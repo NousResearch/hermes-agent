@@ -346,6 +346,41 @@ class TelegramAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Failed to send local image: {e}")
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a document/file natively as a Telegram document attachment."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import os
+            if not os.path.exists(file_path):
+                return SendResult(success=False, error=f"File not found: {file_path}")
+
+            file_size = os.path.getsize(file_path)
+            if file_size > 50 * 1024 * 1024:  # 50MB Telegram limit
+                return SendResult(success=False, error="File exceeds 50MB Telegram limit")
+
+            name = file_name or os.path.basename(file_path)
+            with open(file_path, "rb") as f:
+                msg = await self._bot.send_document(
+                    chat_id=int(chat_id),
+                    document=f,
+                    filename=name,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.error("[%s] Failed to send document: %s", self.name, e)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+
     async def send_image(
         self,
         chat_id: str,

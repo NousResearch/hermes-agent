@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
+    cache_document_from_bytes,
 )
 
 
@@ -303,6 +304,47 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Failed to send local image: {e}")
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a document/file natively as a Discord file attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import io
+
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            if not os.path.exists(file_path):
+                return SendResult(success=False, error=f"File not found: {file_path}")
+
+            file_size = os.path.getsize(file_path)
+            if file_size > 25 * 1024 * 1024:  # 25MB Discord limit
+                return SendResult(success=False, error="File exceeds 25MB Discord limit")
+
+            name = file_name or os.path.basename(file_path)
+            with open(file_path, "rb") as f:
+                file = discord.File(io.BytesIO(f.read()), filename=name)
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                )
+                return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            print(f"[{self.name}] Failed to send document: {e}")
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
 
     async def send_image(
         self,
@@ -866,9 +908,37 @@ class DiscordAdapter(BasePlatformAdapter):
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:
-                # Other attachments: keep the original URL
-                media_urls.append(att.url)
-                media_types.append(content_type)
+                # Documents / other attachments: download to local cache
+                # so sandbox injection and agent file access work reliably.
+                MAX_DOC_BYTES = 50 * 1024 * 1024  # 50 MB
+                if att.size and att.size > MAX_DOC_BYTES:
+                    print(f"[Discord] Document too large ({att.size} bytes), skipping", flush=True)
+                    continue
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(att.url) as resp:
+                            if resp.status == 200:
+                                # Enforce size limit on actual download
+                                cl = resp.content_length or 0
+                                if cl > MAX_DOC_BYTES:
+                                    print(f"[Discord] Document content-length {cl} exceeds limit", flush=True)
+                                    continue
+                                doc_bytes = await resp.read()
+                                if len(doc_bytes) > MAX_DOC_BYTES:
+                                    print(f"[Discord] Downloaded document exceeds 50MB, discarding", flush=True)
+                                    continue
+                                filename = att.filename or "document"
+                                cached_path = cache_document_from_bytes(doc_bytes, filename)
+                                media_urls.append(cached_path)
+                                media_types.append(content_type)
+                                print(f"[Discord] Cached user document: {cached_path}", flush=True)
+                            else:
+                                print(f"[Discord] Failed to download document: HTTP {resp.status}", flush=True)
+                                # Don't append URL — uncached files can't be injected
+                except Exception as e:
+                    print(f"[Discord] Failed to cache document attachment: {e}", flush=True)
+                    # Don't append URL — failed downloads can't be injected
         
         event = MessageEvent(
             text=message.content,

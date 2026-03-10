@@ -585,6 +585,60 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
+    def extract_files(content: str) -> Tuple[List[Tuple[str, Optional[str]]], str]:
+        """
+        Extract ``FILE:<path>`` or ``FILE:<path|caption>`` tags from response text.
+
+        The send_file tool embeds FILE: tags in its JSON response so the
+        gateway delivery pipeline can detect and send them as native
+        document attachments.
+
+        Args:
+            content: The response text to scan.
+
+        Returns:
+            Tuple of (list of (file_path, caption_or_None), cleaned content).
+        """
+        files: List[Tuple[str, Optional[str]]] = []
+        cleaned = content
+
+        # Lazy import to avoid circular dependency at module level
+        try:
+            from tools.file_transfer import is_safe_file_path
+        except ImportError:
+            is_safe_file_path = None
+
+        # Escape-aware regex: matches FILE:<...> where \> is literal, bare > closes.
+        file_pattern = r'FILE:<((?:[^>\\]|\\.)*)>'
+        for match in re.finditer(file_pattern, content):
+            inner = match.group(1).strip()
+            if not inner:
+                continue
+            if "|" in inner:
+                path, caption = inner.split("|", 1)
+                path = path.strip().replace("\\>", ">").replace("\\\\", "\\")
+                caption = caption.strip().replace("\\>", ">").replace("\\\\", "\\")
+            else:
+                path = inner.replace("\\>", ">").replace("\\\\", "\\")
+                caption = None
+
+            # Security: only allow paths inside ~/.hermes/file_cache/
+            if is_safe_file_path is not None:
+                safe = is_safe_file_path(path)
+                if safe is None:
+                    logger.warning("Blocked FILE tag with path outside cache: %s", path)
+                    continue
+                path = str(safe)
+
+            files.append((path, caption))
+
+        # Always strip FILE tags from text (even blocked ones)
+        cleaned = re.sub(file_pattern, '', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+        return files, cleaned
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -704,7 +758,11 @@ class BasePlatformAdapter(ABC):
                 images, text_content = self.extract_images(response)
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
-                
+
+                # Extract FILE:<path|caption> tags before sending text
+                # so the user never sees raw FILE: tags in the message.
+                file_attachments, text_content = self.extract_files(text_content)
+
                 # Send the text portion first (if any remains after extractions)
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
@@ -790,7 +848,23 @@ class BasePlatformAdapter(ABC):
                             print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
                     except Exception as media_err:
                         print(f"[{self.name}] Error sending media: {media_err}")
-            
+
+                # Send extracted FILE:<path|caption> attachments from send_file tool
+                for file_path, file_caption in file_attachments:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        doc_result = await self.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            caption=file_caption,
+                            file_name=os.path.basename(file_path),
+                        )
+                        if not doc_result.success:
+                            logger.error("[%s] Failed to send file: %s", self.name, doc_result.error)
+                    except Exception as file_err:
+                        logger.error("[%s] Error sending file: %s", self.name, file_err, exc_info=True)
+
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)

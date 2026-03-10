@@ -908,6 +908,13 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
+        # Flush any files queued for injection into this sandbox
+        try:
+            from tools.file_transfer import process_pending_injections
+            process_pending_injections(effective_task_id)
+        except Exception as _inj_err:
+            logger.warning("Pending file injection failed: %s", _inj_err)
+
         # Check for dangerous commands (only for local/ssh in interactive modes)
         # Skip check if force=True (user has confirmed they want to run it)
         if not force:

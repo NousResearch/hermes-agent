@@ -1199,6 +1199,34 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        # -----------------------------------------------------------------
+        # Queue uploaded documents for injection into sandbox environments.
+        # The actual injection is deferred until the terminal/file_tools
+        # environment is first accessed (process_pending_injections).
+        # -----------------------------------------------------------------
+        env_type = os.environ.get("TERMINAL_ENV", "local")
+        if env_type != "local" and event.media_urls and event.message_type == MessageType.DOCUMENT:
+            try:
+                from tools.file_transfer import queue_injection
+                for doc_path in event.media_urls:
+                    # Only queue local files — skip URLs that failed to cache
+                    if not os.path.isfile(doc_path):
+                        logger.warning("Skipping non-local path for injection: %s", doc_path)
+                        continue
+                    import os as _os
+                    fname = _os.path.basename(doc_path)
+                    remote_dest = f"/workspace/uploads/{fname}"
+                    queue_injection(
+                        host_path=doc_path,
+                        remote_path=remote_dest,
+                        task_id=session_key,
+                    )
+                    message_text = message_text.replace(
+                        doc_path, f"{doc_path} (will be available in sandbox at {remote_dest})"
+                    )
+            except Exception as _inj_err:
+                logger.warning("Failed to queue file injection: %s", _inj_err)
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -2880,7 +2908,23 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
+            # Same pattern for FILE:<path> tags from the send_file tool.
+            # Collect unique FILE: tags from tool results and append them
+            # so the adapter's extract_files() can deliver documents.
+            if "FILE:<" not in final_response:
+                file_tags = []
+                for msg in result.get("messages", []):
+                    if msg.get("role") in ("tool", "function"):
+                        content = msg.get("content", "")
+                        if "FILE:<" in content:
+                            for match in re.finditer(r'FILE:<((?:[^>\\]|\\.)*)>', content):
+                                fpath = match.group(0)
+                                if fpath not in file_tags:
+                                    file_tags.append(fpath)
+                if file_tags:
+                    final_response = final_response + "\n" + "\n".join(file_tags)
+
             return {
                 "final_response": final_response,
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
@@ -3035,6 +3079,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+            try:
+                from tools.file_transfer import cleanup_file_cache
+                removed = cleanup_file_cache(max_age_hours=24)
+                if removed:
+                    logger.info("File transfer cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("File transfer cache cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

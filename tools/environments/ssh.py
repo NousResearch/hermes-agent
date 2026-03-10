@@ -69,15 +69,23 @@ class SSHEnvironment(BaseEnvironment):
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
         wrapped = f'cd {work_dir} && {exec_command}'
         effective_timeout = timeout or self.timeout
+
+        # Merge sudo password (if any) with caller-supplied stdin_data.
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
 
         cmd = self._build_ssh_command()
         cmd.extend(["bash", "-c", wrapped])
 
         try:
-            kwargs = self._build_run_kwargs(timeout, stdin_data)
+            kwargs = self._build_run_kwargs(timeout, effective_stdin)
             # Remove timeout from kwargs -- we handle it in the poll loop
             kwargs.pop("timeout", None)
 
@@ -87,13 +95,13 @@ class SSHEnvironment(BaseEnvironment):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
                 text=True,
             )
 
-            if stdin_data:
+            if effective_stdin:
                 try:
-                    proc.stdin.write(stdin_data)
+                    proc.stdin.write(effective_stdin)
                     proc.stdin.close()
                 except Exception:
                     pass

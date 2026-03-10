@@ -3239,7 +3239,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = shutil.get_terminal_size().columns
+        w = min(shutil.get_terminal_size().columns, 120)
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         

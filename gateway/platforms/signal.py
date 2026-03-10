@@ -580,7 +580,7 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send failed")
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator."""
         params: Dict[str, Any] = {
             "account": self.account,

@@ -1,0 +1,103 @@
+"""Research support package for Hermes Research Agent."""
+
+from research.approvals import ApprovalStore
+from research.config import (
+    DEFAULT_RESEARCH_CONFIG,
+    get_research_config,
+    get_research_mode,
+    get_workspace_dir,
+    research_enabled,
+)
+from research.loop_policy import (
+    bootstrap_experiment_template,
+    bootstrap_hypothesis_template,
+    bootstrap_idea_candidates,
+    compose_continuation_prompt,
+    compose_monitor_prompt,
+    detect_spec_level,
+)
+from research.manager import (
+    assess_dataset_rows,
+    build_recovery_plan,
+    prune_search_queue,
+    rank_runs,
+    suggest_next_step,
+    triage_literature,
+)
+from research.models import (
+    DatasetRecord,
+    EvalResult,
+    ExperimentSpec,
+    GraphEdge,
+    Hypothesis,
+    InboxItem,
+    LiteratureRecord,
+    LoopCheckpoint,
+    ResearchIdea,
+    ResearchProject,
+    RunSpec,
+)
+from research.reporting import (
+    render_comparison_table,
+    render_dataset_quality_report,
+    render_eval_summary,
+    render_failure_report,
+    render_inbox_markdown,
+    render_iteration_report,
+    render_literature_brief,
+    render_research_memo,
+    render_session_changelog,
+)
+from research.state_store import ResearchStateStore
+from research.tinker_client import (
+    TinkerRuntimePaths,
+    build_runner_script,
+    launch_background_run,
+    normalize_run_spec,
+)
+
+__all__ = [
+    "ApprovalStore",
+    "DEFAULT_RESEARCH_CONFIG",
+    "DatasetRecord",
+    "EvalResult",
+    "ExperimentSpec",
+    "GraphEdge",
+    "Hypothesis",
+    "InboxItem",
+    "LiteratureRecord",
+    "LoopCheckpoint",
+    "ResearchIdea",
+    "ResearchProject",
+    "ResearchStateStore",
+    "RunSpec",
+    "TinkerRuntimePaths",
+    "bootstrap_experiment_template",
+    "bootstrap_hypothesis_template",
+    "bootstrap_idea_candidates",
+    "build_runner_script",
+    "build_recovery_plan",
+    "compose_continuation_prompt",
+    "compose_monitor_prompt",
+    "detect_spec_level",
+    "get_research_config",
+    "get_research_mode",
+    "get_workspace_dir",
+    "launch_background_run",
+    "normalize_run_spec",
+    "prune_search_queue",
+    "rank_runs",
+    "render_dataset_quality_report",
+    "render_comparison_table",
+    "render_eval_summary",
+    "render_failure_report",
+    "render_inbox_markdown",
+    "render_iteration_report",
+    "render_literature_brief",
+    "render_research_memo",
+    "render_session_changelog",
+    "research_enabled",
+    "suggest_next_step",
+    "triage_literature",
+    "assess_dataset_rows",
+]

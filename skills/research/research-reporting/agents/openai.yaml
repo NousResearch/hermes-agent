@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Reporting"
+  short_description: "Turn research state into concise written deliverables"
+  default_prompt: "Use $research-reporting to turn experiment state and results into a concise research memo."

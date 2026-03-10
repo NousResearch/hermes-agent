@@ -1,0 +1,4 @@
+interface:
+  display_name: "Literature To Experiment"
+  short_description: "Translate papers into executable experiment plans"
+  default_prompt: "Use $literature-to-experiment to turn literature findings into a concrete training and evaluation plan."

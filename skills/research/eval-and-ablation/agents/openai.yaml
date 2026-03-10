@@ -1,0 +1,4 @@
+interface:
+  display_name: "Eval And Ablation"
+  short_description: "Compare checkpoints and design clean ablations"
+  default_prompt: "Use $eval-and-ablation to analyze model results and define the next benchmark or ablation pass."

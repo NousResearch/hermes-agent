@@ -20,6 +20,34 @@ from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 
 logger = logging.getLogger(__name__)
 
+_RESEARCH_TOOL_PRIORITY = [
+    "research_state",
+    "research_loop",
+    "research_manager",
+    "tinker_posttrain",
+    "literature",
+    "dataset",
+    "judge",
+    "evaluation",
+]
+
+_GENERAL_TOOLSET_PRIORITY = [
+    "research",
+    "web",
+    "browser",
+    "terminal",
+    "file",
+    "skills",
+    "todo",
+    "memory",
+    "session_search",
+    "clarify",
+    "code_execution",
+    "delegation",
+    "cronjob",
+    "moa",
+]
+
 
 # =========================================================================
 # ANSI building blocks for conversation display
@@ -100,6 +128,22 @@ def get_available_skills() -> Dict[str, List[str]]:
         skills_by_category.setdefault(category, []).append(skill_name)
 
     return skills_by_category
+
+
+def is_research_variant(enabled_toolsets: Optional[List[str]] = None) -> bool:
+    """Return whether the CLI should render as Hermes Research Agent."""
+    enabled = {item.strip() for item in (enabled_toolsets or []) if item}
+    env_enabled = os.getenv("HERMES_RESEARCH_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+    return env_enabled or "research" in enabled
+
+
+def get_research_skill_names(skills_by_category: Dict[str, List[str]]) -> List[str]:
+    """Return research-specific skills for prominent banner display."""
+    research_skills = set(skills_by_category.get("research", []))
+    for category_skills in skills_by_category.values():
+        if "tinker" in category_skills:
+            research_skills.add("tinker")
+    return sorted(research_skills)
 
 
 # =========================================================================
@@ -207,6 +251,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
+    research_variant = is_research_variant(enabled_toolsets)
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
@@ -218,6 +263,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     layout_table.add_column("right", justify="left")
 
     left_lines = ["", HERMES_CADUCEUS, ""]
+    if research_variant:
+        left_lines.append("[bold #FFBF00]Hermes Research Agent[/]")
+        left_lines.append("[dim #B8860B]Autonomous end-to-end research variant[/]")
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
@@ -246,6 +294,16 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 toolsets_dict[display_name].append(tool_name)
 
     sorted_toolsets = sorted(toolsets_dict.keys())
+    if research_variant:
+        research_tools = [name for name in _RESEARCH_TOOL_PRIORITY if name in toolsets_dict.get("research", [])]
+        if research_tools:
+            right_lines.append("[bold #FFBF00]Research Tools[/]")
+            right_lines.append("[#FFF8DC]" + ", ".join(research_tools) + "[/]")
+            right_lines.append("")
+
+    priority_toolsets = [name for name in _GENERAL_TOOLSET_PRIORITY if name in sorted_toolsets]
+    remaining_toolsets = [name for name in sorted_toolsets if name not in priority_toolsets]
+    sorted_toolsets = priority_toolsets + remaining_toolsets
     display_toolsets = sorted_toolsets[:8]
     remaining_toolsets = len(sorted_toolsets) - 8
 
@@ -311,15 +369,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     total_skills = sum(len(s) for s in skills_by_category.values())
 
     if skills_by_category:
+        if research_variant:
+            research_skill_names = get_research_skill_names(skills_by_category)
+            if research_skill_names:
+                right_lines.append("[bold #FFBF00]Research Skills[/]")
+                right_lines.append(f"[#FFF8DC]{', '.join(research_skill_names)}[/]")
+                right_lines.append("")
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
+            max_visible = 8
+            max_chars = 50
+            if research_variant and category == "research":
+                max_visible = len(skill_names)
+                max_chars = 120
+            if len(skill_names) > max_visible:
+                display_names = skill_names[:max_visible]
+                skills_str = ", ".join(display_names) + f" +{len(skill_names) - max_visible} more"
             else:
                 skills_str = ", ".join(skill_names)
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
+            if len(skills_str) > max_chars:
+                skills_str = skills_str[: max_chars - 3] + "..."
             right_lines.append(f"[dim #B8860B]{category}:[/] [#FFF8DC]{skills_str}[/]")
     else:
         right_lines.append("[dim #B8860B]No skills installed[/]")
@@ -349,7 +418,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     outer_panel = Panel(
         layout_table,
-        title=f"[bold #FFD700]Hermes Agent {VERSION}[/]",
+        title=f"[bold #FFD700]{'Hermes Research Agent' if research_variant else 'Hermes Agent'} {VERSION}[/]",
         border_style="#CD7F32",
         padding=(0, 2),
     )

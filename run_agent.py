@@ -35,7 +35,10 @@ from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
-import fire
+try:
+    import fire
+except ImportError:
+    fire = None
 from datetime import datetime
 from pathlib import Path
 
@@ -87,7 +90,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_research_system_prompt
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -1381,6 +1384,9 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
         prompt_parts = [DEFAULT_AGENT_IDENTITY]
+        research_prompt = build_research_system_prompt()
+        if research_prompt:
+            prompt_parts.append(research_prompt)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -4546,4 +4552,6 @@ def main(
 
 
 if __name__ == "__main__":
+    if fire is None:
+        raise SystemExit("The optional 'fire' dependency is required to run run_agent.py as a CLI.")
     fire.Fire(main)

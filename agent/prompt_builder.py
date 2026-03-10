@@ -70,6 +70,15 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+RESEARCH_AGENT_IDENTITY = (
+    "You are Hermes Research Agent, a specialized version of Hermes focused on end-to-end autonomous "
+    "LLM post-training research. Your default behavior is state-first and completion-oriented: detect the "
+    "specification level, turn vague research goals into executable plans, keep durable project state on disk, "
+    "and continue work across fresh sessions until the loop reaches a stable checkpoint or completion. "
+    "When the task is underspecified, default to novel idea generation backed by literature review, then write "
+    "down the chosen hypothesis, experiment plan, success metric, and stop condition before launching training."
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Proactively save important things "
     "you learn (user preferences, environment details, useful approaches) and do "
@@ -179,6 +188,45 @@ def _skill_is_platform_compatible(skill_file: Path) -> bool:
         return True  # Err on the side of showing the skill
 
 
+def _get_research_config() -> dict:
+    try:
+        from research.config import get_research_config
+        return get_research_config()
+    except Exception:
+        return {}
+
+
+def build_research_system_prompt() -> str:
+    """Build the research-specific identity block when research mode is enabled."""
+    cfg = _get_research_config()
+    if not cfg.get("enabled", False):
+        return ""
+    mode = str(cfg.get("mode", "approval")).strip().lower() or "approval"
+    return (
+        RESEARCH_AGENT_IDENTITY
+        + " "
+        + f"Current research mode: {mode}. "
+        + "Use research_state for durable records, research_loop for checkpointing and continuation, "
+        + "tinker_posttrain for long-running training jobs, and research_manager to rank experiments, "
+        + "triage literature, assess datasets, plan the next step, prune search queues, recover failed runs, "
+        + "and write a research memo. Before expensive execution, check whether approval mode requires an explicit approval record."
+    )
+
+
+def _load_full_skill(skill_name: str, skills_dir: Path) -> str:
+    """Load a specific skill body by name for always-on injection."""
+    for skill_file in skills_dir.rglob("SKILL.md"):
+        if skill_file.parent.name != skill_name:
+            continue
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+        sanitized = _scan_context_content(content, str(skill_file))
+        return _truncate_content(sanitized, f"{skill_name}/SKILL.md", max_chars=12_000)
+    return ""
+
+
 def build_skills_system_prompt() -> str:
     """Build a compact skill index for the system prompt.
 
@@ -192,6 +240,14 @@ def build_skills_system_prompt() -> str:
 
     if not skills_dir.exists():
         return ""
+
+    preloaded_lines = []
+    research_cfg = _get_research_config()
+    if research_cfg.get("enabled", False):
+        for skill_name in research_cfg.get("always_load_skills", []):
+            skill_text = _load_full_skill(str(skill_name), skills_dir)
+            if skill_text:
+                preloaded_lines.append(f"### {skill_name}\n{skill_text}")
 
     # Collect skills with descriptions, grouped by category
     # Each entry: (skill_name, description)
@@ -254,7 +310,7 @@ def build_skills_system_prompt() -> str:
             else:
                 index_lines.append(f"    - {name}")
 
-    return (
+    skills_index = (
         "## Skills (mandatory)\n"
         "Before replying, scan the skills below. If one clearly matches your task, "
         "load it with skill_view(name) and follow its instructions. "
@@ -265,6 +321,17 @@ def build_skills_system_prompt() -> str:
         "</available_skills>\n"
         "\n"
         "If none match, proceed normally without loading a skill."
+    )
+
+    if not preloaded_lines:
+        return skills_index
+
+    return (
+        "## Always-Loaded Skills\n"
+        "These skills are injected by configuration and should be treated as active guidance.\n\n"
+        + "\n\n".join(preloaded_lines)
+        + "\n\n"
+        + skills_index
     )
 
 

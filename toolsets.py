@@ -183,6 +183,13 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "research": {
+        "description": "Autonomous ML research toolkit with persistent project state, loop orchestration, and Tinker post-training",
+        "tools": ["research_state", "research_loop", "tinker_posttrain", "research_manager",
+                  "evaluation", "dataset", "literature", "judge"],
+        "includes": ["web", "browser", "terminal", "file", "skills", "todo", "memory", "session_search", "clarify", "code_execution", "delegation", "cronjob", "moa"]
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",

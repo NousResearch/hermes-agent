@@ -62,6 +62,29 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Hermes Research Agent
+
+This repo also ships a research-first entrypoint for autonomous end-to-end LLM post-training loops. The `hermesresearch` command enables a dedicated `research` toolset, durable project state under `.hermes-research/`, bundled research skills, resumable loop checkpointing, and direct Tinker-backed post-training without replacing the default Hermes CLI.
+
+Minimal setup:
+
+```bash
+export TINKER_API_KEY=...
+hermesresearch --research-mode approval
+```
+
+What it supports:
+
+- zero-spec research starts: literature scan, idea generation, hypothesis creation, and first experiment planning
+- partial-spec execution: fills in missing dataset, eval, and training details while preserving user constraints
+- full-spec execution: runs the requested loop with approval gates only where configured
+- durable long-running work: checkpoints loop state, monitors background runs, and writes unread inbox summaries on completion
+- research management: literature triage, dataset quality scoring, experiment ranking, search pruning, failure recovery plans, and memo writing via `research_manager`
+
+The included example project lives at [`examples/autonomous-research-project/README.md`](examples/autonomous-research-project/README.md).
+
+---
+
 ## Documentation
 
 All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:

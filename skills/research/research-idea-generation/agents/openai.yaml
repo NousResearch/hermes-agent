@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Idea Generation"
+  short_description: "Turn vague goals into ranked research ideas"
+  default_prompt: "Use $research-idea-generation to derive ranked LLM research directions from a vague goal."

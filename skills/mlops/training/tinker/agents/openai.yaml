@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tinker Post-Training"
+  short_description: "Launch and manage Tinker training runs"
+  default_prompt: "Use $tinker to validate, launch, monitor, and resume a Tinker post-training run."

@@ -46,7 +46,13 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
-from firecrawl import Firecrawl
+
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+try:
+    from firecrawl import Firecrawl
+except ImportError:
+    Firecrawl = None
 from openai import AsyncOpenAI
 from agent.auxiliary_client import get_async_text_auxiliary_client
 from tools.debug_helpers import DebugSession
@@ -65,6 +71,11 @@ def _get_firecrawl_client():
     """
     global _firecrawl_client
     if _firecrawl_client is None:
+        if Firecrawl is None:
+            raise ValueError(
+                "Firecrawl dependency is not installed. Install the optional web tooling "
+                "dependencies to enable web_search, web_extract, and web_crawl."
+            )
         api_key = os.getenv("FIRECRAWL_API_KEY")
         api_url = os.getenv("FIRECRAWL_API_URL")
         if not api_key and not api_url:
@@ -80,6 +91,36 @@ def _get_firecrawl_client():
             kwargs["api_url"] = api_url
         _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
+
+_FIRECRAWL_RETRY = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=16),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    reraise=True,
+    before_sleep=lambda rs: logger.warning(
+        "Firecrawl API call failed (attempt %d/3), retrying in %.1fs...",
+        rs.attempt_number, rs.next_action.sleep,
+    ),
+)
+
+
+@_FIRECRAWL_RETRY
+def _firecrawl_search(query: str, limit: int):
+    """Search via Firecrawl with automatic retry on transient errors."""
+    return _get_firecrawl_client().search(query=query, limit=limit)
+
+
+@_FIRECRAWL_RETRY
+def _firecrawl_scrape(url: str, formats: List[str]):
+    """Scrape a single URL via Firecrawl with automatic retry on transient errors."""
+    return _get_firecrawl_client().scrape(url=url, formats=formats)
+
+
+@_FIRECRAWL_RETRY
+def _firecrawl_crawl(url: str, **kwargs):
+    """Crawl via Firecrawl with automatic retry on transient errors."""
+    return _get_firecrawl_client().crawl(url=url, **kwargs)
+
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
@@ -494,10 +535,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
         
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
+        response = _firecrawl_search(query=query, limit=limit)
         
         # The response is a SearchData object with web, news, and images attributes
         # When not scraping, the results are directly in these attributes
@@ -633,10 +671,7 @@ async def web_extract_tool(
 
             try:
                 logger.info("Scraping: %s", url)
-                scrape_result = _get_firecrawl_client().scrape(
-                    url=url,
-                    formats=formats
-                )
+                scrape_result = _firecrawl_scrape(url=url, formats=formats)
                 
                 # Process the result - properly handle object serialization
                 metadata = {}
@@ -911,10 +946,7 @@ async def web_crawl_tool(
             return json.dumps({"error": "Interrupted", "success": False})
 
         try:
-            crawl_result = _get_firecrawl_client().crawl(
-                url=url,
-                **crawl_params
-            )
+            crawl_result = _firecrawl_crawl(url=url, **crawl_params)
         except Exception as e:
             logger.debug("Crawl API call failed: %s", e)
             raise

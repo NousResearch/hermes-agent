@@ -63,6 +63,26 @@ DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
     "max_turns": 100,
+    "research": {
+        "enabled": True,
+        "mode": "approval",
+        "always_load_skills": ["autonomous-llm-research"],
+        "workspace_dir": ".hermes-research",
+        "default_chunk_minutes": 20,
+        "max_turns_per_chunk": 30,
+        "loop_poll_interval_minutes": 30,
+        "max_concurrent_runs": 3,
+        "max_total_cost_usd": 50,
+        "require_approval_for": ["start_run", "resume_run", "stop_run"],
+        "zero_spec_strategy": "novel_idea_first",
+        "tinker": {
+            "api_key_env": "TINKER_API_KEY",
+            "default_base_model": "meta-llama/Llama-3.1-8B",
+            "default_method": "sft",
+            "default_lora_rank": 32,
+            "default_learning_rate": 1e-4,
+        },
+    },
     
     "terminal": {
         "backend": "local",

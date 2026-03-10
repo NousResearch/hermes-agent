@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autonomous LLM Research"
+  short_description: "Run durable end-to-end LLM research loops"
+  default_prompt: "Use $autonomous-llm-research to run a full autonomous post-training research loop."

@@ -3544,6 +3544,8 @@ class HermesCLI:
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
+        if getattr(self, '_should_exit', False):
+            return
         from tools.voice_mode import AudioRecorder, check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -3691,12 +3693,14 @@ class HermesCLI:
             # (When transcript IS submitted, process_loop handles restart
             # after chat() completes.)
             if self._voice_continuous and not submitted and not self._voice_recording:
-                try:
-                    self._voice_start_recording()
-                    if hasattr(self, '_app') and self._app:
-                        self._app.invalidate()
-                except Exception:
-                    pass
+                def _restart_recording():
+                    try:
+                        self._voice_start_recording()
+                        if hasattr(self, '_app') and self._app:
+                            self._app.invalidate()
+                    except Exception:
+                        pass
+                threading.Thread(target=_restart_recording, daemon=True).start()
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""

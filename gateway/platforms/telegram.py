@@ -430,6 +430,34 @@ class TelegramAdapter(BasePlatformAdapter):
             # Fallback: try as a regular photo
             return await self.send_image(chat_id, animation_url, caption, reply_to)
 
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import os
+            if not os.path.exists(file_path):
+                return SendResult(success=False, error=f"File not found: {file_path}")
+
+            with open(file_path, "rb") as doc_file:
+                msg = await self._bot.send_document(
+                    chat_id=int(chat_id),
+                    document=doc_file,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.error(f"[{self.name}] Failed to send document: {e}")
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if self._bot:

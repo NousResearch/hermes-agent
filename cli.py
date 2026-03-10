@@ -3772,8 +3772,8 @@ class HermesCLI:
             else:
                 self._enable_voice_mode()
         else:
-            print(f"Unknown voice subcommand: {subcommand}")
-            print("Usage: /voice [on|off|tts|status]")
+            _cprint(f"Unknown voice subcommand: {subcommand}")
+            _cprint("Usage: /voice [on|off|tts|status]")
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -5602,17 +5602,21 @@ class HermesCLI:
                         self._spinner_text = ""
                         app.invalidate()  # Refresh status line
 
-                        # Continuous voice: auto-restart recording after agent responds
+                        # Continuous voice: auto-restart recording after agent responds.
+                        # Dispatch to a daemon thread so play_beep (sd.wait) and
+                        # AudioRecorder.start (lock acquire) never block process_loop —
+                        # otherwise queued user input would stall silently.
                         if self._voice_mode and self._voice_continuous and not self._voice_recording:
-                            try:
-                                # Wait for TTS to finish so we don't record the speaker
-                                if self._voice_tts:
-                                    self._voice_tts_done.wait(timeout=60)
-                                    time.sleep(0.3)  # Brief pause after TTS ends
-                                self._voice_start_recording()
-                                app.invalidate()
-                            except Exception as e:
-                                _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                            def _restart_recording():
+                                try:
+                                    if self._voice_tts:
+                                        self._voice_tts_done.wait(timeout=60)
+                                        time.sleep(0.3)
+                                    self._voice_start_recording()
+                                    app.invalidate()
+                                except Exception as e:
+                                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                            threading.Thread(target=_restart_recording, daemon=True).start()
                     
                 except Exception as e:
                     print(f"Error: {e}")

@@ -875,16 +875,15 @@ class TestHandleVoiceCommandReal:
         cli._handle_voice_command("/voice")
         cli._enable_voice_mode.assert_called_once()
 
-    @patch("builtins.print")
     @patch("cli._cprint")
-    def test_unknown_subcommand(self, _cp, mock_print):
+    def test_unknown_subcommand(self, mock_cp):
         cli = self._cli()
         cli._handle_voice_command("/voice foobar")
         cli._enable_voice_mode.assert_not_called()
         cli._disable_voice_mode.assert_not_called()
-        # Should print usage via print() (not _cprint)
+        # Should print usage via _cprint
         assert any("Unknown" in str(c) or "unknown" in str(c)
-                    for c in mock_print.call_args_list)
+                    for c in mock_cp.call_args_list)
 
 
 class TestEnableVoiceModeReal:

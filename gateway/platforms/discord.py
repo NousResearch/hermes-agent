@@ -133,7 +133,7 @@ class DiscordAdapter(BasePlatformAdapter):
             asyncio.create_task(self._client.start(self.config.token))
             
             # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            await asyncio.wait_for(self._ready_event.wait(), timeout=120)
             
             self._running = True
             return True

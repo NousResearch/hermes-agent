@@ -181,6 +181,9 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
 DOCUMENT_CACHE_DIR = Path(os.path.expanduser("~/.hermes/document_cache"))
 
 SUPPORTED_DOCUMENT_TYPES = {
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".log": "text/plain",
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",

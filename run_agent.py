@@ -3994,6 +3994,39 @@ class AIAgent:
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
                 
+                # Fallback: extract <tool_call> from text when API returns no structured tool_calls
+                # (Hermes models sometimes emit tool calls as text instead of structured API calls)
+                if not assistant_message.tool_calls and assistant_message.content and "<tool_call>" in (assistant_message.content or ""):
+                    try:
+                        import re as _re_tc, uuid as _uuid_tc
+                        from openai.types.chat.chat_completion_message_tool_call import (
+                            ChatCompletionMessageToolCall as _TC,
+                            Function as _Fn,
+                        )
+                        _tc_pat = _re_tc.compile(r"<tool_call>\s*(.*?)\s*</tool_call>|<tool_call>\s*(.*)", _re_tc.DOTALL)
+                        _matches = _tc_pat.findall(assistant_message.content)
+                        _parsed_tcs = []
+                        for _m in _matches:
+                            _raw = (_m[0] if _m[0] else _m[1]).strip()
+                            if not _raw:
+                                continue
+                            _tc_data = json.loads(_raw)
+                            _parsed_tcs.append(_TC(
+                                id=f"call_{_uuid_tc.uuid4().hex[:8]}",
+                                type="function",
+                                function=_Fn(
+                                    name=_tc_data["name"],
+                                    arguments=json.dumps(_tc_data.get("arguments", {}), ensure_ascii=False),
+                                ),
+                            ))
+                        if _parsed_tcs:
+                            _before = assistant_message.content[:assistant_message.content.find("<tool_call>")].strip()
+                            assistant_message.content = _before if _before else None
+                            assistant_message.tool_calls = _parsed_tcs
+                            logger.info("Extracted %d tool call(s) from text via fallback parser", len(_parsed_tcs))
+                    except Exception as _parse_err:
+                        logger.debug("Text tool-call parser fallback failed: %s", _parse_err)
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:

@@ -134,6 +134,7 @@ if _config_path.exists():
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
+os.environ["HERMES_GATEWAY"] = "1"
 
 # Enable interactive exec approval for dangerous commands on messaging platforms
 os.environ["HERMES_EXEC_ASK"] = "1"

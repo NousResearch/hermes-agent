@@ -489,14 +489,16 @@ def run_doctor(args):
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
 
-    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax) --
+    # Tuple: (display_name, env_vars, default_url, base_env, check_url)
+    # check_url=False: provider doesn't support /v1/models — show key-configured instead
     _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL"),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL"),
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL"),
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL"),
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL",        True),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL",       True),
+        ("MiniMax",          ("MINIMAX_API_KEY",),                           "",                                    "MINIMAX_BASE_URL",    False),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "",                                    "MINIMAX_CN_BASE_URL", False),
     ]
-    for _pname, _env_vars, _default_url, _base_env in _apikey_providers:
+    for _pname, _env_vars, _default_url, _base_env, _check_url in _apikey_providers:
         _key = ""
         for _ev in _env_vars:
             _key = os.getenv(_ev, "")
@@ -504,6 +506,10 @@ def run_doctor(args):
                 break
         if _key:
             _label = _pname.ljust(20)
+            if not _check_url:
+                # Provider doesn't expose a /models endpoint — key presence is sufficient
+                print(f"  {color(chr(10003), Colors.GREEN)} {_label} {color('(API key configured)', Colors.DIM)}")
+                continue
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx

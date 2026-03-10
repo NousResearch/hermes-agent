@@ -396,6 +396,7 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+from rich import box as rich_box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -3340,6 +3341,7 @@ class HermesCLI:
                     title=f"[bold]{label}[/bold]",
                     title_align="left",
                     border_style=_resp_color,
+                    box=rich_box.HORIZONTALS,
                     padding=(1, 2),
                 ))
             

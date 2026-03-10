@@ -3830,7 +3830,7 @@ class HermesCLI:
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
     def _disable_voice_mode(self):
-        """Disable voice mode and cancel any active recording."""
+        """Disable voice mode, cancel any active recording, and stop TTS."""
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
                 self._voice_recorder.cancel()
@@ -3838,6 +3838,14 @@ class HermesCLI:
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+
+        # Stop any active TTS playback
+        try:
+            from tools.voice_mode import stop_playback
+            stop_playback()
+        except Exception:
+            pass
+        self._voice_tts_done.set()
 
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
@@ -3868,7 +3876,9 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _cprint(f"  Record key: Ctrl+B")
+        _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+        _display_key = _raw_key.replace("ctrl+", "Ctrl+").upper() if "ctrl+" in _raw_key.lower() else _raw_key
+        _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
@@ -4368,6 +4378,20 @@ class HermesCLI:
         except Exception as e:
             print(f"Error: {e}")
             return None
+        finally:
+            # Ensure streaming TTS resources are cleaned up even on error.
+            # Normal path sends the sentinel at line ~3568; this is a safety
+            # net for exception paths that skip it.  Duplicate sentinels are
+            # harmless — stream_tts_to_speaker exits on the first None.
+            if text_queue is not None:
+                try:
+                    text_queue.put_nowait(None)
+                except Exception:
+                    pass
+            if stop_event is not None:
+                stop_event.set()
+            if tts_thread is not None and tts_thread.is_alive():
+                tts_thread.join(timeout=5)
     
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
@@ -4763,6 +4787,7 @@ class HermesCLI:
                 if cli_ref._voice_recording and cli_ref._voice_recorder:
                     cli_ref._voice_recorder.cancel()
                     cli_ref._voice_recording = False
+                    cli_ref._voice_continuous = False
                     _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
                     event.app.invalidate()
                     return

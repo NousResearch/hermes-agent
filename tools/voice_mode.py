@@ -175,6 +175,9 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
+        # Generation counter — incremented on each start/cancel/stop to
+        # detect stale stream-open completions after a cancel or restart.
+        self._generation: int = 0
         # Silence detection state
         self._has_spoken = False
         self._speech_start: float = 0.0  # When speech attempt began
@@ -182,6 +185,8 @@ class AudioRecorder:
         self._min_speech_duration: float = 0.3  # Seconds of speech needed to confirm
         self._max_dip_tolerance: float = 0.3  # Max dip duration before resetting speech
         self._silence_start: float = 0.0
+        self._resume_start: float = 0.0  # Tracks sustained speech after silence starts
+        self._resume_dip_start: float = 0.0  # Dip tolerance tracker for resume detection
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
@@ -210,8 +215,136 @@ class AudioRecorder:
 
     # -- public methods ------------------------------------------------------
 
+    def _ensure_stream(self) -> None:
+        """Create the audio InputStream once and keep it alive.
+
+        The stream stays open for the lifetime of the recorder.  Between
+        recordings the callback simply discards audio chunks (``_recording``
+        is ``False``).  This avoids the CoreAudio bug where closing and
+        re-opening an ``InputStream`` hangs indefinitely on macOS.
+        """
+        if self._stream is not None:
+            return  # already alive
+
+        sd, np = _import_audio()
+
+        def _callback(indata, frames, time_info, status):  # noqa: ARG001
+            if status:
+                logger.debug("sounddevice status: %s", status)
+            # When not recording the stream is idle — discard audio.
+            if not self._recording:
+                return
+            self._frames.append(indata.copy())
+
+            # Compute RMS for level display and silence detection
+            rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+            self._current_rms = rms
+            if rms > self._peak_rms:
+                self._peak_rms = rms
+
+            # Silence detection
+            if self._on_silence_stop is not None:
+                now = time.monotonic()
+                elapsed = now - self._start_time
+
+                if rms > self._silence_threshold:
+                    # Audio is above threshold -- this is speech (or noise).
+                    self._dip_start = 0.0  # Reset dip tracker
+                    if self._speech_start == 0.0:
+                        self._speech_start = now
+                    elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
+                        self._has_spoken = True
+                        logger.debug("Speech confirmed (%.2fs above threshold)",
+                                     now - self._speech_start)
+                    # After speech is confirmed, only reset silence timer if
+                    # speech is sustained (>0.3s above threshold).  Brief
+                    # spikes from ambient noise should NOT reset the timer.
+                    if not self._has_spoken:
+                        self._silence_start = 0.0
+                    else:
+                        # Track resumed speech with dip tolerance.
+                        # Brief dips below threshold are normal during speech,
+                        # so we mirror the initial speech detection pattern:
+                        # start tracking, tolerate short dips, confirm after 0.3s.
+                        self._resume_dip_start = 0.0  # Above threshold — no dip
+                        if self._resume_start == 0.0:
+                            self._resume_start = now
+                        elif now - self._resume_start >= self._min_speech_duration:
+                            self._silence_start = 0.0
+                            self._resume_start = 0.0
+                elif self._has_spoken:
+                    # Below threshold after speech confirmed.
+                    # Use dip tolerance before resetting resume tracker —
+                    # natural speech has brief dips below threshold.
+                    if self._resume_start > 0:
+                        if self._resume_dip_start == 0.0:
+                            self._resume_dip_start = now
+                        elif now - self._resume_dip_start >= self._max_dip_tolerance:
+                            # Sustained dip — user actually stopped speaking
+                            self._resume_start = 0.0
+                            self._resume_dip_start = 0.0
+                elif self._speech_start > 0:
+                    # We were in a speech attempt but RMS dipped.
+                    # Tolerate brief dips (micro-pauses between syllables).
+                    if self._dip_start == 0.0:
+                        self._dip_start = now
+                    elif now - self._dip_start >= self._max_dip_tolerance:
+                        # Dip lasted too long -- genuine silence, reset
+                        logger.debug("Speech attempt reset (dip lasted %.2fs)",
+                                     now - self._dip_start)
+                        self._speech_start = 0.0
+                        self._dip_start = 0.0
+
+                # Fire silence callback when:
+                # 1. User spoke then went silent for silence_duration, OR
+                # 2. No speech detected at all for max_wait seconds
+                should_fire = False
+                if self._has_spoken and rms <= self._silence_threshold:
+                    # User was speaking and now is silent
+                    if self._silence_start == 0.0:
+                        self._silence_start = now
+                    elif now - self._silence_start >= self._silence_duration:
+                        logger.info("Silence detected (%.1fs), auto-stopping",
+                                    self._silence_duration)
+                        should_fire = True
+                elif not self._has_spoken and elapsed >= self._max_wait:
+                    logger.info("No speech within %.0fs, auto-stopping",
+                                self._max_wait)
+                    should_fire = True
+
+                if should_fire:
+                    cb = self._on_silence_stop
+                    self._on_silence_stop = None  # fire only once
+                    if cb:
+                        def _safe_cb():
+                            try:
+                                cb()
+                            except Exception as e:
+                                logger.error("Silence callback failed: %s", e, exc_info=True)
+                        threading.Thread(target=_safe_cb, daemon=True).start()
+
+        # Create stream — may block on CoreAudio (first call only).
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                callback=_callback,
+            )
+            stream.start()
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to open audio input stream: {e}. "
+                "Check that a microphone is connected and accessible."
+            ) from e
+        self._stream = stream
+
     def start(self, on_silence_stop=None) -> None:
         """Start capturing audio from the default input device.
+
+        The underlying InputStream is created once and kept alive across
+        recordings.  Subsequent calls simply reset detection state and
+        toggle frame collection via ``_recording``.
 
         Args:
             on_silence_stop: Optional callback invoked (in a daemon thread) when
@@ -222,7 +355,7 @@ class AudioRecorder:
         or if a recording is already in progress.
         """
         try:
-            sd, np = _import_audio()
+            _import_audio()
         except (ImportError, OSError) as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
@@ -234,106 +367,53 @@ class AudioRecorder:
             if self._recording:
                 return  # already recording
 
+            self._generation += 1
+
             self._frames = []
             self._start_time = time.monotonic()
             self._has_spoken = False
             self._speech_start = 0.0
             self._dip_start = 0.0
             self._silence_start = 0.0
+            self._resume_start = 0.0
+            self._resume_dip_start = 0.0
             self._peak_rms = 0
+            self._current_rms = 0
             self._on_silence_stop = on_silence_stop
 
-            def _callback(indata, frames, time_info, status):  # noqa: ARG001
-                if status:
-                    logger.debug("sounddevice status: %s", status)
-                self._frames.append(indata.copy())
+        # Ensure the persistent stream is alive (no-op after first call).
+        self._ensure_stream()
 
-                # Compute RMS for level display and silence detection
-                rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
-                self._current_rms = rms
-                if rms > self._peak_rms:
-                    self._peak_rms = rms
-
-                # Silence detection
-                if self._on_silence_stop is not None and self._recording:
-                    now = time.monotonic()
-
-                    if rms > self._silence_threshold:
-                        # Audio is above threshold -- this is speech (or noise).
-                        self._dip_start = 0.0  # Reset dip tracker
-                        if self._speech_start == 0.0:
-                            self._speech_start = now
-                        elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
-                            self._has_spoken = True
-                            logger.debug("Speech confirmed (%.2fs above threshold)",
-                                         now - self._speech_start)
-                        self._silence_start = 0.0
-                    elif self._has_spoken:
-                        # Speech already confirmed, let silence timer run below
-                        pass
-                    elif self._speech_start > 0:
-                        # We were in a speech attempt but RMS dipped.
-                        # Tolerate brief dips (micro-pauses between syllables).
-                        if self._dip_start == 0.0:
-                            self._dip_start = now
-                        elif now - self._dip_start >= self._max_dip_tolerance:
-                            # Dip lasted too long -- genuine silence, reset
-                            logger.debug("Speech attempt reset (dip lasted %.2fs)",
-                                         now - self._dip_start)
-                            self._speech_start = 0.0
-                            self._dip_start = 0.0
-                        # else: brief dip, keep tolerating
-                    # else: no speech attempt, just silence -- nothing to do
-
-                    # Fire silence callback when:
-                    # 1. User spoke then went silent for silence_duration, OR
-                    # 2. No speech detected at all for max_wait seconds
-                    should_fire = False
-                    if self._has_spoken and rms <= self._silence_threshold:
-                        # User was speaking and now is silent
-                        if self._silence_start == 0.0:
-                            self._silence_start = now
-                        elif now - self._silence_start >= self._silence_duration:
-                            logger.info("Silence detected (%.1fs), auto-stopping",
-                                        self._silence_duration)
-                            should_fire = True
-                    elif not self._has_spoken and now - self._start_time >= self._max_wait:
-                        # No speech detected within max_wait — stop to avoid
-                        # infinite recording in quiet environments.
-                        logger.info("No speech within %.0fs, auto-stopping",
-                                    self._max_wait)
-                        should_fire = True
-
-                    if should_fire:
-                        cb = self._on_silence_stop
-                        self._on_silence_stop = None  # fire only once
-                        if cb:
-                            def _safe_cb():
-                                try:
-                                    cb()
-                                except Exception as e:
-                                    logger.error("Silence callback failed: %s", e, exc_info=True)
-                            threading.Thread(target=_safe_cb, daemon=True).start()
-
-            try:
-                self._stream = sd.InputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype=DTYPE,
-                    callback=_callback,
-                )
-                self._stream.start()
-            except Exception as e:
-                self._stream = None
-                raise RuntimeError(
-                    f"Failed to open audio input stream: {e}. "
-                    "Check that a microphone is connected and accessible."
-                ) from e
+        with self._lock:
             self._recording = True
-            logger.info("Voice recording started (rate=%d, channels=%d)", SAMPLE_RATE, CHANNELS)
+        logger.info("Voice recording started (rate=%d, channels=%d)", SAMPLE_RATE, CHANNELS)
+
+    def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
+        """Close the audio stream with a timeout to prevent CoreAudio hangs."""
+        if self._stream is None:
+            return
+
+        stream = self._stream
+        self._stream = None
+
+        def _do_close():
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_close, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            logger.warning("Audio stream close timed out after %.1fs — forcing ahead", timeout)
 
     def stop(self) -> Optional[str]:
         """Stop recording and write captured audio to a WAV file.
+
+        The underlying stream is kept alive for reuse — only frame
+        collection is stopped.
 
         Returns:
             Path to the WAV file, or ``None`` if no audio was captured.
@@ -343,14 +423,9 @@ class AudioRecorder:
                 return None
 
             self._recording = False
-
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
+            self._generation += 1  # Invalidate any pending start()
+            self._current_rms = 0
+            # Stream stays alive — no close needed.
 
             if not self._frames:
                 return None
@@ -379,20 +454,26 @@ class AudioRecorder:
             return self._write_wav(audio_data)
 
     def cancel(self) -> None:
-        """Stop recording and discard all captured audio."""
+        """Stop recording and discard all captured audio.
+
+        The underlying stream is kept alive for reuse.
+        """
+        with self._lock:
+            self._generation += 1  # Invalidate any pending start()
+            self._recording = False
+            self._frames = []
+            self._on_silence_stop = None
+            self._current_rms = 0
+        logger.info("Voice recording cancelled")
+
+    def shutdown(self) -> None:
+        """Release the audio stream.  Call when voice mode is disabled."""
         with self._lock:
             self._recording = False
             self._frames = []
-
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
-
-            logger.info("Voice recording cancelled")
+            self._on_silence_stop = None
+            self._close_stream_with_timeout()
+        logger.info("AudioRecorder shut down")
 
     # -- private helpers -----------------------------------------------------
 

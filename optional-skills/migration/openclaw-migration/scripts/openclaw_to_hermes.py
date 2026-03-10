@@ -33,8 +33,13 @@ SKILL_CATEGORY_DESCRIPTION = (
     "Skills migrated from an OpenClaw workspace."
 )
 SKILL_CONFLICT_MODES = {"skip", "overwrite", "rename"}
-SUPPORTED_SECRET_TARGETS = {
+SUPPORTED_SECRET_TARGETS={
     "TELEGRAM_BOT_TOKEN",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ELEVENLABS_API_KEY",
+    "VOICE_TOOLS_OPENAI_KEY",
 }
 WORKSPACE_INSTRUCTIONS_FILENAME = "AGENTS" + ".md"
 MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
@@ -74,6 +79,42 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "label": "TTS assets",
         "description": "Copy compatible workspace TTS assets into ~/.hermes/tts/.",
     },
+    "discord-settings": {
+        "label": "Discord settings",
+        "description": "Import Discord bot token and allowlist into Hermes .env.",
+    },
+    "slack-settings": {
+        "label": "Slack settings",
+        "description": "Import Slack bot/app tokens and allowlist into Hermes .env.",
+    },
+    "whatsapp-settings": {
+        "label": "WhatsApp settings",
+        "description": "Import WhatsApp allowlist into Hermes .env.",
+    },
+    "signal-settings": {
+        "label": "Signal settings",
+        "description": "Import Signal account, HTTP URL, and allowlist into Hermes .env.",
+    },
+    "provider-keys": {
+        "label": "Provider API keys",
+        "description": "Import model provider API keys into Hermes .env (requires --migrate-secrets).",
+    },
+    "model-config": {
+        "label": "Default model",
+        "description": "Import the default model setting into Hermes config.yaml.",
+    },
+    "tts-config": {
+        "label": "TTS configuration",
+        "description": "Import TTS provider and voice settings into Hermes config.yaml.",
+    },
+    "shared-skills": {
+        "label": "Shared skills",
+        "description": "Copy shared OpenClaw skills from ~/.openclaw/skills/ into Hermes.",
+    },
+    "daily-memory": {
+        "label": "Daily memory files",
+        "description": "Merge daily memory entries from workspace/memory/ into Hermes MEMORY.md.",
+    },
     "archive": {
         "label": "Archive unmapped docs",
         "description": "Archive compatible-but-unmapped docs for later manual review.",
@@ -89,6 +130,14 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
         "command-allowlist",
         "skills",
         "tts-assets",
+        "discord-settings",
+        "slack-settings",
+        "whatsapp-settings",
+        "signal-settings",
+        "model-config",
+        "tts-config",
+        "shared-skills",
+        "daily-memory",
         "archive",
     },
     "full": set(MIGRATION_OPTION_METADATA),
@@ -508,8 +557,17 @@ class Migrator:
         )
         self.run_if_selected("messaging-settings", lambda: self.migrate_messaging_settings(config))
         self.run_if_selected("secret-settings", lambda: self.handle_secret_settings(config))
+        self.run_if_selected("discord-settings", lambda: self.migrate_discord_settings(config))
+        self.run_if_selected("slack-settings", lambda: self.migrate_slack_settings(config))
+        self.run_if_selected("whatsapp-settings", lambda: self.migrate_whatsapp_settings(config))
+        self.run_if_selected("signal-settings", lambda: self.migrate_signal_settings(config))
+        self.run_if_selected("provider-keys", lambda: self.handle_provider_keys(config))
+        self.run_if_selected("model-config", lambda: self.migrate_model_config(config))
+        self.run_if_selected("tts-config", lambda: self.migrate_tts_config(config))
         self.run_if_selected("command-allowlist", self.migrate_command_allowlist)
         self.run_if_selected("skills", self.migrate_skills)
+        self.run_if_selected("shared-skills", self.migrate_shared_skills)
+        self.run_if_selected("daily-memory", self.migrate_daily_memory)
         self.run_if_selected(
             "tts-assets",
             lambda: self.copy_tree_non_destructive(
@@ -618,7 +676,8 @@ class Migrator:
             f"workspace/{WORKSPACE_INSTRUCTIONS_FILENAME}",
             f"workspace.default/{WORKSPACE_INSTRUCTIONS_FILENAME}",
         )
-        if not source:
+        if source is None:
+            self.record("workspace-agents", "workspace/AGENTS.md", "", "skipped", "Source file not found")
             return
         if not self.workspace_target:
             self.record("workspace-agents", source, None, "skipped", "No workspace target was provided")
@@ -862,6 +921,388 @@ class Migrator:
                 "No allowlisted Hermes-compatible secrets found",
                 supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
             )
+
+    def migrate_discord_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        additions: Dict[str, str] = {}
+        discord = config.get("channels", {}).get("discord", {})
+        if isinstance(discord, dict):
+            token = discord.get("token")
+            if isinstance(token, str) and token.strip():
+                additions["DISCORD_BOT_TOKEN"] = token.strip()
+            allow_from = discord.get("allowFrom", [])
+            if isinstance(allow_from, list):
+                users = [str(u).strip() for u in allow_from if str(u).strip()]
+                if users:
+                    additions["DISCORD_ALLOWED_USERS"] = ",".join(users)
+        if additions:
+            self.merge_env_values(additions, "discord-settings", self.source_root / "openclaw.json")
+        else:
+            self.record("discord-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Discord settings found")
+
+    def migrate_slack_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        additions: Dict[str, str] = {}
+        slack = config.get("channels", {}).get("slack", {})
+        if isinstance(slack, dict):
+            bot_token = slack.get("botToken")
+            if isinstance(bot_token, str) and bot_token.strip():
+                additions["SLACK_BOT_TOKEN"] = bot_token.strip()
+            app_token = slack.get("appToken")
+            if isinstance(app_token, str) and app_token.strip():
+                additions["SLACK_APP_TOKEN"] = app_token.strip()
+            allow_from = slack.get("allowFrom", [])
+            if isinstance(allow_from, list):
+                users = [str(u).strip() for u in allow_from if str(u).strip()]
+                if users:
+                    additions["SLACK_ALLOWED_USERS"] = ",".join(users)
+        if additions:
+            self.merge_env_values(additions, "slack-settings", self.source_root / "openclaw.json")
+        else:
+            self.record("slack-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Slack settings found")
+
+    def migrate_whatsapp_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        additions: Dict[str, str] = {}
+        whatsapp = config.get("channels", {}).get("whatsapp", {})
+        if isinstance(whatsapp, dict):
+            allow_from = whatsapp.get("allowFrom", [])
+            if isinstance(allow_from, list):
+                users = [str(u).strip() for u in allow_from if str(u).strip()]
+                if users:
+                    additions["WHATSAPP_ALLOWED_USERS"] = ",".join(users)
+        if additions:
+            self.merge_env_values(additions, "whatsapp-settings", self.source_root / "openclaw.json")
+        else:
+            self.record("whatsapp-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No WhatsApp settings found")
+
+    def migrate_signal_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        additions: Dict[str, str] = {}
+        signal = config.get("channels", {}).get("signal", {})
+        if isinstance(signal, dict):
+            account = signal.get("account")
+            if isinstance(account, str) and account.strip():
+                additions["SIGNAL_ACCOUNT"] = account.strip()
+            http_url = signal.get("httpUrl")
+            if isinstance(http_url, str) and http_url.strip():
+                additions["SIGNAL_HTTP_URL"] = http_url.strip()
+            allow_from = signal.get("allowFrom", [])
+            if isinstance(allow_from, list):
+                users = [str(u).strip() for u in allow_from if str(u).strip()]
+                if users:
+                    additions["SIGNAL_ALLOWED_USERS"] = ",".join(users)
+        if additions:
+            self.merge_env_values(additions, "signal-settings", self.source_root / "openclaw.json")
+        else:
+            self.record("signal-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Signal settings found")
+
+    def handle_provider_keys(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        if not self.migrate_secrets:
+            config_path = self.source_root / "openclaw.json"
+            self.record(
+                "provider-keys",
+                config_path,
+                self.target_root / ".env",
+                "skipped",
+                "Secret migration disabled. Re-run with --migrate-secrets to import provider API keys.",
+                supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
+            )
+            return
+        self.migrate_provider_keys(config)
+
+    def migrate_provider_keys(self, config: Dict[str, Any]) -> None:
+        secret_additions: Dict[str, str] = {}
+
+        # Extract provider API keys from models.providers
+        providers = config.get("models", {}).get("providers", {})
+        if isinstance(providers, dict):
+            for provider_name, provider_cfg in providers.items():
+                if not isinstance(provider_cfg, dict):
+                    continue
+                api_key = provider_cfg.get("apiKey")
+                if not isinstance(api_key, str) or not api_key.strip():
+                    continue
+                api_key = api_key.strip()
+
+                base_url = provider_cfg.get("baseUrl", "")
+                api_type = provider_cfg.get("api", "")
+                env_var = None
+
+                # Match by baseUrl first
+                if isinstance(base_url, str):
+                    if "openrouter" in base_url.lower():
+                        env_var = "OPENROUTER_API_KEY"
+                    elif "openai.com" in base_url.lower():
+                        env_var = "OPENAI_API_KEY"
+                    elif "anthropic" in base_url.lower():
+                        env_var = "ANTHROPIC_API_KEY"
+
+                # Match by api type
+                if not env_var and isinstance(api_type, str) and api_type == "anthropic-messages":
+                    env_var = "ANTHROPIC_API_KEY"
+
+                # Match by provider name
+                if not env_var:
+                    name_lower = provider_name.lower()
+                    if name_lower == "openrouter":
+                        env_var = "OPENROUTER_API_KEY"
+                    elif "openai" in name_lower:
+                        env_var = "OPENAI_API_KEY"
+
+                if env_var:
+                    secret_additions[env_var] = api_key
+
+        # Extract TTS API keys
+        tts = config.get("messages", {}).get("tts", {})
+        if isinstance(tts, dict):
+            elevenlabs = tts.get("elevenlabs", {})
+            if isinstance(elevenlabs, dict):
+                el_key = elevenlabs.get("apiKey")
+                if isinstance(el_key, str) and el_key.strip():
+                    secret_additions["ELEVENLABS_API_KEY"] = el_key.strip()
+            openai_tts = tts.get("openai", {})
+            if isinstance(openai_tts, dict):
+                oai_key = openai_tts.get("apiKey")
+                if isinstance(oai_key, str) and oai_key.strip():
+                    secret_additions["VOICE_TOOLS_OPENAI_KEY"] = oai_key.strip()
+
+        if secret_additions:
+            self.merge_env_values(secret_additions, "provider-keys", self.source_root / "openclaw.json")
+        else:
+            self.record(
+                "provider-keys",
+                self.source_root / "openclaw.json",
+                self.target_root / ".env",
+                "skipped",
+                "No provider API keys found",
+                supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
+            )
+
+    def migrate_model_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        destination = self.target_root / "config.yaml"
+        source_path = self.source_root / "openclaw.json"
+
+        model_value = config.get("agents", {}).get("defaults", {}).get("model")
+        if model_value is None:
+            self.record("model-config", source_path, destination, "skipped", "No default model found in OpenClaw config")
+            return
+
+        if isinstance(model_value, dict):
+            model_str = model_value.get("primary")
+        else:
+            model_str = model_value
+
+        if not isinstance(model_str, str) or not model_str.strip():
+            self.record("model-config", source_path, destination, "skipped", "Default model value is empty or invalid")
+            return
+
+        model_str = model_str.strip()
+
+        if yaml is None:
+            self.record("model-config", source_path, destination, "error", "PyYAML is not available")
+            return
+
+        hermes_config = load_yaml_file(destination)
+        current_model = hermes_config.get("model")
+        if current_model == model_str:
+            self.record("model-config", source_path, destination, "skipped", "Model already set to the same value")
+            return
+        if current_model and not self.overwrite:
+            self.record("model-config", source_path, destination, "conflict", "Model already set and overwrite is disabled", current=current_model, incoming=model_str)
+            return
+
+        if self.execute:
+            backup_path = self.maybe_backup(destination)
+            hermes_config["model"] = model_str
+            dump_yaml_file(destination, hermes_config)
+            self.record("model-config", source_path, destination, "migrated", backup=str(backup_path) if backup_path else "", model=model_str)
+        else:
+            self.record("model-config", source_path, destination, "migrated", "Would set model", model=model_str)
+
+    def migrate_tts_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        destination = self.target_root / "config.yaml"
+        source_path = self.source_root / "openclaw.json"
+
+        tts = config.get("messages", {}).get("tts", {})
+        if not isinstance(tts, dict) or not tts:
+            self.record("tts-config", source_path, destination, "skipped", "No TTS configuration found in OpenClaw config")
+            return
+
+        if yaml is None:
+            self.record("tts-config", source_path, destination, "error", "PyYAML is not available")
+            return
+
+        tts_data: Dict[str, Any] = {}
+
+        provider = tts.get("provider")
+        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge"):
+            tts_data["provider"] = provider
+
+        elevenlabs = tts.get("elevenlabs", {})
+        if isinstance(elevenlabs, dict):
+            el_settings: Dict[str, str] = {}
+            voice_id = elevenlabs.get("voiceId")
+            if isinstance(voice_id, str) and voice_id.strip():
+                el_settings["voice_id"] = voice_id.strip()
+            model_id = elevenlabs.get("modelId")
+            if isinstance(model_id, str) and model_id.strip():
+                el_settings["model_id"] = model_id.strip()
+            if el_settings:
+                tts_data["elevenlabs"] = el_settings
+
+        openai_tts = tts.get("openai", {})
+        if isinstance(openai_tts, dict):
+            oai_settings: Dict[str, str] = {}
+            oai_model = openai_tts.get("model")
+            if isinstance(oai_model, str) and oai_model.strip():
+                oai_settings["model"] = oai_model.strip()
+            oai_voice = openai_tts.get("voice")
+            if isinstance(oai_voice, str) and oai_voice.strip():
+                oai_settings["voice"] = oai_voice.strip()
+            if oai_settings:
+                tts_data["openai"] = oai_settings
+
+        edge_tts = tts.get("edge", {})
+        if isinstance(edge_tts, dict):
+            edge_voice = edge_tts.get("voice")
+            if isinstance(edge_voice, str) and edge_voice.strip():
+                tts_data["edge"] = {"voice": edge_voice.strip()}
+
+        if not tts_data:
+            self.record("tts-config", source_path, destination, "skipped", "No compatible TTS settings found")
+            return
+
+        hermes_config = load_yaml_file(destination)
+        existing_tts = hermes_config.get("tts", {})
+        if not isinstance(existing_tts, dict):
+            existing_tts = {}
+
+        if self.execute:
+            backup_path = self.maybe_backup(destination)
+            merged_tts = dict(existing_tts)
+            for key, value in tts_data.items():
+                if isinstance(value, dict) and isinstance(merged_tts.get(key), dict):
+                    merged_tts[key] = {**merged_tts[key], **value}
+                else:
+                    merged_tts[key] = value
+            hermes_config["tts"] = merged_tts
+            dump_yaml_file(destination, hermes_config)
+            self.record("tts-config", source_path, destination, "migrated", backup=str(backup_path) if backup_path else "", settings=list(tts_data.keys()))
+        else:
+            self.record("tts-config", source_path, destination, "migrated", "Would set TTS config", settings=list(tts_data.keys()))
+
+    def migrate_shared_skills(self) -> None:
+        source_root = self.source_root / "skills"
+        destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
+        if not source_root.exists():
+            self.record("shared-skills", None, destination_root, "skipped", "No shared OpenClaw skills directory found")
+            return
+
+        skill_dirs = [p for p in sorted(source_root.iterdir()) if p.is_dir() and (p / "SKILL.md").exists()]
+        if not skill_dirs:
+            self.record("shared-skills", source_root, destination_root, "skipped", "No shared skills with SKILL.md found")
+            return
+
+        for skill_dir in skill_dirs:
+            destination = destination_root / skill_dir.name
+            final_destination = destination
+            if destination.exists():
+                if self.skill_conflict_mode == "skip":
+                    self.record("shared-skill", skill_dir, destination, "conflict", "Destination skill already exists")
+                    continue
+                if self.skill_conflict_mode == "rename":
+                    final_destination = self.resolve_skill_destination(destination)
+            if self.execute:
+                backup_path = None
+                if final_destination == destination and destination.exists():
+                    backup_path = self.maybe_backup(destination)
+                final_destination.parent.mkdir(parents=True, exist_ok=True)
+                if final_destination == destination and destination.exists():
+                    shutil.rmtree(destination)
+                shutil.copytree(skill_dir, final_destination)
+                details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
+                if final_destination != destination:
+                    details["renamed_from"] = str(destination)
+                self.record("shared-skill", skill_dir, final_destination, "migrated", **details)
+            else:
+                if final_destination != destination:
+                    self.record(
+                        "shared-skill",
+                        skill_dir,
+                        final_destination,
+                        "migrated",
+                        "Would copy shared skill directory under a renamed folder",
+                        renamed_from=str(destination),
+                    )
+                else:
+                    self.record("shared-skill", skill_dir, final_destination, "migrated", "Would copy shared skill directory")
+
+        desc_path = destination_root / "DESCRIPTION.md"
+        if self.execute:
+            desc_path.parent.mkdir(parents=True, exist_ok=True)
+            if not desc_path.exists():
+                desc_path.write_text(SKILL_CATEGORY_DESCRIPTION + "\n", encoding="utf-8")
+        elif not desc_path.exists():
+            self.record("shared-skill-category", None, desc_path, "migrated", "Would create category description")
+
+    def migrate_daily_memory(self) -> None:
+        source_dir = self.source_candidate("workspace/memory")
+        destination = self.target_root / "memories" / "MEMORY.md"
+        if not source_dir or not source_dir.is_dir():
+            self.record("daily-memory", None, destination, "skipped", "No workspace/memory/ directory found")
+            return
+
+        md_files = sorted(p for p in source_dir.iterdir() if p.is_file() and p.suffix == ".md")
+        if not md_files:
+            self.record("daily-memory", source_dir, destination, "skipped", "No .md files found in workspace/memory/")
+            return
+
+        all_incoming: List[str] = []
+        for md_file in md_files:
+            entries = extract_markdown_entries(read_text(md_file))
+            all_incoming.extend(entries)
+
+        if not all_incoming:
+            self.record("daily-memory", source_dir, destination, "skipped", "No importable entries found in daily memory files")
+            return
+
+        existing = parse_existing_memory_entries(destination)
+        merged, stats, overflowed = merge_entries(existing, all_incoming, self.memory_limit)
+        details = {
+            "source_files": len(md_files),
+            "existing_entries": stats["existing"],
+            "added_entries": stats["added"],
+            "duplicate_entries": stats["duplicates"],
+            "overflowed_entries": stats["overflowed"],
+            "char_limit": self.memory_limit,
+            "final_char_count": len(ENTRY_DELIMITER.join(merged)) if merged else 0,
+        }
+        overflow_file = self.write_overflow_entries("daily-memory", overflowed)
+        if overflow_file is not None:
+            details["overflow_file"] = str(overflow_file)
+
+        if self.execute:
+            if stats["added"] == 0 and not overflowed:
+                self.record("daily-memory", source_dir, destination, "skipped", "No new entries to import", **details)
+                return
+            backup_path = self.maybe_backup(destination)
+            ensure_parent(destination)
+            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            self.record(
+                "daily-memory",
+                source_dir,
+                destination,
+                "migrated",
+                backup=str(backup_path) if backup_path else "",
+                overflow_preview=overflowed[:5],
+                **details,
+            )
+        else:
+            self.record("daily-memory", source_dir, destination, "migrated", "Would merge daily memory entries", overflow_preview=overflowed[:5], **details)
 
     def migrate_skills(self) -> None:
         source_root = self.source_candidate("workspace/skills")

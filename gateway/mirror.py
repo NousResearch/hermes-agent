@@ -111,6 +111,7 @@ def _append_to_jsonl(session_id: str, message: dict) -> None:
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:
     """Append a message to the SQLite session database."""
+    db = None
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -121,3 +122,6 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)
+    finally:
+        if db is not None:
+            db.close()

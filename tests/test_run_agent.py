@@ -2083,3 +2083,158 @@ class TestAnthropicBaseUrlPassthrough:
             # No base_url provided, should be default empty string or None
             passed_url = call_args[0][1]
             assert not passed_url or passed_url is None
+
+
+# ===================================================================
+# _streaming_api_call tests
+# ===================================================================
+
+def _make_chunk(content=None, tool_calls=None, finish_reason=None, model="test/model"):
+    """Build a SimpleNamespace mimicking an OpenAI streaming chunk."""
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(model=model, choices=[choice])
+
+
+def _make_tc_delta(index=0, tc_id=None, name=None, arguments=None):
+    """Build a SimpleNamespace mimicking a streaming tool_call delta."""
+    func = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(index=index, id=tc_id, function=func)
+
+
+class TestStreamingApiCall:
+    """Tests for _streaming_api_call — voice TTS streaming pipeline."""
+
+    def test_content_assembly(self, agent):
+        chunks = [
+            _make_chunk(content="Hel"),
+            _make_chunk(content="lo "),
+            _make_chunk(content="World"),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        callback = MagicMock()
+
+        resp = agent._streaming_api_call({"messages": []}, callback)
+
+        assert resp.choices[0].message.content == "Hello World"
+        assert resp.choices[0].finish_reason == "stop"
+        assert callback.call_count == 3
+        callback.assert_any_call("Hel")
+        callback.assert_any_call("lo ")
+        callback.assert_any_call("World")
+
+    def test_tool_call_accumulation(self, agent):
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "web_", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, "search", '"test"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1
+        assert tc[0].function.name == "web_search"
+        assert tc[0].function.arguments == '{"q":"test"}'
+        assert tc[0].id == "call_1"
+
+    def test_multiple_tool_calls(self, agent):
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{}')]),
+            _make_chunk(tool_calls=[_make_tc_delta(1, "call_b", "read", '{}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2
+        assert tc[0].function.name == "search"
+        assert tc[1].function.name == "read"
+
+    def test_content_and_tool_calls_together(self, agent):
+        chunks = [
+            _make_chunk(content="I'll search"),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "search", '{}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        assert resp.choices[0].message.content == "I'll search"
+        assert len(resp.choices[0].message.tool_calls) == 1
+
+    def test_empty_content_returns_none(self, agent):
+        chunks = [_make_chunk(finish_reason="stop")]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        assert resp.choices[0].message.content is None
+        assert resp.choices[0].message.tool_calls is None
+
+    def test_callback_exception_swallowed(self, agent):
+        chunks = [
+            _make_chunk(content="Hello"),
+            _make_chunk(content=" World"),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        callback = MagicMock(side_effect=ValueError("boom"))
+
+        resp = agent._streaming_api_call({"messages": []}, callback)
+
+        assert resp.choices[0].message.content == "Hello World"
+
+    def test_model_name_captured(self, agent):
+        chunks = [
+            _make_chunk(content="Hi", model="gpt-4o"),
+            _make_chunk(finish_reason="stop", model="gpt-4o"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        assert resp.model == "gpt-4o"
+
+    def test_stream_kwarg_injected(self, agent):
+        chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        agent._streaming_api_call({"messages": [], "model": "test"}, MagicMock())
+
+        call_kwargs = agent.client.chat.completions.create.call_args
+        assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
+
+    def test_api_exception_propagated(self, agent):
+        agent.client.chat.completions.create.side_effect = ConnectionError("fail")
+
+        with pytest.raises(ConnectionError, match="fail"):
+            agent._streaming_api_call({"messages": []}, MagicMock())
+
+    def test_response_has_uuid_id(self, agent):
+        chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        assert resp.id.startswith("stream-")
+        assert len(resp.id) > len("stream-")
+
+    def test_empty_choices_chunk_skipped(self, agent):
+        empty_chunk = SimpleNamespace(model="gpt-4", choices=[])
+        chunks = [
+            empty_chunk,
+            _make_chunk(content="Hello", model="gpt-4"),
+            _make_chunk(finish_reason="stop", model="gpt-4"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+
+        assert resp.choices[0].message.content == "Hello"
+        assert resp.model == "gpt-4"

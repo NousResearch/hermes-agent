@@ -714,6 +714,8 @@ class ChatConsole:
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
         self._buffer.truncate()
+        # Read terminal width at render time so panels adapt to current size
+        self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
         for line in output.rstrip("\n").split("\n"):
@@ -3082,6 +3084,10 @@ class HermesCLI:
         # updates on each invalidate — but frequent repaints cause visible
         # flicker in some terminals (Kitty, ghostty).  We only refresh the
         # countdown every 5 s; selection changes (↑/↓) trigger instant
+        # Poll for the user's response.  The countdown in the hint line
+        # updates on each invalidate — but frequent repaints cause visible
+        # flicker in some terminals (Kitty, ghostty).  We only refresh the
+        # countdown every 5 s; selection changes (↑/↓) trigger instant
         # repaints via the key bindings.
         _last_countdown_refresh = _time.monotonic()
         while True:
@@ -3095,6 +3101,9 @@ class HermesCLI:
                     break
                 # Only repaint every 5 s for the countdown — avoids flicker
                 now = _time.monotonic()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
                 if now - _last_countdown_refresh >= 5.0:
                     _last_countdown_refresh = now
                     self._invalidate()
@@ -3239,8 +3248,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = min(shutil.get_terminal_size().columns, 120)
-        _cprint(f"{_GOLD}{'─' * w}{_RST}")
+        _cprint(f"{_GOLD}{'─' * 40}{_RST}")
         print(flush=True)
         
         try:
@@ -3315,28 +3323,25 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                # Cap at 120 so borders don't wrap when shrinking from fullscreen
-                w = min(shutil.get_terminal_size().columns, 120)
-                # Use skin branding for response box label
+                # Use a Rich Panel for the response box — adapts to terminal
+                # width at render time instead of hard-coding border length.
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", " ⚕ Hermes ")
-                    _resp_color = _skin.get_color("response_border", "")
-                    if _resp_color:
-                        _resp_start = f"\033[38;2;{int(_resp_color[1:3], 16)};{int(_resp_color[3:5], 16)};{int(_resp_color[5:7], 16)}m"
-                    else:
-                        _resp_start = _GOLD
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
                 except Exception:
-                    label = " ⚕ Hermes "
-                    _resp_start = _GOLD
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_resp_start}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_resp_start}╰{'─' * (w - 2)}╯{_RST}"
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
 
-                # Render box + response as a single _cprint call so
-                # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    response,
+                    title=f"[bold]{label}[/bold]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    padding=(1, 2),
+                ))
             
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

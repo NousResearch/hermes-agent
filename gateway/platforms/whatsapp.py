@@ -31,12 +31,18 @@ logger = logging.getLogger(__name__)
 
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on the given TCP port."""
+    # Validate port is actually an integer and in valid range
+    if not isinstance(port, int) or port < 1 or port > 65535:
+        logger.warning(f"Invalid port number: {port}")
+        return
+    
     try:
         if _IS_WINDOWS:
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
+                shell=False,  # Explicitly prevent shell injection
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -44,21 +50,33 @@ def _kill_port_process(port: int) -> None:
                     local_addr = parts[1]
                     if local_addr.endswith(f":{port}"):
                         try:
+                            # Validate PID is numeric before using in command
+                            pid = parts[4]
+                            if not pid.isdigit():
+                                continue
                             subprocess.run(
-                                ["taskkill", "/PID", parts[4], "/F"],
+                                ["taskkill", "/PID", pid, "/F"],
                                 capture_output=True, timeout=5,
+                                shell=False,  # Explicitly prevent shell injection
                             )
                         except subprocess.SubprocessError:
                             pass
         else:
+            # Validate port parameter is safe for use in command
+            port_str = str(port)
+            if not port_str.isdigit():
+                return
+            
             result = subprocess.run(
-                ["fuser", f"{port}/tcp"],
+                ["fuser", f"{port_str}/tcp"],
                 capture_output=True, timeout=5,
+                shell=False,  # Explicitly prevent shell injection
             )
             if result.returncode == 0:
                 subprocess.run(
-                    ["fuser", "-k", f"{port}/tcp"],
+                    ["fuser", "-k", f"{port_str}/tcp"],
                     capture_output=True, timeout=5,
+                    shell=False,  # Explicitly prevent shell injection
                 )
     except Exception:
         pass
@@ -89,7 +107,8 @@ def check_whatsapp_requirements() -> bool:
             ["node", "--version"],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
+            shell=False  # Explicitly prevent shell injection
         )
         return result.returncode == 0
     except Exception:
@@ -160,12 +179,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not (bridge_dir / "node_modules").exists():
             print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
             try:
+                # Validate bridge_dir is a safe path
+                bridge_dir_str = str(bridge_dir.resolve())
+                if not os.path.isdir(bridge_dir_str):
+                    logger.error("[%s] Bridge directory is not valid: %s", self.name, bridge_dir_str)
+                    return False
+                
                 install_result = subprocess.run(
                     ["npm", "install", "--silent"],
-                    cwd=str(bridge_dir),
+                    cwd=bridge_dir_str,
                     capture_output=True,
                     text=True,
                     timeout=60,
+                    shell=False  # Explicitly prevent shell injection
                 )
                 if install_result.returncode != 0:
                     print(f"[{self.name}] npm install failed: {install_result.stderr}")

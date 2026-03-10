@@ -3848,13 +3848,25 @@ class HermesCLI:
 
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
+        recorder = None
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
                 self._voice_recorder.cancel()
                 self._voice_recording = False
+            recorder = self._voice_recorder
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+
+        # Shut down the persistent audio stream in background
+        if recorder is not None:
+            def _bg_shutdown(rec=recorder):
+                try:
+                    rec.shutdown()
+                except Exception:
+                    pass
+            threading.Thread(target=_bg_shutdown, daemon=True).start()
+            self._voice_recorder = None
 
         # Stop any active TTS playback
         try:
@@ -4799,15 +4811,24 @@ class HermesCLI:
             import time as _time
             now = _time.time()
 
-            # Cancel active voice recording
+            # Cancel active voice recording.
+            # Run cancel() in a background thread to prevent blocking the
+            # event loop if AudioRecorder._lock or CoreAudio takes time.
+            _should_cancel_voice = False
+            _recorder_ref = None
             with cli_ref._voice_lock:
                 if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    cli_ref._voice_recorder.cancel()
+                    _recorder_ref = cli_ref._voice_recorder
                     cli_ref._voice_recording = False
                     cli_ref._voice_continuous = False
-                    _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                    event.app.invalidate()
-                    return
+                    _should_cancel_voice = True
+            if _should_cancel_voice:
+                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+                threading.Thread(
+                    target=_recorder_ref.cancel, daemon=True
+                ).start()
+                event.app.invalidate()
+                return
 
             # Cancel sudo prompt
             if self._sudo_state:

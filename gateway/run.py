@@ -392,6 +392,41 @@ class GatewayRunner:
         return None
 
     @staticmethod
+    def _load_background_notifications_mode() -> str:
+        """Load background process notification mode from config or env var.
+
+        Modes:
+          - ``all``    — push running-output updates *and* the final message (default)
+          - ``result`` — only the final completion message (regardless of exit code)
+          - ``error``  — only the final message when exit code is non-zero
+          - ``off``    — no watcher messages at all
+        """
+        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        if not mode:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw = cfg.get("display", {}).get("background_process_notifications")
+                    if raw is False:
+                        mode = "off"
+                    elif raw not in (None, ""):
+                        mode = str(raw)
+            except Exception:
+                pass
+        mode = (mode or "all").strip().lower()
+        valid = {"all", "result", "error", "off"}
+        if mode not in valid:
+            logger.warning(
+                "Unknown background_process_notifications '%s', defaulting to 'all'",
+                mode,
+            )
+            return "all"
+        return mode
+
+    @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
@@ -2370,6 +2405,12 @@ class GatewayRunner:
 
         Runs as an asyncio task. Stays silent when nothing changed.
         Auto-removes when the process exits or is killed.
+
+        Notification mode (from ``display.background_process_notifications``):
+          - ``all``    — running-output updates + final message
+          - ``result`` — final completion message only
+          - ``error``  — final message only when exit code != 0
+          - ``off``    — no messages at all
         """
         from tools.process_registry import process_registry
 
@@ -2378,8 +2419,21 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        notify_mode = self._load_background_notifications_mode()
 
-        logger.debug("Process watcher started: %s (every %ss)", session_id, interval)
+        logger.debug("Process watcher started: %s (every %ss, notify=%s)",
+                      session_id, interval, notify_mode)
+
+        if notify_mode == "off":
+            # Still wait for the process to exit so we can log it, but don't
+            # push any messages to the user.
+            while True:
+                await asyncio.sleep(interval)
+                session = process_registry.get(session_id)
+                if session is None or session.exited:
+                    break
+            logger.debug("Process watcher ended (silent): %s", session_id)
+            return
 
         last_output_len = 0
         while True:
@@ -2394,27 +2448,31 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
-                # Process finished -- deliver final update
-                new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                message_text = (
-                    f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                    f"Here's the final output:\n{new_output}]"
+                # Decide whether to notify based on mode
+                should_notify = (
+                    notify_mode in ("all", "result")
+                    or (notify_mode == "error" and session.exit_code not in (0, None))
                 )
-                # Try to deliver to the originating platform
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
-                if adapter and chat_id:
-                    try:
-                        await adapter.send(chat_id, message_text)
-                    except Exception as e:
-                        logger.error("Watcher delivery error: %s", e)
+                if should_notify:
+                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    message_text = (
+                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                        f"Here's the final output:\n{new_output}]"
+                    )
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
+                            await adapter.send(chat_id, message_text)
+                        except Exception as e:
+                            logger.error("Watcher delivery error: %s", e)
                 break
 
-            elif has_new_output:
-                # New output available -- deliver status update
+            elif has_new_output and notify_mode == "all":
+                # New output available -- deliver status update (only in "all" mode)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 message_text = (
                     f"[Background process {session_id} is still running~ "

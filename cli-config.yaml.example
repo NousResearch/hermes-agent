@@ -659,3 +659,44 @@ display:
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
   bell_on_complete: false
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Skin / Theme
+  # ───────────────────────────────────────────────────────────────────────────
+  # Customize CLI visual appearance — banner colors, spinner faces, tool prefix,
+  # response box label, and branding text. Change at runtime with /skin <name>.
+  #
+  # Built-in skins:
+  #   default  — Classic Hermes gold/kawaii
+  #   ares     — Crimson/bronze war-god theme with spinner wings
+  #   mono     — Clean grayscale monochrome
+  #   slate    — Cool blue developer-focused
+  #
+  # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
+  # Schema (all fields optional, missing values inherit from default):
+  #
+  #   name: my-theme
+  #   description: Short description
+  #   colors:
+  #     banner_border: "#HEX"    # Panel border
+  #     banner_title: "#HEX"     # Panel title
+  #     banner_accent: "#HEX"    # Section headers (Available Tools, etc.)
+  #     banner_dim: "#HEX"       # Dim/muted text
+  #     banner_text: "#HEX"      # Body text (tool names, skill names)
+  #     ui_accent: "#HEX"        # UI accent color
+  #     response_border: "#HEX"  # Response box border color
+  #   spinner:
+  #     waiting_faces: ["(⚔)", "(⛨)"]       # Faces shown while waiting
+  #     thinking_faces: ["(⚔)", "(⌁)"]      # Faces shown while thinking
+  #     thinking_verbs: ["forging", "plotting"]  # Verbs for spinner messages
+  #     wings:                                # Optional left/right spinner decorations
+  #       - ["⟪⚔", "⚔⟫"]
+  #       - ["⟪▲", "▲⟫"]
+  #   branding:
+  #     agent_name: "My Agent"               # Banner title and branding
+  #     welcome: "Welcome message"           # Shown at CLI startup
+  #     response_label: " ⚔ Agent "         # Response box header label
+  #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
+  #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
+  #
+  skin: default

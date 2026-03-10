@@ -5,7 +5,9 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional, Sequence
+from typing import Any
+
+from hermes_cli.config import get_hermes_home
 
 
 _OPENCLAW_SCRIPT_PATH = (
@@ -46,36 +48,24 @@ def get_openclaw_source_root() -> Path:
 
 def run_openclaw_migration(
     *,
-    source_root: Optional[Path] = None,
-    target_root: Optional[Path] = None,
-    workspace_target: Optional[Path] = None,
+    source_root: Path | None = None,
+    target_root: Path | None = None,
     execute: bool = True,
     overwrite: bool = False,
     migrate_secrets: bool = True,
-    output_dir: Optional[Path] = None,
     preset: str = "full",
-    include: Optional[Sequence[str]] = None,
-    exclude: Optional[Sequence[str]] = None,
-    skill_conflict_mode: str = "skip",
 ) -> dict[str, Any]:
     module = load_openclaw_migration_module()
     resolved_source = (source_root or get_openclaw_source_root()).expanduser().resolve()
-    resolved_target = (target_root or (Path.home() / ".hermes")).expanduser().resolve()
-    resolved_workspace = (
-        workspace_target.expanduser().resolve() if workspace_target else None
-    )
-    resolved_output = output_dir.expanduser().resolve() if output_dir else None
-    selected_options = module.resolve_selected_options(include, exclude, preset=preset)
+    resolved_target = (target_root or get_hermes_home()).expanduser().resolve()
+    selected_options = module.resolve_selected_options(None, None, preset=preset)
     migrator = module.Migrator(
         source_root=resolved_source,
         target_root=resolved_target,
         execute=execute,
-        workspace_target=resolved_workspace,
         overwrite=overwrite,
         migrate_secrets=migrate_secrets,
-        output_dir=resolved_output,
         selected_options=selected_options,
         preset_name=preset,
-        skill_conflict_mode=skill_conflict_mode,
     )
     return migrator.migrate()

@@ -1780,10 +1780,10 @@ def detect_migration_sources() -> list[str]:
     return detected_sources
 
 
-def run_openclaw_migration(hermes_home: Path) -> Dict[str, Any]:
+def perform_openclaw_migration(hermes_home: Path) -> Dict[str, Any]:
     from hermes_cli.openclaw_migration import (
         get_openclaw_source_root,
-        run_openclaw_migration as run_openclaw_import,
+        run_openclaw_migration,
     )
 
     source_root = get_openclaw_source_root()
@@ -1801,10 +1801,9 @@ def run_openclaw_migration(hermes_home: Path) -> Dict[str, Any]:
         "Importing API keys, platform settings, command allowlists, memories, and skills."
     )
 
-    report = run_openclaw_import(
+    report = run_openclaw_migration(
         source_root=source_root,
         target_root=hermes_home,
-        workspace_target=None,
         execute=True,
         overwrite=False,
         migrate_secrets=True,
@@ -1853,7 +1852,7 @@ def maybe_run_detected_migration(args, hermes_home: Path) -> bool:
     if not prompt_yes_no("Import settings from OpenClaw now?", True):
         return False
 
-    run_openclaw_migration(hermes_home)
+    perform_openclaw_migration(hermes_home)
     return True
 
 
@@ -1864,7 +1863,7 @@ def maybe_run_requested_migration(args, hermes_home: Path) -> bool:
 
     if migrate_from == "openclaw":
         try:
-            run_openclaw_migration(hermes_home)
+            perform_openclaw_migration(hermes_home)
         except FileNotFoundError as exc:
             print_warning(str(exc))
             return False
@@ -1898,13 +1897,10 @@ def run_setup_wizard(args):
       hermes setup agent     — just agent settings
     """
     ensure_hermes_home()
-    
-    config = load_config()
     hermes_home = get_hermes_home()
 
     migration_ran = maybe_run_requested_migration(args, hermes_home)
-    if migration_ran:
-        config = load_config()
+    config = load_config()
     
     # Check if a specific section was requested
     section = getattr(args, 'section', None)

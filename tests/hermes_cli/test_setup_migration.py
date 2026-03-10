@@ -31,7 +31,7 @@ def test_run_setup_wizard_runs_explicit_openclaw_migration(tmp_path: Path):
         patch.object(setup_cli, "get_env_value", return_value=""),
         patch("hermes_cli.auth.get_active_provider", return_value=None),
         patch(
-            "hermes_cli.setup.run_openclaw_migration",
+            "hermes_cli.setup.perform_openclaw_migration",
             return_value={"summary": {"migrated": 1}},
             create=True,
         ) as run_migration,
@@ -67,7 +67,7 @@ def test_run_setup_wizard_offers_detected_openclaw_migration_on_first_run(
         ),
         patch.object(setup_cli, "prompt_yes_no", return_value=True) as prompt_yes_no,
         patch(
-            "hermes_cli.setup.run_openclaw_migration",
+            "hermes_cli.setup.perform_openclaw_migration",
             return_value={"summary": {"migrated": 2}},
             create=True,
         ) as run_migration,
@@ -101,7 +101,7 @@ def test_run_setup_wizard_skips_migration_prompt_when_no_supported_source(
             "hermes_cli.setup.detect_migration_sources", return_value=[], create=True
         ),
         patch.object(setup_cli, "prompt_yes_no") as prompt_yes_no,
-        patch("hermes_cli.setup.run_openclaw_migration", create=True) as run_migration,
+        patch("hermes_cli.setup.perform_openclaw_migration", create=True) as run_migration,
         patch.object(setup_cli, "setup_model_provider"),
         patch.object(setup_cli, "setup_terminal_backend"),
         patch.object(setup_cli, "setup_agent_settings"),
@@ -139,7 +139,7 @@ def test_run_setup_wizard_runs_explicit_openclaw_migration_for_existing_install(
         ),
         patch("hermes_cli.auth.get_active_provider", return_value=None),
         patch(
-            "hermes_cli.setup.run_openclaw_migration",
+            "hermes_cli.setup.perform_openclaw_migration",
             return_value={"summary": {"migrated": 1}},
         ) as run_migration,
         patch.object(setup_cli, "prompt_choice", return_value=9),
@@ -171,7 +171,7 @@ def test_run_setup_wizard_skips_detected_prompt_after_installer_decline(
             return_value=["openclaw"],
         ),
         patch.object(setup_cli, "prompt_yes_no") as prompt_yes_no,
-        patch("hermes_cli.setup.run_openclaw_migration") as run_migration,
+        patch("hermes_cli.setup.perform_openclaw_migration") as run_migration,
         patch.object(setup_cli, "setup_model_provider"),
         patch.object(setup_cli, "setup_terminal_backend"),
         patch.object(setup_cli, "setup_agent_settings"),
@@ -187,7 +187,7 @@ def test_run_setup_wizard_skips_detected_prompt_after_installer_decline(
     run_migration.assert_not_called()
 
 
-def test_run_openclaw_migration_creates_config_before_import(tmp_path: Path):
+def test_perform_openclaw_migration_creates_config_before_import(tmp_path: Path):
     source_root = tmp_path / ".openclaw"
     source_root.mkdir()
     hermes_home = tmp_path / ".hermes"
@@ -210,7 +210,7 @@ def test_run_openclaw_migration_creates_config_before_import(tmp_path: Path):
             return_value={"summary": {"migrated": 1}, "output_dir": None},
         ) as run_migration,
     ):
-        setup_cli.run_openclaw_migration(hermes_home)
+        setup_cli.perform_openclaw_migration(hermes_home)
 
     save_config.assert_called_once_with({"agent": {"max_turns": 90}})
     run_migration.assert_called_once()

@@ -21,6 +21,7 @@ def test_resolve_runtime_provider_codex(monkeypatch):
 
     assert resolved["provider"] == "openai-codex"
     assert resolved["api_mode"] == "codex_responses"
+    assert resolved["transport"] == "openai_responses"
     assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert resolved["api_key"] == "codex-token"
     assert resolved["requested_provider"] == "openai-codex"
@@ -42,6 +43,7 @@ def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
 
     assert resolved["provider"] == "openrouter"
     assert resolved["api_mode"] == "chat_completions"
+    assert resolved["transport"] == "openai_chat_completions"
     assert resolved["api_key"] == "test-key"
     assert resolved["base_url"] == "https://example.com/v1"
     assert resolved["source"] == "explicit"
@@ -176,6 +178,7 @@ def test_resolve_runtime_provider_nous_api(monkeypatch):
 
     assert resolved["provider"] == "nous-api"
     assert resolved["api_mode"] == "chat_completions"
+    assert resolved["transport"] == "openai_chat_completions"
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == "nous-test-key"
     assert resolved["requested_provider"] == "nous-api"

@@ -205,6 +205,7 @@ def _run_single_child(
             model=model or parent_agent.model,
             provider=getattr(parent_agent, "provider", None),
             api_mode=getattr(parent_agent, "api_mode", None),
+            transport=getattr(parent_agent, "transport", None),
             max_iterations=max_iterations,
             max_tokens=getattr(parent_agent, "max_tokens", None),
             reasoning_config=getattr(parent_agent, "reasoning_config", None),

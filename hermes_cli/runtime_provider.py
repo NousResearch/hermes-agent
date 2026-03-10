@@ -15,6 +15,7 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
 )
 from hermes_cli.config import load_config
+from hermes_cli.transport_profiles import build_transport_profile
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -97,9 +98,11 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
+    profile = build_transport_profile("openrouter", base_url=base_url)
     return {
         "provider": "openrouter",
-        "api_mode": "chat_completions",
+        "api_mode": profile.api_mode,
+        "transport": profile.transport,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -111,6 +114,7 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
@@ -126,9 +130,11 @@ def resolve_runtime_provider(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
             timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
         )
+        profile = build_transport_profile("nous", base_url=creds.get("base_url", ""), model=model)
         return {
             "provider": "nous",
-            "api_mode": "chat_completions",
+            "api_mode": profile.api_mode,
+            "transport": profile.transport,
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "portal"),
@@ -138,9 +144,11 @@ def resolve_runtime_provider(
 
     if provider == "openai-codex":
         creds = resolve_codex_runtime_credentials()
+        profile = build_transport_profile("openai-codex", base_url=creds.get("base_url", ""), model=model)
         return {
             "provider": "openai-codex",
-            "api_mode": "codex_responses",
+            "api_mode": profile.api_mode,
+            "transport": profile.transport,
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "hermes-auth-store"),
@@ -152,9 +160,11 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        profile = build_transport_profile(provider, base_url=creds.get("base_url", ""), model=model)
         return {
             "provider": provider,
-            "api_mode": "chat_completions",
+            "api_mode": profile.api_mode,
+            "transport": profile.transport,
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "env"),

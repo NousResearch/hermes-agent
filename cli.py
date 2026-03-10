@@ -1133,6 +1133,7 @@ class HermesCLI:
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.transport = "openai_chat_completions"
         self.base_url = (
             base_url
             or os.getenv("OPENAI_BASE_URL")
@@ -1331,6 +1332,7 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_transport = runtime.get("transport", self.transport)
         if not isinstance(api_key, str) or not api_key:
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
@@ -1342,9 +1344,11 @@ class HermesCLI:
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
+            or resolved_transport != self.transport
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
+        self.transport = resolved_transport
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -1423,6 +1427,7 @@ class HermesCLI:
                 base_url=self.base_url,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                transport=self.transport,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,

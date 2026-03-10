@@ -73,6 +73,14 @@ from tools.browser_tool import cleanup_browser
 import requests
 
 from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
+from hermes_cli.transport_profiles import (
+    ANTHROPIC_MESSAGES,
+    GOOGLE_GENERATE_CONTENT,
+    OPENAI_CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+    legacy_api_mode_for_transport,
+)
+from agent.transport_adapters import AnthropicMessagesClient, GoogleGenerateContentClient
 
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
@@ -153,6 +161,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        transport: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -195,7 +204,8 @@ class AIAgent:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
-            api_mode (str): API mode override: "chat_completions" or "codex_responses"
+            api_mode (str): Legacy API mode override: "chat_completions" or "codex_responses"
+            transport (str): Explicit transport override for provider/model execution
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 90)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
@@ -248,15 +258,15 @@ class AIAgent:
         self.base_url = base_url or OPENROUTER_BASE_URL
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or "openrouter"
-        if api_mode in {"chat_completions", "codex_responses"}:
-            self.api_mode = api_mode
-        elif self.provider == "openai-codex":
-            self.api_mode = "codex_responses"
-        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self.base_url.lower():
-            self.api_mode = "codex_responses"
+        self.transport = self._resolve_transport(
+            provider_name=provider_name,
+            base_url=self.base_url,
+            api_mode=api_mode,
+            transport=transport,
+        )
+        if (provider_name is None) and self.transport == OPENAI_RESPONSES:
             self.provider = "openai-codex"
-        else:
-            self.api_mode = "chat_completions"
+        self.api_mode = legacy_api_mode_for_transport(self.transport)
 
         self.tool_progress_callback = tool_progress_callback
         self.thinking_callback = thinking_callback
@@ -364,7 +374,7 @@ class AIAgent:
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
-        # Initialize OpenAI client - defaults to OpenRouter
+        # Initialize transport client - defaults to OpenAI chat via OpenRouter
         client_kwargs = {}
         
         # Default to OpenRouter if no base_url provided
@@ -397,7 +407,7 @@ class AIAgent:
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
-            self.client = OpenAI(**client_kwargs)
+            self.client = self._create_api_client()
             if not self.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {self.model}")
                 if base_url:
@@ -1441,6 +1451,55 @@ class AIAgent:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
+
+    @staticmethod
+    def _resolve_transport(
+        *,
+        provider_name: Optional[str],
+        base_url: str,
+        api_mode: Optional[str],
+        transport: Optional[str],
+    ) -> str:
+        if isinstance(transport, str) and transport.strip():
+            return transport.strip().lower()
+        if api_mode == "codex_responses":
+            return OPENAI_RESPONSES
+        if isinstance(provider_name, str) and provider_name.strip().lower() == "openai-codex":
+            return OPENAI_RESPONSES
+        if provider_name is None and "chatgpt.com/backend-api/codex" in (base_url or "").lower():
+            return OPENAI_RESPONSES
+        return OPENAI_CHAT_COMPLETIONS
+
+    def _uses_responses_transport(self) -> bool:
+        return self.transport == OPENAI_RESPONSES
+
+    def _create_api_client(self):
+        if self.transport == ANTHROPIC_MESSAGES:
+            return AnthropicMessagesClient(
+                base_url=self._client_kwargs["base_url"],
+                api_key=self._client_kwargs["api_key"],
+                default_headers=self._client_kwargs.get("default_headers"),
+            )
+        if self.transport == GOOGLE_GENERATE_CONTENT:
+            return GoogleGenerateContentClient(
+                base_url=self._client_kwargs["base_url"],
+                api_key=self._client_kwargs["api_key"],
+                default_headers=self._client_kwargs.get("default_headers"),
+            )
+        return OpenAI(**self._client_kwargs)
+
+    def _rebuild_api_client(self) -> bool:
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        try:
+            self.client = self._create_api_client()
+            return True
+        except Exception as exc:
+            logger.warning("Failed to rebuild API client: %s", exc)
+            return False
     
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
@@ -1636,7 +1695,7 @@ class AIAgent:
 
         return items
 
-    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+    def _preflight_responses_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(raw_items, list):
             raise ValueError("Codex Responses input must be a list of input items.")
 
@@ -1722,7 +1781,7 @@ class AIAgent:
 
         return normalized
 
-    def _preflight_codex_api_kwargs(
+    def _preflight_responses_api_kwargs(
         self,
         api_kwargs: Any,
         *,
@@ -1748,7 +1807,7 @@ class AIAgent:
             instructions = str(instructions)
         instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
 
-        normalized_input = self._preflight_codex_input_items(api_kwargs.get("input"))
+        normalized_input = self._preflight_responses_input_items(api_kwargs.get("input"))
 
         tools = api_kwargs.get("tools")
         normalized_tools = None
@@ -1839,6 +1898,19 @@ class AIAgent:
 
         return normalized
 
+    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        """Backward-compatible wrapper for older tests and callers."""
+        return self._preflight_responses_input_items(raw_items)
+
+    def _preflight_codex_api_kwargs(
+        self,
+        api_kwargs: Any,
+        *,
+        allow_stream: bool = False,
+    ) -> Dict[str, Any]:
+        """Backward-compatible wrapper for older tests and callers."""
+        return self._preflight_responses_api_kwargs(api_kwargs, allow_stream=allow_stream)
+
     def _extract_responses_message_text(self, item: Any) -> str:
         """Extract assistant text from a Responses message output item."""
         content = getattr(item, "content", None)
@@ -1871,7 +1943,7 @@ class AIAgent:
             return text.strip()
         return ""
 
-    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
+    def _normalize_responses_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
         output = getattr(response, "output", None)
         if not isinstance(output, list) or not output:
@@ -2012,7 +2084,11 @@ class AIAgent:
             finish_reason = "stop"
         return assistant_message, finish_reason
 
-    def _run_codex_stream(self, api_kwargs: dict):
+    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
+        """Backward-compatible wrapper for older tests and callers."""
+        return self._normalize_responses_response(response)
+
+    def _run_responses_stream(self, api_kwargs: dict):
         """Execute one streaming Responses API request and return the final response."""
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
@@ -2035,14 +2111,18 @@ class AIAgent:
                     logger.debug(
                         "Responses stream did not emit response.completed; falling back to create(stream=True)."
                     )
-                    return self._run_codex_create_stream_fallback(api_kwargs)
+                    return self._run_responses_create_stream_fallback(api_kwargs)
                 raise
 
-    def _run_codex_create_stream_fallback(self, api_kwargs: dict):
-        """Fallback path for stream completion edge cases on Codex-style Responses backends."""
+    def _run_codex_stream(self, api_kwargs: dict):
+        """Backward-compatible wrapper for older tests and callers."""
+        return self._run_responses_stream(api_kwargs)
+
+    def _run_responses_create_stream_fallback(self, api_kwargs: dict):
+        """Fallback path for stream completion edge cases on Responses backends."""
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
-        fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        fallback_kwargs = self._preflight_responses_api_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = self.client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -2077,8 +2157,12 @@ class AIAgent:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
+    def _run_codex_create_stream_fallback(self, api_kwargs: dict):
+        """Backward-compatible wrapper for older tests and callers."""
+        return self._run_responses_create_stream_fallback(api_kwargs)
+
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+        if not self._uses_responses_transport() or self.provider != "openai-codex":
             return False
 
         try:
@@ -2101,15 +2185,8 @@ class AIAgent:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
-        try:
-            self.client.close()
-        except Exception:
-            pass
-
-        try:
-            self.client = OpenAI(**self._client_kwargs)
-        except Exception as exc:
-            logger.warning("Failed to rebuild OpenAI client after Codex refresh: %s", exc)
+        if not self._rebuild_api_client():
+            logger.warning("Failed to rebuild API client after Codex refresh.")
             return False
 
         return True
@@ -2144,15 +2221,8 @@ class AIAgent:
         # Nous requests should not inherit OpenRouter-only attribution headers.
         self._client_kwargs.pop("default_headers", None)
 
-        try:
-            self.client.close()
-        except Exception:
-            pass
-
-        try:
-            self.client = OpenAI(**self._client_kwargs)
-        except Exception as exc:
-            logger.warning("Failed to rebuild OpenAI client after Nous refresh: %s", exc)
+        if not self._rebuild_api_client():
+            logger.warning("Failed to rebuild API client after Nous refresh.")
             return False
 
         return True
@@ -2170,7 +2240,7 @@ class AIAgent:
 
         def _call():
             try:
-                if self.api_mode == "codex_responses":
+                if self._uses_responses_transport():
                     result["response"] = self._run_codex_stream(api_kwargs)
                 else:
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
@@ -2189,7 +2259,7 @@ class AIAgent:
                     pass
                 # Rebuild the client for future calls (cheap, no network)
                 try:
-                    self.client = OpenAI(**self._client_kwargs)
+                    self.client = self._create_api_client()
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
@@ -2302,13 +2372,14 @@ class AIAgent:
             elif "api.kimi.com" in fb_base_url.lower():
                 client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
 
-            self.client = OpenAI(**client_kwargs)
             self._client_kwargs = client_kwargs
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
-            self.api_mode = fb_api_mode
+            self.transport = OPENAI_RESPONSES if fb_api_mode == "codex_responses" else OPENAI_CHAT_COMPLETIONS
+            self.api_mode = legacy_api_mode_for_transport(self.transport)
+            self.client = self._create_api_client()
             self._fallback_activated = True
 
             # Re-evaluate prompt caching for the new provider/model
@@ -2334,7 +2405,7 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
-        if self.api_mode == "codex_responses":
+        if self._uses_responses_transport():
             instructions = ""
             payload_messages = api_messages
             if api_messages and api_messages[0].get("role") == "system":
@@ -2589,7 +2660,7 @@ class AIAgent:
                     "max_tokens": 5120,
                 }
                 response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
-            elif self.api_mode == "codex_responses":
+            elif self._uses_responses_transport():
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
@@ -2609,7 +2680,7 @@ class AIAgent:
 
             # Extract tool calls from the response, handling both API formats
             tool_calls = []
-            if self.api_mode == "codex_responses" and not aux_client:
+            if self._uses_responses_transport() and not aux_client:
                 assistant_msg, _ = self._normalize_codex_response(response)
                 if assistant_msg and assistant_msg.tool_calls:
                     tool_calls = assistant_msg.tool_calls
@@ -2989,7 +3060,7 @@ class AIAgent:
             if _is_nous:
                 summary_extra_body["tags"] = ["product=hermes-agent"]
 
-            if self.api_mode == "codex_responses":
+            if self._uses_responses_transport():
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
@@ -3035,7 +3106,7 @@ class AIAgent:
                     final_response = "I reached the iteration limit and couldn't generate a summary."
             else:
                 # Retry summary generation
-                if self.api_mode == "codex_responses":
+                if self._uses_responses_transport():
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
@@ -3419,7 +3490,7 @@ class AIAgent:
             while retry_count < max_retries:
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
-                    if self.api_mode == "codex_responses":
+                    if self._uses_responses_transport():
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -3448,7 +3519,7 @@ class AIAgent:
                     # Validate response shape before proceeding
                     response_invalid = False
                     error_details = []
-                    if self.api_mode == "codex_responses":
+                    if self._uses_responses_transport():
                         output_items = getattr(response, "output", None) if response is not None else None
                         if response is None:
                             response_invalid = True
@@ -3548,7 +3619,7 @@ class AIAgent:
                         continue  # Retry the API call
 
                     # Check finish_reason before proceeding
-                    if self.api_mode == "codex_responses":
+                    if self._uses_responses_transport():
                         status = getattr(response, "status", None)
                         incomplete_details = getattr(response, "incomplete_details", None)
                         incomplete_reason = None
@@ -3639,7 +3710,7 @@ class AIAgent:
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
-                        if self.api_mode == "codex_responses":
+                        if self._uses_responses_transport():
                             prompt_tokens = getattr(response.usage, 'input_tokens', 0) or 0
                             completion_tokens = getattr(response.usage, 'output_tokens', 0) or 0
                             total_tokens = (
@@ -3707,7 +3778,7 @@ class AIAgent:
 
                     status_code = getattr(api_error, "status_code", None)
                     if (
-                        self.api_mode == "codex_responses"
+                        self._uses_responses_transport()
                         and self.provider == "openai-codex"
                         and status_code == 401
                         and not codex_auth_retry_attempted
@@ -3960,7 +4031,7 @@ class AIAgent:
                 break
 
             try:
-                if self.api_mode == "codex_responses":
+                if self._uses_responses_transport():
                     assistant_message, finish_reason = self._normalize_codex_response(response)
                 else:
                     assistant_message = response.choices[0].message
@@ -4043,7 +4114,7 @@ class AIAgent:
                 if hasattr(self, '_incomplete_scratchpad_retries'):
                     self._incomplete_scratchpad_retries = 0
 
-                if self.api_mode == "codex_responses" and finish_reason == "incomplete":
+                if self._uses_responses_transport() and finish_reason == "incomplete":
                     if not hasattr(self, "_codex_incomplete_retries"):
                         self._codex_incomplete_retries = 0
                     self._codex_incomplete_retries += 1
@@ -4311,7 +4382,7 @@ class AIAgent:
                         self._empty_content_retries = 0
 
                     if (
-                        self.api_mode == "codex_responses"
+                        self._uses_responses_transport()
                         and self.valid_tool_names
                         and codex_ack_continuations < 2
                         and self._looks_like_codex_intermediate_ack(

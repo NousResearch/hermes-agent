@@ -89,6 +89,14 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
     
+    # Filesystem checkpoints — automatic snapshots before destructive file ops.
+    # When enabled, the agent takes a snapshot of the working directory once per
+    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    "checkpoints": {
+        "enabled": False,
+        "max_snapshots": 50,  # Max checkpoints to keep per directory
+    },
+    
     "compression": {
         "enabled": True,
         "threshold": 0.85,
@@ -112,8 +120,9 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "kawaii",
-        "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
-        "bell_on_complete": False,  # Play terminal bell (\a) when agent finishes a response
+        "resume_display": "full",
+        "bell_on_complete": False,
+        "skin": "default",
     },
     
     # Text-to-speech configuration
@@ -171,7 +180,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 5,
+    "_config_version": 6,
 }
 
 # =============================================================================

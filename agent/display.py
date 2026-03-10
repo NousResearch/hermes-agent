@@ -17,6 +17,47 @@ _RESET = "\033[0m"
 
 
 # =========================================================================
+# Skin-aware helpers (lazy import to avoid circular deps)
+# =========================================================================
+
+def _get_skin():
+    """Get the active skin config, or None if not available."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin()
+    except Exception:
+        return None
+
+
+def get_skin_faces(key: str, default: list) -> list:
+    """Get spinner face list from active skin, falling back to default."""
+    skin = _get_skin()
+    if skin:
+        faces = skin.get_spinner_list(key)
+        if faces:
+            return faces
+    return default
+
+
+def get_skin_verbs() -> list:
+    """Get thinking verbs from active skin."""
+    skin = _get_skin()
+    if skin:
+        verbs = skin.get_spinner_list("thinking_verbs")
+        if verbs:
+            return verbs
+    return KawaiiSpinner.THINKING_VERBS
+
+
+def get_skin_tool_prefix() -> str:
+    """Get tool output prefix character from active skin."""
+    skin = _get_skin()
+    if skin:
+        return skin.tool_prefix
+    return "┊"
+
+
+# =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
@@ -179,13 +220,21 @@ class KawaiiSpinner:
             pass
 
     def _animate(self):
+        # Cache skin wings at start (avoid per-frame imports)
+        skin = _get_skin()
+        wings = skin.get_spinner_wings() if skin else []
+
         while self.running:
             if os.getenv("HERMES_SPINNER_PAUSE"):
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
-            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+            if wings:
+                left, right = wings[self.frame_idx % len(wings)]
+                line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
+            else:
+                line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
             self._write(f"\r{line}{' ' * pad}", end='', flush=True)
             self.last_line_len = len(line)
@@ -334,6 +383,7 @@ def get_cute_tool_message(
     """
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
+    skin_prefix = get_skin_tool_prefix()
 
     def _trunc(s, n=40):
         s = str(s)
@@ -344,7 +394,9 @@ def get_cute_tool_message(
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
-        """Append failure suffix when the tool failed."""
+        """Apply skin tool prefix and failure suffix."""
+        if skin_prefix != "┊":
+            line = line.replace("┊", skin_prefix, 1)
         if not is_failure:
             return line
         return f"{line}{failure_suffix}"

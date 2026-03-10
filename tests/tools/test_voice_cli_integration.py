@@ -674,3 +674,30 @@ class TestChatTTSCleanupOnException:
                     "chat() must have a finally block cleaning up "
                     "text_queue/stop_event/tts_thread"
                 )
+
+
+class TestBrowserToolSignalHandlerRemoved:
+    """browser_tool.py must NOT register SIGINT/SIGTERM handlers that call
+    sys.exit() — this conflicts with prompt_toolkit's event loop and causes
+    the process to become unkillable during voice mode."""
+
+    def test_no_signal_handler_registration(self):
+        """Source check: browser_tool.py must not call signal.signal()
+        for SIGINT or SIGTERM."""
+        with open("tools/browser_tool.py") as f:
+            source = f.read()
+
+        lines = source.split("\n")
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            # Skip comments
+            if stripped.startswith("#"):
+                continue
+            assert "signal.signal(signal.SIGINT" not in stripped, (
+                f"browser_tool.py:{i} registers SIGINT handler — "
+                f"use atexit instead to avoid prompt_toolkit conflicts"
+            )
+            assert "signal.signal(signal.SIGTERM" not in stripped, (
+                f"browser_tool.py:{i} registers SIGTERM handler — "
+                f"use atexit instead to avoid prompt_toolkit conflicts"
+            )

@@ -1,0 +1,52 @@
+# Ouroboros -- Council-based reward for research agent training
+#
+# Uses the adversarial council to evaluate agent research output.
+# Produces DPO preference pairs from council disagreements.
+#
+# Usage:
+#   python environments/ouroboros_env.py process \
+#     --env.data_path_to_save_groups data/ouroboros_v1/trajectories.jsonl
+#
+#   python environments/ouroboros_env.py serve \
+#     --openai.base_url http://localhost:8000/v1
+
+environment: ouroboros
+
+# Agent toolsets
+toolsets:
+  - web
+  - file
+  - terminal
+
+# Training parameters
+num_workers: 2
+batch_size: 10
+max_items: 100
+
+# Agent model (the model being trained/evaluated)
+model: nousresearch/hermes-3-llama-3.1-70b
+
+# Council evaluator model (can be same or different)
+council_model: nousresearch/hermes-3-llama-3.1-70b
+
+# Output
+output_dir: data/ouroboros_v1
+dpo_output_dir: data/ouroboros_v1/dpo
+
+# Trajectory compression (optional, for SFT data)
+compression:
+  enabled: true
+  target_max_tokens: 16000
+
+# Evaluation frequency
+eval_every: 25
+eval_size: 3
+
+# Agent loop
+max_agent_turns: 20
+agent_temperature: 1.0
+system_prompt: >
+  You are a research agent. Your task is to thoroughly research the given
+  question using web search and other available tools. Provide a comprehensive,
+  evidence-backed analysis with specific data points, sources, and
+  counter-arguments. Be thorough but concise. Cite your sources.

@@ -693,7 +693,7 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id))
         
         try:
             # Call the handler (this can take a while with tool calls)

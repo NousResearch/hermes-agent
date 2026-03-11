@@ -2190,10 +2190,12 @@ class GatewayRunner:
         if not voice_channel:
             return "You need to be in a voice channel first."
 
-        # Wire callback BEFORE join so voice input arriving immediately
+        # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = self._handle_voice_channel_input
+        if hasattr(adapter, "_on_voice_disconnect"):
+            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
 
         try:
             success = await adapter.join_voice_channel(voice_channel)
@@ -2235,6 +2237,14 @@ class GatewayRunner:
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
+
+    def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
+        """Called by the adapter when a voice channel times out.
+
+        Cleans up runner-side voice_mode state that the adapter cannot reach.
+        """
+        self._voice_mode.pop(chat_id, None)
+        self._save_voice_modes()
 
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
@@ -2339,6 +2349,9 @@ class GatewayRunner:
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
+        import uuid as _uuid
+        audio_path = None
+        actual_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
@@ -2350,7 +2363,7 @@ class GatewayRunner:
             # The TTS tool may convert to .ogg — use file_path from result.
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{int(time.time())}_{id(event) % 10000}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
@@ -2387,13 +2400,14 @@ class GatewayRunner:
                 if "metadata" not in sig.parameters:
                     send_kwargs.pop("metadata", None)
                 await adapter.send_voice(**send_kwargs)
-            for p in {audio_path, actual_path}:
+        except Exception as e:
+            logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+        finally:
+            for p in {audio_path, actual_path} - {None}:
                 try:
                     os.unlink(p)
                 except OSError:
                     pass
-        except Exception as e:
-            logger.warning("Auto voice reply failed: %s", e, exc_info=True)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

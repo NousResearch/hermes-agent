@@ -108,6 +108,9 @@ class VoiceReceiver:
         # Pause flag: don't capture while bot is playing TTS
         self._paused = False
 
+        # Debug logging counter (instance-level to avoid cross-instance races)
+        self._packet_debug_count = 0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -131,10 +134,11 @@ class VoiceReceiver:
             self._vc._connection.remove_socket_listener(self._on_packet)
         except Exception:
             pass
-        self._buffers.clear()
-        self._last_packet_time.clear()
-        self._decoders.clear()
-        self._ssrc_to_user.clear()
+        with self._lock:
+            self._buffers.clear()
+            self._last_packet_time.clear()
+            self._decoders.clear()
+            self._ssrc_to_user.clear()
         logger.info("VoiceReceiver stopped")
 
     def pause(self):
@@ -188,15 +192,13 @@ class VoiceReceiver:
     # Packet handler (called from SocketReader thread)
     # ------------------------------------------------------------------
 
-    _packet_debug_count = 0  # class-level counter for debug logging
-
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
 
         # Log first few raw packets for debugging
-        VoiceReceiver._packet_debug_count += 1
-        if VoiceReceiver._packet_debug_count <= 5:
+        self._packet_debug_count += 1
+        if self._packet_debug_count <= 5:
             logger.info(
                 "Raw UDP packet: len=%d, first_bytes=%s",
                 len(data), data[:4].hex() if len(data) >= 4 else "short",
@@ -209,7 +211,7 @@ class VoiceReceiver:
         # Lower bits may vary (padding, extension, CSRC count).
         # Payload type (byte 1 lower 7 bits) = 0x78 (120) for voice.
         if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
-            if VoiceReceiver._packet_debug_count <= 5:
+            if self._packet_debug_count <= 5:
                 logger.info("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
             return
 
@@ -235,7 +237,7 @@ class VoiceReceiver:
             ext_words = struct.unpack_from(">H", data, ext_preamble_offset + 2)[0]
             ext_data_len = ext_words * 4
 
-        if VoiceReceiver._packet_debug_count <= 10:
+        if self._packet_debug_count <= 10:
             with self._lock:
                 known_user = self._ssrc_to_user.get(ssrc, "unknown")
             logger.info(
@@ -258,7 +260,7 @@ class VoiceReceiver:
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
-            if VoiceReceiver._packet_debug_count <= 10:
+            if self._packet_debug_count <= 10:
                 logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
             return
 
@@ -271,7 +273,7 @@ class VoiceReceiver:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
             if user_id == 0:
-                if VoiceReceiver._packet_debug_count <= 10:
+                if self._packet_debug_count <= 10:
                     logger.warning("DAVE skip: unknown user for ssrc=%d", ssrc)
                 return  # unknown user, can't DAVE-decrypt
             try:
@@ -280,7 +282,7 @@ class VoiceReceiver:
                     user_id, davey.MediaType.audio, decrypted
                 )
             except Exception as e:
-                if VoiceReceiver._packet_debug_count <= 10:
+                if self._packet_debug_count <= 10:
                     logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                 return
 
@@ -394,6 +396,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -751,6 +754,9 @@ class DiscordAdapter(BasePlatformAdapter):
             task.cancel()
         self._voice_text_channels.pop(guild_id, None)
 
+    # Maximum seconds to wait for voice playback before giving up
+    PLAYBACK_TIMEOUT = 120
+
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel."""
         vc = self._voice_clients.get(guild_id)
@@ -763,12 +769,17 @@ class DiscordAdapter(BasePlatformAdapter):
             receiver.pause()
 
         try:
-            # Wait for current playback to finish
+            # Wait for current playback to finish (with timeout)
+            wait_start = time.monotonic()
             while vc.is_playing():
+                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
+                    logger.warning("Timed out waiting for previous playback to finish")
+                    vc.stop()
+                    break
                 await asyncio.sleep(0.1)
 
             done = asyncio.Event()
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _after(error):
                 if error:
@@ -778,7 +789,11 @@ class DiscordAdapter(BasePlatformAdapter):
             source = discord.FFmpegPCMAudio(audio_path)
             source = discord.PCMVolumeTransformer(source, volume=1.0)
             vc.play(source, after=_after)
-            await done.wait()
+            try:
+                await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning("Voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+                vc.stop()
             self._reset_voice_timeout(guild_id)
             return True
         finally:
@@ -814,6 +829,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
         await self.leave_voice_channel(guild_id)
+        # Notify the runner so it can clean up voice_mode state
+        if self._on_voice_disconnect and text_ch_id:
+            try:
+                self._on_voice_disconnect(str(text_ch_id))
+            except Exception:
+                pass
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)
             if ch:

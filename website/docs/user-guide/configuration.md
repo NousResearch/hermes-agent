@@ -608,6 +608,16 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+You can also change the reasoning effort at runtime with the `/reasoning` command:
+
+```
+/reasoning           # Show current effort level and display state
+/reasoning high      # Set reasoning effort to high
+/reasoning none      # Disable reasoning
+/reasoning show      # Show model thinking above each response
+/reasoning hide      # Hide model thinking
+```
+
 ## TTS Configuration
 
 ```yaml
@@ -632,6 +642,7 @@ display:
   compact: false         # Compact output mode (less whitespace)
   resume_display: full   # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false  # Play terminal bell when agent finishes (great for long tasks)
+  show_reasoning: false    # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
 ```
 
 | Mode | What you see |

@@ -147,6 +147,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort and display. Args: effort level (`none`, `low`, `medium`, `high`, `xhigh`) or display toggle (`show`, `hide`). No args shows current state. |
 
 ### Conversation
 

@@ -108,6 +108,8 @@ PLATFORMS = {
     "discord":  {"label": "💬 Discord",    "default_toolset": "hermes-discord"},
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
+    "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
 }
 
 

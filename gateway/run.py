@@ -2023,6 +2023,7 @@ class GatewayRunner:
                 Platform.SLACK: "hermes-slack",
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
+                Platform.EMAIL: "hermes-email",
             }
             platform_toolsets_config = {}
             try:
@@ -2043,6 +2044,7 @@ class GatewayRunner:
                 Platform.SLACK: "slack",
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
+                Platform.EMAIL: "email",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -2835,6 +2837,7 @@ class GatewayRunner:
             Platform.SLACK: "hermes-slack",
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
+            Platform.EMAIL: "hermes-email",
         }
         
         # Try to load platform_toolsets from config
@@ -2858,6 +2861,7 @@ class GatewayRunner:
             Platform.SLACK: "slack",
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
+            Platform.EMAIL: "email",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

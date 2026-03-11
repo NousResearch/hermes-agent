@@ -1328,6 +1328,7 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._stream_buf = ""
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1574,6 +1575,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._on_reasoning if self.show_reasoning else None,
+                stream_delta_callback=self._stream_delta,
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -4014,6 +4016,28 @@ class HermesCLI:
             "Use your best judgement to make the choice and proceed."
         )
 
+    _stream_started = False
+
+    def _stream_delta(self, text: str):
+        """Buffer streaming tokens; emit complete lines via _cprint."""
+        if not text:
+            return
+        if not self._stream_started:
+            text = text.lstrip("\n")
+            if not text:
+                return
+            self._stream_started = True
+        self._stream_buf += text
+        while "\n" in self._stream_buf:
+            line, self._stream_buf = self._stream_buf.split("\n", 1)
+            _cprint(line)
+
+    def _flush_stream(self):
+        """Emit any remaining partial line from the stream buffer."""
+        if self._stream_buf:
+            _cprint(self._stream_buf)
+        self._stream_buf = ""
+
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
@@ -4181,6 +4205,8 @@ class HermesCLI:
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
+        self._stream_buf = ""
+        self._stream_started = False
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
@@ -4314,6 +4340,7 @@ class HermesCLI:
                     agent_thread.join(0.1)
 
             agent_thread.join()  # Ensure agent thread completes
+            self._flush_stream()
 
             # Signal end-of-text to TTS consumer and wait for it to finish
             if use_streaming_tts and text_queue is not None:
@@ -4375,7 +4402,7 @@ class HermesCLI:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
-            if response and not response_previewed:
+            if response and not response_previewed and not (self.agent and self.agent.stream_delta_callback):
                 # Use skin engine for label/color with fallback
                 try:
                     from hermes_cli.skin_engine import get_active_skin

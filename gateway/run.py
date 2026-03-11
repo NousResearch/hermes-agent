@@ -1608,6 +1608,8 @@ class GatewayRunner:
                 (voice_mode == "all")
                 or (voice_mode == "voice_only" and is_voice_input)
             )
+            logger.info("Voice reply check: chat_id=%s, voice_mode=%s, is_voice=%s, should_reply=%s, has_response=%s",
+                        chat_id, voice_mode, is_voice_input, should_voice_reply, bool(response))
             if should_voice_reply and response and not response.startswith("Error:"):
                 # Skip if agent already called TTS tool (avoid double voice)
                 has_agent_tts = any(
@@ -1618,6 +1620,7 @@ class GatewayRunner:
                     )
                     for msg in agent_messages
                 )
+                logger.info("Voice reply: has_agent_tts=%s, calling _send_voice_reply", has_agent_tts)
                 if not has_agent_tts:
                     await self._send_voice_reply(event, response)
 
@@ -2201,9 +2204,12 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             self._voice_mode[event.source.chat_id] = "all"
             self._save_voice_modes()
+            # Wire voice input callback so the adapter can deliver transcripts
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = self._handle_voice_channel_input
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies here. Use /voice leave to disconnect."
+                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
             )
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
 
@@ -2222,6 +2228,49 @@ class GatewayRunner:
         self._voice_mode.pop(event.source.chat_id, None)
         self._save_voice_modes()
         return "Left voice channel."
+
+    async def _handle_voice_channel_input(
+        self, guild_id: int, user_id: int, transcript: str
+    ):
+        """Handle transcribed voice from a user in a voice channel.
+
+        Creates a synthetic MessageEvent and processes it through the
+        adapter's full message pipeline (session, typing, agent, TTS reply).
+        """
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter:
+            return
+
+        text_ch_id = adapter._voice_text_channels.get(guild_id)
+        if not text_ch_id:
+            return
+
+        # Show transcript in text channel
+        try:
+            channel = adapter._client.get_channel(text_ch_id)
+            if channel:
+                await channel.send(f"**[Voice]** <@{user_id}>: {transcript}")
+        except Exception:
+            pass
+
+        # Build a synthetic MessageEvent and feed through the normal pipeline
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(text_ch_id),
+            user_id=str(user_id),
+            user_name=str(user_id),
+        )
+        # Use SimpleNamespace as raw_message so _get_guild_id() can extract
+        # guild_id and _send_voice_reply() plays audio in the voice channel.
+        from types import SimpleNamespace
+        event = MessageEvent(
+            source=source,
+            text=transcript,
+            message_type=MessageType.VOICE,
+            raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+        )
+
+        await adapter.handle_message(event)
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""

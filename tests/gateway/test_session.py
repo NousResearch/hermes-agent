@@ -429,3 +429,119 @@ class TestHasAnySessions:
 
         store._entries = {"key1": MagicMock()}
         assert store.has_any_sessions() is False
+
+
+class TestLastPromptTokens:
+    """Tests for the last_prompt_tokens field — actual API token tracking."""
+
+    def test_session_entry_default(self):
+        """New sessions should have last_prompt_tokens=0."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        assert entry.last_prompt_tokens == 0
+
+    def test_session_entry_roundtrip(self):
+        """last_prompt_tokens should survive serialization/deserialization."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=42000,
+        )
+        d = entry.to_dict()
+        assert d["last_prompt_tokens"] == 42000
+        restored = SessionEntry.from_dict(d)
+        assert restored.last_prompt_tokens == 42000
+
+    def test_session_entry_from_old_data(self):
+        """Old session data without last_prompt_tokens should default to 0."""
+        from gateway.session import SessionEntry
+        data = {
+            "session_key": "test",
+            "session_id": "s1",
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            # No last_prompt_tokens — old format
+        }
+        entry = SessionEntry.from_dict(data)
+        assert entry.last_prompt_tokens == 0
+
+    def test_update_session_sets_last_prompt_tokens(self, tmp_path):
+        """update_session should store the actual prompt token count."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", last_prompt_tokens=85000)
+        assert entry.last_prompt_tokens == 85000
+
+    def test_update_session_none_does_not_change(self, tmp_path):
+        """update_session with default (None) should not change last_prompt_tokens."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=50000,
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1")  # No last_prompt_tokens arg
+        assert entry.last_prompt_tokens == 50000  # unchanged
+
+    def test_update_session_zero_resets(self, tmp_path):
+        """update_session with last_prompt_tokens=0 should reset the field."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=85000,
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", last_prompt_tokens=0)
+        assert entry.last_prompt_tokens == 0

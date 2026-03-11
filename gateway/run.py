@@ -1083,6 +1083,8 @@ class GatewayRunner:
                                 self.session_store.rewrite_transcript(
                                     session_entry.session_id, _compressed
                                 )
+                                # Reset stored token count — transcript was rewritten
+                                session_entry.last_prompt_tokens = 0
                                 history = _compressed
                                 _new_count = len(_compressed)
                                 _new_tokens = estimate_messages_tokens_rough(
@@ -1747,6 +1749,8 @@ class GatewayRunner:
         # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
         self.session_store.rewrite_transcript(session_entry.session_id, truncated)
+        # Reset stored token count — transcript was truncated
+        session_entry.last_prompt_tokens = 0
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -1778,6 +1782,8 @@ class GatewayRunner:
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
         self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
+        # Reset stored token count — transcript was truncated
+        session_entry.last_prompt_tokens = 0
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
@@ -1911,6 +1917,10 @@ class GatewayRunner:
             )
 
             self.session_store.rewrite_transcript(session_entry.session_id, compressed)
+            # Reset stored token count — transcript changed, old value is stale
+            self.session_store.update_session(
+                session_entry.session_key, last_prompt_tokens=0,
+            )
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
 

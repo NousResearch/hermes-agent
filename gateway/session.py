@@ -556,7 +556,7 @@ class SessionStore:
         session_key: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
-        last_prompt_tokens: int = 0,
+        last_prompt_tokens: int = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -566,7 +566,7 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
-            if last_prompt_tokens > 0:
+            if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()

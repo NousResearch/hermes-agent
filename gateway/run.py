@@ -1638,7 +1638,17 @@ class GatewayRunner:
                 # Skip if voice input — base adapter auto-TTS in
                 # _process_message_background already sent audio for voice
                 # messages, so sending another would be double.
+                # Exception: Discord voice channel — the Discord play_tts
+                # override also skips (no-op), so the runner MUST handle it
+                # via play_in_voice_channel.
                 skip_double = is_voice_input
+                if skip_double:
+                    adapter = self.adapters.get(source.platform)
+                    guild_id = self._get_guild_id(event)
+                    if (guild_id and adapter
+                            and hasattr(adapter, "is_in_voice_channel")
+                            and adapter.is_in_voice_channel(guild_id)):
+                        skip_double = False
                 logger.info("Voice reply: has_agent_tts=%s, skip_double=%s, calling _send_voice_reply", has_agent_tts, skip_double)
                 if not has_agent_tts and not skip_double:
                     await self._send_voice_reply(event, response)

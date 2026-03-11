@@ -1107,6 +1107,7 @@ class HermesCLI:
         """
         # Initialize Rich console
         self.console = Console()
+        self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")

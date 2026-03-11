@@ -1,7 +1,9 @@
 """Tests for tools/skills_tool.py — skill discovery and viewing."""
 
 import json
+import importlib
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,11 +159,16 @@ class TestRequiredEnvironmentVariablesNormalization:
         from tools.skills_tool import _is_env_var_persisted
 
         assert _is_env_var_persisted("EMPTY_FILE_KEY", {"EMPTY_FILE_KEY": ""}) is False
-        assert (
-            _is_env_var_persisted("FILLED_FILE_KEY", {"FILLED_FILE_KEY": "x"}) is True
-        )
+        assert _is_env_var_persisted("FILLED_FILE_KEY", {"FILLED_FILE_KEY": "x"}) is True
         assert _is_env_var_persisted("EMPTY_HOST_KEY", {}) is False
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
+
+    def test_required_commands_are_normalized_and_deduped(self):
+        from tools.skills_tool import _get_required_commands
+
+        assert _get_required_commands(["jq", "curl", "jq"]) == ["jq", "curl"]
+        assert _get_required_commands(["  curl  ", "", "jq"]) == ["curl", "jq"]
+        assert _get_required_commands([]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +736,18 @@ class TestFindAllSkillsSecureSetup:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
+        terminal_tool_module = importlib.import_module("tools.terminal_tool")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError(
+                "skills_list should not probe backend state for env vars"
+            )
+
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "get_or_create_environment",
+            fail_if_called,
+        )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -810,9 +829,19 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is True
         assert result["missing_required_environment_variables"] == ["BACKEND_ONLY_KEY"]
 
-    def test_local_env_missing_keeps_setup_needed(self, tmp_path, monkeypatch):
+    def test_local_shell_env_var_counts_as_available(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.delenv("SHELL_ONLY_KEY", raising=False)
+
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_probe_local_login_shell",
+            lambda env_vars, commands: {
+                "env_vars": {"SHELL_ONLY_KEY": True},
+                "commands": {},
+            },
+            raising=False,
+        )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -824,9 +853,65 @@ class TestSkillViewPrerequisites:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["setup_needed"] is True
-        assert result["missing_required_environment_variables"] == ["SHELL_ONLY_KEY"]
-        assert result["readiness_status"] == "setup_needed"
+        assert result["setup_needed"] is False
+        assert result["missing_required_environment_variables"] == []
+        assert result["readiness_status"] == "available"
+
+    def test_local_shell_command_counts_as_available(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_probe_local_login_shell",
+            lambda env_vars, commands: {
+                "env_vars": {},
+                "commands": {"ddgr": True},
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(shutil, "which", lambda command: None)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "duckduckgo-search",
+                frontmatter_extra="prerequisites:\n  commands: [ddgr]\n",
+            )
+            raw = skill_view("duckduckgo-search")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == ["ddgr"]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+
+    def test_remote_backend_probe_prevents_false_setup_needed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_probe_remote_environment",
+            lambda task_id, env_vars, commands: {
+                "env_vars": {"REMOTE_KEY": True},
+                "commands": {"ddgr": True},
+            },
+            raising=False,
+        )
+        from tools.skills_tool import _probe_remote_environment
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "docker-skill",
+                frontmatter_extra=(
+                    "---\nname: docker-skill\nprerequisites:\n  env_vars: [REMOTE_KEY]\n  commands: [ddgr]\n---\n"
+                ),
+            )
+            raw = skill_view("docker-skill", task_id="probe-test")
+
+        result = json.loads(raw)
+        assert result["setup_needed"] is False
+        assert result["missing_required_environment_variables"] == []
+        assert result["missing_required_commands"] == []
 
     def test_gateway_load_keeps_setup_guidance_for_backend_only_env(
         self, tmp_path, monkeypatch
@@ -848,16 +933,13 @@ class TestSkillViewPrerequisites:
         assert "hermes setup" in result["gateway_setup_hint"].lower()
         assert result["setup_needed"] is True
 
-    @pytest.mark.parametrize(
-        "backend,expected_note",
-        [
-            ("ssh", "remote environment"),
-            ("daytona", "remote environment"),
-            ("docker", "docker-backed skills"),
-            ("singularity", "singularity-backed skills"),
-            ("modal", "modal-backed skills"),
-        ],
-    )
+    @pytest.mark.parametrize("backend,expected_note", [
+        ("ssh", "remote environment"),
+        ("daytona", "remote environment"),
+        ("docker", "docker-backed skills"),
+        ("singularity", "singularity-backed skills"),
+        ("modal", "modal-backed skills"),
+    ])
     def test_remote_backend_keeps_setup_needed_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend, expected_note
     ):
@@ -910,9 +992,7 @@ class TestSkillViewPrerequisites:
 
             def fake_read_text(path_obj, *args, **kwargs):
                 if path_obj == skill_md:
-                    raise UnicodeDecodeError(
-                        "utf-8", b"\xff", 0, 1, "invalid start byte"
-                    )
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
                 return original_read_text(path_obj, *args, **kwargs)
 
             monkeypatch.setattr(Path, "read_text", fake_read_text)
@@ -956,9 +1036,7 @@ Do the legacy thing.
             {"name": "LEGACY_KEY", "prompt": "Legacy key"}
         ]
 
-    def test_successful_secret_capture_reloads_empty_env_placeholder(
-        self, tmp_path, monkeypatch
-    ):
+    def test_successful_secret_capture_reloads_empty_env_placeholder(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
 
@@ -1000,3 +1078,23 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+    def test_missing_local_command_sets_setup_needed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr(shutil, "which", lambda command: None)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "duckduckgo-search",
+                frontmatter_extra="prerequisites:\n  commands: [ddgr]\n",
+            )
+            raw = skill_view("duckduckgo-search")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == ["ddgr"]
+        assert result["missing_required_commands"] == ["ddgr"]
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert "command `ddgr`" in result["setup_note"]

@@ -147,9 +147,9 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     Returns enhanced output if sudo failed in messaging context, else original.
     """
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
-    
-    if not is_gateway:
+    from tools.runtime import is_gateway_surface
+
+    if not is_gateway_surface():
         return output
     
     # Check for sudo failure indicators
@@ -591,6 +591,93 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
 
 
+def get_or_create_environment(task_id: str = "default", timeout: int | None = None):
+    """Return the active execution environment for a task, creating it if needed.
+
+    This is the shared runtime boundary for backend-aware helpers that need to
+    inspect or execute inside the configured terminal backend without routing
+    through the full terminal tool response wrapper.
+    """
+    global _active_environments, _last_activity
+
+    config = _get_env_config()
+    env_type = config["env_type"]
+    effective_task_id = task_id or "default"
+    overrides = _task_env_overrides.get(effective_task_id, {})
+
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    cwd = overrides.get("cwd") or config["cwd"]
+    effective_timeout = timeout or config["timeout"]
+
+    _start_cleanup_thread()
+
+    with _env_lock:
+        if effective_task_id in _active_environments:
+            _last_activity[effective_task_id] = time.time()
+            return _active_environments[effective_task_id], env_type
+
+    with _creation_locks_lock:
+        if effective_task_id not in _creation_locks:
+            _creation_locks[effective_task_id] = threading.Lock()
+        task_lock = _creation_locks[effective_task_id]
+
+    with task_lock:
+        with _env_lock:
+            if effective_task_id in _active_environments:
+                _last_activity[effective_task_id] = time.time()
+                return _active_environments[effective_task_id], env_type
+
+        if env_type == "singularity":
+            _check_disk_usage_warning()
+        logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+            }
+
+        container_config = None
+        if env_type in ("docker", "singularity", "modal", "daytona"):
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "docker_volumes": config.get("docker_volumes", []),
+            }
+
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=cwd,
+            timeout=effective_timeout,
+            ssh_config=ssh_config,
+            container_config=container_config,
+            task_id=effective_task_id,
+        )
+
+        with _env_lock:
+            _active_environments[effective_task_id] = env
+            _last_activity[effective_task_id] = time.time()
+
+        logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+        return env, env_type
+
+
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     global _active_environments, _last_activity
@@ -842,112 +929,24 @@ def terminal_tool(
         # Force run after user confirmation
         # Note: force parameter is internal only, not exposed to model API
     """
-    global _active_environments, _last_activity
-
     try:
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
-
-        # Use task_id for environment isolation
         effective_task_id = task_id or "default"
+        effective_timeout = timeout or config["timeout"]
 
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        # before falling back to global env var config
-        overrides = _task_env_overrides.get(effective_task_id, {})
-        
-        # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
-        default_timeout = config["timeout"]
-        effective_timeout = timeout or default_timeout
-
-        # Start cleanup thread
-        _start_cleanup_thread()
-
-        # Get or create environment.
-        # Use a per-task creation lock so concurrent tool calls for the same
-        # task_id wait for the first one to finish creating the sandbox,
-        # instead of each creating their own (wasting Modal resources).
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                env = _active_environments[effective_task_id]
-                needs_creation = False
-            else:
-                needs_creation = True
-
-        if needs_creation:
-            # Per-task lock: only one thread creates the sandbox, others wait
-            with _creation_locks_lock:
-                if effective_task_id not in _creation_locks:
-                    _creation_locks[effective_task_id] = threading.Lock()
-                task_lock = _creation_locks[effective_task_id]
-
-            with task_lock:
-                # Double-check after acquiring the per-task lock
-                with _env_lock:
-                    if effective_task_id in _active_environments:
-                        _last_activity[effective_task_id] = time.time()
-                        env = _active_environments[effective_task_id]
-                        needs_creation = False
-
-                if needs_creation:
-                    if env_type == "singularity":
-                        _check_disk_usage_warning()
-                    logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
-                    try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                            }
-
-                        container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona"):
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "docker_volumes": config.get("docker_volumes", []),
-                            }
-
-                        new_env = _create_environment(
-                            env_type=env_type,
-                            image=image,
-                            cwd=cwd,
-                            timeout=effective_timeout,
-                            ssh_config=ssh_config,
-                            container_config=container_config,
-                            task_id=effective_task_id,
-                        )
-                    except ImportError as e:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": -1,
-                            "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
-                            "status": "disabled"
-                        }, ensure_ascii=False)
-
-                    with _env_lock:
-                        _active_environments[effective_task_id] = new_env
-                        _last_activity[effective_task_id] = time.time()
-                        env = new_env
-                    logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+        try:
+            env, env_type = get_or_create_environment(
+                task_id=effective_task_id, timeout=effective_timeout,
+            )
+        except ImportError as e:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                "status": "disabled"
+            }, ensure_ascii=False)
 
         # Check for dangerous commands (only for local/ssh in interactive modes)
         # Skip check if force=True (user has confirmed they want to run it)
@@ -986,7 +985,7 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = os.getenv("HERMES_SESSION_KEY", "")
-            effective_cwd = workdir or cwd
+            effective_cwd = workdir or getattr(env, "cwd", None)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(

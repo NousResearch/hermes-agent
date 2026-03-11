@@ -230,6 +230,35 @@ class TestSetupWizardOpenclawIntegration:
         # load_config called twice: once at start, once after migration
         assert call_order.count("load_config") == 2
 
+    def test_reloaded_config_flows_into_remaining_setup_sections(self, tmp_path):
+        args = _first_time_args()
+        initial_config = {}
+        reloaded_config = {"model": {"provider": "openrouter"}}
+
+        with (
+            patch.object(setup_mod, "ensure_hermes_home"),
+            patch.object(
+                setup_mod,
+                "load_config",
+                side_effect=[initial_config, reloaded_config],
+            ),
+            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
+            patch.object(setup_mod, "get_env_value", return_value=""),
+            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("builtins.input", return_value=""),
+            patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
+            patch.object(setup_mod, "setup_model_provider") as setup_model_provider,
+            patch.object(setup_mod, "setup_terminal_backend"),
+            patch.object(setup_mod, "setup_agent_settings"),
+            patch.object(setup_mod, "setup_gateway"),
+            patch.object(setup_mod, "setup_tools"),
+            patch.object(setup_mod, "save_config"),
+            patch.object(setup_mod, "_print_setup_summary"),
+        ):
+            setup_mod.run_setup_wizard(args)
+
+        setup_model_provider.assert_called_once_with(reloaded_config)
+
     def test_migration_not_offered_for_existing_install(self, tmp_path):
         """Returning users should not see the migration prompt."""
         args = _first_time_args()

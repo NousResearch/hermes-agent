@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, or your browser — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ## Architecture
 
@@ -15,24 +15,24 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home
 │                              Hermes Gateway                                   │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐│
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA ││
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt││
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘│
-│       │             │           │           │         │         │        │    │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘    │
-│                                     │                                         │
-│                            ┌────────▼────────┐                                │
-│                            │  Session Store  │                                │
-│                            │  (per-chat)     │                                │
-│                            └────────┬────────┘                                │
-│                                     │                                         │
-│                            ┌────────▼────────┐                                │
-│                            │   AIAgent       │                                │
-│                            │   (run_agent)   │                                │
-│                            └─────────────────┘                                │
-│                                                                               │
-└───────────────────────────────────────────────────────────────────────────────┘
+│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐ ┌─────┐│
+│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │ │ Web ││
+│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│ │Adpt ││
+│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘ └──┬──┘│
+│       │             │           │           │         │         │        │       │   │
+│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┴───────┘   │
+│                                     │                                                │
+│                            ┌────────▼────────┐                                       │
+│                            │  Session Store  │                                       │
+│                            │  (per-chat)     │                                       │
+│                            └────────┬────────┘                                       │
+│                                     │                                                │
+│                            ┌────────▼────────┐                                       │
+│                            │   AIAgent       │                                       │
+│                            │   (run_agent)   │                                       │
+│                            └─────────────────┘                                       │
+│                                                                                      │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
@@ -81,6 +81,7 @@ hermes gateway status       # Check service status
 | `/background <prompt>` | Run a prompt in a separate background session |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
+| `/remote-control [port] [token]` | Start web UI for remote access |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill |
 
@@ -220,3 +221,4 @@ Each platform has its own toolset:
 - [Signal Setup](signal.md)
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)
+- [Web UI Setup](web.md)

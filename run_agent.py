@@ -20,6 +20,7 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
+import builtins
 import copy
 import hashlib
 import json
@@ -32,6 +33,20 @@ import sys
 import time
 import threading
 from types import SimpleNamespace
+
+
+def print(*args, **kwargs):
+    """Best-effort console output for gateway/CLI contexts.
+
+    In gateway mode the agent may still emit progress/debug prints even with
+    quiet_mode=True. If stdout/stderr is detached or its pipe closes, a normal
+    print() raises BrokenPipeError and aborts the whole Telegram response.
+    Swallow that case so logging/output failures don't kill the agent turn.
+    """
+    try:
+        return builtins.print(*args, **kwargs)
+    except BrokenPipeError:
+        return None
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI

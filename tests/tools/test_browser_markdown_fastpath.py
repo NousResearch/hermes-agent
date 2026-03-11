@@ -82,6 +82,26 @@ class TestTryFetchMarkdown:
             result = self._call()
         assert result is None
 
+    # ── URL scheme validation ───────────���────────────────────────────
+
+    def test_rejects_file_scheme(self):
+        """file:// URLs are rejected to prevent SSRF."""
+        cfg = {"browser": {"markdown_header": True, "markdown_provider": ""}}
+        with patch("tools.browser_tool.httpx.get") as mock_get, \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            result = self._call("file:///etc/passwd")
+        mock_get.assert_not_called()
+        assert result is None
+
+    def test_rejects_ftp_scheme(self):
+        """ftp:// URLs are rejected."""
+        cfg = {"browser": {"markdown_header": True, "markdown_provider": ""}}
+        with patch("tools.browser_tool.httpx.get") as mock_get, \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            result = self._call("ftp://internal.host/data")
+        mock_get.assert_not_called()
+        assert result is None
+
     # ── markdown_provider strategy ────────────────────────────────────
 
     def test_provider_returns_markdown(self):
@@ -94,6 +114,17 @@ class TestTryFetchMarkdown:
             result = self._call("https://target.com")
         assert result == "# From provider"
         # Second call should be to provider URL
+        assert mock_get.call_args_list[1][0][0] == "https://md.example.com/https://target.com"
+
+    def test_provider_trailing_slash_normalized(self):
+        """Provider URL without trailing slash gets one added."""
+        html_resp = _make_response(content_type="text/html")
+        md_resp = _make_response(content_type="text/plain", text="# Normalized")
+        cfg = {"browser": {"markdown_header": True, "markdown_provider": "https://md.example.com"}}
+        with patch("tools.browser_tool.httpx.get", side_effect=[html_resp, md_resp]) as mock_get, \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            result = self._call("https://target.com")
+        assert result == "# Normalized"
         assert mock_get.call_args_list[1][0][0] == "https://md.example.com/https://target.com"
 
     def test_provider_empty_response_returns_none(self):
@@ -159,7 +190,8 @@ class TestBrowserNavigateFastPath:
     def test_fastpath_sets_read_only_true(self):
         """Markdown fast-path response includes read_only=True."""
         from tools.browser_tool import browser_navigate
-        with patch("tools.browser_tool._try_fetch_markdown", return_value="# Page"):
+        with patch("tools.browser_tool._active_sessions", {}), \
+             patch("tools.browser_tool._try_fetch_markdown", return_value="# Page"):
             result = json.loads(browser_navigate("https://example.com"))
         assert result["success"] is True
         assert result["read_only"] is True
@@ -168,7 +200,8 @@ class TestBrowserNavigateFastPath:
     def test_fastpath_skipped_when_interactive(self):
         """interactive=True bypasses the markdown fast-path entirely."""
         from tools.browser_tool import browser_navigate
-        with patch("tools.browser_tool._try_fetch_markdown") as mock_md, \
+        with patch("tools.browser_tool._active_sessions", {}), \
+             patch("tools.browser_tool._try_fetch_markdown") as mock_md, \
              patch("tools.browser_tool._get_session_info", return_value={"session_name": "s1", "_first_nav": True}), \
              patch("tools.browser_tool._maybe_start_recording"), \
              patch("tools.browser_tool._run_browser_command", return_value={
@@ -182,12 +215,29 @@ class TestBrowserNavigateFastPath:
     def test_fastpath_none_falls_through_to_browser(self):
         """When _try_fetch_markdown returns None, real browser is used."""
         from tools.browser_tool import browser_navigate
-        with patch("tools.browser_tool._try_fetch_markdown", return_value=None), \
+        with patch("tools.browser_tool._active_sessions", {}), \
+             patch("tools.browser_tool._try_fetch_markdown", return_value=None), \
              patch("tools.browser_tool._get_session_info", return_value={"session_name": "s1", "_first_nav": True}), \
              patch("tools.browser_tool._maybe_start_recording"), \
              patch("tools.browser_tool._run_browser_command", return_value={
                  "success": True, "data": {"title": "HN", "url": "https://news.ycombinator.com"}
              }):
             result = json.loads(browser_navigate("https://news.ycombinator.com"))
+        assert result["success"] is True
+        assert "read_only" not in result
+
+    def test_fastpath_skipped_when_session_exists(self):
+        """Fast-path is skipped when a live session already exists for the task."""
+        from tools.browser_tool import browser_navigate
+        # Simulate an existing session for the "default" task
+        with patch("tools.browser_tool._active_sessions", {"default": {"session_name": "s1"}}), \
+             patch("tools.browser_tool._try_fetch_markdown") as mock_md, \
+             patch("tools.browser_tool._get_session_info", return_value={"session_name": "s1", "_first_nav": False}), \
+             patch("tools.browser_tool._maybe_start_recording"), \
+             patch("tools.browser_tool._run_browser_command", return_value={
+                 "success": True, "data": {"title": "Example", "url": "https://example.com"}
+             }):
+            result = json.loads(browser_navigate("https://example.com"))
+        mock_md.assert_not_called()
         assert result["success"] is True
         assert "read_only" not in result

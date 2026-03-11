@@ -3094,8 +3094,21 @@ class HermesCLI:
                 else:
                     self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
-                self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                # Prefix matching: if input uniquely identifies one command, execute it
+                from hermes_cli.commands import COMMANDS
+                typed_base = cmd_lower.split()[0]
+                matches = [c for c in COMMANDS if c.startswith(typed_base)]
+                if len(matches) == 1:
+                    # Re-dispatch with the full command name, preserving any arguments
+                    remainder = cmd_original.strip()[len(typed_base):]
+                    full_cmd = matches[0] + remainder
+                    return self.process_command(full_cmd)
+                elif len(matches) > 1:
+                    self.console.print(f"[bold yellow]Ambiguous command: {cmd_lower}[/]")
+                    self.console.print(f"[dim]Did you mean: {', '.join(sorted(matches))}?[/]")
+                else:
+                    self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
+                    self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     

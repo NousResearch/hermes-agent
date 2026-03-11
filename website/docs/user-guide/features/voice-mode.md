@@ -78,8 +78,8 @@ Add to `~/.hermes/.env`:
 
 ```bash
 # Speech-to-Text (at least one required)
-GROQ_API_KEY=your-key              # Groq Whisper — fast, free tier available (recommended)
-VOICE_TOOLS_OPENAI_KEY=your-key    # OpenAI Whisper — alternative
+GROQ_API_KEY=your-key              # Groq Whisper — fast, free tier (recommended for most users)
+VOICE_TOOLS_OPENAI_KEY=your-key    # OpenAI Whisper — used first if both keys are set
 
 # Text-to-Speech (optional — Edge TTS works without any key)
 ELEVENLABS_API_KEY=your-key        # ElevenLabs — premium quality
@@ -327,16 +327,11 @@ You must be in a voice channel before running `/voice join`. The bot joins the s
 
 When the bot joins a voice channel, it:
 
-1. **Captures audio** via Discord's UDP socket (RTP packets)
-2. **Decrypts** using NaCl transport encryption (aead_xchacha20_poly1305_rtpsize)
-3. **Decrypts** DAVE end-to-end encryption (Discord Audio/Video Encryption)
-4. **Decodes** Opus audio to raw PCM (48kHz stereo, per-user decoder)
-5. **Detects silence** — 1.5s of silence after at least 0.5s of speech triggers processing
-6. **Converts** PCM to 16kHz mono WAV via ffmpeg
-7. **Transcribes** via Whisper STT (Groq or OpenAI)
-8. **Processes** through the full agent pipeline (session, tools, memory)
-9. **Generates TTS** reply audio
-10. **Plays** the reply in the voice channel
+1. **Listens** to each user's audio stream independently
+2. **Detects silence** — 1.5s of silence after at least 0.5s of speech triggers processing
+3. **Transcribes** the audio via Whisper STT (Groq or OpenAI)
+4. **Processes** through the full agent pipeline (session, tools, memory)
+5. **Speaks** the reply back in the voice channel via TTS
 
 ### Text Channel Integration
 
@@ -397,7 +392,13 @@ tts:
 ```bash
 # Speech-to-Text providers
 GROQ_API_KEY=...                   # Groq Whisper (recommended — fast, free tier)
-VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (alternative)
+VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (used first if both set)
+
+# STT advanced overrides (optional)
+STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
+STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
+GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
+STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 
 # Text-to-Speech providers (Edge TTS needs no key)
 ELEVENLABS_API_KEY=...             # ElevenLabs (premium quality)
@@ -464,63 +465,9 @@ The bot requires an @mention by default in server channels. Make sure you:
 - Edge TTS (free, no key) is the default fallback
 - Check logs for TTS errors
 
-### Web UI not accessible from other devices on the network
+### Web UI issues (firewall, mobile mic)
 
-The macOS firewall may block incoming connections. Allow the gateway through:
-
-1. **System Settings** → **Network** → **Firewall** → **Options**
-2. Add `/usr/local/bin/python3` (or your Python path) to the allowed list
-3. Or temporarily disable the firewall for testing
-
-On Linux, allow the port through `ufw`:
-
-```bash
-sudo ufw allow 8765/tcp
-```
-
-### Web UI microphone not working on mobile
-
-Mobile browsers require **HTTPS** for microphone access (`navigator.mediaDevices` API). When accessing the Web UI over HTTP on a LAN IP (e.g. `http://192.168.1.x:8765`), the mic button will appear dimmed.
-
-**Workarounds:**
-
-**Android Chrome** — flag the LAN IP as secure:
-1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-2. Add your Web UI URL (e.g. `http://192.168.1.106:8765`)
-3. Set to **Enabled** and relaunch Chrome
-
-**iOS Safari / Chrome** — no flag bypass available. Use one of these instead:
-
-1. **Self-signed HTTPS** with mkcert (recommended):
-   ```bash
-   # Install mkcert
-   brew install mkcert
-   mkcert -install
-
-   # Generate cert for your LAN IP
-   mkcert 192.168.1.106
-
-   # Run a simple HTTPS reverse proxy (requires Node.js)
-   npx local-ssl-proxy --source 8443 --target 8765 \
-     --cert 192.168.1.106.pem --key 192.168.1.106-key.pem
-   ```
-   Then access `https://192.168.1.106:8443` on your iPhone. You'll need to trust the mkcert root CA on iOS: **Settings → General → About → Certificate Trust Settings**.
-
-2. **Caddy reverse proxy** (auto-HTTPS for local networks):
-   ```bash
-   brew install caddy
-   caddy reverse-proxy --from https://192.168.1.106:8443 --to http://127.0.0.1:8765
-   ```
-
-3. **SSH tunnel from mobile** (if you have an SSH client like Termius):
-   ```bash
-   ssh -L 8765:127.0.0.1:8765 user@your-mac-ip
-   ```
-   Then access `http://localhost:8765` on the mobile browser — localhost is exempt from HTTPS requirement.
-
-:::tip
-Text chat works on mobile over HTTP without any workaround — only the microphone feature requires HTTPS.
-:::
+See the [Web UI Troubleshooting](../messaging/web.md#troubleshooting) guide for firewall, HTTPS, and mobile microphone issues.
 
 ### Whisper returns garbage text
 

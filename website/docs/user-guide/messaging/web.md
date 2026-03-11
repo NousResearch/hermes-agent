@@ -61,46 +61,6 @@ The web UI starts automatically alongside your other platforms.
 
 ---
 
-## Step 1: Configure
-
-Add to `~/.hermes/.env`:
-
-```bash
-# Enable Web UI
-WEB_UI_ENABLED=true
-
-# Port to listen on (default: 8765)
-WEB_UI_PORT=8765
-
-# Bind address (default: 0.0.0.0 = all interfaces, for LAN access)
-# Set to 127.0.0.1 for localhost-only access
-WEB_UI_HOST=0.0.0.0
-
-# Access token (leave empty to auto-generate on each startup)
-WEB_UI_TOKEN=your-secret-token
-```
-
-## Step 2: Start the Gateway
-
-```bash
-hermes gateway
-```
-
-You'll see output like:
-
-```
-[Web] Web UI: http://192.168.1.106:8765
-[Web] Access token: your-secret-token
-```
-
-## Step 3: Open in Browser
-
-1. Open the URL shown in the console on any device on the same network
-2. Enter the access token
-3. Start chatting
-
----
-
 ## Features
 
 ### Markdown & Code Highlighting
@@ -111,7 +71,7 @@ Bot responses render full GitHub-flavored Markdown with syntax-highlighted code 
 
 Click the microphone button to record a voice message. The audio is transcribed via Whisper STT (using OpenAI or Groq as fallback) and sent to the agent. The bot automatically replies with audio playback — voice first, then the text response appears. No extra configuration needed.
 
-STT priority: `VOICE_TOOLS_OPENAI_KEY` (OpenAI Whisper) > `GROQ_API_KEY` (Groq Whisper). TTS uses Edge TTS (free, no key) by default, or ElevenLabs/OpenAI if configured in `~/.hermes/config.yaml`.
+STT uses `VOICE_TOOLS_OPENAI_KEY` (OpenAI Whisper) if set, otherwise falls back to `GROQ_API_KEY` (Groq Whisper, free tier). If you only need STT, setting `GROQ_API_KEY` is the simplest option. TTS uses Edge TTS (free, no key) by default, or ElevenLabs/OpenAI if configured in `~/.hermes/config.yaml`.
 
 ### Images & Files
 
@@ -210,6 +170,36 @@ WEB_UI_PORT=9000
 - Browser must support `MediaRecorder` API (Chrome, Firefox, Safari 14.5+)
 - HTTPS is required for microphone access on non-localhost origins
 - On localhost (`127.0.0.1`), HTTP works fine for microphone
+
+### Microphone not working on mobile
+
+Mobile browsers require **HTTPS** for microphone access (`navigator.mediaDevices` API). When accessing the Web UI over HTTP on a LAN IP (e.g. `http://192.168.1.x:8765`), the mic button will appear dimmed.
+
+**Android Chrome** — flag the LAN IP as secure:
+1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+2. Add your Web UI URL (e.g. `http://192.168.1.106:8765`)
+3. Set to **Enabled** and relaunch Chrome
+
+**iOS Safari / Chrome** — no flag bypass available. Use one of these instead:
+
+1. **Self-signed HTTPS** with mkcert (recommended):
+   ```bash
+   brew install mkcert && mkcert -install
+   mkcert 192.168.1.106
+   npx local-ssl-proxy --source 8443 --target 8765 \
+     --cert 192.168.1.106.pem --key 192.168.1.106-key.pem
+   ```
+   Then access `https://192.168.1.106:8443`. Trust the mkcert root CA on iOS: **Settings > General > About > Certificate Trust Settings**.
+
+2. **SSH tunnel from mobile** (if you have Termius or similar):
+   ```bash
+   ssh -L 8765:127.0.0.1:8765 user@your-mac-ip
+   ```
+   Then access `http://localhost:8765` — localhost is exempt from the HTTPS requirement.
+
+:::tip
+Text chat works on mobile over HTTP without any workaround — only the microphone feature requires HTTPS.
+:::
 
 ### CDN resources not loading
 

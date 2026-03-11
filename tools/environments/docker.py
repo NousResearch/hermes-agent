@@ -7,6 +7,7 @@ persistence via bind mounts.
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -18,6 +19,44 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+
+# Common Docker Desktop install paths checked when 'docker' is not in PATH.
+# macOS Intel: /usr/local/bin, macOS Apple Silicon (Homebrew): /opt/homebrew/bin,
+# Docker Desktop app bundle: /Applications/Docker.app/Contents/Resources/bin
+_DOCKER_SEARCH_PATHS = [
+    "/usr/local/bin/docker",
+    "/opt/homebrew/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+]
+
+_docker_executable: Optional[str] = None  # resolved once, cached
+
+
+def find_docker() -> Optional[str]:
+    """Locate the docker CLI binary.
+
+    Checks ``shutil.which`` first (respects PATH), then probes well-known
+    install locations on macOS where Docker Desktop may not be in PATH
+    (e.g. when running as a gateway service via launchd).
+
+    Returns the absolute path, or ``None`` if docker cannot be found.
+    """
+    global _docker_executable
+    if _docker_executable is not None:
+        return _docker_executable
+
+    found = shutil.which("docker")
+    if found:
+        _docker_executable = found
+        return found
+
+    for path in _DOCKER_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            _docker_executable = path
+            logger.info("Found docker at non-PATH location: %s", path)
+            return path
+
+    return None
 
 
 # Security flags applied to every container.
@@ -145,9 +184,14 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
         logger.info(f"Docker run_args: {all_run_args}")
 
+        # Resolve the docker executable once so it works even when
+        # /usr/local/bin is not in PATH (common on macOS gateway/service).
+        docker_exe = find_docker() or "docker"
+
         self._inner = _Docker(
             image=image, cwd=cwd, timeout=timeout,
             run_args=all_run_args,
+            executable=docker_exe,
         )
         self._container_id = self._inner.container_id
 
@@ -162,8 +206,9 @@ class DockerEnvironment(BaseEnvironment):
         if _storage_opt_ok is not None:
             return _storage_opt_ok
         try:
+            docker = find_docker() or "docker"
             result = subprocess.run(
-                ["docker", "info", "--format", "{{.Driver}}"],
+                [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, timeout=10,
             )
             driver = result.stdout.strip().lower()
@@ -173,14 +218,14 @@ class DockerEnvironment(BaseEnvironment):
             # overlay2 only supports storage-opt on XFS with pquota.
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
-                ["docker", "create", "--storage-opt", "size=1m", "hello-world"],
+                [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
-                    subprocess.run(["docker", "rm", container_id],
+                    subprocess.run([docker, "rm", container_id],
                                    capture_output=True, timeout=5)
                 _storage_opt_ok = True
             else:

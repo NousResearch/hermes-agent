@@ -131,6 +131,23 @@ Type `/` to see an autocomplete dropdown of all available commands.
 Commands are case-insensitive — `/HELP` works the same as `/help`. Most commands work mid-conversation.
 :::
 
+## Quick Commands
+
+You can define custom commands that run shell commands instantly without invoking the LLM. These work in both the CLI and messaging platforms (Telegram, Discord, etc.).
+
+```yaml
+# ~/.hermes/config.yaml
+quick_commands:
+  status:
+    type: exec
+    command: systemctl status hermes-agent
+  gpu:
+    type: exec
+    command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+```
+
+Then type `/status` or `/gpu` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
+
 ## Skill Slash Commands
 
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:

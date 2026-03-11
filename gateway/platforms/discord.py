@@ -289,8 +289,9 @@ class VoiceReceiver:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
-            self._buffers[ssrc].extend(pcm)
-            self._last_packet_time[ssrc] = time.monotonic()
+            with self._lock:
+                self._buffers[ssrc].extend(pcm)
+                self._last_packet_time[ssrc] = time.monotonic()
         except Exception:
             return
 
@@ -305,24 +306,25 @@ class VoiceReceiver:
 
         with self._lock:
             ssrc_user_map = dict(self._ssrc_to_user)
+            ssrc_list = list(self._buffers.keys())
 
-        for ssrc in list(self._buffers.keys()):
-            last_time = self._last_packet_time.get(ssrc, now)
-            silence_duration = now - last_time
-            buf = self._buffers[ssrc]
-            # 48kHz, 16-bit, stereo = 192000 bytes/sec
-            buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
+            for ssrc in ssrc_list:
+                last_time = self._last_packet_time.get(ssrc, now)
+                silence_duration = now - last_time
+                buf = self._buffers[ssrc]
+                # 48kHz, 16-bit, stereo = 192000 bytes/sec
+                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
-            if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
-                user_id = ssrc_user_map.get(ssrc, 0)
-                if user_id:
-                    completed.append((user_id, bytes(buf)))
-                self._buffers[ssrc] = bytearray()
-                self._last_packet_time.pop(ssrc, None)
-            elif silence_duration >= self.SILENCE_THRESHOLD * 2:
-                # Stale buffer with no valid user — discard
-                self._buffers.pop(ssrc, None)
-                self._last_packet_time.pop(ssrc, None)
+                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                    user_id = ssrc_user_map.get(ssrc, 0)
+                    if user_id:
+                        completed.append((user_id, bytes(buf)))
+                    self._buffers[ssrc] = bytearray()
+                    self._last_packet_time.pop(ssrc, None)
+                elif silence_duration >= self.SILENCE_THRESHOLD * 2:
+                    # Stale buffer with no valid user — discard
+                    self._buffers.pop(ssrc, None)
+                    self._last_packet_time.pop(ssrc, None)
 
         return completed
 

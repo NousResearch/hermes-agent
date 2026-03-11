@@ -299,6 +299,99 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def send_raw(
+        self, chat_id: str, content: str, metadata: dict = None,
+    ) -> SendResult:
+        """Send a plain-text message without MarkdownV2 formatting."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id), text=content, parse_mode=None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def edit_message_raw(
+        self, chat_id: str, message_id: str, content: str,
+    ) -> SendResult:
+        """Edit a message with plain text (no MarkdownV2 formatting)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id), message_id=int(message_id),
+                text=content, parse_mode=None,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether this adapter supports Telegram Bot API sendMessageDraft (9.3+)."""
+        return True
+
+    async def send_draft(
+        self, chat_id: str, draft_id: int, text: str, metadata: dict = None,
+    ) -> bool:
+        """Push a draft update via sendMessageDraft (Bot API 9.3+)."""
+        if not self._bot:
+            return False
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            return await self._bot.send_message_draft(
+                chat_id=int(chat_id), draft_id=draft_id, text=text,
+                parse_mode=None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+        except Exception as e:
+            logger.warning("[%s] send_message_draft failed: %s", self.name, e)
+            return False
+
+    async def finalize_draft(
+        self, chat_id: str, content: str, metadata: dict = None,
+    ) -> SendResult:
+        """Finalize a draft stream by sending the completed message with formatting."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            formatted = self.format_message(content)
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id), text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    message_thread_id=int(thread_id) if thread_id else None,
+                )
+            except Exception:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id), text=content, parse_mode=None,
+                    message_thread_id=int(thread_id) if thread_id else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a Telegram message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id), message_id=int(message_id),
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,

@@ -413,6 +413,36 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    @property
+    def supports_streaming(self) -> bool:
+        """Whether this platform supports response streaming via message edits."""
+        return False
+
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether this platform supports native draft streaming (Bot API 9.3+)."""
+        return False
+
+    async def send_draft(self, chat_id: str, draft_id: int, text: str, metadata: dict = None) -> bool:
+        """Push a draft text update. Override in subclasses."""
+        return False
+
+    async def finalize_draft(self, chat_id: str, content: str, metadata: dict = None) -> "SendResult":
+        """Finalize a draft stream with the completed message."""
+        return SendResult(success=False, error="Not supported")
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a previously sent message."""
+        return SendResult(success=False, error="Not supported")
+
+    async def send_raw(self, chat_id: str, content: str, metadata: dict = None) -> "SendResult":
+        """Send without formatting (default: delegates to send)."""
+        return await self.send(chat_id=chat_id, content=content, metadata=metadata)
+
+    async def edit_message_raw(self, chat_id: str, message_id: str, content: str) -> "SendResult":
+        """Edit without formatting (default: delegates to edit_message)."""
+        return await self.edit_message(chat_id=chat_id, message_id=message_id, content=content)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.
@@ -697,11 +727,20 @@ class BasePlatformAdapter(ABC):
         
         try:
             # Call the handler (this can take a while with tool calls)
-            response = await self._message_handler(event)
+            handler_result = await self._message_handler(event)
+
+            # Normalise: handler may return str or dict(content, already_sent)
+            already_sent = False
+            if isinstance(handler_result, dict):
+                response = handler_result.get("content") or ""
+                already_sent = handler_result.get("already_sent", False)
+            else:
+                response = handler_result
             
             # Send response if any
             if not response:
-                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                if not already_sent:
+                    logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -712,7 +751,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
                 # Send the text portion first (if any remains after extractions)
-                if text_content:
+                if text_content and not already_sent:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self.send(
                         chat_id=event.source.chat_id,

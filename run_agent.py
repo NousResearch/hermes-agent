@@ -175,6 +175,7 @@ class AIAgent:
         thinking_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
+        stream_delta_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -262,6 +263,7 @@ class AIAgent:
         self.thinking_callback = thinking_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
+        self.stream_delta_callback = stream_delta_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -2060,6 +2062,147 @@ class AIAgent:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
+    def _interruptible_streaming_api_call(self, api_kwargs: dict, on_first_delta=None):
+        """Streaming variant of _interruptible_api_call for chat_completions.
+
+        Fires self.stream_delta_callback(text) as content tokens arrive and
+        accumulates the full response into a SimpleNamespace matching the shape
+        downstream code expects.  Falls back to the non-streaming path when the
+        provider rejects the stream request.
+        """
+        from types import SimpleNamespace
+
+        result = {"response": None, "error": None}
+        first_delta_fired = [False]
+
+        def _stream():
+            try:
+                stream_kwargs = {**api_kwargs, "stream": True,
+                                 "stream_options": {"include_usage": True}}
+                stream_resp = self.client.chat.completions.create(**stream_kwargs)
+
+                content_parts = []
+                tool_calls_acc = {}
+                finish_reason = "stop"
+                usage = None
+                reasoning_content = None
+                model = None
+                has_tool_calls = False
+
+                try:
+                    for chunk in stream_resp:
+                        if not chunk.choices:
+                            if hasattr(chunk, "usage") and chunk.usage:
+                                usage = chunk.usage
+                            continue
+
+                        choice = chunk.choices[0]
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+                        if model is None and hasattr(chunk, "model"):
+                            model = chunk.model
+
+                        delta = choice.delta
+                        if delta is None:
+                            continue
+
+                        if delta.content:
+                            content_parts.append(delta.content)
+                            if not first_delta_fired[0]:
+                                first_delta_fired[0] = True
+                                if on_first_delta:
+                                    on_first_delta()
+                            if self.stream_delta_callback and not has_tool_calls:
+                                try:
+                                    self.stream_delta_callback(delta.content)
+                                except Exception:
+                                    pass
+
+                        if delta.tool_calls:
+                            has_tool_calls = True
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                if idx not in tool_calls_acc:
+                                    tool_calls_acc[idx] = {
+                                        "id": tc_delta.id or "",
+                                        "type": tc_delta.type or "function",
+                                        "function": {
+                                            "name": getattr(tc_delta.function, "name", None) or "",
+                                            "arguments": getattr(tc_delta.function, "arguments", None) or "",
+                                        },
+                                    }
+                                else:
+                                    entry = tool_calls_acc[idx]
+                                    if tc_delta.id:
+                                        entry["id"] = tc_delta.id
+                                    fn = tc_delta.function
+                                    if fn:
+                                        if fn.name:
+                                            entry["function"]["name"] = fn.name
+                                        if fn.arguments:
+                                            entry["function"]["arguments"] += fn.arguments
+
+                        rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                        if rc:
+                            reasoning_content = (reasoning_content or "") + rc
+                finally:
+                    close_fn = getattr(stream_resp, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
+
+                tool_calls_list = None
+                if tool_calls_acc:
+                    tool_calls_list = [
+                        SimpleNamespace(
+                            id=tc["id"], call_id=tc["id"], type=tc["type"],
+                            function=SimpleNamespace(name=tc["function"]["name"],
+                                                     arguments=tc["function"]["arguments"]),
+                        )
+                        for idx, tc in sorted(tool_calls_acc.items())
+                    ]
+
+                message = SimpleNamespace(
+                    content="".join(content_parts) or None,
+                    tool_calls=tool_calls_list,
+                    reasoning=reasoning_content,
+                    reasoning_content=reasoning_content,
+                    reasoning_details=None,
+                )
+                result["response"] = SimpleNamespace(
+                    choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+                    usage=usage,
+                    model=model,
+                )
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=_stream, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(timeout=0.3)
+            if self._interrupt_requested:
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+                try:
+                    self.client = OpenAI(**self._client_kwargs)
+                except Exception:
+                    pass
+                raise InterruptedError("Agent interrupted during streaming API call")
+
+        if result["error"] is not None:
+            err = result["error"]
+            err_str = str(err).lower()
+            if any(kw in err_str for kw in ("stream", "not support", "unsupported")):
+                logger.debug("Streaming failed (%s), falling back to non-streaming.", err)
+                return self._interruptible_api_call(api_kwargs)
+            raise err
+        return result["response"]
+
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider != "openai-codex":
             return False
@@ -3474,7 +3617,17 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    response = self._interruptible_api_call(api_kwargs)
+                    if self.stream_delta_callback and self.api_mode != "codex_responses":
+                        def _stop_spinner():
+                            nonlocal thinking_spinner
+                            if thinking_spinner:
+                                thinking_spinner.stop("")
+                                thinking_spinner = None
+
+                        response = self._interruptible_streaming_api_call(
+                            api_kwargs, on_first_delta=_stop_spinner)
+                    else:
+                        response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -4230,8 +4383,8 @@ class AIAgent:
                     turn_content = assistant_message.content or ""
                     if turn_content and self._has_content_after_think_block(turn_content):
                         self._last_content_with_tools = turn_content
-                        # Show intermediate commentary so the user can follow along
-                        if self.quiet_mode:
+                        # Show intermediate commentary — skip when streaming (already in buffer)
+                        if self.quiet_mode and not self.stream_delta_callback:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
                                 print(f"  ┊ 💬 {clean}")

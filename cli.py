@@ -1253,6 +1253,7 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._stream_buf = ""
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1495,6 +1496,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
+                stream_delta_callback=self._stream_delta,
                 honcho_session_key=self.session_id,
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -3339,6 +3341,28 @@ class HermesCLI:
             "Use your best judgement to make the choice and proceed."
         )
 
+    _stream_started = False
+
+    def _stream_delta(self, text: str):
+        """Buffer streaming tokens; emit complete lines via _cprint."""
+        if not text:
+            return
+        if not self._stream_started:
+            text = text.lstrip("\n")
+            if not text:
+                return
+            self._stream_started = True
+        self._stream_buf += text
+        while "\n" in self._stream_buf:
+            line, self._stream_buf = self._stream_buf.split("\n", 1)
+            _cprint(line)
+
+    def _flush_stream(self):
+        """Emit any remaining partial line from the stream buffer."""
+        if self._stream_buf:
+            _cprint(self._stream_buf)
+        self._stream_buf = ""
+
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
@@ -3467,6 +3491,8 @@ class HermesCLI:
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
+        self._stream_buf = ""
+        self._stream_started = False
         
         _cprint(f"{_GOLD}{'─' * 40}{_RST}")
         print(flush=True)
@@ -3514,6 +3540,7 @@ class HermesCLI:
                     agent_thread.join(0.1)
             
             agent_thread.join()  # Ensure agent thread completes
+            self._flush_stream()
 
             # Drain any remaining agent output still in the StdoutProxy
             # buffer so tool/status lines render ABOVE our response box.
@@ -3542,7 +3569,7 @@ class HermesCLI:
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
-            if response:
+            if response and not (self.agent and self.agent.stream_delta_callback):
                 # Use a Rich Panel for the response box — adapts to terminal
                 # width at render time instead of hard-coding border length.
                 try:

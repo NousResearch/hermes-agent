@@ -24,7 +24,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +646,7 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = event.source.chat_id
+        session_key = build_session_key(event.source)
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:

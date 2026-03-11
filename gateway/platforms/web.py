@@ -103,8 +103,12 @@ class WebAdapter(BasePlatformAdapter):
         self._running = True
         self._cleanup_task = asyncio.ensure_future(self._media_cleanup_loop())
 
-        local_ip = self._get_local_ip()
-        print(f"[{self.name}] Web UI: http://{local_ip}:{self._port}")
+        all_ips = self._get_local_ips()
+        primary_ip = self._get_local_ip()
+        print(f"[{self.name}] Web UI: http://{primary_ip}:{self._port}")
+        for ip in all_ips:
+            if ip != primary_ip:
+                print(f"[{self.name}]   also: http://{ip}:{self._port}")
         print(f"[{self.name}] Access token: {self._token}")
 
         return True
@@ -484,16 +488,50 @@ class WebAdapter(BasePlatformAdapter):
             pass
 
     @staticmethod
-    def _get_local_ip() -> str:
-        """Get the machine's LAN IP address."""
+    def _get_local_ips() -> List[str]:
+        """Get all non-loopback IPv4 addresses on this machine."""
+        ips = []
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
+            import netifaces
+            for iface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
+                for addr in addrs:
+                    ip = addr.get("addr", "")
+                    if ip and not ip.startswith("127."):
+                        ips.append(ip)
+        except ImportError:
+            # Fallback: parse ifconfig output
+            import subprocess
+            try:
+                out = subprocess.check_output(["ifconfig"], text=True, timeout=5)
+                for line in out.splitlines():
+                    line = line.strip()
+                    if line.startswith("inet ") and "127.0.0.1" not in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            ips.append(parts[1])
+            except Exception:
+                pass
+        if not ips:
+            # Last resort: UDP trick (may return VPN IP)
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                ips.append(s.getsockname()[0])
+                s.close()
+            except Exception:
+                ips.append("127.0.0.1")
+        return ips
+
+    @staticmethod
+    def _get_local_ip() -> str:
+        """Get the most likely LAN IP address."""
+        ips = WebAdapter._get_local_ips()
+        # Prefer 192.168.x.x or 10.x.x.x over VPN ranges like 172.16.x.x
+        for ip in ips:
+            if ip.startswith("192.168.") or ip.startswith("10."):
+                return ip
+        return ips[0] if ips else "127.0.0.1"
 
 
 # ---------------------------------------------------------------------------

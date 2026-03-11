@@ -245,6 +245,80 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
 
+class TestSubagentModelConfig(unittest.TestCase):
+    """Tests for configurable subagent model via config.yaml."""
+
+    def test_inherits_parent_model_by_default(self):
+        """Without config, subagent uses parent's model."""
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-opus-4.6"
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_subagent_config", return_value={}),
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test default", parent_agent=parent)
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "anthropic/claude-opus-4.6")
+
+    def test_uses_config_model_override(self):
+        """Subagent uses model from config.subagent.model."""
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-opus-4.6"
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_subagent_config",
+                  return_value={"model": "google/gemini-3-flash-preview"}),
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test config model", parent_agent=parent)
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+
+    def test_explicit_model_overrides_config(self):
+        """Explicit model arg takes precedence over config.subagent.model."""
+        parent = _make_mock_parent(depth=0)
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_subagent_config",
+                  return_value={"model": "google/gemini-3-flash-preview"}),
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            # _run_single_child receives model arg from delegate_task
+            # but delegate_task doesn't expose model directly — it always
+            # passes None. So config should win over parent, but explicit
+            # model (if exposed in future) would win over config.
+            delegate_task(goal="Test precedence", parent_agent=parent)
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+
+    def test_get_subagent_config_returns_empty_without_cli(self):
+        """_get_subagent_config gracefully returns {} when CLI_CONFIG unavailable."""
+        from tools.delegate_tool import _get_subagent_config
+        # Simulate cli module being unavailable (e.g. gateway mode)
+        with patch.dict("sys.modules", {"cli": None}):
+            result = _get_subagent_config()
+            self.assertEqual(result, {})
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:

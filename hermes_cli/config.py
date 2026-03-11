@@ -119,6 +119,13 @@ DEFAULT_CONFIG = {
         },
     },
     
+    # Subagent configuration — model/provider for tasks spawned via delegate_task.
+    # By default subagents inherit the parent agent's model and provider.
+    # Set "model" to use a cheaper/faster model for delegated subtasks.
+    "subagent": {
+        # "model": "google/gemini-3-flash-preview",
+    },
+
     "display": {
         "compact": False,
         "personality": "kawaii",

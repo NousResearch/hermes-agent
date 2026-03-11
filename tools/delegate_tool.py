@@ -78,6 +78,15 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _get_subagent_config() -> Dict[str, Any]:
+    """Load subagent config from CLI_CONFIG if available."""
+    try:
+        from cli import CLI_CONFIG
+        return CLI_CONFIG.get("subagent", {})
+    except Exception:
+        return {}
+
+
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -199,10 +208,15 @@ def _run_single_child(
         # count toward the session-wide limit.
         shared_budget = getattr(parent_agent, "iteration_budget", None)
 
+        # Subagent model override from config.
+        # Precedence: explicit model arg > config.subagent.model > parent model
+        subagent_cfg = _get_subagent_config()
+        effective_model = model or subagent_cfg.get("model") or parent_agent.model
+
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
-            model=model or parent_agent.model,
+            model=effective_model,
             provider=getattr(parent_agent, "provider", None),
             api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,

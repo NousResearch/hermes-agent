@@ -1,7 +1,7 @@
 ---
 sidebar_position: 10
 title: "Voice Mode"
-description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord text, and Discord voice channels"
+description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels)"
 ---
 
 # Voice Mode
@@ -162,9 +162,33 @@ hermes gateway        # Start the gateway (connects to configured platforms)
 hermes gateway setup  # Interactive setup wizard for first-time configuration
 ```
 
+### Discord: Channels vs DMs
+
+The bot supports two interaction modes on Discord:
+
+| Mode | How to Talk | Mention Required | Setup |
+|------|------------|-----------------|-------|
+| **Direct Message (DM)** | Open the bot's profile → "Message" | No | Works immediately |
+| **Server Channel** | Type in a text channel where the bot is present | Yes (`@botname`) | Bot must be invited to the server |
+
+**DM (recommended for personal use):** Just open a DM with the bot and type — no @mention needed. Voice replies and all commands work the same as in channels.
+
+**Server channels:** The bot only responds when you @mention it (e.g. `@hermesbyt4 hello`). Make sure you select the **bot user** from the mention popup, not the role with the same name.
+
+:::tip
+To disable the mention requirement in server channels, add to `~/.hermes/.env`:
+```bash
+DISCORD_REQUIRE_MENTION=false
+```
+Or set specific channels as free-response (no mention needed):
+```bash
+DISCORD_FREE_RESPONSE_CHANNELS=123456789,987654321
+```
+:::
+
 ### Commands
 
-These work in both Telegram and Discord text channels:
+These work in both Telegram and Discord (DMs and text channels):
 
 ```
 /voice          Toggle voice mode on/off
@@ -413,6 +437,14 @@ PortAudio is not installed:
 brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
+
+### Bot doesn't respond in Discord server channels
+
+The bot requires an @mention by default in server channels. Make sure you:
+
+1. Type `@` and select the **bot user** (with the #discriminator), not the **role** with the same name
+2. Or use DMs instead — no mention needed
+3. Or set `DISCORD_REQUIRE_MENTION=false` in `~/.hermes/.env`
 
 ### Bot joins VC but doesn't hear me
 

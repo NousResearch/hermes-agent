@@ -486,6 +486,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "verbose": args.verbose,
+        "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
@@ -1917,6 +1918,11 @@ For more help on a command:
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
+    )
+    chat_parser.add_argument(
+        "-Q", "--quiet",
+        action="store_true",
+        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
     )
     chat_parser.add_argument(
         "--resume", "-r",

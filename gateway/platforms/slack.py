@@ -185,7 +185,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Slack doesn't have a direct typing indicator API for bots."""
         pass
 

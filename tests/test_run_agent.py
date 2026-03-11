@@ -601,7 +601,10 @@ class TestExecuteToolCalls:
         messages = []
         with patch("run_agent.handle_function_call", return_value="search result") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-            mock_hfc.assert_called_once_with("web_search", {"q": "test"}, "task-1")
+            # enabled_tools passes the agent's own valid_tool_names
+            args, kwargs = mock_hfc.call_args
+            assert args[:3] == ("web_search", {"q": "test"}, "task-1")
+            assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
@@ -627,7 +630,9 @@ class TestExecuteToolCalls:
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             # Invalid JSON args should fall back to empty dict
-            mock_hfc.assert_called_once_with("web_search", {}, "task-1")
+            args, kwargs = mock_hfc.call_args
+            assert args[:3] == ("web_search", {}, "task-1")
+            assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert messages[0]["tool_call_id"] == "c1"
@@ -828,6 +833,36 @@ class TestRunConversation:
         mock_compress.assert_called_once()
         assert result["final_response"] == "All done"
         assert result["completed"] is True
+
+    @pytest.mark.parametrize(
+        ("first_content", "second_content", "expected_final"),
+        [
+            ("Part 1 ", "Part 2", "Part 1 Part 2"),
+            ("<think>internal reasoning</think>", "Recovered final answer", "Recovered final answer"),
+        ],
+    )
+    def test_length_finish_reason_requests_continuation(
+        self, agent, first_content, second_content, expected_final
+    ):
+        self._setup_agent(agent)
+        first = _mock_response(content=first_content, finish_reason="length")
+        second = _mock_response(content=second_content, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == expected_final
+
+        second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert second_call_messages[-1]["role"] == "user"
+        assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
 
 class TestRetryExhaustion:
@@ -1173,3 +1208,78 @@ class TestSystemPromptStability:
         conversation_history = []
         should_prefetch = not conversation_history
         assert should_prefetch is True
+
+
+# ---------------------------------------------------------------------------
+# Iteration budget pressure warnings
+# ---------------------------------------------------------------------------
+
+class TestBudgetPressure:
+    """Budget pressure warning system (issue #414)."""
+
+    def test_no_warning_below_caution(self, agent):
+        agent.max_iterations = 60
+        assert agent._get_budget_warning(30) is None
+
+    def test_caution_at_70_percent(self, agent):
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning(42)
+        assert msg is not None
+        assert "[BUDGET:" in msg
+        assert "18 iterations left" in msg
+
+    def test_warning_at_90_percent(self, agent):
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning(54)
+        assert "[BUDGET WARNING:" in msg
+        assert "Provide your final response NOW" in msg
+
+    def test_last_iteration(self, agent):
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning(59)
+        assert "1 iteration(s) left" in msg
+
+    def test_disabled(self, agent):
+        agent.max_iterations = 60
+        agent._budget_pressure_enabled = False
+        assert agent._get_budget_warning(55) is None
+
+    def test_zero_max_iterations(self, agent):
+        agent.max_iterations = 0
+        assert agent._get_budget_warning(0) is None
+
+    def test_injects_into_json_tool_result(self, agent):
+        """Warning should be injected as _budget_warning field in JSON tool results."""
+        import json
+        agent.max_iterations = 10
+        messages = [
+            {"role": "tool", "content": json.dumps({"output": "done", "exit_code": 0}), "tool_call_id": "tc1"}
+        ]
+        warning = agent._get_budget_warning(9)
+        assert warning is not None
+        # Simulate the injection logic
+        last_content = messages[-1]["content"]
+        parsed = json.loads(last_content)
+        parsed["_budget_warning"] = warning
+        messages[-1]["content"] = json.dumps(parsed, ensure_ascii=False)
+        result = json.loads(messages[-1]["content"])
+        assert "_budget_warning" in result
+        assert "BUDGET WARNING" in result["_budget_warning"]
+        assert result["output"] == "done"  # original content preserved
+
+    def test_appends_to_non_json_tool_result(self, agent):
+        """Warning should be appended as text for non-JSON tool results."""
+        agent.max_iterations = 10
+        messages = [
+            {"role": "tool", "content": "plain text result", "tool_call_id": "tc1"}
+        ]
+        warning = agent._get_budget_warning(9)
+        # Simulate injection logic for non-JSON
+        last_content = messages[-1]["content"]
+        try:
+            import json
+            json.loads(last_content)
+        except (json.JSONDecodeError, TypeError):
+            messages[-1]["content"] = last_content + f"\n\n{warning}"
+        assert "plain text result" in messages[-1]["content"]
+        assert "BUDGET WARNING" in messages[-1]["content"]

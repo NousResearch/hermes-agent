@@ -3,15 +3,15 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _make_cli(env_overrides=None, **kwargs):
+def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
-    import cli as _cli_mod
-    from cli import HermesCLI
+    import importlib
+
     _clean_config = {
         "model": {
             "default": "anthropic/claude-opus-4.6",
@@ -22,13 +22,34 @@ def _make_cli(env_overrides=None, **kwargs):
         "agent": {},
         "terminal": {"env_type": "local"},
     }
+    if config_overrides:
+        _clean_config.update(config_overrides)
     clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
     if env_overrides:
         clean_env.update(env_overrides)
-    with patch("cli.get_tool_definitions", return_value=[]), \
-         patch.dict("os.environ", clean_env, clear=False), \
-         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
-        return HermesCLI(**kwargs)
+    prompt_toolkit_stubs = {
+        "prompt_toolkit": MagicMock(),
+        "prompt_toolkit.history": MagicMock(),
+        "prompt_toolkit.styles": MagicMock(),
+        "prompt_toolkit.patch_stdout": MagicMock(),
+        "prompt_toolkit.application": MagicMock(),
+        "prompt_toolkit.layout": MagicMock(),
+        "prompt_toolkit.layout.processors": MagicMock(),
+        "prompt_toolkit.filters": MagicMock(),
+        "prompt_toolkit.layout.dimension": MagicMock(),
+        "prompt_toolkit.layout.menus": MagicMock(),
+        "prompt_toolkit.widgets": MagicMock(),
+        "prompt_toolkit.key_binding": MagicMock(),
+        "prompt_toolkit.completion": MagicMock(),
+        "prompt_toolkit.formatted_text": MagicMock(),
+    }
+    with patch.dict(sys.modules, prompt_toolkit_stubs), \
+         patch.dict("os.environ", clean_env, clear=False):
+        import cli as _cli_mod
+        _cli_mod = importlib.reload(_cli_mod)
+        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
+             patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
+            return _cli_mod.HermesCLI(**kwargs)
 
 
 class TestMaxTurnsResolution:
@@ -52,6 +73,10 @@ class TestMaxTurnsResolution:
         """Env var is used when config file doesn't set max_turns."""
         cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "42"})
         assert cli_obj.max_turns == 42
+
+    def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
+        cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
+        assert cli_obj.max_turns == 77
 
     def test_max_turns_never_none_for_agent(self):
         """The value passed to AIAgent must never be None (causes TypeError in run_conversation)."""

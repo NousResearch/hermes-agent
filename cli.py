@@ -20,6 +20,7 @@ import json
 import atexit
 import uuid
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -53,6 +54,8 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+
+_COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback
@@ -257,8 +260,13 @@ def load_cli_config() -> Dict[str, Any]:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
             
-            # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
-            if "max_turns" in file_config and "agent" not in file_config:
+            # Handle legacy root-level max_turns (backwards compat) - copy to
+            # agent.max_turns whenever the nested key is missing.
+            agent_file_config = file_config.get("agent")
+            if "max_turns" in file_config and not (
+                isinstance(agent_file_config, dict)
+                and agent_file_config.get("max_turns") is not None
+            ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
@@ -391,6 +399,7 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+from rich import box as rich_box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -709,6 +718,8 @@ class ChatConsole:
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
         self._buffer.truncate()
+        # Read terminal width at render time so panels adapt to current size
+        self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
         for line in output.rstrip("\n").split("\n"):
@@ -1049,6 +1060,12 @@ def save_config_value(key_path: str, value: any) -> bool:
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         
+        # Enforce owner-only permissions on config files (contain API keys)
+        try:
+            os.chmod(config_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+        
         return True
     except Exception as e:
         logger.error("Failed to save config: %s", e)
@@ -1096,6 +1113,7 @@ class HermesCLI:
         """
         # Initialize Rich console
         self.console = Console()
+        self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -1229,6 +1247,12 @@ class HermesCLI:
         self._history_file = Path.home() / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._spinner_text: str = ""  # thinking spinner text for TUI
+        self._command_running = False
+        self._command_status = ""
+
+        # Background task tracking: {task_id: threading.Thread}
+        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_task_counter = 0
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1296,6 +1320,44 @@ class HermesCLI:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         self._spinner_text = text or ""
         self._invalidate()
+
+    def _slow_command_status(self, command: str) -> str:
+        """Return a user-facing status message for slower slash commands."""
+        cmd_lower = command.lower().strip()
+        if cmd_lower.startswith("/skills search"):
+            return "Searching skills..."
+        if cmd_lower.startswith("/skills browse"):
+            return "Loading skills..."
+        if cmd_lower.startswith("/skills inspect"):
+            return "Inspecting skill..."
+        if cmd_lower.startswith("/skills install"):
+            return "Installing skill..."
+        if cmd_lower.startswith("/skills"):
+            return "Processing skills command..."
+        if cmd_lower == "/reload-mcp":
+            return "Reloading MCP servers..."
+        return "Processing command..."
+
+    def _command_spinner_frame(self) -> str:
+        """Return the current spinner frame for slow slash commands."""
+        import time as _time
+
+        frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
+        return _COMMAND_SPINNER_FRAMES[frame_idx]
+
+    @contextmanager
+    def _busy_command(self, status: str):
+        """Expose a temporary busy state in the TUI while a slash command runs."""
+        self._command_running = True
+        self._command_status = status
+        self._invalidate(min_interval=0.0)
+        try:
+            print(f"⏳ {status}")
+            yield
+        finally:
+            self._command_running = False
+            self._command_status = ""
+            self._invalidate(min_interval=0.0)
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1891,18 +1953,22 @@ class HermesCLI:
         )
     
     def show_help(self):
-        """Display help information."""
-        _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
-        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
-        _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
-        
-        for cmd, desc in COMMANDS.items():
-            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
-        
+        """Display help information with categorized commands."""
+        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+
+        _cprint(f"\n{_BOLD}+{'-' * 55}+{_RST}")
+        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 15}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * 55}+{_RST}")
+
+        for category, commands in COMMANDS_BY_CATEGORY.items():
+            _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
+            for cmd, desc in commands.items():
+                _cprint(f"    {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
+
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             for cmd, info in sorted(_skill_commands.items()):
-                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+                _cprint(f"    {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -2242,6 +2308,19 @@ class HermesCLI:
             print("    /personality    - Use a predefined personality")
             print()
     
+
+    @staticmethod
+    def _resolve_personality_prompt(value) -> str:
+        """Accept string or dict personality value; return system prompt string."""
+        if isinstance(value, dict):
+            parts = [value.get("system_prompt", "")]
+            if value.get("tone"):
+                parts.append(f'Tone: {value["tone"]}' )
+            if value.get("style"):
+                parts.append(f'Style: {value["style"]}' )
+            return "\n".join(p for p in parts if p)
+        return str(value)
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -2250,8 +2329,16 @@ class HermesCLI:
             # Set personality
             personality_name = parts[1].strip().lower()
             
-            if personality_name in self.personalities:
-                self.system_prompt = self.personalities[personality_name]
+            if personality_name in ("none", "default", "neutral"):
+                self.system_prompt = ""
+                self.agent = None  # Force re-init
+                if save_config_value("agent.system_prompt", ""):
+                    print("(^_^)b Personality cleared (saved to config)")
+                else:
+                    print("(^_^) Personality cleared (session only)")
+                print("  No personality overlay — using base agent behavior.")
+            elif personality_name in self.personalities:
+                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
@@ -2260,7 +2347,7 @@ class HermesCLI:
                 print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
-                print(f"  Available: {', '.join(self.personalities.keys())}")
+                print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
             print()
@@ -2268,8 +2355,13 @@ class HermesCLI:
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
+            print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
-                print(f"  {name:<12} - \"{prompt}\"")
+                if isinstance(prompt, dict):
+                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                else:
+                    preview = str(prompt)[:50]
+                print(f"  {name:<12} - {preview}")
             print()
             print("  Usage: /personality <name>")
             print()
@@ -2750,7 +2842,8 @@ class HermesCLI:
         elif cmd_lower.startswith("/cron"):
             self._handle_cron_command(cmd_original)
         elif cmd_lower.startswith("/skills"):
-            self._handle_skills_command(cmd_original)
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._handle_skills_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         elif cmd_lower == "/verbose":
@@ -2764,15 +2857,41 @@ class HermesCLI:
         elif cmd_lower == "/paste":
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
-            self._reload_mcp()
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
         elif cmd_lower.startswith("/rollback"):
             self._handle_rollback_command(cmd_original)
+        elif cmd_lower.startswith("/background"):
+            self._handle_background_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
         else:
-            # Check for skill slash commands (/gif-search, /axolotl, etc.)
+            # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
-            if base_cmd in _skill_commands:
+            quick_commands = self.config.get("quick_commands", {})
+            if base_cmd.lstrip("/") in quick_commands:
+                qcmd = quick_commands[base_cmd.lstrip("/")]
+                if qcmd.get("type") == "exec":
+                    import subprocess
+                    exec_cmd = qcmd.get("command", "")
+                    if exec_cmd:
+                        try:
+                            result = subprocess.run(
+                                exec_cmd, shell=True, capture_output=True,
+                                text=True, timeout=30
+                            )
+                            output = result.stdout.strip() or result.stderr.strip()
+                            self.console.print(output if output else "[dim]Command returned no output[/]")
+                        except subprocess.TimeoutExpired:
+                            self.console.print("[bold red]Quick command timed out (30s)[/]")
+                        except Exception as e:
+                            self.console.print(f"[bold red]Quick command error: {e}[/]")
+                    else:
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                else:
+                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (only 'exec' is supported)[/]")
+            # Check for skill slash commands (/gif-search, /axolotl, etc.)
+            elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 msg = build_skill_invocation_message(base_cmd, user_instruction)
                 if msg:
@@ -2788,6 +2907,113 @@ class HermesCLI:
         
         return True
     
+    def _handle_background_command(self, cmd: str):
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, prints the result to the CLI without modifying
+        the active session's conversation history.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /background <prompt>")
+            _cprint("  Example: /background Summarize the top HN stories today")
+            _cprint("  The task runs in a separate session and results display here when done.")
+            return
+
+        prompt = parts[1].strip()
+        self._background_task_counter += 1
+        task_num = self._background_task_counter
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Make sure we have valid credentials
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start background task: no valid credentials.")
+            return
+
+        _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+        _cprint(f"  Task ID: {task_id}")
+        _cprint(f"  You can continue chatting — results will appear when done.\n")
+
+        def run_background():
+            try:
+                bg_agent = AIAgent(
+                    model=self.model,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    provider=self.provider,
+                    api_mode=self.api_mode,
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    reasoning_config=self.reasoning_config,
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    fallback_model=self._fallback_model,
+                )
+
+                result = bg_agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                )
+
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                # Display result in the CLI (thread-safe via patch_stdout)
+                print()
+                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                _cprint(f"  ✅ Background task #{task_num} complete")
+                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        _resp_color = _skin.get_color("response_border", "#CD7F32")
+                    except Exception:
+                        label = "⚕ Hermes"
+                        _resp_color = "#CD7F32"
+
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        response,
+                        title=f"[bold]{label} (background #{task_num})[/bold]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
+                else:
+                    _cprint("  (No response generated)")
+
+                # Play bell if enabled
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                print()
+                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+            finally:
+                self._background_tasks.pop(task_id, None)
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
+        self._background_tasks[task_id] = thread
+        thread.start()
+
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         try:
@@ -2973,7 +3199,8 @@ class HermesCLI:
             with _lock:
                 old_servers = set(_servers.keys())
 
-            print("🔄 Reloading MCP servers...")
+            if not self._command_running:
+                print("🔄 Reloading MCP servers...")
 
             # Shutdown existing connections
             shutdown_mcp_servers()
@@ -3073,8 +3300,16 @@ class HermesCLI:
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
-        # Poll in 1-second ticks so the countdown refreshes in the UI.
-        # Each tick triggers an invalidate() to repaint the hint line.
+        # Poll for the user's response.  The countdown in the hint line
+        # updates on each invalidate — but frequent repaints cause visible
+        # flicker in some terminals (Kitty, ghostty).  We only refresh the
+        # countdown every 5 s; selection changes (↑/↓) trigger instant
+        # Poll for the user's response.  The countdown in the hint line
+        # updates on each invalidate — but frequent repaints cause visible
+        # flicker in some terminals (Kitty, ghostty).  We only refresh the
+        # countdown every 5 s; selection changes (↑/↓) trigger instant
+        # repaints via the key bindings.
+        _last_countdown_refresh = _time.monotonic()
         while True:
             try:
                 result = response_queue.get(timeout=1)
@@ -3084,8 +3319,14 @@ class HermesCLI:
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                # Repaint so the countdown updates
-                self._invalidate()
+                # Only repaint every 5 s for the countdown — avoids flicker
+                now = _time.monotonic()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
 
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
@@ -3165,6 +3406,9 @@ class HermesCLI:
 
         self._invalidate()
 
+        # Same throttled countdown as _clarify_callback — repaint only
+        # every 5 s to avoid flicker in Kitty / ghostty / etc.
+        _last_countdown_refresh = _time.monotonic()
         while True:
             try:
                 result = response_queue.get(timeout=1)
@@ -3176,11 +3420,16 @@ class HermesCLI:
                 remaining = self._approval_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                self._invalidate()
+                now = _time.monotonic()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
 
         self._approval_state = None
         self._approval_deadline = 0
         self._invalidate()
+        return "deny"
+
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -3219,8 +3468,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = shutil.get_terminal_size().columns
-        _cprint(f"{_GOLD}{'─' * w}{_RST}")
+        _cprint(f"{_GOLD}{'─' * 40}{_RST}")
         print(flush=True)
         
         try:
@@ -3295,27 +3543,26 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = shutil.get_terminal_size().columns
-                # Use skin branding for response box label
+                # Use a Rich Panel for the response box — adapts to terminal
+                # width at render time instead of hard-coding border length.
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", " ⚕ Hermes ")
-                    _resp_color = _skin.get_color("response_border", "")
-                    if _resp_color:
-                        _resp_start = f"\033[38;2;{int(_resp_color[1:3], 16)};{int(_resp_color[3:5], 16)};{int(_resp_color[5:7], 16)}m"
-                    else:
-                        _resp_start = _GOLD
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
                 except Exception:
-                    label = " ⚕ Hermes "
-                    _resp_start = _GOLD
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_resp_start}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_resp_start}╰{'─' * (w - 2)}╯{_RST}"
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
 
-                # Render box + response as a single _cprint call so
-                # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    response,
+                    title=f"[bold]{label}[/bold]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 2),
+                ))
             
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
@@ -3412,6 +3659,10 @@ class HermesCLI:
         # Dangerous command approval state (similar mechanism to clarify)
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
+
+        # Slash command loading state
+        self._command_running = False
+        self._command_status = ""
 
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
@@ -3685,6 +3936,8 @@ class HermesCLI:
                 return [('class:clarify-selected', '✎ ❯ ')]
             if cli_ref._clarify_state:
                 return [('class:prompt-working', '? ❯ ')]
+            if cli_ref._command_running:
+                return [('class:prompt-working', f"{cli_ref._command_spinner_frame()} ❯ ")]
             if cli_ref._agent_running:
                 return [('class:prompt-working', '⚕ ❯ ')]
             return [('class:prompt', '❯ ')]
@@ -3696,6 +3949,7 @@ class HermesCLI:
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
             complete_while_typing=True,
@@ -3780,6 +4034,10 @@ class HermesCLI:
                 return "type your answer here and press Enter"
             if cli_ref._clarify_state:
                 return ""
+            if cli_ref._command_running:
+                frame = cli_ref._command_spinner_frame()
+                status = cli_ref._command_status or "Processing command..."
+                return f"{frame} {status}"
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             return ""
@@ -3819,10 +4077,16 @@ class HermesCLI:
                     ('class:clarify-countdown', countdown),
                 ]
 
+            if cli_ref._command_running:
+                frame = cli_ref._command_spinner_frame()
+                return [
+                    ('class:hint', f'  {frame} command in progress · input temporarily disabled'),
+                ]
+
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state:
+            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
             # Keep a 1-line spacer while agent runs so output doesn't push
             # right up against the top rule of the input area
@@ -3956,16 +4220,18 @@ class HermesCLI:
             state = cli_ref._sudo_state
             if not state:
                 return []
+            title = '🔐 Sudo Password Required'
+            body = 'Enter password below (hidden), or press Enter to skip'
+            box_width = _panel_box_width(title, [body])
+            inner = max(0, box_width - 2)
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
-            lines.append(('class:sudo-title', '🔐 Sudo Password Required'))
-            lines.append(('class:sudo-border', ' ──────────────────────────╮\n'))
-            lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '│  '))
-            lines.append(('class:sudo-text', 'Enter password below (hidden), or press Enter to skip'))
-            lines.append(('', '\n'))
-            lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:sudo-title', title))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         sudo_widget = ConditionalContainer(
@@ -4130,6 +4396,19 @@ class HermesCLI:
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
+
+        def spinner_loop():
+            import time as _time
+
+            while not self._should_exit:
+                if self._command_running and self._app:
+                    self._invalidate(min_interval=0.1)
+                    _time.sleep(0.1)
+                else:
+                    _time.sleep(0.05)
+
+        spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
+        spinner_thread.start()
         
         # Background thread to process inputs and run agent
         def process_loop():
@@ -4250,6 +4529,7 @@ def main(
     base_url: str = None,
     max_turns: int = None,
     verbose: bool = False,
+    quiet: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
@@ -4392,10 +4672,22 @@ def main(
     
     # Handle single query mode
     if query:
-        cli.show_banner()
-        cli.console.print(f"[bold blue]Query:[/] {query}")
-        cli.chat(query)
-        cli._print_exit_summary()
+        if quiet:
+            # Quiet mode: suppress banner, spinner, tool previews.
+            # Only print the final response and parseable session info.
+            cli.tool_progress_mode = "off"
+            if cli._init_agent():
+                cli.agent.quiet_mode = True
+                result = cli.agent.run_conversation(query)
+                response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                if response:
+                    print(response)
+                print(f"\nsession_id: {cli.session_id}")
+        else:
+            cli.show_banner()
+            cli.console.print(f"[bold blue]Query:[/] {query}")
+            cli.chat(query)
+            cli._print_exit_summary()
         return
     
     # Run interactive mode

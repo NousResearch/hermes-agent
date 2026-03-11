@@ -477,6 +477,10 @@ def cmd_chat(args):
     except Exception:
         pass
 
+    # --yolo: bypass all dangerous command approvals
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -486,6 +490,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "verbose": args.verbose,
+        "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
@@ -906,9 +911,11 @@ def _model_flow_openrouter(config, current_model=""):
         from hermes_cli.config import load_config, save_config
         cfg = load_config()
         model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = "openrouter"
-            model["base_url"] = OPENROUTER_BASE_URL
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "openrouter"
+        model["base_url"] = OPENROUTER_BASE_URL
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -1090,9 +1097,11 @@ def _model_flow_custom(config):
         # Update config and deactivate any OAuth provider
         cfg = load_config()
         model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = "custom"
-            model["base_url"] = effective_url
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "custom"
+        model["base_url"] = effective_url
         save_config(cfg)
         deactivate_provider()
 
@@ -1235,9 +1244,11 @@ def _model_flow_named_custom(config, provider_info):
 
         cfg = load_config()
         model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = "custom"
-            model["base_url"] = base_url
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "custom"
+        model["base_url"] = base_url
         save_config(cfg)
         deactivate_provider()
 
@@ -1307,9 +1318,11 @@ def _model_flow_named_custom(config, provider_info):
 
     cfg = load_config()
     model = cfg.get("model")
-    if isinstance(model, dict):
-        model["provider"] = "custom"
-        model["base_url"] = base_url
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "custom"
+    model["base_url"] = base_url
     save_config(cfg)
     deactivate_provider()
 
@@ -1420,9 +1433,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         # Update config with provider and base URL
         cfg = load_config()
         model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = provider_id
-            model["base_url"] = effective_base
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
         save_config(cfg)
         deactivate_provider()
 
@@ -1874,6 +1889,12 @@ For more help on a command:
         default=False,
         help="Run in an isolated git worktree (for parallel agents)"
     )
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -1909,6 +1930,11 @@ For more help on a command:
         help="Verbose output"
     )
     chat_parser.add_argument(
+        "-Q", "--quiet",
+        action="store_true",
+        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
+    )
+    chat_parser.add_argument(
         "--resume", "-r",
         metavar="SESSION_ID",
         help="Resume a previous session by ID (shown on exit)"
@@ -1933,6 +1959,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)"
+    )
+    chat_parser.add_argument(
+        "--yolo",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -2220,8 +2252,8 @@ For more help on a command:
     # =========================================================================
     skills_parser = subparsers.add_parser(
         "skills",
-        help="Skills Hub — search, install, and manage skills from online registries",
-        description="Search, install, inspect, audit, and manage skills from GitHub, ClawHub, and other registries."
+        help="Search, install, configure, and manage skills",
+        description="Search, install, inspect, audit, configure, and manage skills from GitHub, ClawHub, and other registries."
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
@@ -2275,9 +2307,17 @@ For more help on a command:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
+    # config sub-action: interactive enable/disable
+    skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
+
     def cmd_skills(args):
-        from hermes_cli.skills_hub import skills_command
-        skills_command(args)
+        # Route 'config' action to skills_config module
+        if getattr(args, 'skills_action', None) == 'config':
+            from hermes_cli.skills_config import skills_command as skills_config_command
+            skills_config_command(args)
+        else:
+            from hermes_cli.skills_hub import skills_command
+            skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
 
@@ -2289,13 +2329,17 @@ For more help on a command:
         help="Configure which tools are enabled per platform",
         description="Interactive tool configuration — enable/disable tools for CLI, Telegram, Discord, etc."
     )
+    tools_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a summary of enabled tools per platform and exit"
+    )
 
     def cmd_tools(args):
         from hermes_cli.tools_config import tools_command
         tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
-
     # =========================================================================
     # sessions command
     # =========================================================================

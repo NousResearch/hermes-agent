@@ -250,6 +250,10 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    # --yolo: bypass all approval prompts
+    if os.getenv("HERMES_YOLO_MODE"):
+        return {"approved": True, "message": None}
+
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
@@ -295,6 +299,6 @@ def check_dangerous_command(command: str, env_type: str,
     elif choice == "always":
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
-        save_permanent_allowlist(load_permanent_allowlist() | {pattern_key})
+        save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}

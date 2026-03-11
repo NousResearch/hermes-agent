@@ -161,7 +161,18 @@ class LocalEnvironment(BaseEnvironment):
 
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
+
+        # Merge the sudo password (if any) with caller-supplied stdin_data.
+        # sudo -S reads exactly one line (the password) then passes the rest
+        # of stdin to the child, so prepending is safe even when stdin_data
+        # is also present.
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
 
         try:
             # The fence wrapper uses bash syntax (semicolons, $?, printf).
@@ -195,14 +206,14 @@ class LocalEnvironment(BaseEnvironment):
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
             )
 
-            if stdin_data is not None:
+            if effective_stdin is not None:
                 def _write_stdin():
                     try:
-                        proc.stdin.write(stdin_data)
+                        proc.stdin.write(effective_stdin)
                         proc.stdin.close()
                     except (BrokenPipeError, OSError):
                         pass

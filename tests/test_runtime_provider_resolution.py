@@ -158,6 +158,48 @@ def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_resolve_runtime_provider_nous_api(monkeypatch):
+    """Nous Portal API key provider resolves via the api_key path."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous-api")
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda pid: {
+            "provider": "nous-api",
+            "api_key": "nous-test-key",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "source": "NOUS_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nous-api")
+
+    assert resolved["provider"] == "nous-api"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert resolved["api_key"] == "nous-test-key"
+    assert resolved["requested_provider"] == "nous-api"
+
+
+def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
+    """When the user explicitly requests openrouter, OPENAI_BASE_URL
+    (which may point to a custom endpoint) must not override the
+    OpenRouter base URL.  Regression test for #874."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://my-custom-llm.example.com/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert "openrouter.ai" in resolved["base_url"]
+    assert "my-custom-llm" not in resolved["base_url"]
+    assert resolved["api_key"] == "or-test-key"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

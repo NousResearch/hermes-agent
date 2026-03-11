@@ -419,7 +419,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """No typing indicator for Home Assistant."""
         pass
 

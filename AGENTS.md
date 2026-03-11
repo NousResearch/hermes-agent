@@ -37,7 +37,12 @@ hermes-agent/
 │   ├── commands.py       # Slash command definitions + SlashCommandCompleter
 │   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
 │   ├── setup.py          # Interactive setup wizard
-│   └── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
+│   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
+│   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
+│   ├── models.py         # Model catalog, provider model lists
+│   └── auth.py           # Provider credential resolution
 ├── tools/                # Tool implementations (one file per tool)
 │   ├── registry.py       # Central tool registry (schemas, handlers, dispatch)
 │   ├── approval.py       # Dangerous command detection
@@ -54,9 +59,10 @@ hermes-agent/
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
 │   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
+├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)
-├── tests/                # Pytest suite (~2500+ tests)
+├── tests/                # Pytest suite (~3000 tests)
 └── batch_runner.py       # Parallel batch processing
 ```
 
@@ -304,6 +310,17 @@ Cache-breaking forces dramatically higher costs. The ONLY time we alter context 
 ### Working Directory Behavior
 - **CLI**: Uses current directory (`.` → `os.getcwd()`)
 - **Messaging**: Uses `MESSAGING_CWD` env var (default: home directory)
+
+### Background Process Notifications (Gateway)
+
+When `terminal(background=true, check_interval=...)` is used, the gateway runs a watcher that
+pushes status updates to the user's chat. Control verbosity with `display.background_process_notifications`
+in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
+
+- `all` — running-output updates + final message (default)
+- `result` — only the final completion message
+- `error` — only the final message when exit code != 0
+- `off` — no watcher messages at all
 
 ---
 

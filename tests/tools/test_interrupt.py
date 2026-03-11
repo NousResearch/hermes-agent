@@ -88,7 +88,7 @@ class TestPreToolCheck:
         agent = MagicMock()
         agent._interrupt_requested = True
         agent.log_prefix = ""
-        agent._log_msg_to_db = MagicMock()
+        agent._persist_session = MagicMock()
 
         # Import and call the method
         from run_agent import AIAgent

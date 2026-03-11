@@ -580,6 +580,17 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+        @tree.command(name="reasoning", description="Show or change reasoning effort")
+        @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
+        async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/reasoning {effort}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
         async def slash_personality(interaction: discord.Interaction, name: str = ""):

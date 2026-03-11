@@ -159,6 +159,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("new", "Start a new conversation"),
                     BotCommand("reset", "Reset conversation history"),
                     BotCommand("model", "Show or change the model"),
+                    BotCommand("reasoning", "Show or change reasoning effort"),
                     BotCommand("personality", "Set a personality"),
                     BotCommand("retry", "Retry your last message"),
                     BotCommand("undo", "Remove the last exchange"),

@@ -38,7 +38,7 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
-| `hermes setup` | Full setup wizard (provider, terminal, messaging) |
+| `hermes setup` | Full setup wizard (runs automatically during install) |
 | `hermes config` | View current configuration |
 | `hermes config edit` | Open config.yaml in your editor |
 | `hermes config set KEY VAL` | Set a specific value |

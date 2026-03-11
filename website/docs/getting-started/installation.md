@@ -22,7 +22,7 @@ Native Windows is **not supported**. Please install [WSL2](https://learn.microso
 
 ### What the Installer Does
 
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, and global `hermes` command setup. It finishes by running the interactive setup wizard to configure your LLM provider.
+The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
 
 ### After Installation
 
@@ -30,8 +30,15 @@ Reload your shell and start chatting:
 
 ```bash
 source ~/.bashrc   # or: source ~/.zshrc
-hermes setup       # Configure API keys (if you skipped during install)
 hermes             # Start chatting!
+```
+
+To reconfigure individual settings later, use the dedicated commands:
+
+```bash
+hermes model       # Switch provider or model
+hermes tools       # Configure which tools are enabled
+hermes gateway setup  # Set up messaging platforms
 ```
 
 ---
@@ -192,10 +199,10 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 fish_add_path $HOME/.local/bin
 ```
 
-### Step 9: Run the Setup Wizard (Optional)
+### Step 9: Configure Your Provider
 
 ```bash
-hermes setup
+hermes model       # Select your LLM provider and model
 ```
 
 ### Step 10: Verify the Installation
@@ -253,7 +260,7 @@ hermes
 | Problem | Solution |
 |---------|----------|
 | `hermes: command not found` | Reload your shell (`source ~/.bashrc`) or check PATH |
-| `API key not set` | Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key` |
+| `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.

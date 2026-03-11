@@ -41,7 +41,6 @@ After installation:
 
 ```bash
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes setup        # configure your LLM provider
 hermes              # start chatting!
 ```
 
@@ -52,7 +51,7 @@ hermes              # start chatting!
 ```bash
 hermes              # Interactive CLI — start a conversation
 hermes model        # Switch provider or model
-hermes setup        # Re-run the setup wizard
+hermes tools        # Configure which tools are enabled
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues

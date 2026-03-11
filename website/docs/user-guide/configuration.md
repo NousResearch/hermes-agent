@@ -471,6 +471,24 @@ compression:
 
 The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
 
+## Iteration Budget Pressure
+
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns) without realizing it's running low. Budget pressure automatically warns the model as it approaches the limit:
+
+| Threshold | Level | What the model sees |
+|-----------|-------|---------------------|
+| **70%** | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
+| **90%** | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]` |
+
+Warnings are injected into the last tool result's JSON (as a `_budget_warning` field) rather than as separate messages — this preserves prompt caching and doesn't disrupt the conversation structure.
+
+```yaml
+agent:
+  max_turns: 90                # Max iterations per conversation turn (default: 90)
+```
+
+Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
+
 ## Auxiliary Models
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via OpenRouter or Nous Portal — you don't need to configure anything.

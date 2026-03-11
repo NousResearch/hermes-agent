@@ -43,6 +43,59 @@ _SECURITY_ARGS = [
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
 
 
+def _ensure_docker_available() -> None:
+    """Best-effort check that the docker CLI is available before use.
+
+    This mirrors the gateway's behaviour of surfacing a clear, actionable
+    error when Docker is not installed or not in PATH, instead of failing
+    later with a low-level FileNotFoundError.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "Docker backend selected but 'docker' executable was not found in PATH. "
+            "Install Docker Desktop and ensure 'docker' is available on the command line.",
+            exc_info=True,
+        )
+        raise RuntimeError(
+            "Docker executable not found in PATH. Install Docker and ensure "
+            "the 'docker' command is available."
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "Docker backend selected but 'docker version' timed out. "
+            "The Docker daemon may not be running.",
+            exc_info=True,
+        )
+        raise RuntimeError(
+            "Docker daemon is not responding. Ensure Docker is running and try again."
+        )
+    except Exception:
+        logger.error(
+            "Unexpected error while checking Docker availability.",
+            exc_info=True,
+        )
+        raise
+    else:
+        if result.returncode != 0:
+            logger.error(
+                "Docker backend selected but 'docker version' failed "
+                "(exit code %d, stderr=%s)",
+                result.returncode,
+                result.stderr.strip(),
+            )
+            raise RuntimeError(
+                "Docker command is available but 'docker version' failed. "
+                "Check your Docker installation."
+            )
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
@@ -80,6 +133,10 @@ class DockerEnvironment(BaseEnvironment):
         if volumes is not None and not isinstance(volumes, list):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
+
+        # Fail fast if Docker is not available rather than surfacing a cryptic
+        # FileNotFoundError deep inside the mini-swe-agent stack.
+        _ensure_docker_available()
 
         from minisweagent.environments.docker import DockerEnvironment as _Docker
 

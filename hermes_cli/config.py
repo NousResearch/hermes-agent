@@ -378,6 +378,11 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HERMES_LOCAL_STT_COMMAND": {
+        "description": "Optional local speech-to-text fallback command template. Supports {input_path}, {output_dir}, and {language} placeholders.",
+        "prompt": "Local STT command template (optional)",
+        "category": "setting",
+    },
     "ELEVENLABS_API_KEY": {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",

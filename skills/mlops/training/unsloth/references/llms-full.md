@@ -6348,7 +6348,7 @@ Our chat templates for the GGUF, our BnB and BF16 uploads and all versions are f
 
 ### :1234: Precision issues
 
-We found multiple precision issues in Tesla T4 and float16 machines primarily since the model was trained using BF16, and so outliers and overflows existed. MXFP4 is not actually supported on Ampere and older GPUs, so Triton provides `tl.dot_scaled` for MXFP4 matrix multiplication. It upcasts the matrices to BF16 internaly on the fly.
+We found multiple precision issues in Tesla T4 and float16 machines primarily since the model was trained using BF16, and so outliers and overflows existed. MXFP4 is not actually supported on Ampere and older GPUs, so Triton provides `tl.dot_scaled` for MXFP4 matrix multiplication. It upcasts the matrices to BF16 internally on the fly.
 
 We made a [MXFP4 inference notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/GPT_OSS_MXFP4_\(20B\)-Inference.ipynb) as well in Tesla T4 Colab!
 
@@ -14877,7 +14877,7 @@ curl -X POST http://localhost:8000/v1/unload_lora_adapter \
 
 # Text-to-Speech (TTS) Fine-tuning
 
-Learn how to to fine-tune TTS & STT voice models with Unsloth.
+Learn how to fine-tune TTS & STT voice models with Unsloth.
 
 Fine-tuning TTS models allows them to adapt to your specific dataset, use case, or desired style and tone. The goal is to customize these models to clone voices, adapt speaking styles and tones, support new languages, handle specific tasks and more. We also support **Speech-to-Text (STT)** models like OpenAI's Whisper.
 
@@ -15306,7 +15306,7 @@ snapshot_download(
 )
 ```
 
-And and let's do inference!
+And let's do inference!
 
 {% code overflow="wrap" %}
 
@@ -16036,7 +16036,7 @@ Then train the model as usual via `trainer.train() .`
 
 Tips to solve issues, and frequently asked questions.
 
-If you're still encountering any issues with versions or depencies, please use our [Docker image](https://docs.unsloth.ai/get-started/install-and-update/docker) which will have everything pre-installed.
+If you're still encountering any issues with versions or dependencies, please use our [Docker image](https://docs.unsloth.ai/get-started/install-and-update/docker) which will have everything pre-installed.
 
 {% hint style="success" %}
 **Try always to update Unsloth if you find any issues.**

@@ -947,6 +947,21 @@ body {
     animation: pulse 1.5s infinite;
     box-shadow: 0 0 16px rgba(255,107,107,0.4);
 }
+#voice-btn.voice-mode {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 16px var(--accent-glow);
+}
+#input-bar.voice-mode-active {
+    justify-content: center;
+}
+#input-bar.voice-mode-active #input,
+#input-bar.voice-mode-active #send-btn { display: none; }
+#input-bar.voice-mode-active #voice-btn {
+    width: 56px; height: 56px;
+}
+#input-bar.voice-mode-active #voice-btn svg { width: 26px; height: 26px; }
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
@@ -1014,6 +1029,9 @@ let authToken = '';
 let isRecording = false;
 let mediaRecorder = null;
 let audioChunks = [];
+let voiceMode = false;
+let voiceAwaitingResponse = false;
+let currentTtsAudio = null;
 let typingTimeout = null;
 let autoScroll = true;
 
@@ -1090,6 +1108,16 @@ function handleServerMessage(data) {
         case 'message':
             hideTyping();
             addBotMessage(data.id, data.content, data.timestamp);
+            // In voice mode, if no TTS audio is coming, restart listening after text
+            if (voiceMode && voiceAwaitingResponse) {
+                // Give a short delay for play_audio to arrive
+                setTimeout(() => {
+                    if (voiceMode && voiceAwaitingResponse && !currentTtsAudio) {
+                        voiceAwaitingResponse = false;
+                        startRecording();
+                    }
+                }, 2000);
+            }
             break;
 
         case 'edit':
@@ -1122,7 +1150,16 @@ function handleServerMessage(data) {
 
         case 'play_audio':
             // Invisible TTS playback — no UI element, just play audio
-            { const a = new Audio(data.url); a.play().catch(() => {}); }
+            {
+                const a = new Audio(data.url);
+                currentTtsAudio = a;
+                voiceAwaitingResponse = false;
+                a.onended = () => {
+                    currentTtsAudio = null;
+                    if (voiceMode) startRecording();
+                };
+                a.play().catch(() => { currentTtsAudio = null; if (voiceMode) startRecording(); });
+            }
             break;
 
         case 'error':
@@ -1155,28 +1192,63 @@ function autoGrow(el) {
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-// --- Voice Recording ---
+// --- Voice Mode & Recording with VAD ---
+const SILENCE_THRESHOLD = 0.015;
+const SILENCE_DURATION = 1500; // ms of silence to auto-stop
+
 async function toggleVoice() {
-    if (isRecording) {
-        stopRecording();
+    if (voiceMode) {
+        exitVoiceMode();
     } else {
-        await startRecording();
+        enterVoiceMode();
     }
 }
 
+function enterVoiceMode() {
+    voiceMode = true;
+    document.getElementById('voice-btn').classList.add('voice-mode');
+    document.getElementById('input-bar').classList.add('voice-mode-active');
+    startRecording();
+}
+
+function exitVoiceMode() {
+    voiceMode = false;
+    voiceAwaitingResponse = false;
+    document.getElementById('voice-btn').classList.remove('voice-mode');
+    document.getElementById('input-bar').classList.remove('voice-mode-active');
+    if (currentTtsAudio) { currentTtsAudio.pause(); currentTtsAudio = null; }
+    stopRecording();
+}
+
 async function startRecording() {
+    if (isRecording) return;
     try {
         const stream = await navigator.mediaDevices.getUserMedia({audio: true});
         audioChunks = [];
+
+        // Set up VAD with AnalyserNode
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        const dataArray = new Float32Array(analyser.fftSize);
+        let silenceStart = null;
+        let hasSpoken = false;
+        let vadActive = true;
+
         mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm;codecs=opus'});
         mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
         mediaRecorder.onstop = async () => {
+            vadActive = false;
+            audioCtx.close();
             stream.getTracks().forEach(t => t.stop());
-            if (audioChunks.length === 0) return;
+            if (audioChunks.length === 0 || !hasSpoken) return;
             const blob = new Blob(audioChunks, {type: 'audio/webm'});
             const reader = new FileReader();
             reader.onloadend = () => {
                 const b64 = reader.result.split(',')[1];
+                voiceAwaitingResponse = true;
                 ws.send(JSON.stringify({type: 'voice', audio: b64, format: 'webm'}));
             };
             reader.readAsDataURL(blob);
@@ -1184,8 +1256,32 @@ async function startRecording() {
         mediaRecorder.start();
         isRecording = true;
         document.getElementById('voice-btn').classList.add('recording');
+
+        // VAD loop — detect silence to auto-stop
+        function checkVAD() {
+            if (!vadActive || !isRecording) return;
+            analyser.getFloatTimeDomainData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i] * dataArray[i];
+            const rms = Math.sqrt(sum / dataArray.length);
+
+            if (rms > SILENCE_THRESHOLD) {
+                hasSpoken = true;
+                silenceStart = null;
+            } else if (hasSpoken) {
+                if (!silenceStart) silenceStart = Date.now();
+                else if (Date.now() - silenceStart > SILENCE_DURATION) {
+                    stopRecording();
+                    return;
+                }
+            }
+            requestAnimationFrame(checkVAD);
+        }
+        requestAnimationFrame(checkVAD);
+
     } catch (err) {
         addSystemMessage('Microphone access denied.');
+        if (voiceMode) exitVoiceMode();
     }
 }
 

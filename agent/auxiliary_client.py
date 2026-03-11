@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
+from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ auxiliary_is_nous: bool = False
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
-_AUTH_JSON_PATH = Path.home() / ".hermes" / "auth.json"
+_AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.

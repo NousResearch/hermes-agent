@@ -554,7 +554,7 @@ class SlackAdapter(BasePlatformAdapter):
             "new": "/reset", "reset": "/reset",
             "status": "/status", "stop": "/stop",
             "help": "/help",
-            "model": "/model", "personality": "/personality",
+            "model": "/model", "reasoning": "/reasoning", "personality": "/personality",
             "retry": "/retry", "undo": "/undo",
         }
         first_word = text.split()[0] if text else ""

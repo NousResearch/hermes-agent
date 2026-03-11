@@ -1343,7 +1343,27 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
 
+    # Selective tool loading: honour include/exclude lists from config.
+    # Rules (matching issue #690 spec):
+    #   tools.include — whitelist: only these tool names are registered
+    #   tools.exclude — blacklist: all tools EXCEPT these are registered
+    #   include and exclude are mutually exclusive; include takes precedence
+    #   Neither set → register all tools (backward-compatible default)
+    tools_filter = config.get("tools") or {}
+    include_set = set(tools_filter.get("include") or [])
+    exclude_set = set(tools_filter.get("exclude") or [])
+
+    def _should_register(tool_name: str) -> bool:
+        if include_set:
+            return tool_name in include_set
+        if exclude_set:
+            return tool_name not in exclude_set
+        return True
+
     for mcp_tool in server._tools:
+        if not _should_register(mcp_tool.name):
+            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
+            continue
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
 
@@ -1424,9 +1444,13 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    # Only attempt servers that aren't already connected
+    # Only attempt servers that aren't already connected and are enabled
+    # (enabled: false skips the server entirely without removing its config)
     with _lock:
-        new_servers = {k: v for k, v in servers.items() if k not in _servers}
+        new_servers = {
+            k: v for k, v in servers.items()
+            if k not in _servers and v.get("enabled", True) is not False
+        }
 
     if not new_servers:
         return _existing_tool_names()

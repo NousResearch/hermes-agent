@@ -2447,3 +2447,79 @@ class TestDiscoveryFailedCount:
         _servers.pop("ok1", None)
         _servers.pop("ok2", None)
         _servers.pop("fail1", None)
+
+
+class TestMCPSelectiveToolLoading:
+    """Tests for tools.include / tools.exclude / enabled config keys."""
+
+    def _make_server(self, name, tool_names):
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask(name)
+        server.session = MagicMock()
+        server._tools = [_make_mcp_tool(n, n) for n in tool_names]
+        return server
+
+    def _run_discover(self, name, tool_names, config):
+        """Run _discover_and_register_server directly and return registered names."""
+        import asyncio
+        from tools.mcp_tool import _discover_and_register_server
+        server = self._make_server(name, tool_names)
+
+        async def fake_connect(n, c):
+            return server
+
+        async def run():
+            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect),                  patch("tools.mcp_tool._servers", {}):
+                return await _discover_and_register_server(name, config)
+
+        return asyncio.run(run())
+
+    def test_include_filter_registers_only_listed_tools(self):
+        """tools.include whitelist: only specified tools are registered."""
+        tool_names = ["create_service", "delete_service", "list_services"]
+        config = {"url": "https://mcp.example.com", "tools": {"include": ["create_service", "list_services"]}}
+        result = self._run_discover("ink", tool_names, config)
+        assert "mcp_ink_create_service" in result
+        assert "mcp_ink_list_services" in result
+        assert "mcp_ink_delete_service" not in result
+
+    def test_exclude_filter_skips_listed_tools(self):
+        """tools.exclude blacklist: all tools except specified are registered."""
+        tool_names = ["create_service", "delete_service", "list_services"]
+        config = {"url": "https://mcp.example.com", "tools": {"exclude": ["delete_service"]}}
+        result = self._run_discover("ink2", tool_names, config)
+        assert "mcp_ink2_create_service" in result
+        assert "mcp_ink2_list_services" in result
+        assert "mcp_ink2_delete_service" not in result
+
+    def test_no_filter_registers_all_tools(self):
+        """No tools filter: all tools registered (backward compatible)."""
+        tool_names = ["create_service", "delete_service", "list_services"]
+        config = {"url": "https://mcp.example.com"}
+        result = self._run_discover("ink3", tool_names, config)
+        assert "mcp_ink3_create_service" in result
+        assert "mcp_ink3_delete_service" in result
+        assert "mcp_ink3_list_services" in result
+
+    def test_enabled_false_skips_server(self):
+        """enabled: false skips the server entirely."""
+        fresh_servers = {}
+        fake_config = {
+            "ink": {
+                "url": "https://mcp.example.com",
+                "enabled": False,
+            }
+        }
+        connect_called = []
+
+        async def fake_connect(name, config):
+            connect_called.append(name)
+            return self._make_server(name, ["create_service"])
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True),              patch("tools.mcp_tool._servers", fresh_servers),              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config),              patch("tools.mcp_tool._connect_server", side_effect=fake_connect):
+            from tools.mcp_tool import discover_mcp_tools
+            result = discover_mcp_tools()
+
+        assert connect_called == []
+        assert "mcp_ink_create_service" not in result
+

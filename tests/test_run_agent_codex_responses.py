@@ -235,10 +235,13 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["tools"][0]["strict"] is False
     assert "function" not in kwargs["tools"][0]
     assert kwargs["store"] is False
-    assert kwargs["tool_choice"] == "auto"
-    assert kwargs["parallel_tool_calls"] is True
-    assert isinstance(kwargs["prompt_cache_key"], str)
-    assert len(kwargs["prompt_cache_key"]) > 0
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
+    assert "prompt_cache_key" not in kwargs
+    normalized = agent._preflight_codex_api_kwargs(kwargs)
+    assert normalized["model"] == kwargs["model"]
+    assert normalized["instructions"] == kwargs["instructions"]
+    assert normalized["input"] == kwargs["input"]
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs

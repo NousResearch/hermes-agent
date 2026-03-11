@@ -36,6 +36,7 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner._voice_mode = {}
     runner._session_db = session_db
     runner._running_agents = {}
 

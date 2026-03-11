@@ -108,6 +108,8 @@ DEFAULT_CONFIG = {
     "browser": {
         "inactivity_timeout": 120,
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+        "markdown_header": True,   # Try Accept: text/markdown header first
+        "markdown_provider": "",   # Markdown proxy URL (e.g. "https://defuddle.md/")
     },
     
     # Filesystem checkpoints — automatic snapshots before destructive file ops.

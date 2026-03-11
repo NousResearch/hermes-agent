@@ -537,6 +537,20 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """
+        Play auto-TTS audio for voice replies.
+
+        Override in subclasses for invisible playback (e.g. Web UI).
+        Default falls back to send_voice (shows audio player).
+        """
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
     async def send_video(
         self,
         chat_id: str,
@@ -718,7 +732,31 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
-                # Send the text portion first (if any remains after extractions)
+                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                _tts_path = None
+                if event.message_type == MessageType.VOICE and text_content and not media_files:
+                    try:
+                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        if check_tts_requirements():
+                            import json as _json
+                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000]
+                            tts_result_str = await asyncio.to_thread(
+                                text_to_speech_tool, text=speech_text
+                            )
+                            tts_data = _json.loads(tts_result_str)
+                            _tts_path = tts_data.get("file_path")
+                    except Exception as tts_err:
+                        logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+
+                # Play TTS audio before text (voice-first experience)
+                if _tts_path and Path(_tts_path).exists():
+                    await self.play_tts(
+                        chat_id=event.source.chat_id,
+                        audio_path=_tts_path,
+                        metadata=_thread_metadata,
+                    )
+
+                # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self.send(
@@ -727,7 +765,7 @@ class BasePlatformAdapter(ABC):
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
-                    
+
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
                         print(f"[{self.name}] Failed to send response: {result.error}")
@@ -740,10 +778,10 @@ class BasePlatformAdapter(ABC):
                         )
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
-                
+
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
-                
+
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
@@ -771,7 +809,7 @@ class BasePlatformAdapter(ABC):
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
-                
+
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}

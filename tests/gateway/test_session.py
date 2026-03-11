@@ -368,6 +368,17 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:discord:group:guild-123"
 
+    def test_group_thread_includes_thread_id(self):
+        """Forum-style threads need a distinct session key within one group."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:group:-1002285219667:17585"
+
 
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""

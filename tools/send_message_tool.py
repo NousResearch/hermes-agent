@@ -8,9 +8,12 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 import json
 import logging
 import os
+import re
 import time
 
 logger = logging.getLogger(__name__)
+
+_TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -33,7 +36,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
             },
             "message": {
                 "type": "string",
@@ -73,23 +76,30 @@ def _handle_send(args):
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
-    chat_id = parts[1].strip() if len(parts) > 1 else None
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
-    if chat_id and not chat_id.lstrip("-").isdigit():
+    if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, chat_id)
+            resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
-                chat_id = resolved
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
             else:
                 return json.dumps({
-                    "error": f"Could not resolve '{chat_id}' on {platform_name}. "
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
                     f"Use send_message(action='list') to see available targets."
                 })
         except Exception:
             return json.dumps({
-                "error": f"Could not resolve '{chat_id}' on {platform_name}. "
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
                 f"Try using a numeric channel ID instead."
             })
 
@@ -134,7 +144,7 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))
+        result = _run_async(_send_to_platform(platform, pconfig, chat_id, message, thread_id=thread_id))
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
@@ -143,7 +153,7 @@ def _handle_send(args):
             try:
                 from gateway.mirror import mirror_to_session
                 source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, message, source_label=source_label):
+                if mirror_to_session(platform_name, chat_id, message, source_label=source_label, thread_id=thread_id):
                     result["mirrored"] = True
             except Exception:
                 pass
@@ -153,11 +163,22 @@ def _handle_send(args):
         return json.dumps({"error": f"Send failed: {e}"})
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message):
+def _parse_target_ref(platform_name: str, target_ref: str):
+    """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    if platform_name == "telegram":
+        match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
+    if target_ref.lstrip("-").isdigit():
+        return target_ref, None, True
+    return None, None, False
+
+
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None):
     """Route a message to the appropriate platform sender."""
     from gateway.config import Platform
     if platform == Platform.TELEGRAM:
-        return await _send_telegram(pconfig.token, chat_id, message)
+        return await _send_telegram(pconfig.token, chat_id, message, thread_id=thread_id)
     elif platform == Platform.DISCORD:
         return await _send_discord(pconfig.token, chat_id, message)
     elif platform == Platform.SLACK:
@@ -167,12 +188,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message):
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
-async def _send_telegram(token, chat_id, message):
+async def _send_telegram(token, chat_id, message, thread_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed)."""
     try:
         from telegram import Bot
         bot = Bot(token=token)
-        msg = await bot.send_message(chat_id=int(chat_id), text=message)
+        send_kwargs = {"chat_id": int(chat_id), "text": message}
+        if thread_id is not None:
+            send_kwargs["message_thread_id"] = int(thread_id)
+        msg = await bot.send_message(**send_kwargs)
         return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(msg.message_id)}
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}

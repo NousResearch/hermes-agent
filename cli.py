@@ -20,6 +20,7 @@ import json
 import atexit
 import uuid
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -53,6 +54,8 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+
+_COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback
@@ -1237,6 +1240,8 @@ class HermesCLI:
         self._history_file = Path.home() / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._spinner_text: str = ""  # thinking spinner text for TUI
+        self._command_running = False
+        self._command_status = ""
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1304,6 +1309,44 @@ class HermesCLI:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         self._spinner_text = text or ""
         self._invalidate()
+
+    def _slow_command_status(self, command: str) -> str:
+        """Return a user-facing status message for slower slash commands."""
+        cmd_lower = command.lower().strip()
+        if cmd_lower.startswith("/skills search"):
+            return "Searching skills..."
+        if cmd_lower.startswith("/skills browse"):
+            return "Loading skills..."
+        if cmd_lower.startswith("/skills inspect"):
+            return "Inspecting skill..."
+        if cmd_lower.startswith("/skills install"):
+            return "Installing skill..."
+        if cmd_lower.startswith("/skills"):
+            return "Processing skills command..."
+        if cmd_lower == "/reload-mcp":
+            return "Reloading MCP servers..."
+        return "Processing command..."
+
+    def _command_spinner_frame(self) -> str:
+        """Return the current spinner frame for slow slash commands."""
+        import time as _time
+
+        frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
+        return _COMMAND_SPINNER_FRAMES[frame_idx]
+
+    @contextmanager
+    def _busy_command(self, status: str):
+        """Expose a temporary busy state in the TUI while a slash command runs."""
+        self._command_running = True
+        self._command_status = status
+        self._invalidate(min_interval=0.0)
+        try:
+            print(f"⏳ {status}")
+            yield
+        finally:
+            self._command_running = False
+            self._command_status = ""
+            self._invalidate(min_interval=0.0)
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -2758,7 +2801,8 @@ class HermesCLI:
         elif cmd_lower.startswith("/cron"):
             self._handle_cron_command(cmd_original)
         elif cmd_lower.startswith("/skills"):
-            self._handle_skills_command(cmd_original)
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._handle_skills_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         elif cmd_lower == "/verbose":
@@ -2772,7 +2816,8 @@ class HermesCLI:
         elif cmd_lower == "/paste":
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
-            self._reload_mcp()
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
         elif cmd_lower.startswith("/rollback"):
             self._handle_rollback_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
@@ -2981,7 +3026,8 @@ class HermesCLI:
             with _lock:
                 old_servers = set(_servers.keys())
 
-            print("🔄 Reloading MCP servers...")
+            if not self._command_running:
+                print("🔄 Reloading MCP servers...")
 
             # Shutdown existing connections
             shutdown_mcp_servers()
@@ -3441,6 +3487,10 @@ class HermesCLI:
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
 
+        # Slash command loading state
+        self._command_running = False
+        self._command_status = ""
+
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
@@ -3713,6 +3763,8 @@ class HermesCLI:
                 return [('class:clarify-selected', '✎ ❯ ')]
             if cli_ref._clarify_state:
                 return [('class:prompt-working', '? ❯ ')]
+            if cli_ref._command_running:
+                return [('class:prompt-working', f"{cli_ref._command_spinner_frame()} ❯ ")]
             if cli_ref._agent_running:
                 return [('class:prompt-working', '⚕ ❯ ')]
             return [('class:prompt', '❯ ')]
@@ -3724,6 +3776,7 @@ class HermesCLI:
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
+            read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
             completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
             complete_while_typing=True,
@@ -3808,6 +3861,10 @@ class HermesCLI:
                 return "type your answer here and press Enter"
             if cli_ref._clarify_state:
                 return ""
+            if cli_ref._command_running:
+                frame = cli_ref._command_spinner_frame()
+                status = cli_ref._command_status or "Processing command..."
+                return f"{frame} {status}"
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             return ""
@@ -3847,10 +3904,16 @@ class HermesCLI:
                     ('class:clarify-countdown', countdown),
                 ]
 
+            if cli_ref._command_running:
+                frame = cli_ref._command_spinner_frame()
+                return [
+                    ('class:hint', f'  {frame} command in progress · input temporarily disabled'),
+                ]
+
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state:
+            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
             # Keep a 1-line spacer while agent runs so output doesn't push
             # right up against the top rule of the input area
@@ -4160,6 +4223,19 @@ class HermesCLI:
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
+
+        def spinner_loop():
+            import time as _time
+
+            while not self._should_exit:
+                if self._command_running and self._app:
+                    self._invalidate(min_interval=0.1)
+                    _time.sleep(0.1)
+                else:
+                    _time.sleep(0.05)
+
+        spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
+        spinner_thread.start()
         
         # Background thread to process inputs and run agent
         def process_loop():

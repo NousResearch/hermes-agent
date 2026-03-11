@@ -2321,6 +2321,11 @@ For more help on a command:
         help="Configure which tools are enabled per platform",
         description="Interactive tool configuration — enable/disable tools for CLI, Telegram, Discord, etc."
     )
+    tools_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a summary of enabled tools per platform and exit"
+    )
 
     def cmd_tools(args):
         from hermes_cli.tools_config import tools_command

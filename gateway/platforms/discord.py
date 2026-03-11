@@ -603,6 +603,23 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """Play auto-TTS audio.
+
+        When the bot is in a voice channel for this chat's guild, skip the
+        file attachment — the gateway runner plays audio in the VC instead.
+        """
+        for gid, text_ch_id in self._voice_text_channels.items():
+            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
+                logger.debug("[%s] Skipping play_tts for %s — VC playback handled by runner", self.name, chat_id)
+                return SendResult(success=True)
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
     async def send_voice(
         self,
         chat_id: str,

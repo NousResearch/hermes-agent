@@ -1942,18 +1942,22 @@ class HermesCLI:
         )
     
     def show_help(self):
-        """Display help information."""
-        _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
-        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
-        _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
-        
-        for cmd, desc in COMMANDS.items():
-            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
-        
+        """Display help information with categorized commands."""
+        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+
+        _cprint(f"\n{_BOLD}+{'-' * 55}+{_RST}")
+        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 15}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * 55}+{_RST}")
+
+        for category, commands in COMMANDS_BY_CATEGORY.items():
+            _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
+            for cmd, desc in commands.items():
+                _cprint(f"    {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
+
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             for cmd, info in sorted(_skill_commands.items()):
-                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+                _cprint(f"    {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")

@@ -47,13 +47,32 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+def _secure_dir(path):
+    """Set directory to owner-only access (0700). No-op on Windows."""
+    try:
+        os.chmod(path, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _secure_file(path):
+    """Set file to owner-only read/write (0600). No-op on Windows."""
+    try:
+        if os.path.exists(str(path)):
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists."""
+    """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
-    (home / "cron").mkdir(parents=True, exist_ok=True)
-    (home / "sessions").mkdir(parents=True, exist_ok=True)
-    (home / "logs").mkdir(parents=True, exist_ok=True)
-    (home / "memories").mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    _secure_dir(home)
+    for subdir in ("cron", "sessions", "logs", "memories"):
+        d = home / subdir
+        d.mkdir(parents=True, exist_ok=True)
+        _secure_dir(d)
 
 
 # =============================================================================
@@ -180,6 +199,12 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+    # User-defined quick commands that bypass the agent loop (type: exec only)
+    "quick_commands": {},
+    # Custom personalities — add your own entries here
+    # Supports string format: {"name": "system prompt"}
+    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    "personalities": {},
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 6,
@@ -872,6 +897,7 @@ def save_config(config: Dict[str, Any]):
         normalized,
         extra_content=_COMMENTED_SECTIONS if sections else None,
     )
+    _secure_file(config_path)
 
 
 def load_env() -> Dict[str, str]:
@@ -924,6 +950,7 @@ def save_env_value(key: str, value: str):
     
     with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
+    _secure_file(env_path)
 
     # Restrict .env permissions to owner-only (contains API keys)
     if not _IS_WINDOWS:

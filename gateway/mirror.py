@@ -28,6 +28,7 @@ def mirror_to_session(
     chat_id: str,
     message_text: str,
     source_label: str = "cli",
+    thread_id: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -39,9 +40,9 @@ def mirror_to_session(
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(platform, str(chat_id))
+        session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id)
         if not session_id:
-            logger.debug("Mirror: no session found for %s:%s", platform, chat_id)
+            logger.debug("Mirror: no session found for %s:%s:%s", platform, chat_id, thread_id)
             return False
 
         mirror_msg = {
@@ -59,11 +60,11 @@ def mirror_to_session(
         return True
 
     except Exception as e:
-        logger.debug("Mirror failed for %s:%s: %s", platform, chat_id, e)
+        logger.debug("Mirror failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
         return False
 
 
-def _find_session_id(platform: str, chat_id: str) -> Optional[str]:
+def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
 
@@ -93,6 +94,9 @@ def _find_session_id(platform: str, chat_id: str) -> Optional[str]:
 
         origin_chat_id = str(origin.get("chat_id", ""))
         if origin_chat_id == str(chat_id):
+            origin_thread_id = origin.get("thread_id")
+            if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+                continue
             updated = entry.get("updated_at", "")
             if updated > best_updated:
                 best_updated = updated

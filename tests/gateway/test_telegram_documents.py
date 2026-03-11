@@ -20,6 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    SendResult,
     SUPPORTED_DOCUMENT_TYPES,
 )
 
@@ -336,3 +337,203 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
         # handle_message should still be called (the handler catches the exception)
         adapter.handle_message.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestSendDocument — outbound file attachment delivery
+# ---------------------------------------------------------------------------
+
+class TestSendDocument:
+    """Tests for TelegramAdapter.send_document() — sending files to users."""
+
+    @pytest.fixture()
+    def connected_adapter(self, adapter):
+        """Adapter with a mock bot attached."""
+        bot = AsyncMock()
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_document_success(self, connected_adapter, tmp_path):
+        """A local file is sent via bot.send_document and returns success."""
+        # Create a real temp file
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 99
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            caption="Here's the report",
+        )
+
+        assert result.success is True
+        assert result.message_id == "99"
+        connected_adapter._bot.send_document.assert_called_once()
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert call_kwargs["chat_id"] == 12345
+        assert call_kwargs["filename"] == "report.pdf"
+        assert call_kwargs["caption"] == "Here's the report"
+
+    @pytest.mark.asyncio
+    async def test_send_document_custom_filename(self, connected_adapter, tmp_path):
+        """The file_name parameter overrides the basename for display."""
+        test_file = tmp_path / "doc_abc123_ugly.csv"
+        test_file.write_bytes(b"a,b,c\n1,2,3")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 100
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            file_name="clean_data.csv",
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert call_kwargs["filename"] == "clean_data.csv"
+
+    @pytest.mark.asyncio
+    async def test_send_document_file_not_found(self, connected_adapter):
+        """Missing file returns error without calling Telegram API."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/nonexistent/file.pdf",
+        )
+
+        assert result.success is False
+        assert "not found" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_document_not_connected(self, adapter):
+        """If bot is None, returns not connected error."""
+        result = await adapter.send_document(
+            chat_id="12345",
+            file_path="/some/file.pdf",
+        )
+
+        assert result.success is False
+        assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_caption_truncated(self, connected_adapter, tmp_path):
+        """Captions longer than 1024 chars are truncated."""
+        test_file = tmp_path / "data.json"
+        test_file.write_bytes(b"{}")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        long_caption = "x" * 2000
+        await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            caption=long_caption,
+        )
+
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert len(call_kwargs["caption"]) == 1024
+
+    @pytest.mark.asyncio
+    async def test_send_document_api_error_falls_back(self, connected_adapter, tmp_path):
+        """If Telegram API raises, falls back to base class text message."""
+        test_file = tmp_path / "file.pdf"
+        test_file.write_bytes(b"data")
+
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=RuntimeError("Telegram API error")
+        )
+
+        # The base fallback calls self.send() which is also on _bot, so mock it
+        # to avoid cascading errors.
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+        )
+
+        # Should have fallen back to base class
+        assert result.success is True
+        assert result.message_id == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_send_document_reply_to(self, connected_adapter, tmp_path):
+        """reply_to parameter is forwarded as reply_to_message_id."""
+        test_file = tmp_path / "spec.md"
+        test_file.write_bytes(b"# Spec")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            reply_to="50",
+        )
+
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert call_kwargs["reply_to_message_id"] == 50
+
+
+# ---------------------------------------------------------------------------
+# TestSendVideo — outbound video delivery
+# ---------------------------------------------------------------------------
+
+class TestSendVideo:
+    """Tests for TelegramAdapter.send_video() — sending videos to users."""
+
+    @pytest.fixture()
+    def connected_adapter(self, adapter):
+        bot = AsyncMock()
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_video_success(self, connected_adapter, tmp_path):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 200
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+            caption="Check this out",
+        )
+
+        assert result.success is True
+        assert result.message_id == "200"
+        connected_adapter._bot.send_video.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_video_file_not_found(self, connected_adapter):
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path="/nonexistent/video.mp4",
+        )
+
+        assert result.success is False
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_not_connected(self, adapter):
+        result = await adapter.send_video(
+            chat_id="12345",
+            video_path="/some/video.mp4",
+        )
+
+        assert result.success is False
+        assert "Not connected" in result.error

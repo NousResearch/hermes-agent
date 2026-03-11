@@ -85,17 +85,28 @@ def _check_disk_usage_warning():
                     try:
                         total_bytes += f.stat().st_size
                     except OSError:
+                        # Best-effort only — skip files that disappear mid-scan
                         pass
         
         total_gb = total_bytes / (1024 ** 3)
         
         if total_gb > DISK_USAGE_WARNING_THRESHOLD_GB:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
+            logger.warning(
+                "Disk usage (%.1fGB) exceeds threshold (%.0fGB). "
+                "Consider running cleanup_all_environments().",
+                total_gb,
+                DISK_USAGE_WARNING_THRESHOLD_GB,
+            )
             return True
         
         return False
-    except Exception as e:
+    except Exception:
+        # If disk usage scanning fails completely, surface the exception for observability
+        logger.warning(
+            "Failed to compute disk usage for terminal environments; "
+            "skipping disk usage warning check.",
+            exc_info=True,
+        )
         return False
 
 
@@ -225,6 +236,11 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
+            # Log unexpected reader failures so sudo UX problems are debuggable
+            logger.error(
+                "Unexpected error while reading sudo password from TTY/input.",
+                exc_info=True,
+            )
             result["password"] = ""
         finally:
             if tty_fd is not None and old_attrs is not None:
@@ -283,6 +299,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         sys.stdout.flush()
         return ""
     except Exception as e:
+        # Keep the existing user-facing message, but also log the full exception for debugging.
+        logger.error("Error during sudo password prompt flow: %s", e, exc_info=True)
         print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
         sys.stdout.flush()
         return ""

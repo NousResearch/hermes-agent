@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import sys
 import signal
 import threading
@@ -674,8 +675,17 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
-        # Check if we're restarting after a /update command
-        await self._send_update_notification()
+        # Check if we're restarting after a /update command. If the update is
+        # still running, keep watching so we notify once it actually finishes.
+        notified = await self._send_update_notification()
+        if not notified and any(
+            path.exists()
+            for path in (
+                _hermes_home / ".update_pending.json",
+                _hermes_home / ".update_pending.claimed.json",
+            )
+        ):
+            self._schedule_update_notification_watch()
 
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
@@ -2714,9 +2724,9 @@ class GatewayRunner:
         """Handle /update command — update Hermes Agent to the latest version.
 
         Spawns ``hermes update`` in a separate systemd scope so it survives the
-        gateway restart that ``hermes update`` triggers at the end.  A marker
-        file is written so the *new* gateway process can notify the user of the
-        result on startup.
+        gateway restart that ``hermes update`` may trigger at the end. Marker
+        files are written so either the current gateway process or the next one
+        can notify the user when the update finishes.
         """
         import json
         import shutil
@@ -2733,9 +2743,9 @@ class GatewayRunner:
         if not hermes_bin:
             return "✗ `hermes` command not found on PATH."
 
-        # Write marker so the restarted gateway can notify this chat
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
+        exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
             "platform": event.source.platform.value,
             "chat_id": event.source.chat_id,
@@ -2743,10 +2753,14 @@ class GatewayRunner:
             "timestamp": datetime.now().isoformat(),
         }
         pending_path.write_text(json.dumps(pending))
+        exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update` in a separate cgroup so it survives gateway
-        # restart.  systemd-run --user --scope creates a transient scope unit.
-        update_cmd = f"{hermes_bin} update > {output_path} 2>&1"
+        # restart. systemd-run --user --scope creates a transient scope unit.
+        update_cmd = (
+            f"{shlex.quote(hermes_bin)} update > {shlex.quote(str(output_path))} 2>&1; "
+            f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
+        )
         try:
             systemd_run = shutil.which("systemd-run")
             if systemd_run:
@@ -2768,25 +2782,90 @@ class GatewayRunner:
                 )
         except Exception as e:
             pending_path.unlink(missing_ok=True)
+            exit_code_path.unlink(missing_ok=True)
             return f"✗ Failed to start update: {e}"
 
+        self._schedule_update_notification_watch()
         return "⚕ Starting Hermes update… I'll notify you when it's done."
 
-    async def _send_update_notification(self) -> None:
-        """If the gateway is starting after a ``/update``, notify the user."""
+    def _schedule_update_notification_watch(self) -> None:
+        """Ensure a background task is watching for update completion."""
+        existing_task = getattr(self, "_update_notification_task", None)
+        if existing_task and not existing_task.done():
+            return
+
+        try:
+            self._update_notification_task = asyncio.create_task(
+                self._watch_for_update_completion()
+            )
+        except RuntimeError:
+            logger.debug("Skipping update notification watcher: no running event loop")
+
+    async def _watch_for_update_completion(
+        self,
+        poll_interval: float = 2.0,
+        timeout: float = 1800.0,
+    ) -> None:
+        """Wait for ``hermes update`` to finish, then send its notification."""
+        pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
+        exit_code_path = _hermes_home / ".update_exit_code"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
+            if exit_code_path.exists():
+                await self._send_update_notification()
+                return
+            await asyncio.sleep(poll_interval)
+
+        if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
+            logger.warning("Update watcher timed out waiting for completion marker")
+            exit_code_path.write_text("124")
+            await self._send_update_notification()
+
+    async def _send_update_notification(self) -> bool:
+        """If an update finished, notify the user.
+
+        Returns False when the update is still running so a caller can retry
+        later. Returns True after a definitive send/skip decision.
+        """
         import json
         import re as _re
 
         pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
+        exit_code_path = _hermes_home / ".update_exit_code"
 
-        if not pending_path.exists():
-            return
+        if not pending_path.exists() and not claimed_path.exists():
+            return False
 
+        cleanup = True
+        active_pending_path = claimed_path
         try:
-            pending = json.loads(pending_path.read_text())
+            if pending_path.exists():
+                try:
+                    pending_path.replace(claimed_path)
+                except FileNotFoundError:
+                    if not claimed_path.exists():
+                        return True
+            elif not claimed_path.exists():
+                return True
+
+            pending = json.loads(claimed_path.read_text())
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
+
+            if not exit_code_path.exists():
+                logger.info("Update notification deferred: update still running")
+                cleanup = False
+                active_pending_path = pending_path
+                claimed_path.replace(pending_path)
+                return False
+
+            exit_code_raw = exit_code_path.read_text().strip() or "1"
+            exit_code = int(exit_code_raw)
 
             # Read the captured update output
             output = ""
@@ -2801,19 +2880,34 @@ class GatewayRunner:
                 # Strip ANSI escape codes for clean display
                 output = _re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
                 if output:
-                    # Truncate if too long for a single message
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
-                    msg = f"✅ Hermes update finished — gateway restarted.\n\n```\n{output}\n```"
+                    if exit_code == 0:
+                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                    else:
+                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
                 else:
-                    msg = "✅ Hermes update finished — gateway restarted successfully."
+                    if exit_code == 0:
+                        msg = "✅ Hermes update finished successfully."
+                    else:
+                        msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
                 await adapter.send(chat_id, msg)
-                logger.info("Sent post-update notification to %s:%s", platform_str, chat_id)
+                logger.info(
+                    "Sent post-update notification to %s:%s (exit=%s)",
+                    platform_str,
+                    chat_id,
+                    exit_code,
+                )
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
         finally:
-            pending_path.unlink(missing_ok=True)
-            output_path.unlink(missing_ok=True)
+            if cleanup:
+                active_pending_path.unlink(missing_ok=True)
+                claimed_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
+                exit_code_path.unlink(missing_ok=True)
+
+        return True
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""

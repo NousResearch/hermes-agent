@@ -806,7 +806,8 @@ class GatewayRunner:
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider", "rollback"}
+                          "update", "title", "resume", "provider", "rollback",
+                          "background"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -868,6 +869,9 @@ class GatewayRunner:
 
         if command == "rollback":
             return await self._handle_rollback_command(event)
+
+        if command == "background":
+            return await self._handle_background_command(event)
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -1495,6 +1499,7 @@ class GatewayRunner:
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
             "`/rollback [number]` — List or restore filesystem checkpoints",
+            "`/background <prompt>` — Run a prompt in a separate background session",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -1903,6 +1908,208 @@ class GatewayRunner:
                 f"A pre-rollback snapshot was saved automatically."
             )
         return f"❌ {result['error']}"
+
+    async def _handle_background_command(self, event: MessageEvent) -> str:
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, sends the result back to the same chat without
+        modifying the active session's conversation history.
+        """
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return (
+                "Usage: /background <prompt>\n"
+                "Example: /background Summarize the top HN stories today\n\n"
+                "Runs the prompt in a separate session. "
+                "You can keep chatting — the result will appear here when done."
+            )
+
+        source = event.source
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+
+        # Fire-and-forget the background task
+        asyncio.create_task(
+            self._run_background_task(prompt, source, task_id)
+        )
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
+
+    async def _run_background_task(
+        self, prompt: str, source: "SessionSource", task_id: str
+    ) -> None:
+        """Execute a background agent task and deliver the result to the chat."""
+        from run_agent import AIAgent
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
+            return
+
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if not runtime_kwargs.get("api_key"):
+                await adapter.send(
+                    source.chat_id,
+                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    metadata=_thread_metadata,
+                )
+                return
+
+            # Read model from config (same as _run_agent)
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+            try:
+                import yaml as _y
+                _cfg_path = _hermes_home / "config.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path, encoding="utf-8") as _f:
+                        _cfg = _y.safe_load(_f) or {}
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
+            except Exception:
+                pass
+
+            # Determine toolset (same logic as _run_agent)
+            default_toolset_map = {
+                Platform.LOCAL: "hermes-cli",
+                Platform.TELEGRAM: "hermes-telegram",
+                Platform.DISCORD: "hermes-discord",
+                Platform.WHATSAPP: "hermes-whatsapp",
+                Platform.SLACK: "hermes-slack",
+                Platform.SIGNAL: "hermes-signal",
+                Platform.HOMEASSISTANT: "hermes-homeassistant",
+            }
+            platform_toolsets_config = {}
+            try:
+                config_path = _hermes_home / 'config.yaml'
+                if config_path.exists():
+                    import yaml
+                    with open(config_path, 'r', encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                    platform_toolsets_config = user_config.get("platform_toolsets", {})
+            except Exception:
+                pass
+
+            platform_config_key = {
+                Platform.LOCAL: "cli",
+                Platform.TELEGRAM: "telegram",
+                Platform.DISCORD: "discord",
+                Platform.WHATSAPP: "whatsapp",
+                Platform.SLACK: "slack",
+                Platform.SIGNAL: "signal",
+                Platform.HOMEASSISTANT: "homeassistant",
+            }.get(source.platform, "telegram")
+
+            config_toolsets = platform_toolsets_config.get(platform_config_key)
+            if config_toolsets and isinstance(config_toolsets, list):
+                enabled_toolsets = config_toolsets
+            else:
+                default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+                enabled_toolsets = [default_toolset]
+
+            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
+
+            pr = self._provider_routing
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+
+            def run_sync():
+                agent = AIAgent(
+                    model=model,
+                    **runtime_kwargs,
+                    max_iterations=max_iterations,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    enabled_toolsets=enabled_toolsets,
+                    reasoning_config=self._reasoning_config,
+                    providers_allowed=pr.get("only"),
+                    providers_ignored=pr.get("ignore"),
+                    providers_order=pr.get("order"),
+                    provider_sort=pr.get("sort"),
+                    provider_require_parameters=pr.get("require_parameters", False),
+                    provider_data_collection=pr.get("data_collection"),
+                    session_id=task_id,
+                    platform=platform_key,
+                    session_db=self._session_db,
+                    fallback_model=self._fallback_model,
+                )
+
+                return agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                )
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, run_sync)
+
+            response = result.get("final_response", "") if result else ""
+            if not response and result and result.get("error"):
+                response = f"Error: {result['error']}"
+
+            # Extract media files from the response
+            if response:
+                media_files, response = adapter.extract_media(response)
+                images, text_content = adapter.extract_images(response)
+
+                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+
+                if text_content:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=header + text_content,
+                        metadata=_thread_metadata,
+                    )
+                elif not images and not media_files:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=header + "(No response generated)",
+                        metadata=_thread_metadata,
+                    )
+
+                # Send extracted images
+                for image_url, alt_text in (images or []):
+                    try:
+                        await adapter.send_image(
+                            chat_id=source.chat_id,
+                            image_url=image_url,
+                            caption=alt_text,
+                        )
+                    except Exception:
+                        pass
+
+                # Send media files
+                for media_path in (media_files or []):
+                    try:
+                        await adapter.send_file(
+                            chat_id=source.chat_id,
+                            file_path=media_path,
+                        )
+                    except Exception:
+                        pass
+            else:
+                preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    metadata=_thread_metadata,
+                )
+
+        except Exception as e:
+            logger.exception("Background task %s failed", task_id)
+            try:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f"❌ Background task {task_id} failed: {e}",
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""

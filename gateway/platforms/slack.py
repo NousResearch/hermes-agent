@@ -506,6 +506,7 @@ class SlackAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Send an audio file to Slack."""
         try:

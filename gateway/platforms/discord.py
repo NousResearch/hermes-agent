@@ -609,7 +609,7 @@ class DiscordAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
         try:

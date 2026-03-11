@@ -516,6 +516,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
@@ -535,6 +536,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """
         Send a video natively via the platform API.
@@ -554,6 +556,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """
         Send a document/file natively via the platform API.
@@ -572,6 +575,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """
         Send a local image file natively via the platform API.

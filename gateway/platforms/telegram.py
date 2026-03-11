@@ -353,6 +353,7 @@ class TelegramAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
@@ -387,6 +388,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
         if not self._bot:
@@ -417,6 +419,7 @@ class TelegramAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a video natively as a Telegram video message."""
         if not self._bot:

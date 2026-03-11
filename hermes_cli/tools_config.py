@@ -11,7 +11,7 @@ the `platform_toolsets` key.
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 import os
 
@@ -308,7 +308,7 @@ def _get_enabled_platforms() -> List[str]:
     return enabled
 
 
-def _platform_toolset_summary(config: dict, platforms: List[str] | None = None) -> Dict[str, Set[str]]:
+def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
     """Return a summary of enabled toolsets per platform.
 
     When ``platforms`` is None, this uses ``_get_enabled_platforms`` to
@@ -893,19 +893,21 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     # Non-interactive summary mode for CLI usage
     if getattr(args, "summary", False):
+        total = len(CONFIGURABLE_TOOLSETS)
+        print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
+        print()
         summary = _platform_toolset_summary(config, enabled_platforms)
         for pkey in enabled_platforms:
             pinfo = PLATFORMS[pkey]
             enabled = summary.get(pkey, set())
-            if not enabled:
-                enabled_label = "none"
-            else:
-                labels = []
+            count = len(enabled)
+            print(color(f"  {pinfo['label']}", Colors.BOLD) + color(f"  ({count}/{total})", Colors.DIM))
+            if enabled:
                 for ts_key in sorted(enabled):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
-                    labels.append(label)
-                enabled_label = ", ".join(labels)
-            print(color(f"- {pinfo['label']}: {enabled_label}", Colors.DIM))
+                    print(color(f"    ✓ {label}", Colors.GREEN))
+            else:
+                print(color("    (none enabled)", Colors.DIM))
         print()
         return
     print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))

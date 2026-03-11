@@ -3323,20 +3323,10 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
-        from tools.transcription_tools import transcribe_audio
+        from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
         import asyncio
 
-        # Read STT model from config.yaml (same key the CLI uses)
-        stt_model = None
-        try:
-            import yaml as _y
-            _cfg = _hermes_home / "config.yaml"
-            if _cfg.exists():
-                with open(_cfg) as _f:
-                    _data = _y.safe_load(_f) or {}
-                stt_model = _data.get("stt", {}).get("model")
-        except Exception:
-            pass
+        stt_model = get_stt_model_from_config()
 
         enriched_parts = []
         for path in audio_paths:

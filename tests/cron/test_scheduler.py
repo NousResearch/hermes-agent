@@ -16,6 +16,7 @@ class TestResolveOrigin:
                 "platform": "telegram",
                 "chat_id": "123456",
                 "chat_name": "Test Chat",
+                "thread_id": "42",
             }
         }
         result = _resolve_origin(job)
@@ -24,6 +25,7 @@ class TestResolveOrigin:
         assert result["platform"] == "telegram"
         assert result["chat_id"] == "123456"
         assert result["chat_name"] == "Test Chat"
+        assert result["thread_id"] == "42"
 
     def test_no_origin(self):
         assert _resolve_origin({}) is None
@@ -67,6 +69,41 @@ class TestDeliverResultMirrorLogging:
 
         assert any("mirror_to_session failed" in r.message for r in caplog.records), \
             f"Expected 'mirror_to_session failed' warning in logs, got: {[r.message for r in caplog.records]}"
+
+    def test_origin_delivery_preserves_thread_id(self):
+        """Origin delivery should forward thread_id to send/mirror helpers."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "test-job",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", return_value={"success": True}) as send_mock, \
+             patch("gateway.mirror.mirror_to_session") as mirror_mock, \
+             patch("asyncio.run", side_effect=lambda coro: None):
+            _deliver_result(job, "hello")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["thread_id"] == "17585"
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "-1001",
+            "hello",
+            source_label="cron",
+            thread_id="17585",
+        )
 
 
 class TestRunJobConfigLogging:

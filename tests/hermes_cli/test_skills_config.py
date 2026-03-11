@@ -146,8 +146,8 @@ class TestIsSkillDisabled:
 # ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
-    @patch("tools.skills_tool._is_skill_disabled")
-    @patch("tools.skills_tool.skill_matches_platform")
+    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
     @patch("tools.skills_tool.SKILLS_DIR")
     def test_disabled_skill_excluded(self, mock_dir, mock_platform, mock_disabled, tmp_path):
         skill_dir = tmp_path / "my-skill"
@@ -156,14 +156,12 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         mock_dir.exists.return_value = True
         mock_dir.rglob.return_value = [skill_md]
-        mock_platform.return_value = True
-        mock_disabled.return_value = True
         from tools.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 
-    @patch("tools.skills_tool._is_skill_disabled")
-    @patch("tools.skills_tool.skill_matches_platform")
+    @patch("tools.skills_tool._get_disabled_skill_names", return_value=set())
+    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
     @patch("tools.skills_tool.SKILLS_DIR")
     def test_enabled_skill_included(self, mock_dir, mock_platform, mock_disabled, tmp_path):
         skill_dir = tmp_path / "my-skill"
@@ -172,10 +170,23 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         mock_dir.exists.return_value = True
         mock_dir.rglob.return_value = [skill_md]
-        mock_platform.return_value = True
-        mock_disabled.return_value = False
         from tools.skills_tool import _find_all_skills
         skills = _find_all_skills()
+        assert any(s["name"] == "my-skill" for s in skills)
+
+    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
+    @patch("tools.skills_tool.SKILLS_DIR")
+    def test_skip_disabled_returns_all(self, mock_dir, mock_platform, mock_disabled, tmp_path):
+        """skip_disabled=True ignores the disabled set (for config UI)."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
+        mock_dir.exists.return_value = True
+        mock_dir.rglob.return_value = [skill_md]
+        from tools.skills_tool import _find_all_skills
+        skills = _find_all_skills(skip_disabled=True)
         assert any(s["name"] == "my-skill" for s in skills)
 
 

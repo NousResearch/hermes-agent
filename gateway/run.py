@@ -1635,10 +1635,10 @@ class GatewayRunner:
                     )
                     for msg in agent_messages
                 )
-                # Skip if voice input on Web platform — base adapter auto-TTS
-                # already sent play_audio, so sending another would be double.
-                is_web = (source.platform == Platform.WEB)
-                skip_double = is_web and is_voice_input
+                # Skip if voice input — base adapter auto-TTS in
+                # _process_message_background already sent audio for voice
+                # messages, so sending another would be double.
+                skip_double = is_voice_input
                 logger.info("Voice reply: has_agent_tts=%s, skip_double=%s, calling _send_voice_reply", has_agent_tts, skip_double)
                 if not has_agent_tts and not skip_double:
                     await self._send_voice_reply(event, response)

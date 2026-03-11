@@ -147,17 +147,28 @@ class HonchoClientConfig:
         )
         linked_hosts = host_block.get("linkedHosts", [])
 
-        api_key = raw.get("apiKey") or os.environ.get("HONCHO_API_KEY")
+        api_key = (
+            host_block.get("apiKey")
+            or raw.get("apiKey")
+            or os.environ.get("HONCHO_API_KEY")
+        )
+
+        environment = (
+            host_block.get("environment")
+            or raw.get("environment", "production")
+        )
 
         # Auto-enable when API key is present (unless explicitly disabled)
-        # This matches user expectations: setting an API key should activate the feature.
-        explicit_enabled = raw.get("enabled")
-        if explicit_enabled is None:
-            # Not explicitly set in config -> auto-enable if API key exists
-            enabled = bool(api_key)
+        # Host-level enabled wins, then root-level, then auto-enable if key exists.
+        host_enabled = host_block.get("enabled")
+        root_enabled = raw.get("enabled")
+        if host_enabled is not None:
+            enabled = host_enabled
+        elif root_enabled is not None:
+            enabled = root_enabled
         else:
-            # Respect explicit setting
-            enabled = explicit_enabled
+            # Not explicitly set anywhere -> auto-enable if API key exists
+            enabled = bool(api_key)
 
         # write_frequency: accept int or string
         raw_wf = (
@@ -170,16 +181,31 @@ class HonchoClientConfig:
         except (TypeError, ValueError):
             write_frequency = str(raw_wf)
 
+        # saveMessages: host wins (None-aware since False is valid)
+        host_save = host_block.get("saveMessages")
+        save_messages = host_save if host_save is not None else raw.get("saveMessages", True)
+
+        # sessionStrategy / sessionPeerPrefix: host first, root fallback
+        session_strategy = (
+            host_block.get("sessionStrategy")
+            or raw.get("sessionStrategy", "per-session")
+        )
+        host_prefix = host_block.get("sessionPeerPrefix")
+        session_peer_prefix = (
+            host_prefix if host_prefix is not None
+            else raw.get("sessionPeerPrefix", False)
+        )
+
         return cls(
             host=host,
             workspace_id=workspace,
             api_key=api_key,
-            environment=raw.get("environment", "production"),
-            peer_name=raw.get("peerName"),
+            environment=environment,
+            peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             linked_hosts=linked_hosts,
             enabled=enabled,
-            save_messages=raw.get("saveMessages", True),
+            save_messages=save_messages,
             **_resolve_memory_mode(
                 raw.get("memoryMode", "hybrid"),
                 host_block.get("memoryMode"),
@@ -201,8 +227,8 @@ class HonchoClientConfig:
                 or raw.get("recallMode")
                 or "hybrid"
             ),
-            session_strategy=raw.get("sessionStrategy", "per-session"),
-            session_peer_prefix=raw.get("sessionPeerPrefix", False),
+            session_strategy=session_strategy,
+            session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
         )

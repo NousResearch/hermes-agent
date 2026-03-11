@@ -41,6 +41,24 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
+def get_stt_model_from_config() -> Optional[str]:
+    """Read the STT model name from ~/.hermes/config.yaml.
+
+    Returns the value of ``stt.model`` if present, otherwise ``None``.
+    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
+    """
+    try:
+        import yaml
+        cfg_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("stt", {}).get("model")
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_stt_provider() -> Tuple[Optional[str], Optional[str], str]:
     """Resolve which STT provider to use based on available API keys.
 

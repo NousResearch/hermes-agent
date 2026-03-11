@@ -632,6 +632,33 @@ stt:
 
 Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
 
+## Quick Commands
+
+Define custom commands that run shell commands without invoking the LLM — zero token usage, instant execution. Especially useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+
+```yaml
+quick_commands:
+  status:
+    type: exec
+    command: systemctl status hermes-agent
+  disk:
+    type: exec
+    command: df -h /
+  update:
+    type: exec
+    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+  gpu:
+    type: exec
+    command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
+```
+
+Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging platform. The command runs locally on the host and returns the output directly — no LLM call, no tokens consumed.
+
+- **30-second timeout** — long-running commands are killed with an error message
+- **Priority** — quick commands are checked before skill commands, so you can override skill names
+- **Type** — only `exec` is supported (runs a shell command); other types show an error
+- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal
+
 ## Human Delay
 
 Simulate human-like response pacing in messaging platforms:

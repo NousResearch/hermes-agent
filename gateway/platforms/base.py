@@ -752,11 +752,17 @@ class BasePlatformAdapter(ABC):
 
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
-                    await self.play_tts(
-                        chat_id=event.source.chat_id,
-                        audio_path=_tts_path,
-                        metadata=_thread_metadata,
-                    )
+                    try:
+                        await self.play_tts(
+                            chat_id=event.source.chat_id,
+                            audio_path=_tts_path,
+                            metadata=_thread_metadata,
+                        )
+                    finally:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
 
                 # Send the text portion
                 if text_content:

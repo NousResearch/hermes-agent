@@ -1060,6 +1060,12 @@ def save_config_value(key_path: str, value: any) -> bool:
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         
+        # Enforce owner-only permissions on config files (contain API keys)
+        try:
+            os.chmod(config_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+        
         return True
     except Exception as e:
         logger.error("Failed to save config: %s", e)

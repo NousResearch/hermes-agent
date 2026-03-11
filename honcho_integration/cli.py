@@ -88,7 +88,12 @@ def cmd_setup(args) -> None:
     if not _ensure_sdk_installed():
         return
 
-    # API key
+    # All writes go to hosts.hermes — root keys are managed by the user
+    # or the honcho CLI only.
+    hosts = cfg.setdefault("hosts", {})
+    hermes_host = hosts.setdefault(HOST, {})
+
+    # API key — shared credential, lives at root so all hosts can read it
     current_key = cfg.get("apiKey", "")
     masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
     print(f"  Current API key: {masked}")
@@ -96,45 +101,39 @@ def cmd_setup(args) -> None:
     if new_key:
         cfg["apiKey"] = new_key
 
-    if not cfg.get("apiKey"):
+    effective_key = cfg.get("apiKey", "")
+    if not effective_key:
         print("\n  No API key configured. Get your API key at https://app.honcho.dev")
         print("  Run 'hermes honcho setup' again once you have a key.\n")
         return
 
     # Peer name
-    current_peer = cfg.get("peerName", "")
+    current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
     new_peer = _prompt("Your name (user peer)", default=current_peer or os.getenv("USER", "user"))
     if new_peer:
-        cfg["peerName"] = new_peer
-
-    # Host block
-    hosts = cfg.setdefault("hosts", {})
-    hermes_host = hosts.setdefault(HOST, {})
+        hermes_host["peerName"] = new_peer
 
     current_workspace = hermes_host.get("workspace") or cfg.get("workspace", "hermes")
     new_workspace = _prompt("Workspace ID", default=current_workspace)
     if new_workspace:
         hermes_host["workspace"] = new_workspace
-        # Also update flat workspace if it was the primary one
-        if cfg.get("workspace") == current_workspace:
-            cfg["workspace"] = new_workspace
 
     hermes_host.setdefault("aiPeer", HOST)
 
     # Memory mode
-    current_mode = cfg.get("memoryMode", "hybrid")
+    current_mode = hermes_host.get("memoryMode") or cfg.get("memoryMode", "hybrid")
     print(f"\n  Memory mode options:")
     print("    hybrid  — write to both Honcho and local MEMORY.md (default)")
     print("    honcho  — Honcho only, skip MEMORY.md writes")
     print("    local   — MEMORY.md only, Honcho disabled")
     new_mode = _prompt("Memory mode", default=current_mode)
     if new_mode in ("hybrid", "honcho", "local"):
-        cfg["memoryMode"] = new_mode
+        hermes_host["memoryMode"] = new_mode
     else:
-        cfg["memoryMode"] = "hybrid"
+        hermes_host["memoryMode"] = "hybrid"
 
     # Write frequency
-    current_wf = str(cfg.get("writeFrequency", "async"))
+    current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))
     print(f"\n  Write frequency options:")
     print("    async   — background thread, no token cost (recommended)")
     print("    turn    — sync write after every turn")
@@ -142,22 +141,22 @@ def cmd_setup(args) -> None:
     print("    N       — write every N turns (e.g. 5)")
     new_wf = _prompt("Write frequency", default=current_wf)
     try:
-        cfg["writeFrequency"] = int(new_wf)
+        hermes_host["writeFrequency"] = int(new_wf)
     except (ValueError, TypeError):
-        cfg["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
+        hermes_host["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
 
     # Recall mode
-    current_recall = cfg.get("recallMode", "hybrid")
+    current_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
     print(f"\n  Recall mode options:")
     print("    hybrid  — pre-warmed context + memory tools available (default)")
     print("    context — pre-warmed context only, memory tools suppressed")
     print("    tools   — no pre-loaded context, rely on tool calls only")
     new_recall = _prompt("Recall mode", default=current_recall)
     if new_recall in ("hybrid", "context", "tools"):
-        cfg["recallMode"] = new_recall
+        hermes_host["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = cfg.get("sessionStrategy", "per-session")
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
     print(f"\n  Session strategy options:")
     print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
     print("    per-directory — one session per working directory")
@@ -165,10 +164,10 @@ def cmd_setup(args) -> None:
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
     if new_strat in ("per-session", "per-repo", "per-directory", "global"):
-        cfg["sessionStrategy"] = new_strat
+        hermes_host["sessionStrategy"] = new_strat
 
-    cfg.setdefault("enabled", True)
-    cfg.setdefault("saveMessages", True)
+    hermes_host.setdefault("enabled", True)
+    hermes_host.setdefault("saveMessages", True)
 
     _write_config(cfg)
     print(f"\n  Config written to {GLOBAL_CONFIG_PATH}")
@@ -321,7 +320,7 @@ def cmd_peer(args) -> None:
         # Show current values
         hosts = cfg.get("hosts", {})
         hermes = hosts.get(HOST, {})
-        user = cfg.get('peerName') or '(not set)'
+        user = hermes.get('peerName') or cfg.get('peerName') or '(not set)'
         ai = hermes.get('aiPeer') or cfg.get('aiPeer') or HOST
         lvl = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
         max_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
@@ -337,9 +336,9 @@ def cmd_peer(args) -> None:
         return
 
     if user_name is not None:
-        cfg["peerName"] = user_name.strip()
+        cfg.setdefault("hosts", {}).setdefault(HOST, {})["peerName"] = user_name.strip()
         changed = True
-        print(f"  User peer → {cfg['peerName']}")
+        print(f"  User peer → {user_name.strip()}")
 
     if ai_name is not None:
         cfg.setdefault("hosts", {}).setdefault(HOST, {})["aiPeer"] = ai_name.strip()

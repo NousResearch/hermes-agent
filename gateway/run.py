@@ -978,7 +978,7 @@ class GatewayRunner:
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
-                          "background", "reasoning", "voice"}
+                          "background", "reasoning", "voice", "remote-control", "remote_control"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -1052,6 +1052,9 @@ class GatewayRunner:
 
         if command == "voice":
             return await self._handle_voice_command(event)
+
+        if command in ("remote-control", "remote_control"):
+            return await self._handle_remote_control_command(event)
 
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -1745,6 +1748,7 @@ class GatewayRunner:
             "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/background <prompt>` — Run a prompt in a separate background session",
             "`/voice [on|off|tts|status]` — Toggle voice reply mode",
+            "`/remote-control [port] [token]` — Start web UI for remote access",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -2400,6 +2404,58 @@ class GatewayRunner:
                 f"A pre-rollback snapshot was saved automatically."
             )
         return f"❌ {result['error']}"
+
+    async def _handle_remote_control_command(self, event: MessageEvent) -> str:
+        """Handle /remote-control — start or show the web UI for remote access."""
+        from gateway.config import Platform, PlatformConfig
+
+        # Already running?
+        if Platform.WEB in self.adapters:
+            adapter = self.adapters[Platform.WEB]
+            local_ip = adapter._get_local_ip()
+            return (
+                f"Web UI already running.\n"
+                f"URL: http://{local_ip}:{adapter._port}\n"
+                f"Token: {adapter._token}"
+            )
+
+        # Start web adapter on the fly
+        try:
+            from gateway.platforms.web import WebAdapter, check_web_requirements
+            if not check_web_requirements():
+                return "Web UI requires aiohttp. Run: pip install aiohttp"
+
+            args = event.get_command_args().strip()
+            port = 8765
+            token = ""
+            for part in args.split():
+                if part.isdigit():
+                    port = int(part)
+                elif part and not part.startswith("-"):
+                    token = part
+
+            web_config = PlatformConfig(
+                enabled=True,
+                extra={"port": port, "host": "0.0.0.0", "token": token},
+            )
+            adapter = WebAdapter(web_config)
+            adapter.set_message_handler(self._handle_message)
+
+            success = await adapter.connect()
+            if not success:
+                return f"Failed to start Web UI on port {port}. Port may be in use."
+
+            self.adapters[Platform.WEB] = adapter
+            local_ip = adapter._get_local_ip()
+            return (
+                f"Web UI started!\n"
+                f"URL: http://{local_ip}:{adapter._port}\n"
+                f"Token: {adapter._token}\n"
+                f"Open this URL on your phone or any device on the same network."
+            )
+        except Exception as e:
+            logger.error("Failed to start web UI: %s", e, exc_info=True)
+            return f"Failed to start Web UI: {e}"
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.

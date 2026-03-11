@@ -530,3 +530,83 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestSendThreading
+# ---------------------------------------------------------------------------
+
+class TestSendThreading:
+    """Verify that send() routes messages to the correct Slack thread."""
+
+    @pytest.mark.asyncio
+    async def test_send_threads_via_thread_id_metadata(self, adapter):
+        """Metadata with thread_id (from base adapter) should post in-thread."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "1111111111.111111"}
+        )
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="tool progress",
+            metadata={"thread_id": "1111111111.111111"},
+        )
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "1111111111.111111"
+
+    @pytest.mark.asyncio
+    async def test_send_threads_via_thread_ts_metadata(self, adapter):
+        """Metadata with thread_ts should still work as before."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "2222222222.222222"}
+        )
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="status update",
+            metadata={"thread_ts": "2222222222.222222"},
+        )
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "2222222222.222222"
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_thread_ts_over_thread_id(self, adapter):
+        """When both keys are present, thread_ts takes precedence."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "3333333333.333333"}
+        )
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="dual metadata",
+            metadata={
+                "thread_ts": "3333333333.333333",
+                "thread_id": "4444444444.444444",
+            },
+        )
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "3333333333.333333"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_takes_precedence_over_metadata(self, adapter):
+        """Explicit reply_to should win over metadata threading."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "5555555555.555555"}
+        )
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="explicit reply",
+            reply_to="5555555555.555555",
+            metadata={"thread_id": "6666666666.666666"},
+        )
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "5555555555.555555"

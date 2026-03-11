@@ -160,8 +160,8 @@ class SlackAdapter(BasePlatformAdapter):
             # Reply in thread if thread_ts is available
             if reply_to:
                 kwargs["thread_ts"] = reply_to
-            elif metadata and metadata.get("thread_ts"):
-                kwargs["thread_ts"] = metadata["thread_ts"]
+            elif metadata and (metadata.get("thread_ts") or metadata.get("thread_id")):
+                kwargs["thread_ts"] = metadata.get("thread_ts") or metadata.get("thread_id")
 
             result = await self._app.client.chat_postMessage(**kwargs)
 

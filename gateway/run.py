@@ -1616,42 +1616,8 @@ class GatewayRunner:
             )
 
             # Auto voice reply: send TTS audio before the text response
-            chat_id = source.chat_id
-            voice_mode = self._voice_mode.get(chat_id, "off")
-            is_voice_input = (event.message_type == MessageType.VOICE)
-            should_voice_reply = (
-                (voice_mode == "all")
-                or (voice_mode == "voice_only" and is_voice_input)
-            )
-            logger.info("Voice reply check: chat_id=%s, voice_mode=%s, is_voice=%s, should_reply=%s, has_response=%s",
-                        chat_id, voice_mode, is_voice_input, should_voice_reply, bool(response))
-            if should_voice_reply and response and not response.startswith("Error:"):
-                # Skip if agent already called TTS tool (avoid double voice)
-                has_agent_tts = any(
-                    msg.get("role") == "assistant"
-                    and any(
-                        tc.get("function", {}).get("name") == "text_to_speech"
-                        for tc in (msg.get("tool_calls") or [])
-                    )
-                    for msg in agent_messages
-                )
-                # Skip if voice input — base adapter auto-TTS in
-                # _process_message_background already sent audio for voice
-                # messages, so sending another would be double.
-                # Exception: Discord voice channel — the Discord play_tts
-                # override also skips (no-op), so the runner MUST handle it
-                # via play_in_voice_channel.
-                skip_double = is_voice_input
-                if skip_double:
-                    adapter = self.adapters.get(source.platform)
-                    guild_id = self._get_guild_id(event)
-                    if (guild_id and adapter
-                            and hasattr(adapter, "is_in_voice_channel")
-                            and adapter.is_in_voice_channel(guild_id)):
-                        skip_double = False
-                logger.info("Voice reply: has_agent_tts=%s, skip_double=%s, calling _send_voice_reply", has_agent_tts, skip_double)
-                if not has_agent_tts and not skip_double:
-                    await self._send_voice_reply(event, response)
+            if self._should_send_voice_reply(event, response, agent_messages):
+                await self._send_voice_reply(event, response)
 
             return response
             
@@ -2301,6 +2267,64 @@ class GatewayRunner:
         )
 
         await adapter.handle_message(event)
+
+    def _should_send_voice_reply(
+        self,
+        event: MessageEvent,
+        response: str,
+        agent_messages: list,
+    ) -> bool:
+        """Decide whether the runner should send a TTS voice reply.
+
+        Returns False when:
+        - voice_mode is off for this chat
+        - response is empty or an error
+        - agent already called text_to_speech tool (dedup)
+        - voice input and base adapter auto-TTS already handled it (skip_double)
+          Exception: Discord voice channel — base play_tts is a no-op there,
+          so the runner must handle VC playback.
+        """
+        if not response or response.startswith("Error:"):
+            return False
+
+        chat_id = event.source.chat_id
+        voice_mode = self._voice_mode.get(chat_id, "off")
+        is_voice_input = (event.message_type == MessageType.VOICE)
+
+        should = (
+            (voice_mode == "all")
+            or (voice_mode == "voice_only" and is_voice_input)
+        )
+        if not should:
+            return False
+
+        # Dedup: agent already called TTS tool
+        has_agent_tts = any(
+            msg.get("role") == "assistant"
+            and any(
+                tc.get("function", {}).get("name") == "text_to_speech"
+                for tc in (msg.get("tool_calls") or [])
+            )
+            for msg in agent_messages
+        )
+        if has_agent_tts:
+            return False
+
+        # Dedup: base adapter auto-TTS already handles voice input.
+        # Exception: Discord voice channel — play_tts override is a no-op,
+        # so the runner must handle VC playback.
+        skip_double = is_voice_input
+        if skip_double:
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            if (guild_id and adapter
+                    and hasattr(adapter, "is_in_voice_channel")
+                    and adapter.is_in_voice_channel(guild_id)):
+                skip_double = False
+        if skip_double:
+            return False
+
+        return True
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""

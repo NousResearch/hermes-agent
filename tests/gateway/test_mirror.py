@@ -57,6 +57,26 @@ class TestFindSessionId:
 
         assert result == "sess_new"
 
+    def test_thread_id_disambiguates_same_chat(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "topic_a": {
+                "session_id": "sess_topic_a",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "10"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "topic_b": {
+                "session_id": "sess_topic_b",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "11"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "-1001", thread_id="10")
+
+        assert result == "sess_topic_a"
+
     def test_no_match_returns_none(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "sess": {
@@ -145,6 +165,29 @@ class TestMirrorToSession:
         assert msg["role"] == "assistant"
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
+
+    def test_successful_mirror_uses_thread_id(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "topic_a": {
+                "session_id": "sess_topic_a",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "10"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "topic_b": {
+                "session_id": "sess_topic_b",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "11"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite"):
+            result = mirror_to_session("telegram", "-1001", "Hello topic!", source_label="cron", thread_id="10")
+
+        assert result is True
+        assert (sessions_dir / "sess_topic_a.jsonl").exists()
+        assert not (sessions_dir / "sess_topic_b.jsonl").exists()
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})

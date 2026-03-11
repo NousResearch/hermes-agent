@@ -851,7 +851,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Convert PCM -> WAV -> STT -> callback."""
         from tools.voice_mode import is_whisper_hallucination
 
-        wav_path = tempfile.mktemp(suffix=".wav", prefix="vc_listen_")
+        tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
+        wav_path = tmp_f.name
+        tmp_f.close()
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 

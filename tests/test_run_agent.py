@@ -1192,17 +1192,15 @@ class TestSystemPromptStability:
 
         assert "User prefers Python over JavaScript" in agent._cached_system_prompt
 
-    def test_honcho_prefetch_skipped_on_continuing_session(self):
-        """Honcho prefetch should not be called when conversation_history
-        is non-empty (continuing session)."""
+    def test_honcho_prefetch_runs_on_continuing_session(self):
+        """Honcho prefetch is consumed on continuing sessions via ephemeral context."""
         conversation_history = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
         ]
-
-        # The guard: `not conversation_history` is False when history exists
-        should_prefetch = not conversation_history
-        assert should_prefetch is False
+        recall_mode = "hybrid"
+        should_prefetch = bool(conversation_history) and recall_mode != "tools"
+        assert should_prefetch is True
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""
@@ -1273,4 +1271,49 @@ class TestHonchoActivation:
         assert agent._honcho is manager
         manager.get_or_create.assert_called_once_with("gateway-session")
         manager.get_prefetch_context.assert_called_once_with("gateway-session")
+        manager.set_context_result.assert_called_once_with(
+            "gateway-session",
+            {"representation": "Known user", "card": ""},
+        )
         mock_client.assert_not_called()
+
+
+class TestHonchoPrefetchScheduling:
+    def test_honcho_prefetch_includes_cached_dialectic(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho.pop_context_result.return_value = {}
+        agent._honcho.pop_dialectic_result.return_value = "Continue with the migration checklist."
+
+        context = agent._honcho_prefetch("what next?")
+
+        assert "Continuity synthesis" in context
+        assert "migration checklist" in context
+
+    def test_queue_honcho_prefetch_skips_tools_mode(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho_config = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            recall_mode="tools",
+        )
+
+        agent._queue_honcho_prefetch("what next?")
+
+        agent._honcho.prefetch_context.assert_not_called()
+        agent._honcho.prefetch_dialectic.assert_not_called()
+
+    def test_queue_honcho_prefetch_runs_when_context_enabled(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho_config = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            recall_mode="hybrid",
+        )
+
+        agent._queue_honcho_prefetch("what next?")
+
+        agent._honcho.prefetch_context.assert_called_once_with("session-key", "what next?")
+        agent._honcho.prefetch_dialectic.assert_called_once_with("session-key", "what next?")

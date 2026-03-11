@@ -487,3 +487,22 @@ class TestNewConfigFieldDefaults:
         cfg = HonchoClientConfig(memory_mode="hybrid", peer_memory_modes={"hermes": "local"})
         assert cfg.peer_memory_mode("hermes") == "local"
         assert cfg.peer_memory_mode("other") == "hybrid"
+
+
+class TestPrefetchCacheAccessors:
+    def test_set_and_pop_context_result(self):
+        mgr = _make_manager(write_frequency="turn")
+        payload = {"representation": "Known user", "card": "prefers concise replies"}
+
+        mgr.set_context_result("cli:test", payload)
+
+        assert mgr.pop_context_result("cli:test") == payload
+        assert mgr.pop_context_result("cli:test") == {}
+
+    def test_set_and_pop_dialectic_result(self):
+        mgr = _make_manager(write_frequency="turn")
+
+        mgr.set_dialectic_result("cli:test", "Resume with toolset cleanup")
+
+        assert mgr.pop_dialectic_result("cli:test") == "Resume with toolset cleanup"
+        assert mgr.pop_dialectic_result("cli:test") == ""

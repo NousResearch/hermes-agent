@@ -697,6 +697,25 @@ class TestExecuteToolCalls:
         assert mock_hfc.call_count == 4
         assert len(messages) == 4
 
+    def test_doom_loop_does_not_skip_unrelated_remaining_calls(self, agent):
+        t1 = _mock_tool_call(name="web_search", arguments='{"q":"same"}', call_id="c1")
+        t2 = _mock_tool_call(name="web_search", arguments='{"q":"same"}', call_id="c2")
+        t3 = _mock_tool_call(name="web_search", arguments='{"q":"same"}', call_id="c3")
+        t4 = _mock_tool_call(name="read_file", arguments='{"path":"run_agent.py"}', call_id="c4")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[t1, t2, t3, t4])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        called_tools = [call.args[0] for call in mock_hfc.call_args_list]
+        assert called_tools == ["web_search", "web_search", "read_file"]
+        assert any(
+            msg["role"] == "tool" and "doom loop detected" in msg["content"].lower()
+            for msg in messages
+        )
+        assert messages[-1]["role"] == "user"
+
 
 class TestHandleMaxIterations:
     def test_returns_summary(self, agent):

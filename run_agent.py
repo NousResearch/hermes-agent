@@ -2705,6 +2705,8 @@ class AIAgent:
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages."""
+        blocked_doom_loop_signature: Optional[tuple[str, str]] = None
+        deferred_doom_loop_recovery_msg: Optional[str] = None
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             # SAFETY: check interrupt BEFORE starting each tool.
             # If the user sent "stop" during a previous tool's execution,
@@ -2740,14 +2742,66 @@ class AIAgent:
                 function_args = {}
 
             doom_loop_signature = self._make_doom_loop_signature(function_name, function_args)
+            if blocked_doom_loop_signature is not None and doom_loop_signature == blocked_doom_loop_signature:
+                skip_content = (
+                    f"[Tool execution skipped - doom loop detected: '{function_name}' "
+                    "was requested again with the same arguments in this turn]"
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": skip_content,
+                        "tool_call_id": tool_call.id,
+                    }
+                )
+                continue
+
             if self._should_trigger_doom_loop(doom_loop_signature):
-                if self._handle_doom_loop(
-                    assistant_message=assistant_message,
-                    messages=messages,
-                    tool_call_index=i - 1,
-                    tool_name=function_name,
-                ):
+                decision = self._handle_doom_loop(tool_name=function_name)
+                if decision == "continue":
+                    pass
+                elif decision == "stop":
+                    skip_content = (
+                        f"[Tool execution skipped - doom loop detected: '{function_name}' was about to be called "
+                        f"{DOOM_LOOP_THRESHOLD} times in a row with the same arguments]"
+                    )
+                    for skipped_tc in assistant_message.tool_calls[i - 1:]:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": skip_content,
+                                "tool_call_id": skipped_tc.id,
+                            }
+                        )
+                    deferred_doom_loop_recovery_msg = (
+                        f"A doom loop was detected on the '{function_name}' tool, and the user chose to stop. "
+                        "Do not call more tools. Provide a final response summarizing what you found so far."
+                    )
+                    self._doom_loop_signature = None
+                    self._doom_loop_count = 0
                     break
+                else:
+                    skip_content = (
+                        f"[Tool execution skipped - doom loop detected: '{function_name}' was about to be called "
+                        f"{DOOM_LOOP_THRESHOLD} times in a row with the same arguments]"
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": skip_content,
+                            "tool_call_id": tool_call.id,
+                        }
+                    )
+                    blocked_doom_loop_signature = doom_loop_signature
+                    deferred_doom_loop_recovery_msg = (
+                        f"A doom loop was detected on the '{function_name}' tool: you attempted the same call "
+                        f"with the same arguments {DOOM_LOOP_THRESHOLD} times in a row. "
+                        "Do NOT repeat that exact tool call again. Try a different approach, use different "
+                        "arguments, use another tool, or provide a final response if you are blocked."
+                    )
+                    self._doom_loop_signature = None
+                    self._doom_loop_count = 0
+                    continue
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -2961,6 +3015,9 @@ class AIAgent:
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
 
+        if deferred_doom_loop_recovery_msg:
+            messages.append({"role": "user", "content": deferred_doom_loop_recovery_msg})
+
         # ── Budget pressure injection ─────────────────────────────────
         # After all tool calls in this turn are processed, check if we're
         # approaching max_iterations. If so, inject a warning into the LAST
@@ -3051,13 +3108,7 @@ class AIAgent:
         self._doom_loop_signature = signature
         self._doom_loop_count = 1
 
-    def _handle_doom_loop(
-        self,
-        assistant_message,
-        messages: list,
-        tool_call_index: int,
-        tool_name: str,
-    ) -> bool:
+    def _handle_doom_loop(self, tool_name: str) -> str:
         logger.warning(
             "Doom loop detected for %s after %s identical calls",
             tool_name,
@@ -3083,38 +3134,10 @@ class AIAgent:
 
         normalized_response = response.lower()
         if "continue" in normalized_response:
-            return False
-
-        skip_content = (
-            f"[Tool execution skipped - doom loop detected: '{tool_name}' was about to be called "
-            f"{DOOM_LOOP_THRESHOLD} times in a row with the same arguments]"
-        )
-        for skipped_tc in assistant_message.tool_calls[tool_call_index:]:
-            skip_msg = {
-                "role": "tool",
-                "content": skip_content,
-                "tool_call_id": skipped_tc.id,
-            }
-            messages.append(skip_msg)
-
+            return "continue"
         if "stop" in normalized_response:
-            recovery_msg = (
-                f"A doom loop was detected on the '{tool_name}' tool, and the user chose to stop. "
-                "Do not call more tools. Provide a final response summarizing what you found so far."
-            )
-        else:
-            recovery_msg = (
-                f"A doom loop was detected on the '{tool_name}' tool: you attempted the same call "
-                f"with the same arguments {DOOM_LOOP_THRESHOLD} times in a row. "
-                "Do NOT repeat that exact tool call again. Try a different approach, use different "
-                "arguments, use another tool, or provide a final response if you are blocked."
-            )
-
-        recovery_dict = {"role": "user", "content": recovery_msg}
-        messages.append(recovery_dict)
-        self._doom_loop_signature = None
-        self._doom_loop_count = 0
-        return True
+            return "stop"
+        return "reroute"
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""

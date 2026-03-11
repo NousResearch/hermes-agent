@@ -380,10 +380,10 @@ class TestAsyncWriterThread:
         sess.add_message("user", "async msg")
 
         flushed = []
-        original = mgr._flush_session
 
         def capture(s):
             flushed.append(s)
+            return True
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
@@ -456,6 +456,66 @@ class TestAsyncWriterRetry:
         # Should have tried exactly twice (initial + one retry) and not crashed
         assert call_count[0] == 2
         assert not mgr._async_thread.is_alive()
+
+    def test_retries_when_flush_reports_failure(self):
+        mgr = _make_manager(write_frequency="async")
+        sess = _make_session()
+        sess.add_message("user", "msg")
+
+        call_count = [0]
+
+        def fail_then_succeed(_session):
+            call_count[0] += 1
+            return call_count[0] > 1
+
+        mgr._flush_session = fail_then_succeed
+
+        with patch("time.sleep"):
+            mgr._async_queue.put(sess)
+            deadline = time.time() + 3.0
+            while call_count[0] < 2 and time.time() < deadline:
+                time.sleep(0.05)
+
+        mgr.shutdown()
+        assert call_count[0] == 2
+
+
+class TestMemoryFileMigrationTargets:
+    def test_soul_upload_targets_ai_peer(self, tmp_path):
+        mgr = _make_manager(write_frequency="turn")
+        session = _make_session(
+            key="cli:test",
+            user_peer_id="custom-user",
+            assistant_peer_id="custom-ai",
+            honcho_session_id="cli-test",
+        )
+        mgr._cache[session.key] = session
+
+        user_peer = MagicMock(name="user-peer")
+        ai_peer = MagicMock(name="ai-peer")
+        mgr._peers_cache[session.user_peer_id] = user_peer
+        mgr._peers_cache[session.assistant_peer_id] = ai_peer
+
+        honcho_session = MagicMock()
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("ai identity", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 3
+
+        peer_by_upload_name = {}
+        for call_args in honcho_session.upload_file.call_args_list:
+            payload = call_args.kwargs["file"]
+            peer_by_upload_name[payload[0]] = call_args.kwargs["peer"]
+
+        assert peer_by_upload_name["consolidated_memory.md"] is user_peer
+        assert peer_by_upload_name["user_profile.md"] is user_peer
+        assert peer_by_upload_name["agent_soul.md"] is ai_peer
 
 
 # ---------------------------------------------------------------------------

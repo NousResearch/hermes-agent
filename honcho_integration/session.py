@@ -270,10 +270,10 @@ class HonchoSessionManager:
         self._cache[key] = session
         return session
 
-    def _flush_session(self, session: HonchoSession) -> None:
+    def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
         if not session.messages:
-            return
+            return True
 
         user_peer = self._get_or_create_peer(session.user_peer_id)
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
@@ -286,7 +286,7 @@ class HonchoSessionManager:
 
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:
-            return
+            return True
 
         honcho_messages = []
         for msg in new_messages:
@@ -298,12 +298,14 @@ class HonchoSessionManager:
             for msg in new_messages:
                 msg["_synced"] = True
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
+            self._cache[session.key] = session
+            return True
         except Exception as e:
             for msg in new_messages:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
-
-        self._cache[session.key] = session
+            self._cache[session.key] = session
+            return False
 
     def _async_writer_loop(self) -> None:
         """Background daemon thread: drains the async write queue."""
@@ -312,16 +314,33 @@ class HonchoSessionManager:
                 item = self._async_queue.get(timeout=5)
                 if item is _ASYNC_SHUTDOWN:
                     break
+
+                first_error: Exception | None = None
                 try:
-                    self._flush_session(item)
+                    success = self._flush_session(item)
                 except Exception as e:
-                    logger.warning("Honcho async write failed, retrying once: %s", e)
-                    import time as _time
-                    _time.sleep(2)
-                    try:
-                        self._flush_session(item)
-                    except Exception as e2:
-                        logger.error("Honcho async write retry failed, dropping batch: %s", e2)
+                    success = False
+                    first_error = e
+
+                if success:
+                    continue
+
+                if first_error is not None:
+                    logger.warning("Honcho async write failed, retrying once: %s", first_error)
+                else:
+                    logger.warning("Honcho async write failed, retrying once")
+
+                import time as _time
+                _time.sleep(2)
+
+                try:
+                    retry_success = self._flush_session(item)
+                except Exception as e2:
+                    logger.error("Honcho async write retry failed, dropping batch: %s", e2)
+                    continue
+
+                if not retry_success:
+                    logger.error("Honcho async write retry failed, dropping batch")
             except queue.Empty:
                 continue
             except Exception as e:
@@ -617,21 +636,17 @@ class HonchoSessionManager:
         Returns:
             True if upload succeeded, False otherwise.
         """
-        sanitized = self._sanitize_id(session_key)
-        honcho_session = self._sessions_cache.get(sanitized)
+        session = self._cache.get(session_key)
+        if not session:
+            logger.warning("No local session cached for '%s', skipping migration", session_key)
+            return False
+
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
             logger.warning("No Honcho session cached for '%s', skipping migration", session_key)
             return False
 
-        # Resolve user peer for attribution
-        parts = session_key.split(":", 1)
-        channel = parts[0] if len(parts) > 1 else "default"
-        chat_id = parts[1] if len(parts) > 1 else session_key
-        user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
-        user_peer = self._peers_cache.get(user_peer_id)
-        if not user_peer:
-            logger.warning("No user peer cached for '%s', skipping migration", user_peer_id)
-            return False
+        user_peer = self._get_or_create_peer(session.user_peer_id)
 
         content_bytes = self._format_migration_transcript(session_key, messages)
         first_ts = messages[0].get("timestamp") if messages else None
@@ -700,30 +715,45 @@ class HonchoSessionManager:
         if not memory_path.exists():
             return False
 
-        sanitized = self._sanitize_id(session_key)
-        honcho_session = self._sessions_cache.get(sanitized)
+        session = self._cache.get(session_key)
+        if not session:
+            logger.warning("No local session cached for '%s', skipping memory migration", session_key)
+            return False
+
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
             return False
 
-        # Resolve user peer for attribution
-        parts = session_key.split(":", 1)
-        channel = parts[0] if len(parts) > 1 else "default"
-        chat_id = parts[1] if len(parts) > 1 else session_key
-        user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
-        user_peer = self._peers_cache.get(user_peer_id)
-        if not user_peer:
-            logger.warning("No user peer cached for '%s', skipping memory migration", user_peer_id)
-            return False
+        user_peer = self._get_or_create_peer(session.user_peer_id)
+        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
 
         uploaded = False
         files = [
-            ("MEMORY.md", "consolidated_memory.md", "Long-term agent notes and preferences"),
-            ("USER.md", "user_profile.md", "User profile and preferences"),
-            ("SOUL.md", "agent_soul.md", "Agent persona and identity configuration"),
+            (
+                "MEMORY.md",
+                "consolidated_memory.md",
+                "Long-term agent notes and preferences",
+                user_peer,
+                "user",
+            ),
+            (
+                "USER.md",
+                "user_profile.md",
+                "User profile and preferences",
+                user_peer,
+                "user",
+            ),
+            (
+                "SOUL.md",
+                "agent_soul.md",
+                "Agent persona and identity configuration",
+                assistant_peer,
+                "ai",
+            ),
         ]
 
-        for filename, upload_name, description in files:
+        for filename, upload_name, description, target_peer, target_kind in files:
             filepath = memory_path / filename
             if not filepath.exists():
                 continue
@@ -745,10 +775,19 @@ class HonchoSessionManager:
             try:
                 honcho_session.upload_file(
                     file=(upload_name, wrapped.encode("utf-8"), "text/plain"),
-                    peer=user_peer,
-                    metadata={"source": "local_memory", "original_file": filename},
+                    peer=target_peer,
+                    metadata={
+                        "source": "local_memory",
+                        "original_file": filename,
+                        "target_peer": target_kind,
+                    },
                 )
-                logger.info("Uploaded %s to Honcho for %s", filename, session_key)
+                logger.info(
+                    "Uploaded %s to Honcho for %s (%s peer)",
+                    filename,
+                    session_key,
+                    target_kind,
+                )
                 uploaded = True
             except Exception as e:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)

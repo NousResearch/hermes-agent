@@ -880,7 +880,28 @@ def _model_flow_openrouter(config, current_model=""):
     from hermes_cli.config import get_env_value, save_env_value
 
     api_key = get_env_value("OPENROUTER_API_KEY")
-    if not api_key:
+    if api_key:
+        print(f"Current OpenRouter API key: {api_key[:8]}... (configured)")
+        try:
+            update = input("Update OpenRouter API key? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if update in {"y", "yes"}:
+            try:
+                key = input("New OpenRouter API key (or Enter to keep current): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if key:
+                save_env_value("OPENROUTER_API_KEY", key)
+                api_key = key
+                print("API key updated.")
+                print()
+            else:
+                print("Keeping current OpenRouter API key.")
+                print()
+    else:
         print("No OpenRouter API key configured.")
         print("Get one at: https://openrouter.ai/keys")
         print()

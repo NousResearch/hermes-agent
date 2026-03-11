@@ -821,7 +821,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Saved {name}")
                     print()
             else:
-                print("  Set later with: hermes config set KEY VALUE")
+                print("  Set later with: hermes config set <key> <value>")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
@@ -1265,7 +1265,7 @@ def show_config():
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
-    print(color("  hermes config set KEY VALUE", Colors.DIM))
+    print(color("  hermes config set <key> <value>", Colors.DIM))
     print(color("  hermes setup           # Run setup wizard", Colors.DIM))
     print()
 
@@ -1391,7 +1391,7 @@ def config_command(args):
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
         if not key or not value:
-            print("Usage: hermes config set KEY VALUE")
+            print("Usage: hermes config set <key> <value>")
             print()
             print("Examples:")
             print("  hermes config set model anthropic/claude-sonnet-4")

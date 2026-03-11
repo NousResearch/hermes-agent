@@ -602,7 +602,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print(
         f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
     )
-    print(f"   {color('hermes config set KEY VALUE', Colors.GREEN)}")
+    print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
     print(f"                          Set a specific value")
     print()
     print(f"   Or edit the files directly:")

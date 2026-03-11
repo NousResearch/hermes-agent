@@ -464,6 +464,64 @@ The bot requires an @mention by default in server channels. Make sure you:
 - Edge TTS (free, no key) is the default fallback
 - Check logs for TTS errors
 
+### Web UI not accessible from other devices on the network
+
+The macOS firewall may block incoming connections. Allow the gateway through:
+
+1. **System Settings** → **Network** → **Firewall** → **Options**
+2. Add `/usr/local/bin/python3` (or your Python path) to the allowed list
+3. Or temporarily disable the firewall for testing
+
+On Linux, allow the port through `ufw`:
+
+```bash
+sudo ufw allow 8765/tcp
+```
+
+### Web UI microphone not working on mobile
+
+Mobile browsers require **HTTPS** for microphone access (`navigator.mediaDevices` API). When accessing the Web UI over HTTP on a LAN IP (e.g. `http://192.168.1.x:8765`), the mic button will appear dimmed.
+
+**Workarounds:**
+
+**Android Chrome** — flag the LAN IP as secure:
+1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+2. Add your Web UI URL (e.g. `http://192.168.1.106:8765`)
+3. Set to **Enabled** and relaunch Chrome
+
+**iOS Safari / Chrome** — no flag bypass available. Use one of these instead:
+
+1. **Self-signed HTTPS** with mkcert (recommended):
+   ```bash
+   # Install mkcert
+   brew install mkcert
+   mkcert -install
+
+   # Generate cert for your LAN IP
+   mkcert 192.168.1.106
+
+   # Run a simple HTTPS reverse proxy (requires Node.js)
+   npx local-ssl-proxy --source 8443 --target 8765 \
+     --cert 192.168.1.106.pem --key 192.168.1.106-key.pem
+   ```
+   Then access `https://192.168.1.106:8443` on your iPhone. You'll need to trust the mkcert root CA on iOS: **Settings → General → About → Certificate Trust Settings**.
+
+2. **Caddy reverse proxy** (auto-HTTPS for local networks):
+   ```bash
+   brew install caddy
+   caddy reverse-proxy --from https://192.168.1.106:8443 --to http://127.0.0.1:8765
+   ```
+
+3. **SSH tunnel from mobile** (if you have an SSH client like Termius):
+   ```bash
+   ssh -L 8765:127.0.0.1:8765 user@your-mac-ip
+   ```
+   Then access `http://localhost:8765` on the mobile browser — localhost is exempt from HTTPS requirement.
+
+:::tip
+Text chat works on mobile over HTTP without any workaround — only the microphone feature requires HTTPS.
+:::
+
 ### Whisper returns garbage text
 
 The hallucination filter catches most cases automatically. If you're still getting phantom transcripts:

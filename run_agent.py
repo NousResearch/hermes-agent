@@ -1803,10 +1803,14 @@ class AIAgent:
         elif "stream" in api_kwargs:
             raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
+        # Silently drop fields that are valid for other providers but not
+        # supported by the Codex Responses API (e.g. parallel_tool_calls,
+        # prompt_cache_key, tool_choice injected by litellm or the caller).
         unexpected = sorted(key for key in api_kwargs.keys() if key not in allowed_keys)
         if unexpected:
-            raise ValueError(
-                f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
+            logger.debug(
+                "Codex Responses: dropping unsupported field(s): %s",
+                ", ".join(unexpected),
             )
 
         return normalized

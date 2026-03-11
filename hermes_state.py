@@ -227,16 +227,27 @@ class SessionDB:
         self._conn.commit()
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0
+        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
+        model: str = None,
     ) -> None:
-        """Increment token counters on a session."""
-        self._conn.execute(
-            """UPDATE sessions SET
-               input_tokens = input_tokens + ?,
-               output_tokens = output_tokens + ?
-               WHERE id = ?""",
-            (input_tokens, output_tokens, session_id),
-        )
+        """Increment token counters on a session. Optionally backfill model."""
+        if model:
+            self._conn.execute(
+                """UPDATE sessions SET
+                   input_tokens = input_tokens + ?,
+                   output_tokens = output_tokens + ?,
+                   model = COALESCE(model, ?)
+                   WHERE id = ?""",
+                (input_tokens, output_tokens, model, session_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE sessions SET
+                   input_tokens = input_tokens + ?,
+                   output_tokens = output_tokens + ?
+                   WHERE id = ?""",
+                (input_tokens, output_tokens, session_id),
+            )
         self._conn.commit()
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:

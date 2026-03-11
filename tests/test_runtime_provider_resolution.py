@@ -181,6 +181,25 @@ def test_resolve_runtime_provider_nous_api(monkeypatch):
     assert resolved["requested_provider"] == "nous-api"
 
 
+def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
+    """When the user explicitly requests openrouter, OPENAI_BASE_URL
+    (which may point to a custom endpoint) must not override the
+    OpenRouter base URL.  Regression test for #874."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://my-custom-llm.example.com/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert "openrouter.ai" in resolved["base_url"]
+    assert "my-custom-llm" not in resolved["base_url"]
+    assert resolved["api_key"] == "or-test-key"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

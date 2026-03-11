@@ -477,6 +477,10 @@ def cmd_chat(args):
     except Exception:
         pass
 
+    # --yolo: bypass all dangerous command approvals
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -1885,6 +1889,12 @@ For more help on a command:
         default=False,
         help="Run in an isolated git worktree (for parallel agents)"
     )
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -1949,6 +1959,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)"
+    )
+    chat_parser.add_argument(
+        "--yolo",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

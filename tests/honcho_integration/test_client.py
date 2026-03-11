@@ -25,7 +25,7 @@ class TestHonchoClientConfigDefaults:
         assert config.environment == "production"
         assert config.enabled is False
         assert config.save_messages is True
-        assert config.session_strategy == "per-directory"
+        assert config.session_strategy == "per-session"
         assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.linked_hosts == []
@@ -140,7 +140,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "key"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.session_strategy == "per-directory"
+        assert config.session_strategy == "per-session"
 
     def test_context_tokens_host_block_wins(self, tmp_path):
         """Host block contextTokens should override root."""

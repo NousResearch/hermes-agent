@@ -219,7 +219,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         prefill_messages = _json.load(_pf)
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
-                except Exception:
+                except Exception as e:
+                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
         # Max iterations

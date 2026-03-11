@@ -29,13 +29,15 @@ source ~/.bashrc   # or source ~/.zshrc
 
 ## 2. Set Up a Provider
 
-The installer configures your LLM provider automatically. To change it later, run:
+The installer configures your LLM provider automatically. To change it later, use one of these commands:
 
 ```bash
-hermes model
+hermes model       # Choose your LLM provider and model
+hermes tools       # Configure which tools are enabled
+hermes setup       # Or configure everything at once
 ```
 
-This walks you through selecting an inference provider:
+`hermes model` walks you through selecting an inference provider:
 
 | Provider | What it is | How to set up |
 |----------|-----------|---------------|
@@ -160,8 +162,9 @@ mcp_servers:
 | Command | Description |
 |---------|-------------|
 | `hermes` | Start chatting |
-| `hermes model` | Switch provider or model |
+| `hermes model` | Choose your LLM provider and model |
 | `hermes tools` | Configure which tools are enabled per platform |
+| `hermes setup` | Full setup wizard (configures everything at once) |
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest version |
 | `hermes gateway` | Start the messaging gateway |

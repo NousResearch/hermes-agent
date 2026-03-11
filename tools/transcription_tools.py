@@ -32,13 +32,13 @@ from typing import Optional, Dict, Any, Tuple
 logger = logging.getLogger(__name__)
 
 
-# Default STT models per provider
-DEFAULT_STT_MODEL = "whisper-1"
-DEFAULT_GROQ_STT_MODEL = "whisper-large-v3-turbo"
+# Default STT models per provider (overridable via env)
+DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
+DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 
-# Provider endpoints
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-OPENAI_BASE_URL = "https://api.openai.com/v1"
+# Provider endpoints (overridable via env for proxies / self-hosted)
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
 def _resolve_stt_provider() -> Tuple[Optional[str], Optional[str], str]:

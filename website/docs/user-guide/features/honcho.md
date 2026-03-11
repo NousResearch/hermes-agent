@@ -54,16 +54,22 @@ Honcho reads from `~/.honcho/config.json` (shared across all Honcho-enabled appl
 ```json
 {
   "apiKey": "your-honcho-api-key",
-  "workspace": "hermes",
-  "peerName": "your-name",
-  "aiPeer": "hermes",
-  "memoryMode": "hybrid",
-  "writeFrequency": "async",
-  "recallMode": "hybrid",
-  "sessionStrategy": "per-directory",
-  "enabled": true
+  "hosts": {
+    "hermes": {
+      "workspace": "hermes",
+      "peerName": "your-name",
+      "aiPeer": "hermes",
+      "memoryMode": "hybrid",
+      "writeFrequency": "async",
+      "recallMode": "hybrid",
+      "sessionStrategy": "per-session",
+      "enabled": true
+    }
+  }
 }
 ```
+
+`apiKey` lives at the root because it is a shared credential across all Honcho-enabled tools. All other settings are scoped under `hosts.hermes`. The `hermes honcho setup` wizard writes this structure automatically.
 
 Or set the API key as an environment variable:
 
@@ -79,23 +85,36 @@ When an API key is present (either in `~/.honcho/config.json` or as `HONCHO_API_
 
 ### Global Config (`~/.honcho/config.json`)
 
+Settings are scoped to `hosts.hermes` and fall back to root-level globals when the host field is absent. Root-level keys are managed by the user or the honcho CLI -- Hermes only writes to its own host block (except `apiKey`, which is a shared credential at root).
+
+**Root-level (shared)**
+
 | Field | Default | Description |
 |-------|---------|-------------|
-| `apiKey` | — | Honcho API key (required) |
+| `apiKey` | — | Honcho API key (required, shared across all hosts) |
+| `sessions` | `{}` | Manual session name overrides per directory (shared) |
+
+**Host-level (`hosts.hermes`)**
+
+| Field | Default | Description |
+|-------|---------|-------------|
 | `workspace` | `"hermes"` | Workspace identifier |
 | `peerName` | *(derived)* | Your identity name for user modeling |
 | `aiPeer` | `"hermes"` | AI assistant identity name |
 | `environment` | `"production"` | Honcho environment |
+| `enabled` | *(auto)* | Auto-enables when API key is present |
 | `saveMessages` | `true` | Whether to sync messages to Honcho |
 | `memoryMode` | `"hybrid"` | Memory mode: `hybrid`, `honcho`, or `local` |
 | `writeFrequency` | `"async"` | When to write: `async`, `turn`, `session`, or integer N |
 | `recallMode` | `"hybrid"` | Retrieval strategy: `hybrid`, `context`, or `tools` |
-| `sessionStrategy` | `"per-directory"` | How sessions are scoped |
+| `sessionStrategy` | `"per-session"` | How sessions are scoped |
 | `sessionPeerPrefix` | `false` | Prefix session names with peer name |
 | `contextTokens` | *(Honcho default)* | Max tokens for context prefetch |
 | `dialecticReasoningLevel` | `"low"` | Floor for dialectic reasoning: `minimal` / `low` / `medium` / `high` / `max` |
 | `dialecticMaxChars` | `600` | Char cap on dialectic results injected into system prompt |
-| `sessions` | `{}` | Manual session name overrides per directory |
+| `linkedHosts` | `[]` | Other host keys whose workspaces to cross-reference |
+
+All host-level fields fall back to the equivalent root-level key if not set under `hosts.hermes`. Existing configs with settings at root level continue to work.
 
 ### Memory Modes
 
@@ -142,33 +161,39 @@ Controls how Honcho context reaches the agent:
 
 | Strategy | Session key | Use case |
 |----------|-------------|----------|
-| `per-directory` | CWD basename | Default. Each project gets its own session. |
+| `per-session` | Unique per run | Default. Fresh session every time. |
+| `per-directory` | CWD basename | Each project gets its own session. |
 | `per-repo` | Git repo root name | Groups subdirectories under one session. |
-| `per-session` | Unique per run | Fresh session every time. |
 | `global` | Fixed `"global"` | Single cross-project session. |
 
 Resolution order: manual map > session title > strategy-derived key > platform key.
 
-### Host-specific Configuration
+### Multi-host Configuration
 
-For multi-application setups, use host blocks:
+Multiple Honcho-enabled tools share `~/.honcho/config.json`. Each tool writes only to its own host block, reads its host block first, and falls back to root-level globals:
 
 ```json
 {
   "apiKey": "your-key",
+  "peerName": "eri",
   "hosts": {
     "hermes": {
       "workspace": "my-workspace",
       "aiPeer": "hermes-assistant",
+      "memoryMode": "honcho",
       "linkedHosts": ["claude-code"],
       "contextTokens": 2000,
       "dialecticReasoningLevel": "medium"
+    },
+    "claude-code": {
+      "workspace": "my-workspace",
+      "aiPeer": "clawd"
     }
   }
 }
 ```
 
-Host-specific fields override global fields. Resolution: host block > global fields > defaults.
+Resolution: `hosts.<tool>` field > root-level field > default. In this example, both tools share the root `apiKey` and `peerName`, but each has its own `aiPeer` and workspace settings.
 
 ### Hermes Config (`~/.hermes/config.yaml`)
 

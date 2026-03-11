@@ -259,6 +259,7 @@ async def vision_analyze_tool(
         
         # Check auxiliary vision client availability
         if _aux_async_client is None or DEFAULT_VISION_MODEL is None:
+            logger.error("Vision analysis unavailable: no auxiliary vision model configured")
             return json.dumps({
                 "success": False,
                 "analysis": "Vision analysis unavailable: no auxiliary vision model configured. "

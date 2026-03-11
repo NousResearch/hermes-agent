@@ -157,11 +157,11 @@ def cmd_setup(args) -> None:
         cfg["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = cfg.get("sessionStrategy", "per-directory")
+    current_strat = cfg.get("sessionStrategy", "per-session")
     print(f"\n  Session strategy options:")
-    print("    per-directory — one session per working directory (default)")
+    print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
+    print("    per-directory — one session per working directory")
     print("    per-repo      — one session per git repository (uses repo root name)")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID")
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
     if new_strat in ("per-session", "per-repo", "per-directory", "global"):
@@ -715,7 +715,7 @@ def cmd_migrate(args) -> None:
     print()
     print("  Session naming")
     print("    OpenClaw: no persistent session concept — files are global.")
-    print("    Hermes:   per-directory by default — each project gets its own session")
+    print("    Hermes:   per-session by default — each run gets its own session")
     print("              Map a custom name:  hermes honcho map <session-name>")
 
     # ── Step 6: Next steps ────────────────────────────────────────────────────

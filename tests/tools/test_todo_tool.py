@@ -46,11 +46,17 @@ class TestFormatForInjection:
         store.write([
             {"id": "1", "content": "Do thing", "status": "completed"},
             {"id": "2", "content": "Next", "status": "pending"},
+            {"id": "3", "content": "Working", "status": "in_progress"},
         ])
         text = store.format_for_injection()
-        assert "[x]" in text
+        # Completed items are filtered out of injection
+        assert "[x]" not in text
+        assert "Do thing" not in text
+        # Active items are included
         assert "[ ]" in text
-        assert "Do thing" in text
+        assert "[>]" in text
+        assert "Next" in text
+        assert "Working" in text
         assert "context compression" in text.lower()
 
 

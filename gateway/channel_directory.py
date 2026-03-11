@@ -17,6 +17,26 @@ logger = logging.getLogger(__name__)
 DIRECTORY_PATH = Path.home() / ".hermes" / "channel_directory.json"
 
 
+def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
+    chat_id = origin.get("chat_id")
+    if not chat_id:
+        return None
+    thread_id = origin.get("thread_id")
+    if thread_id:
+        return f"{chat_id}:{thread_id}"
+    return str(chat_id)
+
+
+def _session_entry_name(origin: Dict[str, Any]) -> str:
+    base_name = origin.get("chat_name") or origin.get("user_name") or str(origin.get("chat_id"))
+    thread_id = origin.get("thread_id")
+    if not thread_id:
+        return base_name
+
+    topic_label = origin.get("chat_topic") or f"topic {thread_id}"
+    return f"{base_name} / {topic_label}"
+
+
 # ---------------------------------------------------------------------------
 # Build / refresh
 # ---------------------------------------------------------------------------
@@ -41,7 +61,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal"):
+    for plat_name in ("telegram", "whatsapp", "signal", "email"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 
@@ -123,14 +143,15 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue
-            chat_id = origin.get("chat_id")
-            if not chat_id or chat_id in seen_ids:
+            entry_id = _session_entry_id(origin)
+            if not entry_id or entry_id in seen_ids:
                 continue
-            seen_ids.add(chat_id)
+            seen_ids.add(entry_id)
             entries.append({
-                "id": str(chat_id),
-                "name": origin.get("chat_name") or origin.get("user_name") or str(chat_id),
+                "id": entry_id,
+                "name": _session_entry_name(origin),
                 "type": session.get("chat_type", "dm"),
+                "thread_id": origin.get("thread_id"),
             })
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)

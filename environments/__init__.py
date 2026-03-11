@@ -18,9 +18,14 @@ Benchmarks (eval-only):
     - benchmarks/terminalbench_2/: Terminal-Bench 2.0 evaluation
 """
 
-from environments.agent_loop import AgentResult, HermesAgentLoop
-from environments.tool_context import ToolContext
-from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
+try:
+    from environments.agent_loop import AgentResult, HermesAgentLoop
+    from environments.tool_context import ToolContext
+    from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
+except ImportError:
+    # atroposlib not installed — environments are unavailable but
+    # submodules like tool_call_parsers can still be imported directly.
+    pass
 
 __all__ = [
     "AgentResult",

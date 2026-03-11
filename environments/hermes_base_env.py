@@ -229,6 +229,12 @@ class HermesAgentBaseEnv(BaseEnv):
         from environments.agent_loop import resize_tool_pool
         resize_tool_pool(config.tool_pool_size)
 
+        # Set tool_parser on the ServerManager so ManagedServer uses it
+        # for bidirectional tool call translation (raw text ↔ OpenAI tool_calls).
+        if hasattr(self.server, 'tool_parser'):
+            self.server.tool_parser = config.tool_call_parser
+            print(f"🔧 Tool parser: {config.tool_call_parser}")
+
         # Current group's resolved tools (set in collect_trajectories)
         self._current_group_tools: Optional[Tuple[List[Dict], Set[str]]] = None
 
@@ -466,22 +472,14 @@ class HermesAgentBaseEnv(BaseEnv):
         # Run the agent loop
         result: AgentResult
         if self._use_managed_server():
-            # Phase 2: ManagedServer with parser -- exact tokens + logprobs
-            # Load the tool call parser from registry based on config
-            from environments.tool_call_parsers import get_parser
-            try:
-                tc_parser = get_parser(self.config.tool_call_parser)
-            except KeyError:
-                logger.warning(
-                    "Tool call parser '%s' not found, falling back to 'hermes'",
-                    self.config.tool_call_parser,
-                )
-                tc_parser = get_parser("hermes")
-
+            # Phase 2: ManagedServer with ToolCallTranslator -- exact tokens + logprobs
+            # tool_parser is set on ServerManager in __init__ and passed through
+            # to ManagedServer, which uses ToolCallTranslator for bidirectional
+            # translation between raw text and OpenAI tool_calls.
             try:
                 async with self.server.managed_server(
                     tokenizer=self.tokenizer,
-                    tool_call_parser=tc_parser,
+                    preserve_think_blocks=bool(self.config.thinking_mode),
                 ) as managed:
                     agent = HermesAgentLoop(
                         server=managed,

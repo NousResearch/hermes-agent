@@ -490,13 +490,16 @@ def run_doctor(args):
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
 
     # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
+    # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
-        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL"),
-        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL"),
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL"),
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL"),
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
+        ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
     ]
-    for _pname, _env_vars, _default_url, _base_env in _apikey_providers:
+    for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
         for _ev in _env_vars:
             _key = os.getenv(_ev, "")
@@ -504,6 +507,10 @@ def run_doctor(args):
                 break
         if _key:
             _label = _pname.ljust(20)
+            # Some providers (like MiniMax) don't support /models endpoint
+            if not _supports_health_check:
+                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
+                continue
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx

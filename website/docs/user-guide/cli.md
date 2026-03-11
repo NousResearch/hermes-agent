@@ -104,6 +104,7 @@ Type `/` to see an autocomplete dropdown of all available commands.
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set/clear custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`) and display (`show`/`hide`) |
 
 ### Conversation Management
 
@@ -130,6 +131,23 @@ Type `/` to see an autocomplete dropdown of all available commands.
 :::tip
 Commands are case-insensitive — `/HELP` works the same as `/help`. Most commands work mid-conversation.
 :::
+
+## Quick Commands
+
+You can define custom commands that run shell commands instantly without invoking the LLM. These work in both the CLI and messaging platforms (Telegram, Discord, etc.).
+
+```yaml
+# ~/.hermes/config.yaml
+quick_commands:
+  status:
+    type: exec
+    command: systemctl status hermes-agent
+  gpu:
+    type: exec
+    command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+```
+
+Then type `/status` or `/gpu` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
 
 ## Skill Slash Commands
 

@@ -32,7 +32,12 @@ hermes-agent/
 │   ├── commands.py       # Slash command definitions + SlashCommandCompleter
 │   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
 │   ├── setup.py          # Interactive setup wizard
-│   └── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
+│   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
+│   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
+│   ├── models.py         # Model catalog, provider model lists
+│   └── auth.py           # Provider credential resolution
 ├── tools/                # Tool implementations (one file per tool)
 │   ├── registry.py       # Central tool registry (schemas, handlers, dispatch)
 │   ├── approval.py       # Dangerous command detection
@@ -49,9 +54,10 @@ hermes-agent/
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
 │   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
+├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)
-├── tests/                # Pytest suite (~2500+ tests)
+├── tests/                # Pytest suite (~3000 tests)
 └── batch_runner.py       # Parallel batch processing
 ```
 
@@ -332,7 +338,7 @@ The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HER
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # Full suite (~2500 tests, ~2 min)
+python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading
 python -m pytest tests/gateway/ -q               # Gateway tests

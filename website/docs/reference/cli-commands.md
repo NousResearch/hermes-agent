@@ -38,7 +38,7 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
-| `hermes setup` | Full setup wizard (provider, terminal, messaging) |
+| `hermes setup` | Full setup wizard — configures provider, model, terminal, and messaging all at once |
 | `hermes config` | View current configuration |
 | `hermes config edit` | Open config.yaml in your editor |
 | `hermes config set KEY VAL` | Set a specific value |
@@ -147,6 +147,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort and display. Args: effort level (`none`, `low`, `medium`, `high`, `xhigh`) or display toggle (`show`, `hide`). No args shows current state. |
 
 ### Conversation
 

@@ -11,7 +11,7 @@ the `platform_toolsets` key.
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 import os
 
@@ -108,6 +108,8 @@ PLATFORMS = {
     "discord":  {"label": "💬 Discord",    "default_toolset": "hermes-discord"},
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
+    "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
 }
 
 
@@ -308,6 +310,22 @@ def _get_enabled_platforms() -> List[str]:
     return enabled
 
 
+def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
+    """Return a summary of enabled toolsets per platform.
+
+    When ``platforms`` is None, this uses ``_get_enabled_platforms`` to
+    auto-detect platforms. Tests can pass an explicit list to avoid relying
+    on environment variables.
+    """
+    if platforms is None:
+        platforms = _get_enabled_platforms()
+
+    summary: Dict[str, Set[str]] = {}
+    for pkey in platforms:
+        summary[pkey] = _get_platform_tools(config, pkey)
+    return summary
+
+
 def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     from toolsets import resolve_toolset, TOOLSETS
@@ -447,6 +465,7 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
+    from hermes_cli.curses_ui import curses_checklist
 
     labels = []
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
@@ -455,112 +474,18 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             suffix = "  [no API key]"
         labels.append(f"{ts_label}  ({ts_desc}){suffix}")
 
-    pre_selected_indices = [
+    pre_selected = {
         i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)
         if ts_key in enabled
-    ]
+    }
 
-    # Curses-based multi-select — arrow keys + space to toggle + enter to confirm.
-    # simple_term_menu has rendering bugs in tmux, iTerm, and other terminals.
-    try:
-        import curses
-        selected = set(pre_selected_indices)
-        result_holder = [None]
-
-        def _curses_checklist(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, 8, -1)  # dim gray
-            cursor = 0
-            scroll_offset = 0
-
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
-                header = f"Tools for {platform_label}  —  ↑↓ navigate, SPACE toggle, ENTER confirm"
-                try:
-                    stdscr.addnstr(0, 0, header, max_x - 1, curses.A_BOLD | curses.color_pair(2) if curses.has_colors() else curses.A_BOLD)
-                except curses.error:
-                    pass
-
-                visible_rows = max_y - 3
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
-
-                for draw_i, i in enumerate(range(scroll_offset, min(len(labels), scroll_offset + visible_rows))):
-                    y = draw_i + 2
-                    if y >= max_y - 1:
-                        break
-                    check = "✓" if i in selected else " "
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow} [{check}] {labels[i]}"
-
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                key = stdscr.getch()
-
-                if key in (curses.KEY_UP, ord('k')):
-                    cursor = (cursor - 1) % len(labels)
-                elif key in (curses.KEY_DOWN, ord('j')):
-                    cursor = (cursor + 1) % len(labels)
-                elif key == ord(' '):
-                    if cursor in selected:
-                        selected.discard(cursor)
-                    else:
-                        selected.add(cursor)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result_holder[0] = {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
-                    return
-                elif key in (27, ord('q')):  # ESC or q
-                    result_holder[0] = enabled
-                    return
-
-        curses.wrapper(_curses_checklist)
-        return result_holder[0] if result_holder[0] is not None else enabled
-
-    except Exception:
-        pass  # fall through to numbered toggle
-
-    # Final fallback: numbered toggle (Windows without curses, etc.)
-    selected = set(pre_selected_indices)
-    print(color(f"\n  Tools for {platform_label}", Colors.YELLOW))
-    print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
-
-    while True:
-        for i, label in enumerate(labels):
-            marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
-            print(f"  {marker} {i + 1:>2}. {label}")
-        print()
-        try:
-            val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
-            if not val:
-                break
-            idx = int(val) - 1
-            if 0 <= idx < len(labels):
-                if idx in selected:
-                    selected.discard(idx)
-                else:
-                    selected.add(idx)
-        except (ValueError, KeyboardInterrupt, EOFError):
-            return enabled
-        print()
-
-    return {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
+    chosen = curses_checklist(
+        f"Tools for {platform_label}",
+        labels,
+        pre_selected,
+        cancel_returns=pre_selected,
+    )
+    return {CONFIGURABLE_TOOLSETS[i][0] for i in chosen}
 
 
 # ─── Provider-Aware Configuration ────────────────────────────────────────────
@@ -874,6 +799,26 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     enabled_platforms = _get_enabled_platforms()
 
     print()
+
+    # Non-interactive summary mode for CLI usage
+    if getattr(args, "summary", False):
+        total = len(CONFIGURABLE_TOOLSETS)
+        print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
+        print()
+        summary = _platform_toolset_summary(config, enabled_platforms)
+        for pkey in enabled_platforms:
+            pinfo = PLATFORMS[pkey]
+            enabled = summary.get(pkey, set())
+            count = len(enabled)
+            print(color(f"  {pinfo['label']}", Colors.BOLD) + color(f"  ({count}/{total})", Colors.DIM))
+            if enabled:
+                for ts_key in sorted(enabled):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    print(color(f"    ✓ {label}", Colors.GREEN))
+            else:
+                print(color("    (none enabled)", Colors.DIM))
+        print()
+        return
     print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
     print(color("  Enable or disable tools per platform.", Colors.DIM))
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))
@@ -941,19 +886,65 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_choices.append(f"Configure {pinfo['label']}  ({count}/{total} enabled)")
         platform_keys.append(pkey)
 
+    if len(platform_keys) > 1:
+        platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
     platform_choices.append("Done")
+
+    # Index offsets for the extra options after per-platform entries
+    _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
+    _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
+    _done_idx = _reconfig_idx + 1
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
 
         # "Done" selected
-        if idx == len(platform_keys) + 1:
+        if idx == _done_idx:
             break
 
         # "Reconfigure" selected
-        if idx == len(platform_keys):
+        if idx == _reconfig_idx:
             _reconfigure_tool(config)
+            print()
+            continue
+
+        # "Configure all platforms (global)" selected
+        if idx == _global_idx:
+            # Use the union of all platforms' current tools as the starting state
+            all_current = set()
+            for pk in platform_keys:
+                all_current |= _get_platform_tools(config, pk)
+            new_enabled = _prompt_toolset_checklist("All platforms", all_current)
+            if new_enabled != all_current:
+                for pk in platform_keys:
+                    prev = _get_platform_tools(config, pk)
+                    added = new_enabled - prev
+                    removed = prev - new_enabled
+                    pinfo_inner = PLATFORMS[pk]
+                    if added or removed:
+                        print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
+                        for ts in sorted(added):
+                            label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                            print(color(f"    + {label}", Colors.GREEN))
+                        for ts in sorted(removed):
+                            label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                            print(color(f"    - {label}", Colors.RED))
+                    # Configure API keys for newly enabled tools
+                    for ts_key in sorted(added):
+                        if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                            if not _toolset_has_keys(ts_key):
+                                _configure_toolset(ts_key, config)
+                    _save_platform_tools(config, pk, new_enabled)
+                save_config(config)
+                print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
+                # Update choice labels
+                for ci, pk in enumerate(platform_keys):
+                    new_count = len(_get_platform_tools(config, pk))
+                    total = len(CONFIGURABLE_TOOLSETS)
+                    platform_choices[ci] = f"Configure {PLATFORMS[pk]['label']}  ({new_count}/{total} enabled)"
+            else:
+                print(color("  No changes", Colors.DIM))
             print()
             continue
 

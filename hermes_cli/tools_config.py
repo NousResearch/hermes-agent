@@ -481,7 +481,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
-                header = f"Tools for {platform_label}  —  ↑↓ navigate, SPACE toggle, ENTER confirm"
+                header = f"Tools for {platform_label}  —  ↑↓ navigate, SPACE toggle, ENTER confirm, ESC cancel"
                 try:
                     stdscr.addnstr(0, 0, header, max_x - 1, curses.A_BOLD | curses.color_pair(2) if curses.has_colors() else curses.A_BOLD)
                 except curses.error:
@@ -941,19 +941,65 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_choices.append(f"Configure {pinfo['label']}  ({count}/{total} enabled)")
         platform_keys.append(pkey)
 
+    if len(platform_keys) > 1:
+        platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
     platform_choices.append("Done")
+
+    # Index offsets for the extra options after per-platform entries
+    _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
+    _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
+    _done_idx = _reconfig_idx + 1
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
 
         # "Done" selected
-        if idx == len(platform_keys) + 1:
+        if idx == _done_idx:
             break
 
         # "Reconfigure" selected
-        if idx == len(platform_keys):
+        if idx == _reconfig_idx:
             _reconfigure_tool(config)
+            print()
+            continue
+
+        # "Configure all platforms (global)" selected
+        if idx == _global_idx:
+            # Use the union of all platforms' current tools as the starting state
+            all_current = set()
+            for pk in platform_keys:
+                all_current |= _get_platform_tools(config, pk)
+            new_enabled = _prompt_toolset_checklist("All platforms", all_current)
+            if new_enabled != all_current:
+                for pk in platform_keys:
+                    prev = _get_platform_tools(config, pk)
+                    added = new_enabled - prev
+                    removed = prev - new_enabled
+                    pinfo_inner = PLATFORMS[pk]
+                    if added or removed:
+                        print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
+                        for ts in sorted(added):
+                            label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                            print(color(f"    + {label}", Colors.GREEN))
+                        for ts in sorted(removed):
+                            label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                            print(color(f"    - {label}", Colors.RED))
+                    # Configure API keys for newly enabled tools
+                    for ts_key in sorted(added):
+                        if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                            if not _toolset_has_keys(ts_key):
+                                _configure_toolset(ts_key, config)
+                    _save_platform_tools(config, pk, new_enabled)
+                save_config(config)
+                print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
+                # Update choice labels
+                for ci, pk in enumerate(platform_keys):
+                    new_count = len(_get_platform_tools(config, pk))
+                    total = len(CONFIGURABLE_TOOLSETS)
+                    platform_choices[ci] = f"Configure {PLATFORMS[pk]['label']}  ({new_count}/{total} enabled)"
+            else:
+                print(color("  No changes", Colors.DIM))
             print()
             continue
 

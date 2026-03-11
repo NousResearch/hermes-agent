@@ -111,7 +111,7 @@ def _prompt_checklist(title: str, items: List[str], disabled_items: Set[str]) ->
                 curses.use_default_colors()
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, curses.COLOR_RED, -1)
+                curses.init_pair(3, 8, -1)  # dim gray
             cursor = 0
             scroll_offset = 0
             while True:
@@ -121,28 +121,27 @@ def _prompt_checklist(title: str, items: List[str], disabled_items: Set[str]) ->
                     hattr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
                     stdscr.addnstr(0, 0, title, max_x - 1, hattr)
                     stdscr.addnstr(1, 0, "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel", max_x - 1,
-                                   curses.color_pair(3) if curses.has_colors() else curses.A_DIM)
-                    stdscr.addnstr(2, 0, "  [✓] enabled   [✗] disabled", max_x - 1, curses.A_DIM)
+                                   curses.A_DIM)
                 except curses.error:
                     pass
-                visible_rows = max_y - 4
+                visible_rows = max_y - 3
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
                     scroll_offset = cursor - visible_rows + 1
                 for draw_i, i in enumerate(range(scroll_offset, min(len(items), scroll_offset + visible_rows))):
-                    y = draw_i + 4
+                    y = draw_i + 3
                     if y >= max_y - 1:
                         break
                     is_disabled = i in selected
-                    check = "✗" if is_disabled else "✓"
+                    check = " " if is_disabled else "✓"
                     arrow = "→" if i == cursor else " "
                     line = f" {arrow} [{check}] {items[i]}"
                     attr = curses.A_NORMAL
                     if i == cursor:
-                        attr = curses.A_BOLD | (curses.color_pair(1) if curses.has_colors() else 0)
-                    elif is_disabled and curses.has_colors():
-                        attr = curses.color_pair(3)
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
                     try:
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
                     except curses.error:
@@ -179,7 +178,7 @@ def _numbered_toggle(title: str, items: List[str], disabled: Set[str]) -> Set[st
         print()
         print(color(f"{title}", Colors.BOLD))
         for i, item in enumerate(items, 1):
-            mark = "✗" if item in current else "✓"
+            mark = "✓" if item not in current else " "
             print(f"  {i:3}. [{mark}] {item}")
         print()
         print(color("  Number to toggle, 's' save, 'q' cancel:", Colors.DIM))

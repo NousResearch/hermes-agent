@@ -583,6 +583,7 @@ def setup_model_provider(config: dict):
         get_codex_auth_status,
         DEFAULT_CODEX_BASE_URL,
         detect_external_credentials,
+        _resolve_kimi_base_url,
     )
 
     print_header("Inference Provider")
@@ -948,23 +949,49 @@ def setup_model_provider(config: dict):
         print_header("Kimi / Moonshot API Key")
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
         print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://platform.moonshot.cn/")
+        print_info(f"Legacy Base URL: https://api.moonshot.ai/v1")
+        print_info(f"Kimi Coding Base URL: https://api.kimi.com/coding/v1")
+        print_info("Keys starting with 'sk-kimi-' use Kimi Coding endpoint")
+        print_info(
+            "Get your API key at: https://platform.moonshot.cn/ or https://platform.kimi.ai/"
+        )
         print()
 
         existing_key = get_env_value("KIMI_API_KEY")
         if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
+            detected_url = _resolve_kimi_base_url(
+                existing_key, "https://api.moonshot.ai/v1", ""
+            )
+            endpoint_type = (
+                "Kimi Coding" if "kimi.com" in detected_url else "Moonshot Legacy"
+            )
+            print_info(f"Current: {existing_key[:8]}... ({endpoint_type} endpoint)")
             if prompt_yes_no("Update API key?", False):
                 api_key = prompt("  Kimi API key", password=True)
                 if api_key:
                     save_env_value("KIMI_API_KEY", api_key)
-                    print_success("Kimi API key updated")
+                    detected_url = _resolve_kimi_base_url(
+                        api_key, "https://api.moonshot.ai/v1", ""
+                    )
+                    endpoint_type = (
+                        "Kimi Coding"
+                        if "kimi.com" in detected_url
+                        else "Moonshot Legacy"
+                    )
+                    print_success(f"Kimi API key updated ({endpoint_type} endpoint)")
         else:
             api_key = prompt("  Kimi API key", password=True)
             if api_key:
                 save_env_value("KIMI_API_KEY", api_key)
-                print_success("Kimi API key saved")
+                detected_url = _resolve_kimi_base_url(
+                    api_key, "https://api.moonshot.ai/v1", ""
+                )
+                endpoint_type = (
+                    "Kimi Coding" if "kimi.com" in detected_url else "Moonshot Legacy"
+                )
+                print_success(
+                    f"Kimi API key saved ({endpoint_type} endpoint: {detected_url})"
+                )
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
@@ -1180,7 +1207,13 @@ def setup_model_provider(config: dict):
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
         elif selected_provider == "kimi-coding":
-            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
+            kimi_models = [
+                "kimi-coding",
+                "kimi-latest",
+                "kimi-k2.5",
+                "kimi-k2-thinking",
+                "kimi-k2-turbo-preview",
+            ]
             model_choices = list(kimi_models)
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

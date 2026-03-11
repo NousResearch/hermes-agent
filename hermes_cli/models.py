@@ -15,19 +15,19 @@ from typing import Any, Optional
 
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.6",       "recommended"),
-    ("anthropic/claude-sonnet-4.5",     ""),
-    ("openai/gpt-5.4-pro",              ""),
-    ("openai/gpt-5.4",                  ""),
-    ("openai/gpt-5.3-codex",            ""),
-    ("google/gemini-3-pro-preview",     ""),
-    ("google/gemini-3-flash-preview",   ""),
-    ("qwen/qwen3.5-plus-02-15",         ""),
-    ("qwen/qwen3.5-35b-a3b",            ""),
-    ("stepfun/step-3.5-flash",          ""),
-    ("z-ai/glm-5",                      ""),
-    ("moonshotai/kimi-k2.5",            ""),
-    ("minimax/minimax-m2.5",            ""),
+    ("anthropic/claude-opus-4.6", "recommended"),
+    ("anthropic/claude-sonnet-4.5", ""),
+    ("openai/gpt-5.4-pro", ""),
+    ("openai/gpt-5.4", ""),
+    ("openai/gpt-5.3-codex", ""),
+    ("google/gemini-3-pro-preview", ""),
+    ("google/gemini-3-flash-preview", ""),
+    ("qwen/qwen3.5-plus-02-15", ""),
+    ("qwen/qwen3.5-35b-a3b", ""),
+    ("stepfun/step-3.5-flash", ""),
+    ("z-ai/glm-5", ""),
+    ("moonshotai/kimi-k2.5", ""),
+    ("minimax/minimax-m2.5", ""),
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -38,6 +38,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5-flash",
     ],
     "kimi-coding": [
+        "kimi-coding",
+        "kimi-latest",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
@@ -107,8 +109,13 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn",
+        "openrouter",
+        "nous",
+        "openai-codex",
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -123,16 +130,19 @@ def list_available_providers() -> list[dict[str, str]]:
         has_creds = False
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
+
             runtime = resolve_runtime_provider(requested=pid)
             has_creds = bool(runtime.get("api_key"))
         except Exception:
             pass
-        result.append({
-            "id": pid,
-            "label": label,
-            "aliases": alias_list,
-            "authenticated": has_creds,
-        })
+        result.append(
+            {
+                "id": pid,
+                "label": label,
+                "aliases": alias_list,
+                "authenticated": has_creds,
+            }
+        )
     return result
 
 
@@ -157,7 +167,7 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     colon = stripped.find(":")
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
-        model_part = stripped[colon + 1:].strip()
+        model_part = stripped[colon + 1 :].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
@@ -280,7 +290,9 @@ def validate_requested_model(
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
-                suggestion_text = "\n  Did you mean: " + ", ".join(f"`{s}`" for s in suggestions)
+                suggestion_text = "\n  Did you mean: " + ", ".join(
+                    f"`{s}`" for s in suggestions
+                )
 
             return {
                 "accepted": False,

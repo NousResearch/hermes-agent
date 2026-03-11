@@ -53,6 +53,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "glm-5": 202752,
     "glm-4.5": 131072,
     "glm-4.5-flash": 131072,
+    "kimi-coding": 200000,
+    "kimi-latest": 200000,
     "kimi-k2.5": 262144,
     "kimi-k2-thinking": 262144,
     "kimi-k2-turbo-preview": 262144,
@@ -67,7 +69,11 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+    if (
+        not force_refresh
+        and _model_metadata_cache
+        and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL
+    ):
         return _model_metadata_cache
 
     try:
@@ -80,7 +86,9 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
             model_id = model.get("id", "")
             cache[model_id] = {
                 "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+                "max_completion_tokens": model.get("top_provider", {}).get(
+                    "max_completion_tokens", 4096
+                ),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
             }
@@ -166,11 +174,11 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
-        r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
-        r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
-        r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
-        r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
-        r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
+        r"(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})",
+        r"context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})",
+        r"(\d{4,})\s*(?:token)?\s*(?:context|limit)",
+        r">\s*(\d{4,})\s*(?:max|limit|token)",  # "250000 tokens > 200000 maximum"
+        r"(\d{4,})\s*(?:max(?:imum)?)\b",  # "200000 maximum"
     ]
     for pattern in patterns:
         match = re.search(pattern, error_lower)

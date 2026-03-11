@@ -1671,11 +1671,11 @@ def _save_model_choice(model_id: str) -> None:
     from hermes_cli.config import save_config, load_config, save_env_value
 
     config = load_config()
-    # Handle both string and dict model formats
+    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
-        config["model"] = model_id
+        config["model"] = {"default": model_id}
     save_config(config)
     save_env_value("LLM_MODEL", model_id)
 

@@ -2628,20 +2628,25 @@ class HermesCLI:
                 target_provider, new_model = parse_model_input(raw_input, current_provider)
                 provider_changed = target_provider != current_provider
 
-                # If provider is changing, re-resolve credentials for the new provider
+                # Always resolve runtime credentials for the target provider before
+                # validating the requested model. The shell can start with a stale
+                # base URL from env/config that does not match the active provider.
                 api_key_for_probe = self.api_key
                 base_url_for_probe = self.base_url
-                if provider_changed:
-                    try:
-                        from hermes_cli.runtime_provider import resolve_runtime_provider
-                        runtime = resolve_runtime_provider(requested=target_provider)
-                        api_key_for_probe = runtime.get("api_key", "")
-                        base_url_for_probe = runtime.get("base_url", "")
-                    except Exception as e:
-                        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
-                        print(f"(^_^) Current model unchanged: {self.model}")
-                        return True
+                try:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    runtime = resolve_runtime_provider(requested=target_provider)
+                    api_key_for_probe = runtime.get("api_key", "")
+                    base_url_for_probe = runtime.get("base_url", "")
+                    self.requested_provider = target_provider
+                    self.provider = target_provider
+                    self.api_key = api_key_for_probe
+                    self.base_url = base_url_for_probe
+                except Exception as e:
+                    provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                    print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                    print(f"(^_^) Current model unchanged: {self.model}")
+                    return True
 
                 try:
                     validation = validate_requested_model(
@@ -2661,12 +2666,6 @@ class HermesCLI:
                 else:
                     self.model = new_model
                     self.agent = None  # Force re-init
-
-                    if provider_changed:
-                        self.requested_provider = target_provider
-                        self.provider = target_provider
-                        self.api_key = api_key_for_probe
-                        self.base_url = base_url_for_probe
 
                     provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
                     provider_note = f" [provider: {provider_label}]" if provider_changed else ""

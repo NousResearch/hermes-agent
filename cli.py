@@ -713,7 +713,14 @@ class ChatConsole:
     def __init__(self):
         from io import StringIO
         self._buffer = StringIO()
-        self._inner = Console(file=self._buffer, force_terminal=True, highlight=False)
+        # Use truecolor here because we render into an in-memory buffer (StringIO),
+        # and Rich's auto-detection can otherwise downgrade colors.
+        self._inner = Console(
+            file=self._buffer,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+        )
 
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
@@ -1718,6 +1725,20 @@ class HermesCLI:
         from rich.panel import Panel
         from rich.text import Text
 
+        # Skin-aware colors for the recap panel
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            _history_text_c = _skin.get_color("banner_text", "#FFF8DC")
+            _session_label_c = _skin.get_color("session_label", "#DAA520")
+            _session_border_c = _skin.get_color("session_border", "#8B8682")
+            _assistant_label_c = _skin.get_color("ui_ok", "#8FBC8F")
+        except Exception:
+            _history_text_c = "#FFF8DC"
+            _session_label_c = "#DAA520"
+            _session_border_c = "#8B8682"
+            _assistant_label_c = "#8FBC8F"
+
         lines = Text()
         if skipped:
             lines.append(
@@ -1727,14 +1748,14 @@ class HermesCLI:
 
         for i, (role, text) in enumerate(entries):
             if role == "user":
-                lines.append("  ● You: ", style="dim bold #DAA520")
+                lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             else:
-                lines.append("  ◆ Hermes: ", style="dim bold #8FBC8F")
+                lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
@@ -1744,9 +1765,10 @@ class HermesCLI:
 
         panel = Panel(
             lines,
-            title="[dim #DAA520]Previous Conversation[/]",
-            border_style="dim #8B8682",
+            title=f"[dim {_session_label_c}]Previous Conversation[/]",
+            border_style=f"dim {_session_border_c}",
             padding=(0, 1),
+            style=_history_text_c,
         )
         self.console.print(panel)
 
@@ -2991,16 +3013,19 @@ class HermesCLI:
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
+                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
+                        _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         response,
-                        title=f"[bold]{label} (background #{task_num})[/bold]",
+                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
+                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 2),
                     ))
@@ -3572,16 +3597,19 @@ class HermesCLI:
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
+                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
+                    _resp_text = "#FFF8DC"
 
                 _chat_console = ChatConsole()
                 _chat_console.print(Panel(
                     response,
-                    title=f"[bold]{label}[/bold]",
+                    title=f"[{_resp_color} bold]{label}[/]",
                     title_align="left",
                     border_style=_resp_color,
+                    style=_resp_text,
                     box=rich_box.HORIZONTALS,
                     padding=(1, 2),
                 ))
@@ -3969,21 +3997,26 @@ class HermesCLI:
                 sym = '❯ '
 
             sym = sym or '❯ '
+            # Normalize to exactly one trailing space (prompt_toolkit expects a
+            # trailing spacer; skin files often have inconsistent whitespace).
+            sym = sym.rstrip() + ' '
 
-            # If the symbol looks like "<icon> <arrow>", use only the last token.
-            # Otherwise, use the full symbol as-is.
+            # If the symbol looks like "<icon> <arrow>", extract just the trailing
+            # arrow token for state prompts (🔐/⚠/⚕...). If the skin provides an
+            # icon-only prompt (e.g. "⚔ "), don't invent an arrow.
             s = sym.rstrip()
             if not s:
                 return '❯ ', '❯ '
 
             parts = s.split()
-            if len(parts) >= 2:
-                arrow = parts[-1]
-            else:
-                arrow = sym
+            candidate = parts[-1] if parts else ''
+            arrow_chars = ('❯', '>', '$', '#', '›', '»', '→')
+            has_arrow = any(ch in candidate for ch in arrow_chars)
 
-            if isinstance(arrow, str) and arrow and not arrow.endswith(' '):
-                arrow = arrow + ' '
+            if has_arrow:
+                arrow = candidate.rstrip() + ' '
+            else:
+                arrow = ''
 
             return sym, arrow
 

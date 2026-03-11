@@ -241,7 +241,7 @@ class TestCliBrandingHelpers:
     def test_active_prompt_symbol_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
         set_active_skin("ares")
-        assert get_active_prompt_symbol() == "⚔ ❯ "
+        assert get_active_prompt_symbol() == "⚔ "
 
     def test_active_help_header_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_help_header

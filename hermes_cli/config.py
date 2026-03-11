@@ -182,7 +182,16 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
-    
+
+    # Subagent delegation — override the provider:model used by delegate_task
+    # so child agents can run on a different (cheaper/faster) provider and model.
+    # Uses the same runtime provider resolution as CLI/gateway startup, so all
+    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    "delegation": {
+        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

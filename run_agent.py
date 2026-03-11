@@ -20,6 +20,7 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
+import atexit
 import copy
 import hashlib
 import json
@@ -31,6 +32,7 @@ import re
 import sys
 import time
 import threading
+import weakref
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
@@ -550,6 +552,7 @@ class AIAgent:
         self._honcho = None  # HonchoSessionManager | None
         self._honcho_session_key = honcho_session_key
         self._honcho_config = None  # HonchoClientConfig | None
+        self._honcho_exit_hook_registered = False
         if not skip_memory:
             try:
                 if honcho_manager is not None:
@@ -1427,28 +1430,46 @@ class AIAgent:
             try:
                 ctx = self._honcho.get_prefetch_context(self._honcho_session_key)
                 if ctx:
-                    self._honcho._context_cache[self._honcho_session_key] = ctx
+                    self._honcho.set_context_result(self._honcho_session_key, ctx)
                     logger.debug("Honcho context pre-warmed for first turn")
             except Exception as exc:
                 logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
 
-        import signal as _signal
-        import threading as _threading
+        self._register_honcho_exit_hook()
 
-        honcho_ref = self._honcho
+    def _register_honcho_exit_hook(self) -> None:
+        """Register a process-exit flush hook without clobbering signal handlers."""
+        if self._honcho_exit_hook_registered or not self._honcho:
+            return
 
-        if _threading.current_thread() is _threading.main_thread():
-            def _honcho_flush_handler(signum, frame):
-                try:
-                    honcho_ref.flush_all()
-                except Exception:
-                    pass
-                if signum == _signal.SIGINT:
-                    raise KeyboardInterrupt
-                raise SystemExit(0)
+        honcho_ref = weakref.ref(self._honcho)
 
-            _signal.signal(_signal.SIGTERM, _honcho_flush_handler)
-            _signal.signal(_signal.SIGINT, _honcho_flush_handler)
+        def _flush_honcho_on_exit():
+            manager = honcho_ref()
+            if manager is None:
+                return
+            try:
+                manager.flush_all()
+            except Exception as exc:
+                logger.debug("Honcho flush on exit failed (non-fatal): %s", exc)
+
+        atexit.register(_flush_honcho_on_exit)
+        self._honcho_exit_hook_registered = True
+
+    def _queue_honcho_prefetch(self, user_message: str) -> None:
+        """Queue turn-end Honcho prefetch so the next turn can consume cached results."""
+        if not self._honcho or not self._honcho_session_key:
+            return
+
+        recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
+        if recall_mode == "tools":
+            return
+
+        try:
+            self._honcho.prefetch_context(self._honcho_session_key, user_message)
+            self._honcho.prefetch_dialectic(self._honcho_session_key, user_message or "What were we working on?")
+        except Exception as exc:
+            logger.debug("Honcho background prefetch failed (non-fatal): %s", exc)
 
     def _honcho_prefetch(self, user_message: str) -> str:
         """Assemble the first-turn Honcho context from the pre-warmed cache."""
@@ -1471,6 +1492,10 @@ class AIAgent:
                     parts.append(f"## AI peer representation\n{ai_rep}")
                 if ai_card:
                     parts.append(ai_card)
+
+            dialectic = self._honcho.pop_dialectic_result(self._honcho_session_key)
+            if dialectic:
+                parts.append(f"## Continuity synthesis\n{dialectic}")
 
             if not parts:
                 return ""
@@ -3379,15 +3404,23 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho: on the first turn only, read the pre-warmed context snapshot and
-        # bake it into the system prompt. We intentionally avoid per-turn refreshes
-        # here because changing the system prompt would destroy provider prompt-cache
-        # reuse for the rest of the session.
+        # Honcho prefetch consumption:
+        # - First turn: bake into cached system prompt (stable for the session).
+        # - Later turns: inject as ephemeral system context for this API call only.
+        #
+        # This keeps the persisted/cached prompt stable while still allowing
+        # turn N to consume background prefetch results from turn N-1.
         self._honcho_context = ""
+        self._honcho_turn_context = ""
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
-        if self._honcho and self._honcho_session_key and not conversation_history and _recall_mode != "tools":
+        if self._honcho and self._honcho_session_key and _recall_mode != "tools":
             try:
-                self._honcho_context = self._honcho_prefetch(user_message)
+                prefetched_context = self._honcho_prefetch(user_message)
+                if prefetched_context:
+                    if not conversation_history:
+                        self._honcho_context = prefetched_context
+                    else:
+                        self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
@@ -3566,15 +3599,12 @@ class AIAgent:
                 api_messages.append(api_msg)
 
             # Build the final system message: cached prompt + ephemeral system prompt.
-            # The ephemeral part is appended here (not baked into the cached prompt)
-            # so it stays out of the session DB and logs.
-            # Note: Honcho context is baked into _cached_system_prompt on the first
-            # turn and stored in the session DB, so it does NOT need to be injected
-            # here.  This keeps the system message identical across all turns in a
-            # session, maximizing Anthropic prompt cache hits.
+            # Ephemeral additions are API-call-time only (not persisted to session DB).
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if self._honcho_turn_context:
+                effective_system = (effective_system + "\n\n" + self._honcho_turn_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -4656,6 +4686,7 @@ class AIAgent:
         # Sync conversation to Honcho for user modeling
         if final_response and not interrupted:
             self._honcho_sync(original_user_message, final_response)
+            self._queue_honcho_prefetch(original_user_message)
 
         # Build result with interrupt info if applicable
         result = {

@@ -157,11 +157,11 @@ def cmd_setup(args) -> None:
         cfg["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = cfg.get("sessionStrategy", "per-session")
+    current_strat = cfg.get("sessionStrategy", "per-directory")
     print(f"\n  Session strategy options:")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
+    print("    per-directory — one session per working directory (default)")
     print("    per-repo      — one session per git repository (uses repo root name)")
-    print("    per-directory — one session per working directory")
+    print("    per-session   — new Honcho session each run, named by Hermes session ID")
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
     if new_strat in ("per-session", "per-repo", "per-directory", "global"):
@@ -199,6 +199,7 @@ def cmd_setup(args) -> None:
     print(f"    honcho_context  — ask Honcho a question about you (LLM-synthesized)")
     print(f"    honcho_search       — semantic search over your history (no LLM)")
     print(f"    honcho_profile      — your peer card, key facts (no LLM)")
+    print(f"    honcho_conclude     — persist a user fact to Honcho memory (no LLM)")
     print(f"\n  Other commands:")
     print(f"    hermes honcho status     — show full config")
     print(f"    hermes honcho mode       — show or change memory mode")
@@ -710,10 +711,11 @@ def cmd_migrate(args) -> None:
     print("    honcho_context   — ask Honcho a question, get a synthesized answer (LLM)")
     print("    honcho_search        — semantic search over stored context (no LLM)")
     print("    honcho_profile       — fast peer card snapshot (no LLM)")
+    print("    honcho_conclude      — write a conclusion/fact back to memory (no LLM)")
     print()
     print("  Session naming")
     print("    OpenClaw: no persistent session concept — files are global.")
-    print("    Hermes:   per-session by default — each run gets a new Honcho session")
+    print("    Hermes:   per-directory by default — each project gets its own session")
     print("              Map a custom name:  hermes honcho map <session-name>")
 
     # ── Step 6: Next steps ────────────────────────────────────────────────────

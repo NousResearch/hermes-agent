@@ -103,6 +103,7 @@ class HonchoSessionManager:
         # Prefetch caches: session_key → last result (consumed once per turn)
         self._context_cache: dict[str, dict] = {}
         self._dialectic_cache: dict[str, str] = {}
+        self._prefetch_cache_lock = threading.Lock()
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
         )
@@ -496,10 +497,17 @@ class HonchoSessionManager:
         def _run():
             result = self.dialectic_query(session_key, query)
             if result:
-                self._dialectic_cache[session_key] = result
+                self.set_dialectic_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-dialectic-prefetch", daemon=True)
         t.start()
+
+    def set_dialectic_result(self, session_key: str, result: str) -> None:
+        """Store a prefetched dialectic result in a thread-safe way."""
+        if not result:
+            return
+        with self._prefetch_cache_lock:
+            self._dialectic_cache[session_key] = result
 
     def pop_dialectic_result(self, session_key: str) -> str:
         """
@@ -507,7 +515,8 @@ class HonchoSessionManager:
 
         Returns empty string if no result is ready yet.
         """
-        return self._dialectic_cache.pop(session_key, "")
+        with self._prefetch_cache_lock:
+            return self._dialectic_cache.pop(session_key, "")
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """
@@ -519,10 +528,17 @@ class HonchoSessionManager:
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
-                self._context_cache[session_key] = result
+                self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
         t.start()
+
+    def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
+        """Store a prefetched context result in a thread-safe way."""
+        if not result:
+            return
+        with self._prefetch_cache_lock:
+            self._context_cache[session_key] = result
 
     def pop_context_result(self, session_key: str) -> dict[str, str]:
         """
@@ -530,7 +546,8 @@ class HonchoSessionManager:
 
         Returns empty dict if no result is ready yet (first turn).
         """
-        return self._context_cache.pop(session_key, {})
+        with self._prefetch_cache_lock:
+            return self._context_cache.pop(session_key, {})
 
     def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
         """

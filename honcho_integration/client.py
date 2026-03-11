@@ -95,7 +95,7 @@ class HonchoClientConfig:
     # "tools"   — no pre-loaded context, rely on tool calls only
     recall_mode: str = "hybrid"
     # Session resolution
-    session_strategy: str = "per-session"
+    session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -201,7 +201,7 @@ class HonchoClientConfig:
                 or raw.get("recallMode")
                 or "hybrid"
             ),
-            session_strategy=raw.get("sessionStrategy", "per-session"),
+            session_strategy=raw.get("sessionStrategy", "per-directory"),
             session_peer_prefix=raw.get("sessionPeerPrefix", False),
             sessions=raw.get("sessions", {}),
             raw=raw,

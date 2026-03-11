@@ -255,6 +255,15 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # Pre-exec security scanning via tirith
+    "security": {
+        "redact_secrets": True,
+        "tirith_enabled": True,
+        "tirith_path": "tirith",
+        "tirith_timeout": 5,
+        "tirith_fail_open": True,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 7,
 }
@@ -885,14 +894,23 @@ def load_config() -> Dict[str, Any]:
     return _normalize_max_turns_config(config)
 
 
-_COMMENTED_SECTIONS = """
+_SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
 # API keys, tokens, and passwords are redacted from tool output by default.
 # Set to false to see full values (useful for debugging auth issues).
+# tirith pre-exec scanning is enabled by default when the tirith binary
+# is available. Configure via security.tirith_* keys or env vars
+# (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 #
 # security:
 #   redact_secrets: false
+#   tirith_enabled: true
+#   tirith_path: "tirith"
+#   tirith_timeout: 5
+#   tirith_fail_open: true
+"""
 
+_FALLBACK_COMMENT = """
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
@@ -955,18 +973,18 @@ def save_config(config: Dict[str, Any]):
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
-    sections = []
+    parts = []
     sec = normalized.get("security", {})
     if not sec or sec.get("redact_secrets") is None:
-        sections.append("security")
+        parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
     if not fb or not (fb.get("provider") and fb.get("model")):
-        sections.append("fallback")
+        parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(
         config_path,
         normalized,
-        extra_content=_COMMENTED_SECTIONS if sections else None,
+        extra_content="".join(parts) if parts else None,
     )
     _secure_file(config_path)
 

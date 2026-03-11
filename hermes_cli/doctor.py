@@ -69,7 +69,11 @@ def check_info(text: str):
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
-    
+
+    # Doctor runs from the interactive CLI, so CLI-gated tool availability
+    # checks (like cronjob management) should see the same context as `hermes`.
+    os.environ.setdefault("HERMES_INTERACTIVE", "1")
+
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
@@ -580,7 +584,7 @@ def run_doctor(args):
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-        
+
         available, unavailable = check_tool_availability()
         
         for tid in available:

@@ -249,6 +249,85 @@ class TestCronTimezone:
         due = get_due_jobs()
         assert len(due) == 1
 
+    def test_ensure_aware_naive_preserves_absolute_time(self):
+        """_ensure_aware must preserve the absolute instant for naive datetimes.
+
+        Regression: the old code used replace(tzinfo=hermes_tz) which shifted
+        absolute time when system-local tz != Hermes tz.  The fix interprets
+        naive values as system-local wall time, then converts.
+        """
+        from cron.jobs import _ensure_aware
+
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
+        hermes_time.reset_cache()
+
+        # Create a naive datetime — will be interpreted as system-local time
+        naive_dt = datetime(2026, 3, 11, 12, 0, 0)
+
+        result = _ensure_aware(naive_dt)
+
+        # The result should be in Kolkata tz
+        assert result.tzinfo is not None
+
+        # The UTC equivalent must match what we'd get by correctly interpreting
+        # the naive dt as system-local time first, then converting
+        system_tz = datetime.now().astimezone().tzinfo
+        expected_utc = naive_dt.replace(tzinfo=system_tz).astimezone(timezone.utc)
+        actual_utc = result.astimezone(timezone.utc)
+        assert actual_utc == expected_utc, (
+            f"Absolute time shifted: expected {expected_utc}, got {actual_utc}"
+        )
+
+    def test_ensure_aware_normalizes_aware_to_hermes_tz(self):
+        """Already-aware datetimes should be normalized to Hermes tz."""
+        from cron.jobs import _ensure_aware
+
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
+        hermes_time.reset_cache()
+
+        # Create an aware datetime in UTC
+        utc_dt = datetime(2026, 3, 11, 15, 0, 0, tzinfo=timezone.utc)
+        result = _ensure_aware(utc_dt)
+
+        # Must be in Hermes tz (Kolkata) but same absolute instant
+        kolkata = ZoneInfo("Asia/Kolkata")
+        assert result.utctimetuple()[:5] == (2026, 3, 11, 15, 0)
+        expected_local = utc_dt.astimezone(kolkata)
+        assert result == expected_local
+
+    def test_ensure_aware_due_job_not_skipped_when_system_ahead(self, tmp_path, monkeypatch):
+        """Reproduce the actual bug: system tz ahead of Hermes tz caused
+        overdue jobs to appear as not-yet-due.
+
+        Scenario: system is Asia/Kolkata (UTC+5:30), Hermes is UTC.
+        A naive timestamp from 5 minutes ago (local time) should still
+        be recognized as due after conversion.
+        """
+        import cron.jobs as jobs_module
+        monkeypatch.setattr(jobs_module, "CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr(jobs_module, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_module, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+        os.environ["HERMES_TIMEZONE"] = "UTC"
+        hermes_time.reset_cache()
+
+        from cron.jobs import create_job, load_jobs, save_jobs, get_due_jobs
+
+        job = create_job(prompt="Bug repro", schedule="every 1h")
+        jobs = load_jobs()
+
+        # Simulate a naive timestamp that was written by datetime.now() on a
+        # system running in UTC+5:30 — 5 minutes in the past (local time)
+        naive_past = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = naive_past
+        save_jobs(jobs)
+
+        # Must be recognized as due regardless of tz mismatch
+        due = get_due_jobs()
+        assert len(due) == 1, (
+            "Overdue job was skipped — _ensure_aware likely shifted absolute time"
+        )
+
     def test_create_job_stores_tz_aware_timestamps(self, tmp_path, monkeypatch):
         """New jobs store timezone-aware created_at and next_run_at."""
         import cron.jobs as jobs_module

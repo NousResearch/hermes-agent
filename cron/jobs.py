@@ -168,16 +168,22 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Make a naive datetime tz-aware using the configured timezone.
+    """Return a timezone-aware datetime in Hermes configured timezone.
 
-    Handles backward compatibility: timestamps stored before timezone support
-    are naive (server-local).  We assume they were in the same timezone as
-    the current configuration so comparisons work without crashing.
+    Backward compatibility:
+    - Older stored timestamps may be naive.
+    - Naive values are interpreted as *system-local wall time* (the timezone
+      `datetime.now()` used when they were created), then converted to the
+      configured Hermes timezone.
+
+    This preserves relative ordering for legacy naive timestamps across
+    timezone changes and avoids false not-due results.
     """
+    target_tz = _hermes_now().tzinfo
     if dt.tzinfo is None:
-        tz = _hermes_now().tzinfo
-        return dt.replace(tzinfo=tz)
-    return dt
+        local_tz = datetime.now().astimezone().tzinfo
+        return dt.replace(tzinfo=local_tz).astimezone(target_tz)
+    return dt.astimezone(target_tz)
 
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:

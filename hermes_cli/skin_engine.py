@@ -190,9 +190,9 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#ffa726",
             "prompt": "#F1E6CF",
             "input_rule": "#9F1C1C",
-            "response_border": "#C7A96B",
-            "session_label": "#C7A96B",
-            "session_border": "#6E584B",
+            "response_border": "#9F1C1C",
+            "session_label": "#9F1C1C",
+            "session_border": "#9F1C1C",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],

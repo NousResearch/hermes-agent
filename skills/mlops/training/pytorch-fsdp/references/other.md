@@ -2290,7 +2290,7 @@ This call gives the AsyncStager the opportunity to ‘stage’ the state_dict. T
 
 for serializing the state_dict and writing it to storage.
 
-the serialization thread starts and before returning from dcp.async_save. If this is set to False, the assumption is the user has defined a custom synchronization point for the the purpose of further optimizing save latency in the training loop (for example, by overlapping staging with the forward/backward pass), and it is the respondsibility of the user to call AsyncStager.synchronize_staging at the appropriate time.
+the serialization thread starts and before returning from dcp.async_save. If this is set to False, the assumption is the user has defined a custom synchronization point for the purpose of further optimizing save latency in the training loop (for example, by overlapping staging with the forward/backward pass), and it is the respondsibility of the user to call AsyncStager.synchronize_staging at the appropriate time.
 
 Clean up all resources used by the stager.
 
@@ -3441,7 +3441,7 @@ The target module does not have to be an FSDP module.
 
 A StateDictSettings containing the state_dict_type and state_dict / optim_state_dict configs that are currently set.
 
-AssertionError` if the StateDictSettings for differen –
+AssertionError` if the StateDictSettings for different –
 
 FSDP submodules differ. –
 
@@ -3766,7 +3766,7 @@ The sharing is done as described by ZeRO.
 
 The local optimizer instance in each rank is only responsible for updating approximately 1 / world_size parameters and hence only needs to keep 1 / world_size optimizer states. After parameters are updated locally, each rank will broadcast its parameters to all other peers to keep all model replicas in the same state. ZeroRedundancyOptimizer can be used in conjunction with torch.nn.parallel.DistributedDataParallel to reduce per-rank peak memory consumption.
 
-ZeroRedundancyOptimizer uses a sorted-greedy algorithm to pack a number of parameters at each rank. Each parameter belongs to a single rank and is not divided among ranks. The partition is arbitrary and might not match the the parameter registration or usage order.
+ZeroRedundancyOptimizer uses a sorted-greedy algorithm to pack a number of parameters at each rank. Each parameter belongs to a single rank and is not divided among ranks. The partition is arbitrary and might not match the parameter registration or usage order.
 
 params (Iterable) – an Iterable of torch.Tensor s or dict s giving all parameters, which will be sharded across ranks.
 

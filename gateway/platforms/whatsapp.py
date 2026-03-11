@@ -181,8 +181,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             
             # Kill any orphaned bridge from a previous gateway run
             _kill_port_process(self._bridge_port)
-            import time
-            time.sleep(1)
+            import asyncio
+            await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection

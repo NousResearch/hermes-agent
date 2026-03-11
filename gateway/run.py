@@ -2520,6 +2520,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.WEB: "hermes-web",
             }
             platform_toolsets_config = {}
             try:
@@ -2541,6 +2542,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.WEB: "web",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -3426,8 +3428,9 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.WEB: "hermes-web",
         }
-        
+
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
         try:
@@ -3439,7 +3442,7 @@ class GatewayRunner:
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
         except Exception as e:
             logger.debug("Could not load platform_toolsets config: %s", e)
-        
+
         # Map platform enum to config key
         platform_config_key = {
             Platform.LOCAL: "cli",
@@ -3450,6 +3453,7 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.WEB: "web",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

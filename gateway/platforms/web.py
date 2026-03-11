@@ -218,6 +218,27 @@ class WebAdapter(BasePlatformAdapter):
         await self._broadcast(payload)
         return SendResult(success=True, message_id=msg_id)
 
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """Play TTS audio invisibly — no bubble in chat, just audio playback."""
+        filename = f"tts_{uuid.uuid4().hex[:8]}{Path(audio_path).suffix}"
+        dest = self._media_dir / filename
+        try:
+            shutil.copy2(audio_path, dest)
+        except Exception as e:
+            return SendResult(success=False, error=f"Failed to copy audio: {e}")
+
+        payload = {
+            "type": "play_audio",
+            "url": f"/media/{filename}",
+        }
+        await self._broadcast(payload)
+        return SendResult(success=True)
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -551,27 +572,36 @@ def _build_chat_html() -> str:
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 :root {
-    --bg: #0d1117;
-    --bg-secondary: #161b22;
-    --bg-input: #1c2128;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-muted: #8b949e;
-    --accent: #58a6ff;
-    --accent-hover: #79c0ff;
-    --user-bg: #1f6feb;
-    --bot-bg: #21262d;
-    --error: #f85149;
-    --success: #3fb950;
-    --radius: 12px;
+    --bg: #08090d;
+    --bg-secondary: rgba(14,16,24,0.85);
+    --bg-input: rgba(20,24,36,0.9);
+    --glass: rgba(16,20,32,0.6);
+    --glass-border: rgba(100,120,200,0.12);
+    --border: rgba(80,100,160,0.15);
+    --text: #e2e8f0;
+    --text-muted: #64748b;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108,92,231,0.3);
+    --accent-hover: #a29bfe;
+    --user-bg: linear-gradient(135deg, #6c5ce7 0%, #4834d4 100%);
+    --bot-bg: rgba(20,24,40,0.7);
+    --error: #ff6b6b;
+    --success: #51cf66;
+    --radius: 16px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     height: 100dvh;
     overflow: hidden;
+    /* Subtle grid background */
+    background-image:
+        radial-gradient(ellipse at 50% 0%, rgba(108,92,231,0.08) 0%, transparent 60%),
+        linear-gradient(rgba(30,35,60,0.3) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30,35,60,0.3) 1px, transparent 1px);
+    background-size: 100% 100%, 40px 40px, 40px 40px;
 }
 
 /* Auth Screen */
@@ -581,116 +611,222 @@ body {
     align-items: center;
     justify-content: center;
     height: 100dvh;
-    gap: 16px;
+    gap: 20px;
 }
-#auth-screen h1 { font-size: 28px; font-weight: 600; }
+#auth-screen h1 {
+    font-size: 32px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #e2e8f0, #a29bfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+}
 #auth-screen p { color: var(--text-muted); font-size: 14px; }
 #token-input {
     background: var(--bg-input);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     color: var(--text);
-    padding: 12px 16px;
-    border-radius: 8px;
+    padding: 14px 18px;
+    border-radius: 12px;
     font-size: 16px;
-    width: 300px;
+    width: 320px;
     max-width: 80vw;
     text-align: center;
     outline: none;
+    backdrop-filter: blur(12px);
+    transition: border-color 0.2s, box-shadow 0.2s;
 }
-#token-input:focus { border-color: var(--accent); }
+#token-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 20px var(--accent-glow);
+}
 #auth-btn {
     background: var(--accent);
     color: #fff;
     border: none;
-    padding: 10px 32px;
-    border-radius: 8px;
+    padding: 12px 36px;
+    border-radius: 12px;
     font-size: 15px;
     cursor: pointer;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    transition: all 0.2s;
 }
-#auth-btn:hover { background: var(--accent-hover); }
+#auth-btn:hover {
+    background: var(--accent-hover);
+    box-shadow: 0 4px 24px var(--accent-glow);
+    transform: translateY(-1px);
+}
 #auth-error { color: var(--error); font-size: 13px; display: none; }
 
-/* Chat Screen */
+/* Chat container — centered on desktop */
 #chat-screen {
     display: none;
     flex-direction: column;
     height: 100dvh;
+    max-width: 760px;
+    margin: 0 auto;
+    position: relative;
 }
+@media (min-width: 800px) {
+    #chat-screen {
+        border-left: 1px solid var(--glass-border);
+        border-right: 1px solid var(--glass-border);
+        background: rgba(8,9,13,0.5);
+        backdrop-filter: blur(8px);
+    }
+}
+
+/* Status bar */
 #status-bar {
     background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
-    padding: 10px 16px;
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--glass-border);
+    padding: 12px 20px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-shrink: 0;
 }
-#status-bar .title { font-weight: 600; font-size: 15px; }
+#status-bar .title {
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: -0.3px;
+}
+#status-bar .conn-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 500;
+}
 #status-dot {
     width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--success);
     display: inline-block;
     margin-right: 8px;
+    box-shadow: 0 0 8px rgba(81,207,102,0.5);
 }
-#status-dot.disconnected { background: var(--error); }
+#status-dot.disconnected {
+    background: var(--error);
+    box-shadow: 0 0 8px rgba(255,107,107,0.5);
+}
 
 /* Messages */
 #messages {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     scroll-behavior: smooth;
 }
+#messages::-webkit-scrollbar { width: 4px; }
+#messages::-webkit-scrollbar-track { background: transparent; }
+#messages::-webkit-scrollbar-thumb { background: rgba(100,120,200,0.2); border-radius: 4px; }
+
 .msg {
-    max-width: 85%;
-    padding: 10px 14px;
+    max-width: 80%;
+    padding: 12px 16px;
     border-radius: var(--radius);
     font-size: 14px;
-    line-height: 1.55;
+    line-height: 1.6;
     word-wrap: break-word;
     overflow-wrap: break-word;
+    animation: msgIn 0.25s ease-out;
+}
+@keyframes msgIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 .msg.user {
     align-self: flex-end;
     background: var(--user-bg);
     border-bottom-right-radius: 4px;
+    box-shadow: 0 2px 16px rgba(108,92,231,0.2);
 }
 .msg.bot {
     align-self: flex-start;
     background: var(--bot-bg);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     border-bottom-left-radius: 4px;
+    backdrop-filter: blur(8px);
 }
 .msg.bot pre {
-    background: #0d1117;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    background: rgba(8,9,13,0.8);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
     padding: 12px;
     overflow-x: auto;
     margin: 8px 0;
 }
 .msg.bot code {
-    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
     font-size: 13px;
 }
 .msg.bot p code {
-    background: rgba(110,118,129,0.3);
+    background: rgba(108,92,231,0.15);
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 13px;
 }
 .msg.bot img {
     max-width: 100%;
-    border-radius: 8px;
+    border-radius: 10px;
     margin: 8px 0;
     cursor: pointer;
 }
-.msg.bot audio { width: 100%; margin: 6px 0; }
+
+/* Voice message bubble */
+.voice-bubble {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 220px;
+    padding: 4px 0;
+}
+.voice-play-btn {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    box-shadow: 0 2px 12px var(--accent-glow);
+}
+.voice-play-btn:hover { background: var(--accent-hover); }
+.voice-play-btn svg { fill: #fff; width: 16px; height: 16px; }
+.voice-waveform {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 28px;
+    cursor: pointer;
+    position: relative;
+}
+.voice-waveform .bar {
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0.3;
+    transition: opacity 0.15s;
+}
+.voice-waveform .bar.played { opacity: 1.0; }
+.voice-time {
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 38px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
 .msg .timestamp {
     font-size: 11px;
     color: var(--text-muted);
@@ -720,14 +856,15 @@ body {
     align-self: flex-start;
     padding: 10px 16px;
     background: var(--bot-bg);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius);
     border-bottom-left-radius: 4px;
+    backdrop-filter: blur(8px);
 }
 .typing-indicator span {
     display: inline-block;
     width: 7px; height: 7px;
-    background: var(--text-muted);
+    background: var(--accent);
     border-radius: 50%;
     margin: 0 2px;
     animation: typing 1.4s infinite;
@@ -736,38 +873,43 @@ body {
 .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes typing {
     0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
-    30% { opacity: 1; transform: translateY(-4px); }
+    30% { opacity: 1; transform: translateY(-5px); }
 }
 
 /* Input bar */
 #input-bar {
     background: var(--bg-secondary);
-    border-top: 1px solid var(--border);
-    padding: 10px 12px;
+    backdrop-filter: blur(16px);
+    border-top: 1px solid var(--glass-border);
+    padding: 12px 16px;
     display: flex;
-    gap: 8px;
+    gap: 10px;
     align-items: flex-end;
     flex-shrink: 0;
 }
 #input {
     flex: 1;
     background: var(--bg-input);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     color: var(--text);
-    padding: 10px 14px;
-    border-radius: 20px;
+    padding: 11px 16px;
+    border-radius: 22px;
     font-size: 15px;
     font-family: inherit;
     resize: none;
     max-height: 120px;
-    min-height: 42px;
+    min-height: 44px;
     line-height: 1.4;
     outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
 }
-#input:focus { border-color: var(--accent); }
+#input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 16px var(--accent-glow);
+}
 #input::placeholder { color: var(--text-muted); }
 .input-btn {
-    width: 42px; height: 42px;
+    width: 44px; height: 44px;
     border-radius: 50%;
     border: none;
     cursor: pointer;
@@ -775,25 +917,35 @@ body {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    transition: background 0.15s;
+    transition: all 0.2s;
 }
 #send-btn {
     background: var(--accent);
     color: #fff;
+    box-shadow: 0 2px 12px var(--accent-glow);
 }
-#send-btn:hover { background: var(--accent-hover); }
-#send-btn:disabled { opacity: 0.4; cursor: default; }
+#send-btn:hover {
+    background: var(--accent-hover);
+    box-shadow: 0 4px 20px var(--accent-glow);
+    transform: translateY(-1px);
+}
+#send-btn:disabled { opacity: 0.3; cursor: default; box-shadow: none; transform: none; }
 #voice-btn {
     background: var(--bg-input);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     color: var(--text-muted);
 }
-#voice-btn:hover { border-color: var(--accent); color: var(--accent); }
+#voice-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+}
 #voice-btn.recording {
     background: var(--error);
     border-color: var(--error);
     color: #fff;
     animation: pulse 1.5s infinite;
+    box-shadow: 0 0 16px rgba(255,107,107,0.4);
 }
 @keyframes pulse {
     0%, 100% { opacity: 1; }
@@ -807,8 +959,8 @@ body {
     align-items: center;
     gap: 6px;
     padding: 8px 12px;
-    background: rgba(88,166,255,0.1);
-    border: 1px solid var(--border);
+    background: rgba(108,92,231,0.1);
+    border: 1px solid var(--glass-border);
     border-radius: 8px;
     color: var(--accent);
     text-decoration: none;
@@ -968,6 +1120,11 @@ function handleServerMessage(data) {
             addTranscriptMessage(data.text);
             break;
 
+        case 'play_audio':
+            // Invisible TTS playback — no UI element, just play audio
+            { const a = new Audio(data.url); a.play().catch(() => {}); }
+            break;
+
         case 'error':
             addSystemMessage(data.error);
             break;
@@ -1020,7 +1177,6 @@ async function startRecording() {
             const reader = new FileReader();
             reader.onloadend = () => {
                 const b64 = reader.result.split(',')[1];
-                addSystemMessage('Sending voice message...');
                 ws.send(JSON.stringify({type: 'voice', audio: b64, format: 'webm'}));
             };
             reader.readAsDataURL(blob);
@@ -1118,10 +1274,87 @@ function addVoiceMessage(id, url, caption, ts) {
         p.textContent = caption;
         div.appendChild(p);
     }
-    const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.src = url;
-    div.appendChild(audio);
+
+    const audio = new Audio(url);
+    audio.preload = 'metadata';
+
+    // Build voice bubble
+    const bubble = document.createElement('div');
+    bubble.className = 'voice-bubble';
+
+    // Play/pause button
+    const btn = document.createElement('button');
+    btn.className = 'voice-play-btn';
+    const playSvg = '<svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>';
+    const pauseSvg = '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
+    btn.innerHTML = playSvg;
+    bubble.appendChild(btn);
+
+    // Waveform bars
+    const waveform = document.createElement('div');
+    waveform.className = 'voice-waveform';
+    const barCount = 35;
+    const bars = [];
+    for (let i = 0; i < barCount; i++) {
+        const bar = document.createElement('div');
+        bar.className = 'bar';
+        const h = 6 + Math.random() * 22;
+        bar.style.height = h + 'px';
+        waveform.appendChild(bar);
+        bars.push(bar);
+    }
+    bubble.appendChild(waveform);
+
+    // Duration display
+    const timeEl = document.createElement('div');
+    timeEl.className = 'voice-time';
+    timeEl.textContent = '0:00';
+    bubble.appendChild(timeEl);
+
+    function fmtDur(s) {
+        const m = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+
+    audio.addEventListener('loadedmetadata', () => {
+        if (isFinite(audio.duration)) timeEl.textContent = fmtDur(audio.duration);
+    });
+
+    let playing = false;
+    function updateProgress() {
+        if (!isFinite(audio.duration)) return;
+        const pct = audio.currentTime / audio.duration;
+        const playedIdx = Math.floor(pct * barCount);
+        bars.forEach((b, i) => b.classList.toggle('played', i <= playedIdx));
+        timeEl.textContent = fmtDur(audio.currentTime);
+        if (playing) requestAnimationFrame(updateProgress);
+    }
+
+    btn.onclick = () => {
+        if (playing) { audio.pause(); }
+        else { audio.play(); }
+    };
+    audio.onplay = () => { playing = true; btn.innerHTML = pauseSvg; updateProgress(); };
+    audio.onpause = () => { playing = false; btn.innerHTML = playSvg; };
+    audio.onended = () => {
+        playing = false;
+        btn.innerHTML = playSvg;
+        bars.forEach(b => b.classList.remove('played'));
+        if (isFinite(audio.duration)) timeEl.textContent = fmtDur(audio.duration);
+    };
+
+    // Click on waveform to seek
+    waveform.onclick = (e) => {
+        if (!isFinite(audio.duration)) return;
+        const rect = waveform.getBoundingClientRect();
+        const pct = (e.clientX - rect.left) / rect.width;
+        audio.currentTime = pct * audio.duration;
+        if (!playing) audio.play();
+    };
+
+    div.appendChild(bubble);
+
     if (ts) {
         const time = document.createElement('div');
         time.className = 'timestamp';
@@ -1130,6 +1363,9 @@ function addVoiceMessage(id, url, caption, ts) {
     }
     messagesEl.insertBefore(div, typingEl);
     scrollToBottom();
+
+    // Autoplay
+    audio.play().catch(() => {});
 }
 
 function addDocumentMessage(id, url, filename, caption, ts) {
@@ -1162,9 +1398,14 @@ function addSystemMessage(text) {
 }
 
 function addTranscriptMessage(text) {
+    // Show transcribed voice as a normal user message with mic icon
     const div = document.createElement('div');
-    div.className = 'msg transcript';
+    div.className = 'msg user';
     div.textContent = text;
+    const ts = document.createElement('div');
+    ts.className = 'timestamp';
+    ts.textContent = formatTime(Date.now() / 1000);
+    div.appendChild(ts);
     messagesEl.insertBefore(div, typingEl);
     scrollToBottom();
 }

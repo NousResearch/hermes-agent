@@ -151,6 +151,9 @@ class GatewayConfig:
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+
+    # User-defined quick commands (slash commands that bypass the agent loop)
+    quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -218,6 +221,7 @@ class GatewayConfig:
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
             },
             "reset_triggers": self.reset_triggers,
+            "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
         }
@@ -252,12 +256,17 @@ class GatewayConfig:
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
+        quick_commands = data.get("quick_commands", {})
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
+            quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
         )

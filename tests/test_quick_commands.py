@@ -146,3 +146,20 @@ class TestGatewayQuickCommands:
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_gateway_config_object_supports_quick_commands(self):
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            quick_commands={"limits": {"type": "exec", "command": "echo ok"}}
+        )
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("limits")
+        result = await runner._handle_message(event)
+        assert result == "ok"

@@ -12,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value
+from hermes_cli.config import get_env_path, get_env_value, load_config
 from hermes_constants import OPENROUTER_MODELS_URL
 
 def check_mark(ok: bool) -> str:
@@ -68,6 +68,29 @@ def show_status(args):
     
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+
+    # Show configured default model and provider from config.yaml for quick inspection.
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        default_model = model_cfg.get("default") or model_cfg.get("name") or ""
+        provider = model_cfg.get("provider") or "auto"
+    elif isinstance(model_cfg, str):
+        default_model = model_cfg
+        provider = "auto"
+    else:
+        default_model = ""
+        provider = "auto"
+
+    model_label = default_model or "(not set)"
+    provider_label = provider
+
+    print(f"  Model:        {model_label}")
+    print(f"  Provider:     {provider_label}")
     
     # =========================================================================
     # API Keys

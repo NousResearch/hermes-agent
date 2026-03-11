@@ -4,7 +4,6 @@ state management, streaming TTS activation, voice message prefix, _vprint."""
 import ast
 import os
 import queue
-import re
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -40,23 +39,10 @@ def _make_voice_cli(**overrides):
 
 
 # ============================================================================
-# Markdown stripping (same logic as _voice_speak_response)
+# Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-def _strip_markdown_for_tts(text: str) -> str:
-    """Replicate the markdown stripping logic from cli._voice_speak_response."""
-    tts_text = text[:4000] if len(text) > 4000 else text
-    tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
-    tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
-    tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
-    tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
-    tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-    tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
-    tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-    tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
-    tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
-    tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
-    return tts_text.strip()
+from tools.tts_tool import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -110,10 +96,11 @@ class TestMarkdownStripping:
         result = _strip_markdown_for_tts(text)
         assert result == ""
 
-    def test_truncates_long_text(self):
+    def test_long_text_not_truncated(self):
+        """_strip_markdown_for_tts does NOT truncate — that's the caller's job."""
         text = "a" * 5000
         result = _strip_markdown_for_tts(text)
-        assert len(result) <= 4000
+        assert len(result) == 5000
 
     def test_complex_response(self):
         text = (

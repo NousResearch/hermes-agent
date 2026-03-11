@@ -96,7 +96,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = Path.home() / ".hermes" / path
+        path = _hermes_home / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []
@@ -141,16 +141,16 @@ def load_cli_config() -> Dict[str, Any]:
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
     """
-    # Check user config first (~/.hermes/config.yaml)
-    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    # Check user config first ({HERMES_HOME}/config.yaml)
+    user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    
+
     # Use user config if it exists, otherwise project config
     if user_config_path.exists():
         config_path = user_config_path
     else:
         config_path = project_config_path
-    
+
     # Default configuration
     defaults = {
         "model": {
@@ -1037,7 +1037,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         True if successful, False otherwise
     """
     # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
     
@@ -1259,7 +1259,7 @@ class HermesCLI:
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # History file for persistent input recall across sessions
-        self._history_file = Path.home() / ".hermes_history"
+        self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
         self._secret_state = None
@@ -1778,7 +1778,7 @@ class HermesCLI:
         """
         from hermes_cli.clipboard import save_clipboard_image
 
-        img_dir = Path.home() / ".hermes" / "images"
+        img_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "images"
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
@@ -2074,7 +2074,7 @@ class HermesCLI:
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
-        user_config_path = Path.home() / '.hermes' / 'config.yaml'
+        user_config_path = _hermes_home / 'config.yaml'
         project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
             config_path = user_config_path
@@ -4255,7 +4255,7 @@ class HermesCLI:
             if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
-                paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
+                paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")

@@ -420,7 +420,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
             soul_path = candidate
             break
     if not soul_path:
-        global_soul = Path.home() / ".hermes" / "SOUL.md"
+        global_soul = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
         if global_soul.exists():
             soul_path = global_soul
 

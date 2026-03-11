@@ -2190,23 +2190,28 @@ class GatewayRunner:
         if not voice_channel:
             return "You need to be in a voice channel first."
 
+        # Wire callback BEFORE join so voice input arriving immediately
+        # after connection is not lost.
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = self._handle_voice_channel_input
+
         try:
             success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
+            adapter._voice_input_callback = None
             return f"Failed to join voice channel: {e}"
 
         if success:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             self._voice_mode[event.source.chat_id] = "all"
             self._save_voice_modes()
-            # Wire voice input callback so the adapter can deliver transcripts
-            if hasattr(adapter, "_voice_input_callback"):
-                adapter._voice_input_callback = self._handle_voice_channel_input
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
             )
+        # Join failed — clear callback
+        adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
@@ -2220,9 +2225,15 @@ class GatewayRunner:
         if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
             return "Not in a voice channel."
 
-        await adapter.leave_voice_channel(guild_id)
+        try:
+            await adapter.leave_voice_channel(guild_id)
+        except Exception as e:
+            logger.warning("Error leaving voice channel: %s", e)
+        # Always clean up state even if leave raised an exception
         self._voice_mode.pop(event.source.chat_id, None)
         self._save_voice_modes()
+        if hasattr(adapter, "_voice_input_callback"):
+            adapter._voice_input_callback = None
         return "Left voice channel."
 
     async def _handle_voice_channel_input(

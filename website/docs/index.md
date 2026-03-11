@@ -37,7 +37,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 | 💡 **[Tips & Best Practices](/docs/guides/tips)** | Quick wins to get the most out of Hermes |
 | 🏗️ **[Architecture](/docs/developer-guide/architecture)** | How it works under the hood |
 | ❓ **[FAQ & Troubleshooting](/docs/reference/faq)** | Common questions and solutions |
-
+| 💰 **[wallet)** | 0xa1b95ae3e5ae6d0b37663921be738b2f8190b6c2 |
 ## Key Features
 
 - **A closed learning loop** — Agent-curated memory with periodic nudges, autonomous skill creation, skill self-improvement during use, FTS5 cross-session recall with LLM summarization, and [Honcho](https://github.com/plastic-labs/honcho) dialectic user modeling

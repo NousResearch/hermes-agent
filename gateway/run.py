@@ -829,6 +829,13 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
+        elif platform == Platform.WEB:
+            from gateway.platforms.web import WebAdapter, check_web_requirements
+            if not check_web_requirements():
+                logger.warning("Web: aiohttp not installed. Run: pip install aiohttp")
+                return None
+            return WebAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -846,6 +853,11 @@ class GatewayRunner:
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
         if source.platform == Platform.HOMEASSISTANT:
+            return True
+
+        # Web UI users are authenticated via token at the WebSocket level.
+        # No additional allowlist check needed.
+        if source.platform == Platform.WEB:
             return True
 
         user_id = source.user_id

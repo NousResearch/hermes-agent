@@ -1112,9 +1112,14 @@ def check_terminal_requirements() -> bool:
             return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment
-            # Check if docker is available
+            # Check if docker is available (use find_docker for macOS PATH issues)
+            from tools.environments.docker import find_docker
             import subprocess
-            result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
+            docker = find_docker()
+            if not docker:
+                logger.error("Docker executable not found in PATH or common install locations")
+                return False
+            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":
             from minisweagent.environments.singularity import SingularityEnvironment

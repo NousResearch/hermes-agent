@@ -238,7 +238,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
-        print(f"[FileTools] write_file error: {type(e).__name__}: {e}", flush=True)  
+        logger.error("write_file error: %s: %s", type(e).__name__, e)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

@@ -28,6 +28,7 @@ class Platform(Enum):
     SLACK = "slack"
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
+    EMAIL = "email"
 
 
 @dataclass
@@ -166,6 +167,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # Email uses extra dict for config (address + imap_host + smtp_host)
+            elif platform == Platform.EMAIL and config.extra.get("address"):
                 connected.append(platform)
         return connected
     
@@ -419,6 +423,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         hass_url = os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+
+    # Email
+    email_addr = os.getenv("EMAIL_ADDRESS")
+    email_pwd = os.getenv("EMAIL_PASSWORD")
+    email_imap = os.getenv("EMAIL_IMAP_HOST")
+    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    if all([email_addr, email_pwd, email_imap, email_smtp]):
+        if Platform.EMAIL not in config.platforms:
+            config.platforms[Platform.EMAIL] = PlatformConfig()
+        config.platforms[Platform.EMAIL].enabled = True
+        config.platforms[Platform.EMAIL].extra.update({
+            "address": email_addr,
+            "imap_host": email_imap,
+            "smtp_host": email_smtp,
+        })
+        email_home = os.getenv("EMAIL_HOME_ADDRESS")
+        if email_home:
+            config.platforms[Platform.EMAIL].home_channel = HomeChannel(
+                platform=Platform.EMAIL,
+                chat_id=email_home,
+                name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

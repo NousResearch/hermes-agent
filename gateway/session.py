@@ -241,6 +241,9 @@ class SessionEntry:
     output_tokens: int = 0
     total_tokens: int = 0
     
+    # Last API-reported prompt tokens (for accurate compression pre-check)
+    last_prompt_tokens: int = 0
+    
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
@@ -257,6 +260,7 @@ class SessionEntry:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+            "last_prompt_tokens": self.last_prompt_tokens,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -287,6 +291,7 @@ class SessionEntry:
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
+            last_prompt_tokens=data.get("last_prompt_tokens", 0),
         )
 
 
@@ -301,6 +306,8 @@ def build_session_key(source: SessionSource) -> str:
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+    if source.thread_id:
+        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
     return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
 
 
@@ -550,7 +557,8 @@ class SessionStore:
         self, 
         session_key: str,
         input_tokens: int = 0,
-        output_tokens: int = 0
+        output_tokens: int = 0,
+        last_prompt_tokens: int = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -560,6 +568,8 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            if last_prompt_tokens is not None:
+                entry.last_prompt_tokens = last_prompt_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()
             
@@ -677,10 +687,17 @@ class SessionStore:
         """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL)."""
-        # Write to SQLite
-        if self._db:
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Append a message to a session's transcript (SQLite + legacy JSONL).
+
+        Args:
+            skip_db: When True, only write to JSONL and skip the SQLite write.
+                     Used when the agent already persisted messages to SQLite
+                     via its own _flush_messages_to_session_db(), preventing
+                     the duplicate-write bug (#860).
+        """
+        # Write to SQLite (unless the agent already handled it)
+        if self._db and not skip_db:
             try:
                 self._db.append_message(
                     session_id=session_id,

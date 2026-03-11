@@ -323,7 +323,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 1: Start the Atropos API server (run-api)
         print(f"[{run_id}] Starting Atropos API server (run-api)...")
         
-        api_log_file = open(api_log, "w")
+        # File must stay open while the subprocess runs; we store the handle
+        # on run_state so _stop_training_run() can close it when done.
+        api_log_file = open(api_log, "w")  # closed by _stop_training_run
+        run_state.api_log_file = api_log_file
         run_state.api_process = subprocess.Popen(
             ["run-api"],
             stdout=api_log_file,
@@ -337,6 +340,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.api_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"API server exited with code {run_state.api_process.returncode}. Check {api_log}"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Atropos API server started")
@@ -344,7 +348,8 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 2: Start the Tinker trainer
         print(f"[{run_id}] Starting Tinker trainer: launch_training.py --config {config_path}")
         
-        trainer_log_file = open(trainer_log, "w")
+        trainer_log_file = open(trainer_log, "w")  # closed by _stop_training_run
+        run_state.trainer_log_file = trainer_log_file
         run_state.trainer_process = subprocess.Popen(
             [sys.executable, "launch_training.py", "--config", str(config_path)],
             stdout=trainer_log_file,
@@ -360,8 +365,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.trainer_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Trainer exited with code {run_state.trainer_process.returncode}. Check {trainer_log}"
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Trainer started, inference server on port 8001")
@@ -380,11 +384,13 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if not env_info:
             run_state.status = "failed"
             run_state.error_message = f"Environment '{run_state.environment}' not found"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Starting environment: {env_info.file_path} serve")
         
-        env_log_file = open(env_log, "w")
+        env_log_file = open(env_log, "w")  # closed by _stop_training_run
+        run_state.env_log_file = env_log_file
         run_state.env_process = subprocess.Popen(
             [sys.executable, str(env_info.file_path), "serve", "--config", str(config_path)],
             stdout=env_log_file,
@@ -398,10 +404,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.env_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Environment exited with code {run_state.env_process.returncode}. Check {env_log}"
-            if run_state.trainer_process:
-                run_state.trainer_process.terminate()
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         run_state.status = "running"
@@ -479,6 +482,16 @@ def _stop_training_run(run_state: RunState):
     
     if run_state.status == "running":
         run_state.status = "stopped"
+
+    # Close log file handles that were opened for subprocess stdout.
+    for attr in ("env_log_file", "trainer_log_file", "api_log_file"):
+        fh = getattr(run_state, attr, None)
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            setattr(run_state, attr, None)
 
 
 # ============================================================================

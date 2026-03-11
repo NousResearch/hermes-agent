@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import logging
 import os
 import re
 from typing import Dict, List, Optional, Any
@@ -39,6 +40,9 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def check_slack_requirements() -> bool:
@@ -73,17 +77,19 @@ class SlackAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
-            print("[Slack] slack-bolt not installed. Run: pip install slack-bolt")
+            logger.error(
+                "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
+            )
             return False
 
         bot_token = self.config.token
         app_token = os.getenv("SLACK_APP_TOKEN")
 
         if not bot_token:
-            print("[Slack] SLACK_BOT_TOKEN not set")
+            logger.error("[Slack] SLACK_BOT_TOKEN not set")
             return False
         if not app_token:
-            print("[Slack] SLACK_APP_TOKEN not set")
+            logger.error("[Slack] SLACK_APP_TOKEN not set")
             return False
 
         try:
@@ -117,19 +123,22 @@ class SlackAdapter(BasePlatformAdapter):
             asyncio.create_task(self._handler.start_async())
 
             self._running = True
-            print(f"[Slack] Connected as @{bot_name} (Socket Mode)")
+            logger.info("[Slack] Connected as @%s (Socket Mode)", bot_name)
             return True
 
-        except Exception as e:
-            print(f"[Slack] Connection failed: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[Slack] Connection failed: %s", e, exc_info=True)
             return False
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         if self._handler:
-            await self._handler.close_async()
+            try:
+                await self._handler.close_async()
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
         self._running = False
-        print("[Slack] Disconnected")
+        logger.info("[Slack] Disconnected")
 
     async def send(
         self,
@@ -162,8 +171,8 @@ class SlackAdapter(BasePlatformAdapter):
                 raw_response=result,
             )
 
-        except Exception as e:
-            print(f"[Slack] Send error: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def edit_message(
@@ -182,7 +191,14 @@ class SlackAdapter(BasePlatformAdapter):
                 text=content,
             )
             return SendResult(success=True, message_id=message_id)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[Slack] Failed to edit message %s in channel %s: %s",
+                message_id,
+                chat_id,
+                e,
+                exc_info=True,
+            )
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -214,8 +230,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, raw_response=result)
 
-        except Exception as e:
-            print(f"[{self.name}] Failed to send local image: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send local Slack image %s: %s",
+                self.name,
+                image_path,
+                e,
+                exc_info=True,
+            )
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
     async def send_image(
@@ -247,7 +269,13 @@ class SlackAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, raw_response=result)
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning(
+                "[Slack] Failed to upload image from URL %s, falling back to text: %s",
+                image_url,
+                e,
+                exc_info=True,
+            )
             # Fall back to sending the URL as text
             text = f"{caption}\n{image_url}" if caption else image_url
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
@@ -273,7 +301,13 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, raw_response=result)
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[Slack] Failed to send audio file %s: %s",
+                audio_path,
+                e,
+                exc_info=True,
+            )
             return SendResult(success=False, error=str(e))
 
     async def send_video(
@@ -300,8 +334,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, raw_response=result)
 
-        except Exception as e:
-            print(f"[{self.name}] Failed to send video: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send video %s: %s",
+                self.name,
+                video_path,
+                e,
+                exc_info=True,
+            )
             return await super().send_video(chat_id, video_path, caption, reply_to)
 
     async def send_document(
@@ -331,8 +371,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, raw_response=result)
 
-        except Exception as e:
-            print(f"[{self.name}] Failed to send document: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send document %s: %s",
+                self.name,
+                file_path,
+                e,
+                exc_info=True,
+            )
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -348,7 +394,13 @@ class SlackAdapter(BasePlatformAdapter):
                 "name": channel.get("name", chat_id),
                 "type": "dm" if is_dm else "group",
             }
-        except Exception:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[Slack] Failed to fetch chat info for %s: %s",
+                chat_id,
+                e,
+                exc_info=True,
+            )
             return {"name": chat_id, "type": "unknown"}
 
     # ----- Internal handlers -----
@@ -403,8 +455,8 @@ class SlackAdapter(BasePlatformAdapter):
                     media_urls.append(cached)
                     media_types.append(mimetype)
                     msg_type = MessageType.PHOTO
-                except Exception as e:
-                    print(f"[Slack] Failed to cache image: {e}", flush=True)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    logger.warning("[Slack] Failed to cache image from %s: %s", url, e, exc_info=True)
             elif mimetype.startswith("audio/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
@@ -414,8 +466,8 @@ class SlackAdapter(BasePlatformAdapter):
                     media_urls.append(cached)
                     media_types.append(mimetype)
                     msg_type = MessageType.VOICE
-                except Exception as e:
-                    print(f"[Slack] Failed to cache audio: {e}", flush=True)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
             elif url:
                 # Try to handle as a document attachment
                 try:
@@ -437,7 +489,7 @@ class SlackAdapter(BasePlatformAdapter):
                     file_size = f.get("size", 0)
                     MAX_DOC_BYTES = 20 * 1024 * 1024
                     if not file_size or file_size > MAX_DOC_BYTES:
-                        print(f"[Slack] Document too large or unknown size: {file_size}", flush=True)
+                        logger.warning("[Slack] Document too large or unknown size: %s", file_size)
                         continue
 
                     # Download and cache
@@ -449,7 +501,7 @@ class SlackAdapter(BasePlatformAdapter):
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
                     msg_type = MessageType.DOCUMENT
-                    print(f"[Slack] Cached user document: {cached_path}", flush=True)
+                    logger.debug("[Slack] Cached user document: %s", cached_path)
 
                     # Inject text content for .txt/.md files (capped at 100 KB)
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
@@ -466,8 +518,8 @@ class SlackAdapter(BasePlatformAdapter):
                         except UnicodeDecodeError:
                             pass  # Binary content, skip injection
 
-                except Exception as e:
-                    print(f"[Slack] Failed to cache document: {e}", flush=True)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
 
         # Build source
         source = self.build_source(

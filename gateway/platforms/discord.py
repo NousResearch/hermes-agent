@@ -72,11 +72,11 @@ class DiscordAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
-            print(f"[{self.name}] discord.py not installed. Run: pip install discord.py")
+            logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
         
         if not self.config.token:
-            print(f"[{self.name}] No bot token configured")
+            logger.error("[%s] No bot token configured", self.name)
             return False
         
         try:
@@ -105,7 +105,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Register event handlers
             @self._client.event
             async def on_ready():
-                print(f"[{adapter_self.name}] Connected as {adapter_self._client.user}")
+                logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
@@ -113,16 +113,30 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Sync slash commands with Discord
                 try:
                     synced = await adapter_self._client.tree.sync()
-                    print(f"[{adapter_self.name}] Synced {len(synced)} slash command(s)")
-                except Exception as e:
-                    print(f"[{adapter_self.name}] Slash command sync failed: {e}")
+                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                except Exception as e:  # pragma: no cover - defensive logging
+                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
             
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # Ignore bot's own messages
+                # Always ignore our own messages
                 if message.author == self._client.user:
                     return
+                
+                # Bot message filtering (DISCORD_ALLOW_BOTS):
+                #   "none"     — ignore all other bots (default)
+                #   "mentions" — accept bot messages only when they @mention us
+                #   "all"      — accept all bot messages
+                if getattr(message.author, "bot", False):
+                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    if allow_bots == "none":
+                        return
+                    elif allow_bots == "mentions":
+                        if not self._client.user or self._client.user not in message.mentions:
+                            return
+                    # "all" falls through to handle_message
+                
                 await self._handle_message(message)
             
             # Register slash commands
@@ -138,10 +152,10 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
             
         except asyncio.TimeoutError:
-            print(f"[{self.name}] Timeout waiting for connection")
+            logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
             return False
-        except Exception as e:
-            print(f"[{self.name}] Failed to connect: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             return False
     
     async def disconnect(self) -> None:
@@ -149,13 +163,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if self._client:
             try:
                 await self._client.close()
-            except Exception as e:
-                print(f"[{self.name}] Error during disconnect: {e}")
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
         
         self._running = False
         self._client = None
         self._ready_event.clear()
-        print(f"[{self.name}] Disconnected")
+        logger.info("[%s] Disconnected", self.name)
     
     async def send(
         self,
@@ -204,7 +218,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 raw_response={"message_ids": message_ids}
             )
             
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def edit_message(
@@ -226,7 +241,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_voice(
@@ -263,8 +279,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg.id))
         
-        except Exception as e:
-            print(f"[{self.name}] Failed to send audio: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
     
     async def send_image_file(
@@ -300,8 +316,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg.id))
         
-        except Exception as e:
-            print(f"[{self.name}] Failed to send local image: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send local image, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
     async def send_image(
@@ -353,10 +369,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     return SendResult(success=True, message_id=str(msg.id))
         
         except ImportError:
-            print(f"[{self.name}] aiohttp not installed, falling back to URL. Run: pip install aiohttp")
+            logger.warning(
+                "[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp",
+                self.name,
+                exc_info=True,
+            )
             return await super().send_image(chat_id, image_url, caption, reply_to)
-        except Exception as e:
-            print(f"[{self.name}] Failed to send image attachment, falling back to URL: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send image attachment, falling back to URL: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             return await super().send_image(chat_id, image_url, caption, reply_to)
     
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -404,7 +429,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 "guild_id": str(channel.guild.id) if hasattr(channel, "guild") and channel.guild else None,
                 "guild_name": channel.guild.name if hasattr(channel, "guild") and channel.guild else None,
             }
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to get chat info for %s: %s", self.name, chat_id, e, exc_info=True)
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
     
     async def _resolve_allowed_usernames(self) -> None:

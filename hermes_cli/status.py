@@ -208,6 +208,7 @@ def show_status(args):
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
     }
     
     for name, (token_var, home_var) in platforms.items():

@@ -166,10 +166,20 @@ def _run_single_child(
     max_iterations: int,
     parent_agent,
     task_count: int = 1,
+    # Credential overrides from delegation config (provider:model resolution)
+    override_provider: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+    override_api_key: Optional[str] = None,
+    override_api_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
     Returns a structured result dict.
+
+    When override_* params are set (from delegation config), the child uses
+    those credentials instead of inheriting from the parent.  This enables
+    routing subagents to a different provider:model pair (e.g. cheap/fast
+    model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
 
@@ -199,12 +209,19 @@ def _run_single_child(
         # count toward the session-wide limit.
         shared_budget = getattr(parent_agent, "iteration_budget", None)
 
+        # Resolve effective credentials: config override > parent inherit
+        effective_model = model or parent_agent.model
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or parent_agent.base_url
+        effective_api_key = override_api_key or parent_api_key
+        effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+
         child = AIAgent(
-            base_url=parent_agent.base_url,
-            api_key=parent_api_key,
-            model=model or parent_agent.model,
-            provider=getattr(parent_agent, "provider", None),
-            api_mode=getattr(parent_agent, "api_mode", None),
+            base_url=effective_base_url,
+            api_key=effective_api_key,
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
             max_iterations=max_iterations,
             max_tokens=getattr(parent_agent, "max_tokens", None),
             reasoning_config=getattr(parent_agent, "reasoning_config", None),
@@ -327,6 +344,16 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
+    # Resolve delegation credentials (provider:model pair).
+    # When delegation.provider is configured, this resolves the full credential
+    # bundle (base_url, api_key, api_mode) via the same runtime provider system
+    # used by CLI/gateway startup.  When unconfigured, returns None values so
+    # children inherit from the parent.
+    try:
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
     # Normalize to task list
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
@@ -358,10 +385,14 @@ def delegate_task(
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=None,
+            model=creds["model"],
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
             task_count=1,
+            override_provider=creds["provider"],
+            override_base_url=creds["base_url"],
+            override_api_key=creds["api_key"],
+            override_api_mode=creds["api_mode"],
         )
         results.append(result)
     else:
@@ -383,10 +414,14 @@ def delegate_task(
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
-                    model=None,
+                    model=creds["model"],
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
+                    override_provider=creds["provider"],
+                    override_base_url=creds["base_url"],
+                    override_api_key=creds["api_key"],
+                    override_api_mode=creds["api_mode"],
                 )
                 futures[future] = i
 
@@ -444,11 +479,78 @@ def delegate_task(
     }, ensure_ascii=False)
 
 
+def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+    """Resolve credentials for subagent delegation.
+
+    If ``delegation.provider`` is configured, resolves the full credential
+    bundle (base_url, api_key, api_mode, provider) via the runtime provider
+    system — the same path used by CLI/gateway startup.  This lets subagents
+    run on a completely different provider:model pair.
+
+    If no provider is configured, returns None values so the child inherits
+    everything from the parent agent.
+
+    Raises ValueError with a user-friendly message on credential failure.
+    """
+    configured_model = cfg.get("model") or None
+    configured_provider = cfg.get("provider") or None
+
+    if not configured_provider:
+        # No provider override — child inherits everything from parent
+        return {
+            "model": configured_model,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+
+    # Provider is configured — resolve full credentials
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested=configured_provider)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
+            f"Check that the provider is configured (API key set, valid provider name). "
+            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+        ) from exc
+
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"Delegation provider '{configured_provider}' resolved but has no API key. "
+            f"Set the appropriate environment variable or run 'hermes login'."
+        )
+
+    return {
+        "model": configured_model,
+        "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode"),
+    }
+
+
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG if available."""
+    """Load delegation config from CLI_CONFIG or persistent config.
+
+    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
+    to the persistent config (hermes_cli/config.py load_config()) so that
+    ``delegation.model`` / ``delegation.provider`` are picked up regardless
+    of the entry point (CLI, gateway, cron).
+    """
     try:
         from cli import CLI_CONFIG
-        return CLI_CONFIG.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation", {})
+        if cfg:
+            return cfg
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+        full = load_config()
+        return full.get("delegation", {})
     except Exception:
         return {}
 

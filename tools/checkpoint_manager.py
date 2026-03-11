@@ -95,21 +95,34 @@ def _run_git(
 ) -> tuple:
     """Run a git command against the shadow repo.  Returns (ok, stdout, stderr)."""
     env = _git_env(shadow_repo, working_dir)
+    cmd = ["git"] + list(args)
     try:
         result = subprocess.run(
-            ["git"] + args,
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(Path(working_dir).resolve()),
         )
-        return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+        ok = result.returncode == 0
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        if not ok:
+            logger.error(
+                "Git command failed: %s (rc=%d) stderr=%s",
+                " ".join(cmd), result.returncode, stderr,
+            )
+        return ok, stdout, stderr
     except subprocess.TimeoutExpired:
-        return False, "", f"git timed out after {timeout}s: git {' '.join(args)}"
+        msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
+        logger.error(msg, exc_info=True)
+        return False, "", msg
     except FileNotFoundError:
+        logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
         return False, "", "git not found"
     except Exception as exc:
+        logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
 
 
@@ -287,7 +300,7 @@ class CheckpointManager:
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
-            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
+            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found", "debug": err or None}
 
         # Take a checkpoint of current state before restoring (so you can undo the undo)
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
@@ -299,7 +312,7 @@ class CheckpointManager:
         )
 
         if not ok:
-            return {"success": False, "error": f"Restore failed: {err}"}
+            return {"success": False, "error": "Restore failed", "debug": err or None}
 
         # Get info about what was restored
         ok2, reason_out, _ = _run_git(

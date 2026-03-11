@@ -691,6 +691,16 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
 
+# Skin-aware accent for legacy _cprint lines (use skin.colors.ui_accent)
+from rich.markup import escape as _escape
+
+def _accent_hex() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("ui_accent", "#FFBF00")
+    except Exception:
+        return "#FFBF00"
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1461,13 +1471,9 @@ class HermesCLI:
                 title_part = ""
                 if session_meta.get("title"):
                     title_part = f" \"{session_meta['title']}\""
-                _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD}{title_part} "
-                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
-                    f"{len(restored)} total messages){_RST}"
-                )
+                ChatConsole().print(f"[bold {_accent_hex()}]↻ Resumed session[/] [bold]{_escape(self.session_id)}[/][bold {_accent_hex()}]{_escape(title_part)}[/] ({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)")
             else:
-                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
+                ChatConsole().print(f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]")
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
@@ -1995,12 +2001,12 @@ class HermesCLI:
         for category, commands in COMMANDS_BY_CATEGORY.items():
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
             for cmd, desc in commands.items():
-                _cprint(f"    {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
+                ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             for cmd, info in sorted(_skill_commands.items()):
-                _cprint(f"    {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+                ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -3003,10 +3009,10 @@ class HermesCLI:
 
                 # Display result in the CLI (thread-safe via patch_stdout)
                 print()
-                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
                 _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 if response:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
@@ -3515,7 +3521,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:
@@ -4550,20 +4556,20 @@ class HermesCLI:
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]")
                             user_input = full_text
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     else:
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] [dim](+{line_count - 1} lines)[/]")
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
                     if submit_images:

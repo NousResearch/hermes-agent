@@ -726,8 +726,8 @@ def cmd_model(args):
         config_provider = model_cfg.get("provider")
 
     effective_provider = (
-        os.getenv("HERMES_INFERENCE_PROVIDER")
-        or config_provider
+        config_provider
+        or os.getenv("HERMES_INFERENCE_PROVIDER")
         or "auto"
     )
     try:
@@ -2340,6 +2340,20 @@ For more help on a command:
         tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
+
+    # =========================================================================
+    # skills-config command
+    # =========================================================================
+    skills_parser = subparsers.add_parser(
+        "skills-config",
+        aliases=["skill-config"],
+        help="Configure which installed skills are enabled",
+        description="Interactive skill configuration — enable/disable individual installed skills."
+    )
+    def cmd_skills(args):
+        from hermes_cli.skills_config import skills_command
+        skills_command(args)
+    skills_parser.set_defaults(func=cmd_skills)
     # =========================================================================
     # sessions command
     # =========================================================================

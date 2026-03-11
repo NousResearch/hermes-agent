@@ -1,6 +1,6 @@
 """
 Skills configuration for Hermes Agent.
-`hermes skills` enters this module.
+`hermes skills-config` enters this module.
 
 Toggle individual skills or categories on/off, globally or per-platform.
 Config stored in ~/.hermes/config.yaml under:
@@ -127,9 +127,7 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def skills_command(args=None):
-    """Entry point for `hermes skills`."""
-    from hermes_cli.curses_ui import curses_checklist
-
+    """Entry point for `hermes skills-config`."""
     config = load_config()
     skills = _list_all_skills()
 

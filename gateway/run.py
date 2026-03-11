@@ -3326,11 +3326,23 @@ class GatewayRunner:
         from tools.transcription_tools import transcribe_audio
         import asyncio
 
+        # Read STT model from config.yaml (same key the CLI uses)
+        stt_model = None
+        try:
+            import yaml as _y
+            _cfg = _hermes_home / "config.yaml"
+            if _cfg.exists():
+                with open(_cfg) as _f:
+                    _data = _y.safe_load(_f) or {}
+                stt_model = _data.get("stt", {}).get("model")
+        except Exception:
+            pass
+
         enriched_parts = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(transcribe_audio, path)
+                result = await asyncio.to_thread(transcribe_audio, path, model=stt_model)
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(

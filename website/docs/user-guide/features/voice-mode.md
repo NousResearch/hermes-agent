@@ -213,7 +213,7 @@ Voice mode setting is persisted across gateway restarts.
 | Platform | Format | Notes |
 |----------|--------|-------|
 | **Telegram** | Voice bubble (Opus/OGG) | Plays inline in chat. ffmpeg converts MP3 → Opus if needed |
-| **Discord** | Audio file attachment (MP3) | Sent alongside text response |
+| **Discord** | Native voice bubble (Opus/OGG) | Plays inline like a user voice message. Falls back to file attachment if voice bubble API fails |
 
 ---
 

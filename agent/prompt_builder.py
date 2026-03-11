@@ -131,6 +131,14 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "email": (
+        "You are communicating via email. Write clear, well-structured responses "
+        "suitable for email. Use plain text formatting (no markdown). "
+        "Keep responses concise but complete. You can send file attachments — "
+        "include MEDIA:/absolute/path/to/file in your response. The subject line "
+        "is preserved for threading. Do not include greetings or sign-offs unless "
+        "contextually appropriate."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
@@ -159,8 +167,8 @@ def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
             if len(desc) > max_chars:
                 desc = desc[:max_chars - 3] + "..."
             return desc
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read skill description from %s: %s", skill_file, e)
     return ""
 
 

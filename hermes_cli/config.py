@@ -47,13 +47,32 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+def _secure_dir(path):
+    """Set directory to owner-only access (0700). No-op on Windows."""
+    try:
+        os.chmod(path, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _secure_file(path):
+    """Set file to owner-only read/write (0600). No-op on Windows."""
+    try:
+        if os.path.exists(str(path)):
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists."""
+    """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
-    (home / "cron").mkdir(parents=True, exist_ok=True)
-    (home / "sessions").mkdir(parents=True, exist_ok=True)
-    (home / "logs").mkdir(parents=True, exist_ok=True)
-    (home / "memories").mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    _secure_dir(home)
+    for subdir in ("cron", "sessions", "logs", "memories"):
+        d = home / subdir
+        d.mkdir(parents=True, exist_ok=True)
+        _secure_dir(d)
 
 
 # =============================================================================
@@ -63,7 +82,9 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    "agent": {
+        "max_turns": 90,
+    },
     
     "terminal": {
         "backend": "local",
@@ -122,6 +143,7 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "bell_on_complete": False,
+        "show_reasoning": False,
         "skin": "default",
     },
     
@@ -161,7 +183,16 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
-    
+
+    # Subagent delegation — override the provider:model used by delegate_task
+    # so child agents can run on a different (cheaper/faster) provider and model.
+    # Uses the same runtime provider resolution as CLI/gateway startup, so all
+    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    "delegation": {
+        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -178,6 +209,12 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+    # User-defined quick commands that bypass the agent loop (type: exec only)
+    "quick_commands": {},
+    # Custom personalities — add your own entries here
+    # Supports string format: {"name": "system prompt"}
+    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    "personalities": {},
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 6,
@@ -205,6 +242,22 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
+    "NOUS_API_KEY": {
+        "description": "Nous Portal API key (direct API key access to Nous inference)",
+        "prompt": "Nous Portal API key",
+        "url": "https://portal.nousresearch.com",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NOUS_BASE_URL": {
+        "description": "Nous Portal base URL override",
+        "prompt": "Nous Portal base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENROUTER_API_KEY": {
         "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "prompt": "OpenRouter API key",
@@ -758,6 +811,23 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy root-level max_turns into agent.max_turns."""
+    config = dict(config)
+    agent_config = dict(config.get("agent") or {})
+
+    if "max_turns" in config and "max_turns" not in agent_config:
+        agent_config["max_turns"] = config["max_turns"]
+
+    if "max_turns" not in agent_config:
+        agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+
+    config["agent"] = agent_config
+    config.pop("max_turns", None)
+    return config
+
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -770,11 +840,18 @@ def load_config() -> Dict[str, Any]:
             with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
 
+            if "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return config
+    return _normalize_max_turns_config(config)
 
 
 _COMMENTED_SECTIONS = """
@@ -809,23 +886,28 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    from utils import atomic_yaml_write
+
     ensure_hermes_home()
     config_path = get_config_path()
-    
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        # Append commented-out sections for features that are off by default
-        # or only relevant when explicitly configured. Skip sections the
-        # user has already uncommented and configured.
-        sections = []
-        sec = config.get("security", {})
-        if not sec or sec.get("redact_secrets") is None:
-            sections.append("security")
-        fb = config.get("fallback_model", {})
-        if not fb or not (fb.get("provider") and fb.get("model")):
-            sections.append("fallback")
-        if sections:
-            f.write(_COMMENTED_SECTIONS)
+    normalized = _normalize_max_turns_config(config)
+
+    # Build optional commented-out sections for features that are off by
+    # default or only relevant when explicitly configured.
+    sections = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        sections.append("security")
+    fb = normalized.get("fallback_model", {})
+    if not fb or not (fb.get("provider") and fb.get("model")):
+        sections.append("fallback")
+
+    atomic_yaml_write(
+        config_path,
+        normalized,
+        extra_content=_COMMENTED_SECTIONS if sections else None,
+    )
+    _secure_file(config_path)
 
 
 def load_env() -> Dict[str, str]:
@@ -878,6 +960,7 @@ def save_env_value(key: str, value: str):
     
     with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
+    _secure_file(env_path)
 
     # Restrict .env permissions to owner-only (contains API keys)
     if not _IS_WINDOWS:
@@ -949,9 +1032,17 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
+    # Display
+    print()
+    print(color("◆ Display", Colors.CYAN, Colors.BOLD))
+    display = config.get('display', {})
+    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+
     # Terminal
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))

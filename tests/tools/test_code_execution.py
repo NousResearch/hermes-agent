@@ -743,5 +743,56 @@ class TestInterruptHandling(unittest.TestCase):
             t.join(timeout=3)
 
 
+class TestHeadTailTruncation(unittest.TestCase):
+    """Tests for head+tail truncation of large stdout in execute_code."""
+
+    def _run(self, code):
+        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+            result = execute_code(
+                code=code,
+                task_id="test-task",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+        return json.loads(result)
+
+    def test_short_output_not_truncated(self):
+        """Output under MAX_STDOUT_BYTES should not be truncated."""
+        result = self._run('print("small output")')
+        self.assertEqual(result["status"], "success")
+        self.assertIn("small output", result["output"])
+        self.assertNotIn("TRUNCATED", result["output"])
+
+    def test_large_output_preserves_head_and_tail(self):
+        """Output exceeding MAX_STDOUT_BYTES keeps both head and tail."""
+        code = '''
+# Print HEAD marker, then filler, then TAIL marker
+print("HEAD_MARKER_START")
+for i in range(15000):
+    print(f"filler_line_{i:06d}_padding_to_fill_buffer")
+print("TAIL_MARKER_END")
+'''
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        output = result["output"]
+        # Head should be preserved
+        self.assertIn("HEAD_MARKER_START", output)
+        # Tail should be preserved (this is the key improvement)
+        self.assertIn("TAIL_MARKER_END", output)
+        # Truncation notice should be present
+        self.assertIn("TRUNCATED", output)
+
+    def test_truncation_notice_format(self):
+        """Truncation notice includes character counts."""
+        code = '''
+for i in range(15000):
+    print(f"padding_line_{i:06d}_xxxxxxxxxxxxxxxxxxxxxxxxxx")
+'''
+        result = self._run(code)
+        output = result["output"]
+        if "TRUNCATED" in output:
+            self.assertIn("chars omitted", output)
+            self.assertIn("total", output)
+
+
 if __name__ == "__main__":
     unittest.main()

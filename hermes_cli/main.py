@@ -17,6 +17,7 @@ Usage:
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
+    hermes dashboard           # Local neon ops dashboard
     hermes doctor              # Check configuration and dependencies
     hermes version             # Show version
     hermes update              # Update to latest version
@@ -506,6 +507,13 @@ def cmd_gateway(args):
     """Gateway management commands."""
     from hermes_cli.gateway import gateway_command
     gateway_command(args)
+
+
+def cmd_dashboard(args):
+    """Run the lightweight local Hermes telemetry dashboard."""
+    from hermes_cli.dashboard import run_dashboard
+
+    run_dashboard(host=args.host, port=args.port, open_browser=args.open)
 
 
 def cmd_whatsapp(args):
@@ -2168,6 +2176,19 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # dashboard command
+    # =========================================================================
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Run local web dashboard for runtime telemetry",
+        description="Launch a lightweight neon-themed local dashboard for gateway, sessions, cron, and process status"
+    )
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    dashboard_parser.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+    dashboard_parser.add_argument("--open", action="store_true", help="Open dashboard URL in your browser")
+    dashboard_parser.set_defaults(func=cmd_dashboard)
     
     # =========================================================================
     # doctor command

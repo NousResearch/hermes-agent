@@ -2049,6 +2049,65 @@ class TestSamplingErrors:
             assert "No LLM provider" in result.message
             assert handler.metrics["errors"] == 1
 
+    def test_empty_choices_returns_error(self):
+        """LLM returning choices=[] is handled gracefully, not IndexError."""
+        handler = SamplingHandler("ec", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[],
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "default-model"),
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
+
+    def test_none_choices_returns_error(self):
+        """LLM returning choices=None is handled gracefully, not TypeError."""
+        handler = SamplingHandler("nc", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=None,
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "default-model"),
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
+
+    def test_missing_choices_attr_returns_error(self):
+        """LLM response without choices attribute is handled gracefully."""
+        handler = SamplingHandler("mc", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "default-model"),
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
+
 
 # ---------------------------------------------------------------------------
 # 10. Model whitelist

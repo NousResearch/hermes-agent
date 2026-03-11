@@ -80,13 +80,13 @@ def _check_disk_usage_warning():
         total_bytes = 0
         import glob
         for path in glob.glob(str(scratch_dir / "hermes-*")):
-            for f in Path(path).rglob('*'):
+            for f in Path(path).rglob("*"):
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
-                    except OSError:
-                        # Best-effort only — skip files that disappear mid-scan
-                        pass
+                    except OSError as e:
+                        # Best-effort only — skip files that disappear mid-scan, but log for debugging.
+                        logger.debug("Could not stat file %s: %s", f, e)
         
         total_gb = total_bytes / (1024 ** 3)
         

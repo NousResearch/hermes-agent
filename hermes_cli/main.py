@@ -2329,17 +2329,16 @@ For more help on a command:
     tools_parser.set_defaults(func=cmd_tools)
 
     # =========================================================================
-    # skills command
+    # skills config subcommand (added under existing skills parser)
     # =========================================================================
-    skills_parser = subparsers.add_parser(
-        "skills",
+    skills_config_sub = skills_subparsers.add_parser(
+        "config",
         help="Configure which skills are enabled",
-        description="Interactive skill configuration — enable/disable individual skills."
     )
     def cmd_skills(args):
         from hermes_cli.skills_config import skills_command
         skills_command(args)
-    skills_parser.set_defaults(func=cmd_skills)
+    skills_config_sub.set_defaults(func=cmd_skills)
     # =========================================================================
     # sessions command
     # =========================================================================

@@ -72,7 +72,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
     @patch.dict(os.environ, {
         "WEB_UI_ENABLED": "true",
-        "WEB_TOKEN": "",
+        "WEB_UI_TOKEN": "",
     }, clear=False)
     def test_web_defaults(self):
         config = GatewayConfig()

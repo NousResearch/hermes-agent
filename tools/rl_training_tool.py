@@ -340,6 +340,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.api_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"API server exited with code {run_state.api_process.returncode}. Check {api_log}"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Atropos API server started")
@@ -364,8 +365,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.trainer_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Trainer exited with code {run_state.trainer_process.returncode}. Check {trainer_log}"
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Trainer started, inference server on port 8001")
@@ -384,6 +384,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if not env_info:
             run_state.status = "failed"
             run_state.error_message = f"Environment '{run_state.environment}' not found"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Starting environment: {env_info.file_path} serve")
@@ -403,10 +404,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.env_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Environment exited with code {run_state.env_process.returncode}. Check {env_log}"
-            if run_state.trainer_process:
-                run_state.trainer_process.terminate()
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         run_state.status = "running"

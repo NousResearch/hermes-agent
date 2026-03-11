@@ -670,6 +670,11 @@ display:
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
   bell_on_complete: false
 
+  # Show model reasoning/thinking before each response.
+  # When enabled, a dim box shows the model's thought process above the response.
+  # Toggle at runtime with /reasoning show or /reasoning hide.
+  show_reasoning: false
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────

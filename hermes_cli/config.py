@@ -143,6 +143,7 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "bell_on_complete": False,
+        "show_reasoning": False,
         "skin": "default",
     },
     
@@ -1025,6 +1026,14 @@ def show_config():
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
+    # Display
+    print()
+    print(color("◆ Display", Colors.CYAN, Colors.BOLD))
+    display = config.get('display', {})
+    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+
     # Terminal
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))

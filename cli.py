@@ -205,6 +205,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "show_reasoning": False,
             "skin": "default",
         },
         "clarify": {
@@ -1121,6 +1122,8 @@ class HermesCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # show_reasoning: display model thinking/reasoning before the response
+        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1495,6 +1498,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
+                reasoning_callback=self._on_reasoning if self.show_reasoning else None,
                 honcho_session_key=self.session_id,
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -2848,6 +2852,8 @@ class HermesCLI:
             self._show_gateway_status()
         elif cmd_lower == "/verbose":
             self._toggle_verbose()
+        elif cmd_lower.startswith("/reasoning"):
+            self._handle_reasoning_command(cmd_original)
         elif cmd_lower == "/compress":
             self._manual_compress()
         elif cmd_lower == "/usage":
@@ -3072,6 +3078,75 @@ class HermesCLI:
             "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, and debug logs.",
         }
         self.console.print(labels.get(self.tool_progress_mode, ""))
+
+    def _handle_reasoning_command(self, cmd: str):
+        """Handle /reasoning — manage effort level and display toggle.
+
+        Usage:
+            /reasoning              Show current effort level and display state
+            /reasoning <level>      Set reasoning effort (none, low, medium, high, xhigh)
+            /reasoning show|on      Show model thinking/reasoning in output
+            /reasoning hide|off     Hide model thinking/reasoning from output
+        """
+        parts = cmd.strip().split(maxsplit=1)
+
+        if len(parts) < 2:
+            # Show current state
+            rc = self.reasoning_config
+            if rc is None:
+                level = "medium (default)"
+            elif rc.get("enabled") is False:
+                level = "none (disabled)"
+            else:
+                level = rc.get("effort", "medium")
+            display_state = "on" if self.show_reasoning else "off"
+            _cprint(f"  {_GOLD}Reasoning effort: {level}{_RST}")
+            _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+
+        # Display toggle
+        if arg in ("show", "on"):
+            self.show_reasoning = True
+            if self.agent:
+                self.agent.reasoning_callback = self._on_reasoning
+            _cprint(f"  {_GOLD}Reasoning display: ON{_RST}")
+            _cprint(f"  {_DIM}Model thinking will be shown during and after each response.{_RST}")
+            return
+        if arg in ("hide", "off"):
+            self.show_reasoning = False
+            if self.agent:
+                self.agent.reasoning_callback = None
+            _cprint(f"  {_GOLD}Reasoning display: OFF{_RST}")
+            return
+
+        # Effort level change
+        parsed = _parse_reasoning_config(arg)
+        if parsed is None:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Valid levels: none, low, minimal, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            return
+
+        self.reasoning_config = parsed
+        self.agent = None  # Force agent re-init with new reasoning config
+
+        if save_config_value("agent.reasoning_effort", arg):
+            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (saved to config){_RST}")
+        else:
+            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _on_reasoning(self, reasoning_text: str):
+        """Callback for intermediate reasoning display during tool-call loops."""
+        lines = reasoning_text.strip().splitlines()
+        if len(lines) > 5:
+            preview = "\n".join(lines[:5])
+            preview += f"\n  ... ({len(lines) - 5} more lines)"
+        else:
+            preview = reasoning_text.strip()
+        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
 
     def _manual_compress(self):
         """Manually trigger context compression on the current conversation."""
@@ -3542,6 +3617,24 @@ class HermesCLI:
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
+            # Display reasoning (thinking) box if enabled and available
+            if self.show_reasoning and result:
+                reasoning = result.get("last_reasoning")
+                if reasoning:
+                    w = shutil.get_terminal_size().columns
+                    r_label = " Reasoning "
+                    r_fill = w - 2 - len(r_label)
+                    r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
+                    r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
+                    # Collapse long reasoning: show first 10 lines
+                    lines = reasoning.strip().splitlines()
+                    if len(lines) > 10:
+                        display_reasoning = "\n".join(lines[:10])
+                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
+                    else:
+                        display_reasoning = reasoning.strip()
+                    _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+
             if response:
                 # Use a Rich Panel for the response box — adapts to terminal
                 # width at render time instead of hard-coding border length.

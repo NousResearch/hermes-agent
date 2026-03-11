@@ -134,9 +134,12 @@ class TestAutoVoiceReply:
 
     To prevent double audio, _send_voice_reply is skipped when voice input
     already triggered base adapter auto-TTS (skip_double = is_voice_input).
+    Exception: Discord voice channel — both auto-TTS and Discord play_tts
+    override skip, so the runner must handle it via play_in_voice_channel.
     """
 
-    def _should_reply(self, voice_mode, message_type, agent_messages=None, response="Hello!"):
+    def _should_reply(self, voice_mode, message_type, agent_messages=None,
+                      response="Hello!", in_voice_channel=False):
         """Replicate the auto voice reply decision from _handle_message."""
         if not response or response.startswith("Error:"):
             return False
@@ -162,35 +165,83 @@ class TestAutoVoiceReply:
             if has_agent_tts:
                 return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
+        # Dedup: base adapter auto-TTS already handles voice input.
+        # Exception: in voice channel, Discord play_tts also skips,
+        # so the runner must handle VC playback.
         skip_double = is_voice_input
+        if skip_double and in_voice_channel:
+            skip_double = False
         if skip_double:
             return False
 
         return True
 
-    # -- voice_mode + message_type matrix ----------------------------------
+    # -- Full platform x input x mode matrix --------------------------------
+    #
+    # Legend:
+    #   base = base adapter auto-TTS (play_tts)
+    #   runner = gateway _send_voice_reply
+    #
+    # | Platform      | Input | Mode       | base | runner | Expected     |
+    # |---------------|-------|------------|------|--------|--------------|
+    # | Telegram      | voice | off        | yes  | skip   | 1 audio      |
+    # | Telegram      | voice | voice_only | yes  | skip*  | 1 audio      |
+    # | Telegram      | voice | all        | yes  | skip*  | 1 audio      |
+    # | Telegram      | text  | off        | skip | skip   | 0 audio      |
+    # | Telegram      | text  | voice_only | skip | skip   | 0 audio      |
+    # | Telegram      | text  | all        | skip | yes    | 1 audio      |
+    # | Discord text  | voice | all        | yes  | skip*  | 1 audio      |
+    # | Discord text  | text  | all        | skip | yes    | 1 audio      |
+    # | Discord VC    | voice | all        | skip†| yes    | 1 audio (VC) |
+    # | Web UI        | voice | off        | yes  | skip   | 1 audio      |
+    # | Web UI        | voice | all        | yes  | skip*  | 1 audio      |
+    # | Web UI        | text  | all        | skip | yes    | 1 audio      |
+    # | Slack         | voice | all        | yes  | skip*  | 1 audio      |
+    # | Slack         | text  | all        | skip | yes    | 1 audio      |
+    #
+    # * skip_double: voice input → base already handles
+    # † Discord play_tts override skips when in VC
 
-    def test_voice_only_voice_input_skipped_double(self):
+    # -- Telegram/Slack/Web: voice input, base handles ---------------------
+
+    def test_voice_input_voice_only_skipped(self):
         """voice_only + voice input: base auto-TTS handles it, runner skips."""
         assert self._should_reply("voice_only", MessageType.VOICE) is False
 
-    def test_voice_only_text_input(self):
-        assert self._should_reply("voice_only", MessageType.TEXT) is False
-
-    def test_all_mode_text_input(self):
-        """all + text input: only runner fires (base auto-TTS only for voice)."""
-        assert self._should_reply("all", MessageType.TEXT) is True
-
-    def test_all_mode_voice_input_skipped_double(self):
+    def test_voice_input_all_mode_skipped(self):
         """all + voice input: base auto-TTS handles it, runner skips."""
         assert self._should_reply("all", MessageType.VOICE) is False
 
-    def test_off_mode(self):
+    # -- Text input: only runner handles -----------------------------------
+
+    def test_text_input_all_mode_runner_fires(self):
+        """all + text input: only runner fires (base auto-TTS only for voice)."""
+        assert self._should_reply("all", MessageType.TEXT) is True
+
+    def test_text_input_voice_only_no_reply(self):
+        """voice_only + text input: neither fires."""
+        assert self._should_reply("voice_only", MessageType.TEXT) is False
+
+    # -- Mode off: nothing fires -------------------------------------------
+
+    def test_off_mode_voice(self):
         assert self._should_reply("off", MessageType.VOICE) is False
+
+    def test_off_mode_text(self):
         assert self._should_reply("off", MessageType.TEXT) is False
 
-    # -- edge cases --------------------------------------------------------
+    # -- Discord VC exception: runner must handle --------------------------
+
+    def test_discord_vc_voice_input_runner_fires(self):
+        """Discord VC + voice input: base play_tts skips (VC override),
+        so runner must handle via play_in_voice_channel."""
+        assert self._should_reply("all", MessageType.VOICE, in_voice_channel=True) is True
+
+    def test_discord_vc_voice_only_runner_fires(self):
+        """Discord VC + voice_only + voice: runner must handle."""
+        assert self._should_reply("voice_only", MessageType.VOICE, in_voice_channel=True) is True
+
+    # -- Edge cases --------------------------------------------------------
 
     def test_error_response_skipped(self):
         assert self._should_reply("all", MessageType.TEXT, response="Error: boom") is False

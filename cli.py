@@ -4503,8 +4503,7 @@ def main(
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
-            cli.agent = cli._init_agent()
-            if cli.agent:
+            if cli._init_agent():
                 cli.agent.quiet_mode = True
                 result = cli.agent.run_conversation(query)
                 response = result.get("final_response", "") if isinstance(result, dict) else str(result)

@@ -4356,6 +4356,7 @@ def main(
     base_url: str = None,
     max_turns: int = None,
     verbose: bool = False,
+    quiet: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
@@ -4498,10 +4499,23 @@ def main(
     
     # Handle single query mode
     if query:
-        cli.show_banner()
-        cli.console.print(f"[bold blue]Query:[/] {query}")
-        cli.chat(query)
-        cli._print_exit_summary()
+        if quiet:
+            # Quiet mode: suppress banner, spinner, tool previews.
+            # Only print the final response and parseable session info.
+            cli.tool_progress_mode = "off"
+            cli.agent = cli._init_agent()
+            if cli.agent:
+                cli.agent.quiet_mode = True
+                result = cli.agent.run_conversation(query)
+                response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                if response:
+                    print(response)
+                print(f"\nsession_id: {cli.session_id}")
+        else:
+            cli.show_banner()
+            cli.console.print(f"[bold blue]Query:[/] {query}")
+            cli.chat(query)
+            cli._print_exit_summary()
         return
     
     # Run interactive mode

@@ -208,6 +208,12 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Discord platform settings (gateway mode)
+    "discord": {
+        "require_mention": True,       # Require @mention to respond in server channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)

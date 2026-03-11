@@ -292,6 +292,18 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge discord settings from config.yaml to env vars
+            # (env vars take precedence — only set if not already defined)
+            discord_cfg = yaml_cfg.get("discord", {})
+            if isinstance(discord_cfg, dict):
+                if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
+                    os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                frc = discord_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     except Exception:
         pass
 

@@ -28,6 +28,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import tempfile
 import random
 import re
 import sys
@@ -1398,8 +1399,17 @@ class AIAgent:
                 "messages": cleaned,
             }
 
-            with open(self.session_log_file, "w", encoding="utf-8") as f:
-                json.dump(entry, f, indent=2, ensure_ascii=False, default=str)
+            tmp_dir = str(self.session_log_file.parent) if hasattr(self.session_log_file, 'parent') else os.path.dirname(str(self.session_log_file))
+            fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, suffix='.tmp', prefix='.session_')
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    json.dump(entry, f, indent=2, ensure_ascii=False, default=str)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(self.session_log_file))
+            except:
+                os.unlink(tmp_path)
+                raise
 
         except Exception as e:
             if self.verbose_logging:

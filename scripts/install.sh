@@ -562,9 +562,30 @@ clone_repo() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
+
+            local autostash_ref=""
+            if [ -n "$(git status --porcelain)" ]; then
+                local stash_name
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+                log_info "Local changes detected, stashing before update..."
+                git stash push --include-untracked -m "$stash_name"
+                autostash_ref="$(git rev-parse --verify refs/stash)"
+            fi
+
             git fetch origin
             git checkout "$BRANCH"
             git pull origin "$BRANCH"
+
+            if [ -n "$autostash_ref" ]; then
+                log_info "Restoring local changes..."
+                if git stash apply "$autostash_ref"; then
+                    git stash drop "$autostash_ref" >/dev/null
+                else
+                    log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                    log_info "Resolve manually with: git stash apply $autostash_ref"
+                    exit 1
+                fi
+            fi
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"

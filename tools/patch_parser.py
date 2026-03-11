@@ -359,7 +359,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     # Parse content (remove line numbers)
     current_lines = []
     for line in read_result.content.split('\n'):
-        if '|' in line:
+        if re.match(r'^\s*\d+\|', line):
             # Line format: "    123|content"
             parts = line.split('|', 1)
             if len(parts) == 2:

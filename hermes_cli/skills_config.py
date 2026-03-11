@@ -22,6 +22,8 @@ PLATFORMS = {
     "discord":  "💬 Discord",
     "slack":    "💼 Slack",
     "whatsapp": "📱 WhatsApp",
+    "signal":   "📡 Signal",
+    "email":    "📧 Email",
 }
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

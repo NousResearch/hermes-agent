@@ -119,6 +119,7 @@ def _handle_send(args):
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "email": Platform.EMAIL,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -185,6 +186,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None)
         return await _send_slack(pconfig.token, chat_id, message)
     elif platform == Platform.SIGNAL:
         return await _send_signal(pconfig.extra, chat_id, message)
+    elif platform == Platform.EMAIL:
+        return await _send_email(pconfig.extra, chat_id, message)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -281,6 +284,35 @@ async def _send_signal(extra, chat_id, message):
             return {"success": True, "platform": "signal", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Signal send failed: {e}"}
+
+
+async def _send_email(extra, chat_id, message):
+    """Send via SMTP (one-shot, no persistent connection needed)."""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+    password = os.getenv("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+
+    if not all([address, password, smtp_host]):
+        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+
+    try:
+        msg = MIMEText(message, "plain", "utf-8")
+        msg["From"] = address
+        msg["To"] = chat_id
+        msg["Subject"] = "Hermes Agent"
+
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls()
+        server.login(address, password)
+        server.send_message(msg)
+        server.quit()
+        return {"success": True, "platform": "email", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"Email send failed: {e}"}
 
 
 def _check_send_message():

@@ -104,6 +104,7 @@ Type `/` to see an autocomplete dropdown of all available commands.
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set/clear custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`) and display (`show`/`hide`) |
 
 ### Conversation Management
 

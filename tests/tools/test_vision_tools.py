@@ -289,7 +289,7 @@ class TestErrorLoggingExcInfo:
             assert result_data["success"] is False
 
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
-            assert any(r.exc_info is not None for r in error_records)
+            assert any(r.exc_info and r.exc_info[0] is not None for r in error_records)
 
     @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):

@@ -35,6 +35,7 @@ COMMANDS_BY_CATEGORY = {
         "/prompt": "View/set custom system prompt",
         "/personality": "Set a predefined personality",
         "/verbose": "Cycle tool progress display: off → new → all → verbose",
+        "/reasoning": "Manage reasoning effort and display (usage: /reasoning [level|show|hide])",
         "/skin": "Show or change the display skin/theme",
     },
     "Tools & Skills": {

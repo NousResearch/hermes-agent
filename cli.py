@@ -3162,18 +3162,20 @@ class HermesCLI:
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
-    def _approval_callback(self, command: str, description: str) -> str:
+    def _approval_callback(self, command: str, description: str,
+                           *, allow_permanent: bool = True) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
-        
+
         Called from the agent thread. Shows a selection UI similar to clarify
-        with choices: once / session / always / deny.
+        with choices: once / session / always / deny.  When allow_permanent
+        is False (tirith warnings present), the 'always' option is hidden.
         """
         import time as _time
 
         timeout = 60
         response_queue = queue.Queue()
-        choices = ["once", "session", "always", "deny"]
+        choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
         self._approval_state = {
             "command": command,
@@ -3446,6 +3448,13 @@ class HermesCLI:
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
+
+        # Ensure tirith security scanner is available (downloads if needed)
+        try:
+            from tools.tirith_security import ensure_installed
+            ensure_installed()
+        except Exception:
+            pass  # Non-fatal — fail-open at scan time if unavailable
         
         # Key bindings for the input area
         kb = KeyBindings()

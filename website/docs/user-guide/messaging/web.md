@@ -107,9 +107,11 @@ You'll see output like:
 
 Bot responses render full GitHub-flavored Markdown with syntax-highlighted code blocks powered by highlight.js.
 
-### Voice Messages
+### Voice Conversation
 
-Click the microphone button to record a voice message. The audio is transcribed via Whisper STT and sent to the agent. If voice mode is enabled (`/voice tts`), the bot replies with audio playback in the browser.
+Click the microphone button to record a voice message. The audio is transcribed via Whisper STT (using OpenAI or Groq as fallback) and sent to the agent. The bot automatically replies with audio playback — voice first, then the text response appears. No extra configuration needed.
+
+STT priority: `VOICE_TOOLS_OPENAI_KEY` (OpenAI Whisper) > `GROQ_API_KEY` (Groq Whisper). TTS uses Edge TTS (free, no key) by default, or ElevenLabs/OpenAI if configured in `~/.hermes/config.yaml`.
 
 ### Images & Files
 

@@ -241,6 +241,9 @@ class SessionEntry:
     output_tokens: int = 0
     total_tokens: int = 0
     
+    # Last API-reported prompt tokens (for accurate compression pre-check)
+    last_prompt_tokens: int = 0
+    
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
@@ -257,6 +260,7 @@ class SessionEntry:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+            "last_prompt_tokens": self.last_prompt_tokens,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -287,6 +291,7 @@ class SessionEntry:
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
+            last_prompt_tokens=data.get("last_prompt_tokens", 0),
         )
 
 
@@ -550,7 +555,8 @@ class SessionStore:
         self, 
         session_key: str,
         input_tokens: int = 0,
-        output_tokens: int = 0
+        output_tokens: int = 0,
+        last_prompt_tokens: int = 0,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -560,6 +566,8 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            if last_prompt_tokens > 0:
+                entry.last_prompt_tokens = last_prompt_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()
             

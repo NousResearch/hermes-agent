@@ -223,6 +223,16 @@ def normalize_provider(provider: Optional[str]) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
+def provider_label(provider: Optional[str]) -> str:
+    """Return a human-friendly label for a provider id or alias."""
+    original = (provider or "openrouter").strip()
+    normalized = original.lower()
+    if normalized == "auto":
+        return "Auto"
+    normalized = normalize_provider(normalized)
+    return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
+
+
 def provider_model_ids(provider: Optional[str]) -> list[str]:
     """Return the best known model catalog for a provider.
 

@@ -1,6 +1,7 @@
 """Tests for gateway/channel_directory.py — channel resolution and display."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -115,7 +116,7 @@ class TestResolveChannelName:
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
         """Write sessions.json at the path _build_from_sessions expects."""
-        sessions_path = tmp_path / ".hermes" / "sessions" / "sessions.json"
+        sessions_path = tmp_path / "sessions" / "sessions.json"
         sessions_path.parent.mkdir(parents=True)
         sessions_path.write_text(json.dumps(sessions_data))
 
@@ -145,7 +146,7 @@ class TestBuildFromSessions:
             },
         })
 
-        with patch.object(Path, "home", return_value=tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")
 
         assert len(entries) == 2
@@ -154,7 +155,7 @@ class TestBuildFromSessions:
         assert "Bob" in names
 
     def test_missing_sessions_file(self, tmp_path):
-        with patch.object(Path, "home", return_value=tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")
         assert entries == []
 
@@ -164,7 +165,7 @@ class TestBuildFromSessions:
             "s2": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "X"}},
         })
 
-        with patch.object(Path, "home", return_value=tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")
 
         assert len(entries) == 1

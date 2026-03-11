@@ -100,6 +100,13 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 
+HONCHO_TOOL_NAMES = {
+    "honcho_context",
+    "honcho_profile",
+    "honcho_search",
+    "honcho_conclude",
+}
+
 
 class IterationBudget:
     """Thread-safe shared iteration counter for parent and child agents.
@@ -606,6 +613,11 @@ class AIAgent:
                 print(f"  Honcho init failed: {e}")
                 print("  Run 'hermes honcho setup' to reconfigure.")
                 self._honcho = None
+
+        # Tools are initially discovered before Honcho activation. If Honcho
+        # stays inactive, remove any stale honcho_* tools from prior process state.
+        if not self._honcho:
+            self._strip_honcho_tools_from_surface()
 
         # Gate local memory writes based on per-peer memory modes.
         # AI peer governs MEMORY.md; user peer governs USER.md.
@@ -1342,6 +1354,20 @@ class AIAgent:
             for peer in (hcfg.ai_peer, hcfg.peer_name or "user")
         )
 
+    def _strip_honcho_tools_from_surface(self) -> None:
+        """Remove Honcho tools from the active tool surface."""
+        if not self.tools:
+            self.valid_tool_names = set()
+            return
+
+        self.tools = [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") not in HONCHO_TOOL_NAMES
+        ]
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
     def _activate_honcho(
         self,
         hcfg,
@@ -1386,19 +1412,24 @@ class AIAgent:
 
         set_session_context(self._honcho, self._honcho_session_key)
 
-        if hcfg.recall_mode != "context":
-            self.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-                quiet_mode=True,
-            )
-            self.valid_tool_names = {
-                tool["function"]["name"] for tool in self.tools
-            } if self.tools else set()
+        # Rebuild tool surface after Honcho context injection. Tool availability
+        # is check_fn-gated and may change once session context is attached.
+        self.tools = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+        if hcfg.recall_mode == "context":
+            self._strip_honcho_tools_from_surface()
+            if not self.quiet_mode:
+                print("  Honcho active — recall_mode: context (tools suppressed)")
+        else:
             if not self.quiet_mode:
                 print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
-        elif not self.quiet_mode:
-            print("  Honcho active — recall_mode: context (tools suppressed)")
 
         logger.info(
             "Honcho active (session: %s, user: %s, workspace: %s, "

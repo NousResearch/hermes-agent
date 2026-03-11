@@ -31,6 +31,12 @@ def _write_config(cfg: dict) -> None:
     )
 
 
+def _resolve_api_key(cfg: dict) -> str:
+    """Resolve API key with host -> root -> env fallback."""
+    host_key = ((cfg.get("hosts") or {}).get(HOST) or {}).get("apiKey")
+    return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
@@ -435,7 +441,7 @@ def cmd_tokens(args) -> None:
 def cmd_identity(args) -> None:
     """Seed AI peer identity or show both peer representations."""
     cfg = _read_config()
-    if not cfg.get("apiKey"):
+    if not _resolve_api_key(cfg):
         print("  No API key configured. Run 'hermes honcho setup' first.\n")
         return
 
@@ -533,7 +539,7 @@ def cmd_migrate(args) -> None:
                 agent_files.append(p)
 
     cfg = _read_config()
-    has_key = bool(cfg.get("apiKey", ""))
+    has_key = bool(_resolve_api_key(cfg))
 
     print("\nHoncho migration: OpenClaw native memory → Hermes\n" + "─" * 50)
     print()

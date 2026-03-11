@@ -739,7 +739,9 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000]
+                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            if not speech_text:
+                                raise ValueError("Empty text after markdown cleanup")
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )

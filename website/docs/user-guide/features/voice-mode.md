@@ -8,6 +8,18 @@ description: "Real-time voice conversations with Hermes Agent — CLI, Telegram,
 
 Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
 
+## Prerequisites
+
+Before using voice features, make sure you have:
+
+1. **Hermes Agent installed** — `pip install hermes-agent` (see [Getting Started](../../getting-started.md))
+2. **An LLM provider configured** — set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `LLM_MODEL` in `~/.hermes/.env`
+3. **A working base setup** — run `hermes` to verify the agent responds to text before enabling voice
+
+:::tip
+The `~/.hermes/` directory and default `config.yaml` are created automatically the first time you run `hermes`. You only need to create `~/.hermes/.env` manually for API keys.
+:::
+
 ## Overview
 
 | Feature | Platform | Description |
@@ -79,6 +91,14 @@ ELEVENLABS_API_KEY=your-key        # ElevenLabs — premium quality
 
 ### Quick Start
 
+Start the CLI and enable voice mode:
+
+```bash
+hermes                # Start the interactive CLI
+```
+
+Then use these commands inside the CLI:
+
 ```
 /voice          Toggle voice mode on/off
 /voice on       Enable voice mode
@@ -89,7 +109,7 @@ ELEVENLABS_API_KEY=your-key        # ElevenLabs — premium quality
 
 ### How It Works
 
-1. Enable voice mode with `/voice on`
+1. Start the CLI with `hermes` and enable voice mode with `/voice on`
 2. **Press Ctrl+B** — a beep plays (880Hz), recording starts
 3. **Speak** — a live audio level bar shows your input: `● [▁▂▃▅▇▇▅▂] ❯`
 4. **Stop speaking** — after 3 seconds of silence, recording auto-stops
@@ -125,11 +145,22 @@ When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it g
 
 ### Hallucination Filter
 
-Whisper sometimes generates phantom text from silence or background noise ("Thank you for watching", "Subscribe", etc.). The agent filters these out using a database of 498+ known hallucination phrases across multiple languages.
+Whisper sometimes generates phantom text from silence or background noise ("Thank you for watching", "Subscribe", etc.). The agent filters these out using a set of 26 known hallucination phrases across multiple languages, plus a regex pattern that catches repetitive variations.
 
 ---
 
 ## Gateway Voice Reply (Telegram & Discord)
+
+If you haven't set up your messaging bots yet, see the platform-specific guides:
+- [Telegram Setup Guide](../messaging/telegram.md)
+- [Discord Setup Guide](../messaging/discord.md)
+
+Start the gateway to connect to your messaging platforms:
+
+```bash
+hermes gateway        # Start the gateway (connects to configured platforms)
+hermes gateway setup  # Interactive setup wizard for first-time configuration
+```
 
 ### Commands
 
@@ -245,7 +276,17 @@ GROQ_API_KEY=your-key              # Recommended (fast, free tier)
 # ELEVENLABS_API_KEY=your-key      # Premium quality
 ```
 
+### Start the Gateway
+
+```bash
+hermes gateway        # Start with existing configuration
+```
+
+The bot should come online in Discord within a few seconds.
+
 ### Commands
+
+Use these in the Discord text channel where the bot is present:
 
 ```
 /voice join      Bot joins your current voice channel

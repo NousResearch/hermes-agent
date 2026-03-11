@@ -1,11 +1,8 @@
 """Tests for OpenClaw migration integration in the setup wizard."""
 
 from argparse import Namespace
-from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from hermes_cli import setup as setup_mod
 
@@ -145,7 +142,7 @@ class TestOfferOpenclawMigration:
             patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
-            patch.object(setup_mod, "load_config", return_value={"agent": {}}) as mock_load,
+            patch.object(setup_mod, "load_config", return_value={"agent": {}}),
             patch.object(setup_mod, "save_config") as mock_save,
             patch(
                 "importlib.util.spec_from_file_location",
@@ -242,7 +239,8 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "load_config", return_value={}),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(
-                setup_mod, "get_env_value",
+                setup_mod,
+                "get_env_value",
                 side_effect=lambda k: "sk-xxx" if k == "OPENROUTER_API_KEY" else "",
             ),
             patch("hermes_cli.auth.get_active_provider", return_value=None),

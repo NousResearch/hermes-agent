@@ -12,7 +12,6 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
-import json
 import logging
 import os
 import sys
@@ -2084,8 +2083,12 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 _OPENCLAW_SCRIPT = (
-    PROJECT_ROOT / "optional-skills" / "migration"
-    / "openclaw-migration" / "scripts" / "openclaw_to_hermes.py"
+    PROJECT_ROOT
+    / "optional-skills"
+    / "migration"
+    / "openclaw-migration"
+    / "scripts"
+    / "openclaw_to_hermes.py"
 )
 
 
@@ -2108,7 +2111,9 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     print()
 
     if not prompt_yes_no("Would you like to import from OpenClaw?", default=True):
-        print_info("Skipping migration. You can run it later via the openclaw-migration skill.")
+        print_info(
+            "Skipping migration. You can run it later via the openclaw-migration skill."
+        )
         return False
 
     # Ensure config.yaml exists before migration tries to read it

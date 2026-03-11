@@ -953,6 +953,10 @@ body {
     color: #fff;
     box-shadow: 0 0 16px var(--accent-glow);
 }
+#voice-btn.unavailable {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
 #input-bar.voice-mode-active {
     justify-content: center;
 }
@@ -1092,9 +1096,11 @@ function handleServerMessage(data) {
             document.getElementById('chat-screen').style.display = 'flex';
             document.getElementById('input').focus();
             setStatus(true);
-            // Check voice support
+            // Check voice support — on mobile browsers, mediaDevices
+            // requires HTTPS (localhost is exempt). Mark as unavailable
+            // but keep the button visible so users know the feature exists.
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                document.getElementById('voice-btn').style.display = 'none';
+                document.getElementById('voice-btn').classList.add('unavailable');
             }
             break;
 
@@ -1197,6 +1203,10 @@ const SILENCE_THRESHOLD = 0.015;
 const SILENCE_DURATION = 1500; // ms of silence to auto-stop
 
 async function toggleVoice() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        addSystemMessage('Microphone requires HTTPS. On mobile, use https:// or access via localhost.');
+        return;
+    }
     if (voiceMode) {
         exitVoiceMode();
     } else {

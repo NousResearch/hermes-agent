@@ -99,6 +99,51 @@ from agent.trajectory import (
 )
 
 
+class _SafeWriter:
+    """Transparent stdout wrapper that catches OSError from broken pipes.
+
+    When hermes-agent runs as a systemd service, Docker container, or headless
+    daemon, the stdout pipe can become unavailable (idle timeout, buffer
+    exhaustion, socket reset). Any print() call then raises
+    ``OSError: [Errno 5] Input/output error``, which can crash
+    run_conversation() — especially via double-fault when the except handler
+    also tries to print.
+
+    This wrapper delegates all writes to the underlying stream and silently
+    catches OSError.  It is installed once at the start of run_conversation()
+    and is transparent when stdout is healthy (zero overhead on the happy path).
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner):
+        object.__setattr__(self, "_inner", inner)
+
+    def write(self, data):
+        try:
+            return self._inner.write(data)
+        except OSError:
+            return len(data) if isinstance(data, str) else 0
+
+    def flush(self):
+        try:
+            self._inner.flush()
+        except OSError:
+            pass
+
+    def fileno(self):
+        return self._inner.fileno()
+
+    def isatty(self):
+        try:
+            return self._inner.isatty()
+        except OSError:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class IterationBudget:
     """Thread-safe shared iteration counter for parent and child agents.
 
@@ -3157,6 +3202,11 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Guard stdout against OSError from broken pipes (systemd/headless/daemon).
+        # Installed once, transparent when stdout is healthy, prevents crash on write.
+        if not isinstance(sys.stdout, _SafeWriter):
+            sys.stdout = _SafeWriter(sys.stdout)
+
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         

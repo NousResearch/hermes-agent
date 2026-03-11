@@ -628,3 +628,70 @@ def init_skin_from_config(config: dict) -> None:
         set_active_skin(skin_name.strip())
     else:
         set_active_skin("default")
+
+
+
+# =============================================================================
+# Convenience helpers for CLI modules
+# =============================================================================
+
+def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
+    """Get the input prompt symbol from the active skin."""
+    try:
+        return get_active_skin().get_branding("prompt_symbol", fallback)
+    except Exception:
+        return fallback
+
+
+def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
+    """Get the /help header text from the active skin."""
+    try:
+        return get_active_skin().get_branding("help_header", fallback)
+    except Exception:
+        return fallback
+
+
+def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
+    """Get the goodbye text from the active skin."""
+    try:
+        return get_active_skin().get_branding("goodbye", fallback)
+    except Exception:
+        return fallback
+
+
+def get_prompt_toolkit_style_overrides() -> Dict:
+    """Return prompt_toolkit style overrides derived from the active skin.
+
+    This makes skin YAML values like colors.prompt and colors.input_rule actually
+    apply to the interactive TUI (prompt symbol, input rules, clarify panels).
+    """
+    try:
+        skin = get_active_skin()
+    except Exception:
+        return {}
+
+    prompt = skin.get_color("prompt", "#FFF8DC")
+    input_rule = skin.get_color("input_rule", "#CD7F32")
+    title = skin.get_color("banner_title", "#FFD700")
+
+    return {
+        # Main input + prompt
+        "input-area": prompt,
+        "prompt": prompt,
+        "input-rule": input_rule,
+        # Clarify panel
+        "clarify-border": input_rule,
+        "clarify-title": f"{title} bold",
+        "clarify-question": f"{prompt} bold",
+        "clarify-selected": f"{title} bold",
+        "clarify-active-other": f"{title} italic",
+        "clarify-countdown": input_rule,
+        # Sudo panel
+        "sudo-border": input_rule,
+        "sudo-text": prompt,
+        # Approval panel
+        "approval-border": input_rule,
+        "approval-desc": f"{prompt} bold",
+        "approval-selected": f"{title} bold",
+    }
+

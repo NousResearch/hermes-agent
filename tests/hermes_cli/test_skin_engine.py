@@ -230,3 +230,35 @@ class TestDisplayIntegration:
         from agent.display import get_cute_tool_message
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
         assert msg.startswith("┊")
+
+
+
+class TestCliBrandingHelpers:
+    def test_active_prompt_symbol_default(self):
+        from hermes_cli.skin_engine import get_active_prompt_symbol
+        assert get_active_prompt_symbol() == "❯ "
+
+    def test_active_prompt_symbol_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
+        set_active_skin("ares")
+        assert get_active_prompt_symbol() == "⚔ ❯ "
+
+    def test_active_help_header_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_help_header
+        set_active_skin("ares")
+        assert get_active_help_header() == "(⚔) Available Commands"
+
+    def test_active_goodbye_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_goodbye
+        set_active_skin("ares")
+        assert get_active_goodbye() == "Farewell, warrior! ⚔"
+
+    def test_prompt_toolkit_style_overrides_use_skin(self):
+        from hermes_cli.skin_engine import (
+            set_active_skin, get_active_skin, get_prompt_toolkit_style_overrides
+        )
+        set_active_skin("ares")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["input-rule"] == skin.get_color("input_rule")

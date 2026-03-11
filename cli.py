@@ -1956,9 +1956,19 @@ class HermesCLI:
         """Display help information with categorized commands."""
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
 
-        _cprint(f"\n{_BOLD}+{'-' * 55}+{_RST}")
-        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 15}|{_RST}")
-        _cprint(f"{_BOLD}+{'-' * 55}+{_RST}")
+        # Skin-aware header (branding.help_header)
+        try:
+            from hermes_cli.skin_engine import get_active_help_header
+            _header = get_active_help_header("(^_^)? Available Commands")
+        except Exception:
+            _header = "(^_^)? Available Commands"
+        _header = (_header or "").strip() or "(^_^)? Available Commands"
+        inner_width = 55
+        if len(_header) > inner_width:
+            _header = _header[:inner_width]
+        _cprint(f"\n{_BOLD}+{'-' * inner_width}+{_RST}")
+        _cprint(f"{_BOLD}|{_header:^{inner_width}}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
         for category, commands in COMMANDS_BY_CATEGORY.items():
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
@@ -3051,6 +3061,18 @@ class HermesCLI:
             print(f"  Skin set to: {new_skin}")
         print("  Note: banner colors will update on next session start.")
 
+        # In interactive TUI mode, update prompt colors immediately.
+        try:
+            if getattr(self, '_app', None) and getattr(self, '_tui_style_base', None):
+                from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+                style_dict = dict(self._tui_style_base)
+                style_dict.update(get_prompt_toolkit_style_overrides())
+                self._app.style = PTStyle.from_dict(style_dict)
+                self._invalidate(min_interval=0.0)
+                print("  Prompt colors updated.")
+        except Exception:
+            pass
+
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]
@@ -3615,7 +3637,12 @@ class HermesCLI:
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
         else:
-            print("Goodbye! ⚕")
+            try:
+                from hermes_cli.skin_engine import get_active_goodbye
+                goodbye = get_active_goodbye("Goodbye! ⚕")
+            except Exception:
+                goodbye = "Goodbye! ⚕"
+            print(goodbye)
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
@@ -3927,20 +3954,54 @@ class HermesCLI:
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
+        def _get_skin_prompt_symbols():
+            """Return (full_prompt, arrow_suffix) from the active skin.
+
+            full_prompt is the exact branding.prompt_symbol from the skin.
+            arrow_suffix is a best-effort extraction of the trailing "arrow" token
+            (used when we prepend our own status icon like 🔐/⚠/⚕, to avoid
+            duplicating the skin's icon).
+            """
+            try:
+                from hermes_cli.skin_engine import get_active_prompt_symbol
+                sym = get_active_prompt_symbol('❯ ')
+            except Exception:
+                sym = '❯ '
+
+            sym = sym or '❯ '
+
+            # If the symbol looks like "<icon> <arrow>", use only the last token.
+            # Otherwise, use the full symbol as-is.
+            s = sym.rstrip()
+            if not s:
+                return '❯ ', '❯ '
+
+            parts = s.split()
+            if len(parts) >= 2:
+                arrow = parts[-1]
+            else:
+                arrow = sym
+
+            if isinstance(arrow, str) and arrow and not arrow.endswith(' '):
+                arrow = arrow + ' '
+
+            return sym, arrow
+
         def get_prompt():
+            sym, arrow = _get_skin_prompt_symbols()
             if cli_ref._sudo_state:
-                return [('class:sudo-prompt', '🔐 ❯ ')]
+                return [('class:sudo-prompt', f"🔐 {arrow}")]
             if cli_ref._approval_state:
-                return [('class:prompt-working', '⚠ ❯ ')]
+                return [('class:prompt-working', f"⚠ {arrow}")]
             if cli_ref._clarify_freetext:
-                return [('class:clarify-selected', '✎ ❯ ')]
+                return [('class:clarify-selected', f"✎ {arrow}")]
             if cli_ref._clarify_state:
-                return [('class:prompt-working', '? ❯ ')]
+                return [('class:prompt-working', f"? {arrow}")]
             if cli_ref._command_running:
-                return [('class:prompt-working', f"{cli_ref._command_spinner_frame()} ❯ ")]
+                return [('class:prompt-working', f"{cli_ref._command_spinner_frame()} {arrow}")]
             if cli_ref._agent_running:
-                return [('class:prompt-working', '⚕ ❯ ')]
-            return [('class:prompt', '❯ ')]
+                return [('class:prompt-working', f"⚕ {arrow}")]
+            return [('class:prompt', sym)]
 
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         input_area = TextArea(
@@ -4349,7 +4410,9 @@ class HermesCLI:
         )
         
         # Style for the application
-        style = PTStyle.from_dict({
+        # Keep a stable base style dict, then layer skin-driven overrides
+        # (colors.prompt, colors.input_rule, etc.) on top.
+        self._tui_style_base = {
             'input-area': '#FFF8DC',
             'placeholder': '#555555 italic',
             'prompt': '#FFF8DC',
@@ -4384,7 +4447,14 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
-        })
+        }
+        style_dict = dict(self._tui_style_base)
+        try:
+            from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+            style_dict.update(get_prompt_toolkit_style_overrides())
+        except Exception:
+            pass
+        style = PTStyle.from_dict(style_dict)
         
         # Create the application
         app = Application(

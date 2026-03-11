@@ -950,9 +950,12 @@ class GatewayRunner:
         # repeated truncation/context failures.  Detect this early and
         # compress proactively — before the agent even starts.  (#628)
         #
-        # Thresholds are derived from the SAME compression config the
-        # agent uses (compression.threshold × model context length) so
-        # CLI and messaging platforms behave identically.
+        # IMPORTANT: This pre-check uses a rough char-based estimate
+        # (~4 chars/token) which significantly overestimates for
+        # tool-heavy conversations (code/JSON tokenizes at 5-7+
+        # chars/token).  To avoid premature compression, we apply a
+        # 1.4x safety factor — the agent's own compression uses actual
+        # API-reported token counts and handles precise thresholds.
         # -----------------------------------------------------------------
         if history and len(history) >= 4:
             from agent.model_metadata import (
@@ -1000,11 +1003,14 @@ class GatewayRunner:
 
             if _hyg_compression_enabled:
                 _hyg_context_length = get_model_context_length(_hyg_model)
+                # Apply 1.4x safety factor to account for rough estimate
+                # overestimation on tool-heavy / code-heavy conversations.
+                _ROUGH_ESTIMATE_SAFETY = 1.4
                 _compress_token_threshold = int(
-                    _hyg_context_length * _hyg_threshold_pct
+                    _hyg_context_length * _hyg_threshold_pct * _ROUGH_ESTIMATE_SAFETY
                 )
-                # Warn if still huge after compression (95% of context)
-                _warn_token_threshold = int(_hyg_context_length * 0.95)
+                # Warn if still huge after compression (95% of context, with same safety factor)
+                _warn_token_threshold = int(_hyg_context_length * 0.95 * _ROUGH_ESTIMATE_SAFETY)
 
                 _msg_count = len(history)
                 _approx_tokens = estimate_messages_tokens_rough(history)

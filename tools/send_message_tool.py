@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+_VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
+_AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+_VOICE_EXTS = {'.ogg', '.opus'}
+
 
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
@@ -195,12 +200,61 @@ async def _send_telegram(token, chat_id, message, thread_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed)."""
     try:
         from telegram import Bot
+        from gateway.platforms.base import BasePlatformAdapter
         bot = Bot(token=token)
-        send_kwargs = {"chat_id": int(chat_id), "text": message}
+        int_chat_id = int(chat_id)
+        thread_kwargs = {}
         if thread_id is not None:
-            send_kwargs["message_thread_id"] = int(thread_id)
-        msg = await bot.send_message(**send_kwargs)
-        return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(msg.message_id)}
+            thread_kwargs["message_thread_id"] = int(thread_id)
+
+        # Extract MEDIA:<path> tags and send files natively
+        media_files, cleaned = BasePlatformAdapter.extract_media(message)
+
+        last_msg = None
+        # Send text portion if any remains
+        if cleaned.strip():
+            last_msg = await bot.send_message(
+                chat_id=int_chat_id, text=cleaned, **thread_kwargs
+            )
+
+        # Send extracted media files
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                logger.warning("Media file not found, skipping: %s", media_path)
+                continue
+            ext = os.path.splitext(media_path)[1].lower()
+            try:
+                with open(media_path, "rb") as f:
+                    if ext in _IMAGE_EXTS:
+                        last_msg = await bot.send_photo(
+                            chat_id=int_chat_id, photo=f, **thread_kwargs
+                        )
+                    elif ext in _VIDEO_EXTS:
+                        last_msg = await bot.send_video(
+                            chat_id=int_chat_id, video=f, **thread_kwargs
+                        )
+                    elif ext in _VOICE_EXTS and is_voice:
+                        last_msg = await bot.send_voice(
+                            chat_id=int_chat_id, voice=f, **thread_kwargs
+                        )
+                    elif ext in _AUDIO_EXTS:
+                        last_msg = await bot.send_audio(
+                            chat_id=int_chat_id, audio=f, **thread_kwargs
+                        )
+                    else:
+                        last_msg = await bot.send_document(
+                            chat_id=int_chat_id, document=f, **thread_kwargs
+                        )
+            except Exception as e:
+                logger.error("Failed to send media %s: %s", media_path, e)
+
+        # If no text and no media sent, send cleaned text as fallback
+        if last_msg is None:
+            last_msg = await bot.send_message(
+                chat_id=int_chat_id, text=cleaned if cleaned.strip() else message, **thread_kwargs
+            )
+
+        return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(last_msg.message_id)}
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:

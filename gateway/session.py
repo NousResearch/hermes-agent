@@ -306,6 +306,8 @@ def build_session_key(source: SessionSource) -> str:
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+    if source.thread_id:
+        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
     return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
 
 

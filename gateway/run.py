@@ -875,7 +875,6 @@ class GatewayRunner:
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
-                    import asyncio
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
@@ -1067,12 +1066,14 @@ class GatewayRunner:
                     )
 
                     _hyg_adapter = self.adapters.get(source.platform)
+                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
                     if _hyg_adapter:
                         try:
                             await _hyg_adapter.send(
                                 source.chat_id,
                                 f"🗜️ Session is large ({_msg_count} messages, "
-                                f"~{_approx_tokens:,} tokens). Auto-compressing..."
+                                f"~{_approx_tokens:,} tokens). Auto-compressing...",
+                                metadata=_hyg_meta,
                             )
                         except Exception:
                             pass
@@ -1132,7 +1133,8 @@ class GatewayRunner:
                                             f"🗜️ Compressed: {_msg_count} → "
                                             f"{_new_count} messages, "
                                             f"~{_approx_tokens:,} → "
-                                            f"~{_new_tokens:,} tokens"
+                                            f"~{_new_tokens:,} tokens",
+                                            metadata=_hyg_meta,
                                         )
                                     except Exception:
                                         pass
@@ -1152,7 +1154,8 @@ class GatewayRunner:
                                                 "after compression "
                                                 f"(~{_new_tokens:,} tokens). "
                                                 "Consider using /reset to start "
-                                                "fresh if you experience issues."
+                                                "fresh if you experience issues.",
+                                                metadata=_hyg_meta,
                                             )
                                         except Exception:
                                             pass
@@ -1164,6 +1167,7 @@ class GatewayRunner:
                         # Compression failed and session is dangerously large
                         if _approx_tokens >= _warn_token_threshold:
                             _hyg_adapter = self.adapters.get(source.platform)
+                            _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
                             if _hyg_adapter:
                                 try:
                                     await _hyg_adapter.send(
@@ -1173,7 +1177,8 @@ class GatewayRunner:
                                         f"~{_approx_tokens:,} tokens) and "
                                         "auto-compression failed. Consider "
                                         "using /compress or /reset to avoid "
-                                        "issues."
+                                        "issues.",
+                                        metadata=_hyg_meta,
                                     )
                                 except Exception:
                                     pass
@@ -2765,7 +2770,7 @@ class GatewayRunner:
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
-                    await adapter.send_typing(source.chat_id)
+                    await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
                     await asyncio.sleep(0.3)

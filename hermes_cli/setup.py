@@ -697,6 +697,12 @@ def setup_model_provider(config: dict):
     active_oauth = get_active_provider()
     existing_custom = get_env_value("OPENAI_BASE_URL")
 
+    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+    current_config_provider = str(model_cfg.get("provider") or "").strip().lower() or None
+    if current_config_provider == "auto":
+        current_config_provider = None
+    current_config_base_url = str(model_cfg.get("base_url") or "").strip()
+
     # Detect credentials from other CLI tools
     detected_creds = detect_external_credentials()
     if detected_creds:
@@ -709,10 +715,23 @@ def setup_model_provider(config: dict):
         print()
 
     # Detect if any provider is already configured
-    has_any_provider = bool(active_oauth or existing_custom or existing_or)
+    has_any_provider = bool(
+        current_config_provider or active_oauth or existing_custom or existing_or
+    )
 
     # Build "keep current" label
-    if active_oauth and active_oauth in PROVIDER_REGISTRY:
+    if current_config_provider == "custom":
+        custom_label = current_config_base_url or existing_custom
+        keep_label = (
+            f"Keep current (Custom: {custom_label})"
+            if custom_label
+            else "Keep current (Custom)"
+        )
+    elif current_config_provider == "openrouter":
+        keep_label = "Keep current (OpenRouter)"
+    elif current_config_provider and current_config_provider in PROVIDER_REGISTRY:
+        keep_label = f"Keep current ({PROVIDER_REGISTRY[current_config_provider].name})"
+    elif active_oauth and active_oauth in PROVIDER_REGISTRY:
         keep_label = f"Keep current ({PROVIDER_REGISTRY[active_oauth].name})"
     elif existing_custom:
         keep_label = f"Keep current (Custom: {existing_custom})"
@@ -1215,6 +1234,17 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    # Normalize "keep current" to an explicit provider so downstream logic
+    # doesn't fall back to the generic OpenRouter/static-model path.
+    if selected_provider is None:
+        if current_config_provider:
+            selected_provider = current_config_provider
+        elif active_oauth and active_oauth in PROVIDER_REGISTRY:
+            selected_provider = active_oauth
+        elif existing_custom:
+            selected_provider = "custom"
+        elif existing_or:
+            selected_provider = "openrouter"
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.

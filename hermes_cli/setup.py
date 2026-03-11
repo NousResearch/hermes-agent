@@ -243,7 +243,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
                     else:
                         selected.add(idx)
                 else:
-                    print_error(f"Enter a number between 1 and {len(items) + 1}")
+                    print_error(f"Enter a number between 1 and {len(items)}")
             except ValueError:
                 print_error("Enter a number")
             except (KeyboardInterrupt, EOFError):

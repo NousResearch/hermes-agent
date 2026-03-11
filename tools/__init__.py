@@ -155,6 +155,13 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
+# X intelligence CLI integration (xint-rs / xint)
+from .xint_tool import (
+    xint_tool,
+    check_xint_requirements,
+    XINT_SCHEMA,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -260,5 +267,9 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+    # X intelligence tool
+    'xint_tool',
+    'check_xint_requirements',
+    'XINT_SCHEMA',
 ]
 

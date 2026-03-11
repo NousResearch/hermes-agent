@@ -1,8 +1,8 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
-import asyncio
+import json
 import logging
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -74,7 +74,6 @@ class TestRunJobConfigLogging:
 
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
         """When config.yaml is malformed, a warning should be logged."""
-        # Create a bad config.yaml
         bad_yaml = tmp_path / "config.yaml"
         bad_yaml.write_text("invalid: yaml: [[[bad")
 
@@ -89,7 +88,7 @@ class TestRunJobConfigLogging:
              patch("dotenv.load_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
-            mock_agent.run.return_value = ("output doc", "final response")
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
             with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
@@ -97,3 +96,32 @@ class TestRunJobConfigLogging:
 
         assert any("failed to load config.yaml" in r.message for r in caplog.records), \
             f"Expected 'failed to load config.yaml' warning in logs, got: {[r.message for r in caplog.records]}"
+
+    def test_bad_prefill_messages_is_logged(self, caplog, tmp_path):
+        """When the prefill messages file contains invalid JSON, a warning should be logged."""
+        # Valid config.yaml that points to a bad prefill file
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("prefill_messages_file: prefill.json\n")
+
+        bad_prefill = tmp_path / "prefill.json"
+        bad_prefill.write_text("{not valid json!!!")
+
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                run_job(job)
+
+        assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
+            f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"

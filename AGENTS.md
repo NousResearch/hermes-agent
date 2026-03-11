@@ -5,7 +5,12 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 ## Development Environment
 
 ```bash
-source .venv/bin/activate  # ALWAYS activate before running Python
+source .venv/bin/activate  # Linux/macOS/WSL (ALWAYS activate before running Python)
+# Windows PowerShell:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .venv\Scripts\Activate.ps1
+# Windows cmd.exe:
+#   .venv\Scripts\activate.bat
 ```
 
 ## Project Structure
@@ -321,7 +326,10 @@ The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HER
 ## Testing
 
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate  # Linux/macOS/WSL
+# Windows PowerShell:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .venv\Scripts\Activate.ps1
 python -m pytest tests/ -q          # Full suite (~2500 tests, ~2 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading

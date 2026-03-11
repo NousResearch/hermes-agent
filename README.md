@@ -97,7 +97,12 @@ git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
-source .venv/bin/activate
+source .venv/bin/activate  # Linux/macOS/WSL
+# Windows PowerShell:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .venv\Scripts\Activate.ps1
+# Windows cmd.exe:
+#   .venv\Scripts\activate.bat
 uv pip install -e ".[all,dev]"
 uv pip install -e "./mini-swe-agent"
 python -m pytest tests/ -q

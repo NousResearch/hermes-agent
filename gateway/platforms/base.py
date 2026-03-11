@@ -618,16 +618,16 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags (path may contain spaces)
-        media_pattern = r'MEDIA:(\S+)'
+        # Extract MEDIA:<path> tags
+        media_pattern = r'MEDIA:\s*(\S+)'
         for match in re.finditer(media_pattern, content):
-            path = match.group(1).strip()
+            path = match.group(1).strip().rstrip('`"\',)}')
             if path:
                 media.append((path, has_voice_tag))
         
-        # Remove MEDIA tags from content
+        # Remove MEDIA tags from content (including surrounding backticks/quotes)
         if media:
-            cleaned = re.sub(media_pattern, '', cleaned)
+            cleaned = re.sub(r'[`"\']*MEDIA:\s*\S+[`"\']*', '', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

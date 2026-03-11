@@ -333,6 +333,8 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
+    requires_toolsets: [terminal]      # Optional — show only when toolset is available
 ---
 
 # Skill Title
@@ -366,6 +368,48 @@ platforms: [windows]          # Windows only
 ```
 
 If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
+
+### Conditional skill activation
+
+Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** — alternatives that should only be shown when a primary tool is unavailable.
+
+Four fields are supported under `metadata.hermes`:
+
+```yaml
+metadata:
+  hermes:
+    fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
+    requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
+    fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
+    requires_tools: [terminal]        # Show ONLY when these specific tools are available
+```
+
+**Semantics:**
+- `fallback_for_*`: The skill is a backup. It is **hidden** when the listed tools/toolsets are available, and **shown** when they are unavailable. Use this for free alternatives to premium tools.
+- `requires_*`: The skill needs certain tools to function. It is **hidden** when the listed tools/toolsets are unavailable. Use this for skills that depend on specific capabilities (e.g., a skill that only makes sense with terminal access).
+- If both are specified, both conditions must be satisfied for the skill to appear.
+- If neither is specified, the skill is always shown (backward compatible).
+
+**Examples:**
+
+```yaml
+# DuckDuckGo search — shown when Firecrawl (web toolset) is unavailable
+metadata:
+  hermes:
+    fallback_for_toolsets: [web]
+
+# Smart home skill — only useful when terminal is available
+metadata:
+  hermes:
+    requires_toolsets: [terminal]
+
+# Local browser fallback — shown when Browserbase is unavailable
+metadata:
+  hermes:
+    fallback_for_toolsets: [browser]
+```
+
+The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
 
 ### Skill guidelines
 

@@ -2074,7 +2074,15 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
             return False
 
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        # Register in sys.modules so @dataclass can resolve the module
+        # (Python 3.11+ requires this for dynamically loaded modules)
+        import sys as _sys
+        _sys.modules[spec.name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            _sys.modules.pop(spec.name, None)
+            raise
 
         # Run migration with the "full" preset, execute mode, no overwrite
         selected = mod.resolve_selected_options(None, None, preset="full")

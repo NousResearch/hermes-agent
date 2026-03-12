@@ -354,6 +354,7 @@ async def vision_analyze_tool(
         # Prepare error response
         result = {
             "success": False,
+            "error": error_msg,
             "analysis": analysis,
         }
         

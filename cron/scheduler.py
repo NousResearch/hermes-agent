@@ -180,7 +180,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}

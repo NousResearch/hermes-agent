@@ -775,6 +775,46 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
+        """Return the parent channel ID for a Discord thread-like channel, if present."""
+        parent = getattr(channel, "parent", None)
+        if parent is not None and getattr(parent, "id", None) is not None:
+            return str(parent.id)
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is not None:
+            return str(parent_id)
+        return None
+
+    def _is_forum_parent(self, channel: Any) -> bool:
+        """Best-effort check for whether a Discord channel is a forum channel."""
+        if channel is None:
+            return False
+        forum_cls = getattr(discord, "ForumChannel", None)
+        if forum_cls and isinstance(channel, forum_cls):
+            return True
+        channel_type = getattr(channel, "type", None)
+        if channel_type is not None:
+            type_value = getattr(channel_type, "value", channel_type)
+            if type_value == 15:
+                return True
+        return False
+
+    def _format_thread_chat_name(self, thread: Any) -> str:
+        """Build a readable chat name for thread-like Discord channels, including forum context when available."""
+        thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
+        parent = getattr(thread, "parent", None)
+        guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
+        guild_name = getattr(guild, "name", None)
+        parent_name = getattr(parent, "name", None)
+
+        if self._is_forum_parent(parent) and guild_name and parent_name:
+            return f"{guild_name} / {parent_name} / {thread_name}"
+        if parent_name and guild_name:
+            return f"{guild_name} / #{parent_name} / {thread_name}"
+        if parent_name:
+            return f"{parent_name} / {thread_name}"
+        return thread_name
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -785,28 +825,33 @@ class DiscordAdapter(BasePlatformAdapter):
         #       bot responds to every message without needing a mention.
         #   DISCORD_REQUIRE_MENTION: Set to "false" to disable mention requirement
         #       globally (all channels become free-response). Default: "true".
-        
+        #       Can also be set via discord.require_mention in config.yaml.
+
+        thread_id = None
+        parent_channel_id = None
+        is_thread = isinstance(message.channel, discord.Thread)
+        if is_thread:
+            thread_id = str(message.channel.id)
+            parent_channel_id = self._get_parent_channel_id(message.channel)
+
         if not isinstance(message.channel, discord.DMChannel):
-            # Check if this channel is in the free-response list
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
-            channel_id = str(message.channel.id)
-            
-            # Global override: if DISCORD_REQUIRE_MENTION=false, all channels are free
+            channel_ids = {str(message.channel.id)}
+            if parent_channel_id:
+                channel_ids.add(parent_channel_id)
+
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            
-            is_free_channel = channel_id in free_channels
-            
+            is_free_channel = bool(channel_ids & free_channels)
+
             if require_mention and not is_free_channel:
-                # Must be @mentioned to respond
                 if self._client.user not in message.mentions:
-                    return  # Silently ignore messages that don't mention the bot
-            
-            # Strip the bot mention from the message text so the agent sees clean input
+                    return
+
             if self._client.user and self._client.user in message.mentions:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
-        
+
         # Determine message type
         msg_type = MessageType.TEXT
         if message.content.startswith("/"):
@@ -829,20 +874,15 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(message.channel, discord.DMChannel):
             chat_type = "dm"
             chat_name = message.author.name
-        elif isinstance(message.channel, discord.Thread):
+        elif is_thread:
             chat_type = "thread"
-            chat_name = message.channel.name
+            chat_name = self._format_thread_chat_name(message.channel)
         else:
-            chat_type = "group"  # Treat server channels as groups
+            chat_type = "group"
             chat_name = getattr(message.channel, "name", str(message.channel.id))
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        
-        # Get thread ID if in a thread
-        thread_id = None
-        if isinstance(message.channel, discord.Thread):
-            thread_id = str(message.channel.id)
-        
+
         # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
         chat_topic = getattr(message.channel, "topic", None)
         

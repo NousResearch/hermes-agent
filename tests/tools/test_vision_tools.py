@@ -202,7 +202,7 @@ class TestHandleVisionAnalyze:
             assert model == "custom/model-v1"
 
     def test_falls_back_to_default_model(self):
-        """Without AUXILIARY_VISION_MODEL, should use DEFAULT_VISION_MODEL or fallback."""
+        """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
@@ -218,9 +218,9 @@ class TestHandleVisionAnalyze:
             coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
-            # Should be DEFAULT_VISION_MODEL or the hardcoded fallback
-            assert model is not None
-            assert len(model) > 0
+            # With no AUXILIARY_VISION_MODEL set, model should be None
+            # (the centralized call_llm router picks the default)
+            assert model is None
 
     def test_empty_args_graceful(self):
         """Missing keys should default to empty strings, not raise."""
@@ -277,8 +277,6 @@ class TestErrorLoggingExcInfo:
                 new_callable=AsyncMock,
                 side_effect=Exception("download boom"),
             ),
-            patch("tools.vision_tools._aux_async_client", MagicMock()),
-            patch("tools.vision_tools.DEFAULT_VISION_MODEL", "test/model"),
             caplog.at_level(logging.ERROR, logger="tools.vision_tools"),
         ):
             result = await vision_analyze_tool(
@@ -311,25 +309,16 @@ class TestErrorLoggingExcInfo:
                 "tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",
             ),
-            patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value=None),
-            patch(
-                "agent.auxiliary_client.auxiliary_max_tokens_param",
-                return_value={"max_tokens": 2000},
-            ),
             caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
         ):
-            # Mock the vision client
-            mock_client = AsyncMock()
+            # Mock the async_call_llm function to return a mock response
             mock_response = MagicMock()
             mock_choice = MagicMock()
             mock_choice.message.content = "A test image description"
             mock_response.choices = [mock_choice]
-            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-            # Patch module-level _aux_async_client so the tool doesn't bail early
             with (
-                patch("tools.vision_tools._aux_async_client", mock_client),
-                patch("tools.vision_tools.DEFAULT_VISION_MODEL", "test/model"),
+                patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
                 # Make unlink fail to trigger cleanup warning
                 original_unlink = Path.unlink

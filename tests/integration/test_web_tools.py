@@ -579,7 +579,7 @@ class WebToolsTester:
             "results": self.test_results,
             "environment": {
                 "firecrawl_api_key": check_firecrawl_api_key(),
-                "nous_api_key": check_auxiliary_model(),
+                "auxiliary_model": check_auxiliary_model(),
                 "debug_mode": get_debug_session_info()["enabled"]
             }
         }

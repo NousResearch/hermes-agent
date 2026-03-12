@@ -2795,7 +2795,11 @@ class HermesCLI:
                         base_url_for_probe = runtime.get("base_url", "")
                     except Exception as e:
                         provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                        if target_provider == "custom":
+                            print(f"(>_<) Custom endpoint not configured. Set OPENAI_BASE_URL and OPENAI_API_KEY,")
+                            print(f"      or run: hermes setup → Custom OpenAI-compatible endpoint")
+                        else:
+                            print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
                         print(f"(^_^) Current model unchanged: {self.model}")
                         return True
 

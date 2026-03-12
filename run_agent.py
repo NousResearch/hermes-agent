@@ -358,14 +358,24 @@ class AIAgent:
         _error_log_dir.mkdir(parents=True, exist_ok=True)
         _error_log_path = _error_log_dir / "errors.log"
         from logging.handlers import RotatingFileHandler
-        _error_file_handler = RotatingFileHandler(
-            _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+        # Guard against duplicate handlers: in gateway mode a new AIAgent is
+        # created per message, so without this check every log line would be
+        # written N times after N messages (see #1025 / #990).
+        _root_logger = logging.getLogger()
+        _has_error_handler = any(
+            isinstance(h, RotatingFileHandler)
+            and getattr(h, "baseFilename", "").endswith("errors.log")
+            for h in _root_logger.handlers
         )
-        _error_file_handler.setLevel(logging.WARNING)
-        _error_file_handler.setFormatter(RedactingFormatter(
-            '%(asctime)s %(levelname)s %(name)s: %(message)s',
-        ))
-        logging.getLogger().addHandler(_error_file_handler)
+        if not _has_error_handler:
+            _error_file_handler = RotatingFileHandler(
+                _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+            )
+            _error_file_handler.setLevel(logging.WARNING)
+            _error_file_handler.setFormatter(RedactingFormatter(
+                '%(asctime)s %(levelname)s %(name)s: %(message)s',
+            ))
+            _root_logger.addHandler(_error_file_handler)
 
         if self.verbose_logging:
             logging.basicConfig(

@@ -664,7 +664,7 @@ class AIAgent:
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section) or environment variables
-        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.85"))
+        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.50"))
         compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
         compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
         

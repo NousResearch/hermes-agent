@@ -1560,7 +1560,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 
 def _model_flow_anthropic(config, current_model=""):
-    """Flow for Anthropic provider — API key, setup-token, or Claude Code creds."""
+    """Flow for Anthropic provider — setup-token, API key, or Claude Code creds."""
     import os
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
@@ -1571,15 +1571,13 @@ def _model_flow_anthropic(config, current_model=""):
 
     pconfig = PROVIDER_REGISTRY["anthropic"]
 
-    # Check for existing credentials (env vars or Claude Code)
+    # Check for existing credentials
     existing_key = (
         get_env_value("ANTHROPIC_API_KEY")
         or os.getenv("ANTHROPIC_API_KEY", "")
         or get_env_value("ANTHROPIC_TOKEN")
         or os.getenv("ANTHROPIC_TOKEN", "")
     )
-
-    # Check for Claude Code auto-discovery
     cc_available = False
     try:
         from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -1590,21 +1588,75 @@ def _model_flow_anthropic(config, current_model=""):
         pass
 
     if existing_key:
-        print(f"  Anthropic key: {existing_key[:12]}... ✓")
-    elif cc_available:
-        print("  Claude Code credentials: ✓ (auto-detected from ~/.claude/.credentials.json)")
-    else:
-        print("No Anthropic credentials found.")
+        print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+        print()
         try:
-            new_key = input("ANTHROPIC_API_KEY (or Enter to cancel): ").strip()
+            update = input("Update credentials? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            update = ""
+        if update != "y":
+            pass  # skip to model selection
+        else:
+            existing_key = ""  # fall through to auth choice below
+    elif cc_available:
+        print("  Claude Code credentials: ✓ (auto-detected)")
+        print()
+    
+    if not existing_key and not cc_available:
+        # No credentials — show auth method choice
+        print()
+        print("  Choose authentication method:")
+        print()
+        print("    1. Claude Pro/Max subscription (setup-token)")
+        print("    2. Anthropic API key (pay-per-token)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
-        if not new_key:
-            print("Cancelled.")
+
+        if choice == "1":
+            print()
+            print("  To get a setup-token from your Claude subscription:")
+            print()
+            print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+            print("    2. Run:                  claude setup-token")
+            print("    3. Open the URL it prints in your browser")
+            print("    4. Log in and click \"Authorize\"")
+            print("    5. Paste the auth code back into Claude Code")
+            print("    6. Copy the resulting sk-ant-oat01-... token")
+            print()
+            try:
+                token = input("  Paste setup-token here: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not token:
+                print("  Cancelled.")
+                return
+            save_env_value("ANTHROPIC_API_KEY", token)
+            print("  ✓ Setup-token saved.")
+
+        elif choice == "2":
+            print()
+            print("  Get an API key at: https://console.anthropic.com/settings/keys")
+            print()
+            try:
+                api_key = input("  API key (sk-ant-api03-...): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not api_key:
+                print("  Cancelled.")
+                return
+            save_env_value("ANTHROPIC_API_KEY", api_key)
+            print("  ✓ API key saved.")
+
+        else:
+            print("  No change.")
             return
-        save_env_value("ANTHROPIC_API_KEY", new_key)
-        print("API key saved.")
     print()
 
     # Model selection

@@ -129,6 +129,11 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # STT settings
+        _stt_cfg = _cfg.get("stt", {})
+        if isinstance(_stt_cfg, dict):
+            _stt_enabled = _stt_cfg.get("enabled", True)
+            os.environ["HERMES_STT_ENABLED"] = str(_stt_enabled).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -2260,6 +2265,12 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
+        # Check if STT is disabled in config
+        stt_enabled = os.environ.get("HERMES_STT_ENABLED", "true").lower()
+        if stt_enabled == "false":
+            logger.debug("STT disabled in config, skipping transcription")
+            return user_text
+
         from tools.transcription_tools import transcribe_audio
         import asyncio
 

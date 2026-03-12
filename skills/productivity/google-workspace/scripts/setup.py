@@ -142,41 +142,55 @@ def store_client_secret(path: str):
 
 
 def get_auth_url():
-    """Print the OAuth authorization URL. User visits this in a browser."""
+    """Print the OAuth authorization URL. User visits this in a browser.
+
+    Builds the URL manually without PKCE parameters so the token exchange
+    in exchange_auth_code() can succeed on headless systems where the Flow
+    object is no longer in memory.
+    """
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
 
-    _ensure_deps()
-    from google_auth_oauthlib.flow import Flow
+    try:
+        client_data = json.loads(CLIENT_SECRET_PATH.read_text())
+    except Exception as e:
+        print(f"ERROR: Could not read client secret: {e}")
+        sys.exit(1)
 
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-    )
+    client_info = client_data.get("installed") or client_data.get("web")
+    if not client_info:
+        print("ERROR: Unrecognized client secret format.")
+        sys.exit(1)
+
+    client_id = client_info["client_id"]
+    auth_uri = client_info.get("auth_uri", "https://accounts.google.com/o/oauth2/auth")
+
+    import urllib.parse
+    params = {
+        "client_id": client_id,
+        "redirect_uri": REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    auth_url = auth_uri + "?" + urllib.parse.urlencode(params)
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
 
 
 def exchange_auth_code(code: str):
-    """Exchange the authorization code for a token and save it."""
+    """Exchange the authorization code for a token and save it.
+
+    Uses a direct HTTP token exchange without PKCE so it works on headless
+    systems where the Flow object that generated the auth URL is no longer
+    available.  Desktop OAuth clients are not required to use PKCE, and
+    Google's token endpoint accepts non-PKCE requests for installed apps.
+    """
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
-
-    _ensure_deps()
-    from google_auth_oauthlib.flow import Flow
-
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
 
     # The code might come as a full redirect URL or just the code itself
     if code.startswith("http"):
@@ -190,14 +204,64 @@ def exchange_auth_code(code: str):
         code = params["code"][0]
 
     try:
-        flow.fetch_token(code=code)
+        client_data = json.loads(CLIENT_SECRET_PATH.read_text())
+    except Exception as e:
+        print(f"ERROR: Could not read client secret: {e}")
+        sys.exit(1)
+
+    # Support both "installed" and "web" client secret formats
+    client_info = client_data.get("installed") or client_data.get("web")
+    if not client_info:
+        print("ERROR: Unrecognized client secret format.")
+        sys.exit(1)
+
+    client_id = client_info["client_id"]
+    client_secret = client_info["client_secret"]
+    token_uri = client_info.get("token_uri", "https://oauth2.googleapis.com/token")
+
+    # Direct token exchange — no PKCE verifier needed.
+    # This avoids the "Missing code verifier" error on headless systems where
+    # the Flow object that held the verifier is no longer in memory.
+    import urllib.parse
+    import urllib.request
+
+    post_data = urllib.parse.urlencode({
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            token_uri,
+            data=post_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            token_data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"ERROR: Token exchange failed: {e} — {body}")
+        print("The code may have expired. Run --auth-url to get a fresh URL.")
+        sys.exit(1)
     except Exception as e:
         print(f"ERROR: Token exchange failed: {e}")
         print("The code may have expired. Run --auth-url to get a fresh URL.")
         sys.exit(1)
 
-    creds = flow.credentials
-    TOKEN_PATH.write_text(creds.to_json())
+    # Build a credentials JSON compatible with google.oauth2.credentials.Credentials
+    creds_data = {
+        "token": token_data.get("access_token"),
+        "refresh_token": token_data.get("refresh_token"),
+        "token_uri": token_uri,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scopes": SCOPES,
+    }
+    TOKEN_PATH.write_text(json.dumps(creds_data, indent=2))
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
 
 

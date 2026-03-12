@@ -2681,6 +2681,8 @@ class HermesCLI:
                                                 self.agent._honcho_session_key = new_key
                                                 from tools.honcho_tools import set_session_context
                                                 set_session_context(self.agent._honcho, new_key)
+                                                from agent.display import honcho_session_line, write_tty
+                                                write_tty(honcho_session_line(hcfg.workspace_id, new_key) + "\n")
                                                 _cprint(f"  Honcho session: {old_key} → {new_key}")
                                         except Exception:
                                             pass
@@ -3742,6 +3744,18 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
+
+        # One-line Honcho session indicator (TTY-only, not captured by agent)
+        try:
+            from honcho_integration.client import HonchoClientConfig
+            from agent.display import honcho_session_line, write_tty
+            hcfg = HonchoClientConfig.from_global_config()
+            if hcfg.enabled:
+                sname = hcfg.resolve_session_name(session_id=self.session_id)
+                if sname:
+                    write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")
+        except Exception:
+            pass
 
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.

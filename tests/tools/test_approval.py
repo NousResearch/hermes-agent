@@ -413,3 +413,20 @@ class TestViewFullCommand:
         # After first 'v', is_truncated becomes False, so second 'v' -> deny
         assert result == "deny"
 
+
+class TestForkBombDetection:
+    """The fork bomb regex must match the classic :(){ :|:& };: pattern."""
+
+    def test_classic_fork_bomb(self):
+        dangerous, key, desc = detect_dangerous_command(":(){ :|:& };:")
+        assert dangerous is True, "classic fork bomb not detected"
+        assert "fork bomb" in desc.lower()
+
+    def test_fork_bomb_with_spaces(self):
+        dangerous, key, desc = detect_dangerous_command(":()  {  : | :&  } ; :")
+        assert dangerous is True, "fork bomb with extra spaces not detected"
+
+    def test_colon_in_safe_command_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("echo hello:world")
+        assert dangerous is False
+

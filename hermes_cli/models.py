@@ -327,44 +327,35 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API responded but model is not listed
+            # API responded but model is not listed.  Accept anyway —
+            # the user may have access to models not shown in the public
+            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
+            # endpoints even though it's not in /models).  Warn but allow.
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
-                suggestion_text = "\n  Did you mean: " + ", ".join(f"`{s}`" for s in suggestions)
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Error: `{requested}` is not a valid model for this provider."
+                    f"Note: `{requested}` was not found in this provider's model listing. "
+                    f"It may still work if your plan supports it."
                     f"{suggestion_text}"
                 ),
             }
 
-    # api_models is None — couldn't reach API, fall back to catalog check
+    # api_models is None — couldn't reach API.  Accept and persist,
+    # but warn so typos don't silently break things.
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
-    known_models = provider_model_ids(normalized)
-
-    if requested in known_models:
-        return {
-            "accepted": True,
-            "persist": True,
-            "recognized": True,
-            "message": None,
-        }
-
-    # Can't validate — accept for session only
-    suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
-    suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
     return {
         "accepted": True,
-        "persist": False,
+        "persist": True,
         "recognized": False,
         "message": (
-            f"Could not validate `{requested}` against the live {provider_label} API. "
-            "Using it for this session only; config unchanged."
-            f"{suggestion_text}"
+            f"Could not reach the {provider_label} API to validate `{requested}`. "
+            f"If the service isn't down, this model may not be valid."
         ),
     }

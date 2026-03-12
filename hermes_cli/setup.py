@@ -889,7 +889,8 @@ def setup_model_provider(config: dict):
                 print_info(f"  URL: {detected['base_url']}")
                 if detected["id"].startswith("coding"):
                     print_info(
-                        f"  Note: Coding Plan detected — GLM-5 is not available, using {detected['model']}"
+                        f"  Note: Coding Plan endpoint detected (default model: {detected['model']}). "
+                        f"GLM-5 may still be available depending on your plan tier."
                     )
                 save_env_value("GLM_BASE_URL", zai_base_url)
             else:
@@ -1107,14 +1108,11 @@ def setup_model_provider(config: dict):
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
         elif selected_provider == "zai":
-            # Coding Plan endpoints don't have GLM-5
-            is_coding_plan = get_env_value("GLM_BASE_URL") and "coding" in (
-                get_env_value("GLM_BASE_URL") or ""
-            )
-            if is_coding_plan:
-                zai_models = ["glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            else:
-                zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            # Always offer all models — Pro/Max plans support GLM-5 even
+            # on coding endpoints.  If the user's plan doesn't support a
+            # model, the API will return an error at runtime (not our job
+            # to gatekeep).
+            zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
             model_choices = list(zai_models)
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

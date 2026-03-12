@@ -242,14 +242,6 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_API_KEY": {
-        "description": "Nous Portal API key (direct API key access to Nous inference)",
-        "prompt": "Nous Portal API key",
-        "url": "https://portal.nousresearch.com",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
         "prompt": "Nous Portal base URL (leave empty for default)",

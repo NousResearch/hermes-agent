@@ -150,9 +150,16 @@ TOOL_CATEGORIES = {
     "web": {
         "name": "Web Search & Extract",
         "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need Firecrawl.",
+        "setup_note": "A free DuckDuckGo search skill is also included, and Tavily-based skills/integrations can be configured here too.",
         "icon": "🔍",
         "providers": [
+            {
+                "name": "Tavily",
+                "tag": "Search-first research for Tavily-based skills and integrations",
+                "env_vars": [
+                    {"key": "TAVILY_API_KEY", "prompt": "Tavily API key", "url": "https://app.tavily.com/home"},
+                ],
+            },
             {
                 "name": "Firecrawl Cloud",
                 "tag": "Recommended - hosted service",

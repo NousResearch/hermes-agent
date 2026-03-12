@@ -10,6 +10,8 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    ENV_VARS_BY_VERSION,
+    OPTIONAL_ENV_VARS,
     get_hermes_home,
     ensure_hermes_home,
     load_config,
@@ -151,3 +153,12 @@ class TestSaveConfigAtomicity:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
+
+
+class TestOptionalToolKeys:
+    def test_tavily_api_key_is_registered_for_setup_and_migration(self):
+        tavily = OPTIONAL_ENV_VARS["TAVILY_API_KEY"]
+        assert tavily["prompt"] == "Tavily API key"
+        assert tavily["category"] == "tool"
+        assert "research" in tavily["description"].lower()
+        assert "TAVILY_API_KEY" in ENV_VARS_BY_VERSION[7]

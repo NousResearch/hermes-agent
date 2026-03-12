@@ -434,6 +434,12 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
 
+    # Tavily (skills / integrations)
+    if get_env_value("TAVILY_API_KEY"):
+        tool_status.append(("Tavily Research Integrations", True, None))
+    else:
+        tool_status.append(("Tavily Research Integrations", False, "TAVILY_API_KEY"))
+
     # Browser tools (local Chromium or Browserbase cloud)
     import shutil
 

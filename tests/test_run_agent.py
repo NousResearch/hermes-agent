@@ -2533,3 +2533,56 @@ class TestVprintForceOnErrors:
             agent._vprint("debug")
             agent._vprint("error", force=True)
         assert len(printed) == 2
+
+
+class TestNormalizeCodexDictArguments:
+    """_normalize_codex_response must produce valid JSON strings for tool
+    call arguments, even when the Responses API returns them as dicts."""
+
+    def _make_codex_response(self, item_type, arguments, item_status="completed"):
+        """Build a minimal Responses API response with a single tool call."""
+        item = SimpleNamespace(
+            type=item_type,
+            status=item_status,
+        )
+        if item_type == "function_call":
+            item.name = "web_search"
+            item.arguments = arguments
+            item.call_id = "call_abc123"
+            item.id = "fc_abc123"
+        elif item_type == "custom_tool_call":
+            item.name = "web_search"
+            item.input = arguments
+            item.call_id = "call_abc123"
+            item.id = "fc_abc123"
+        return SimpleNamespace(
+            output=[item],
+            status="completed",
+        )
+
+    def test_function_call_dict_arguments_produce_valid_json(self, agent):
+        """dict arguments from function_call must be serialised with
+        json.dumps, not str(), so downstream json.loads() succeeds."""
+        args_dict = {"query": "weather in NYC", "units": "celsius"}
+        response = self._make_codex_response("function_call", args_dict)
+        msg, _ = agent._normalize_codex_response(response)
+        tc = msg.tool_calls[0]
+        parsed = json.loads(tc.function.arguments)
+        assert parsed == args_dict
+
+    def test_custom_tool_call_dict_arguments_produce_valid_json(self, agent):
+        """dict arguments from custom_tool_call must also use json.dumps."""
+        args_dict = {"path": "/tmp/test.txt", "content": "hello"}
+        response = self._make_codex_response("custom_tool_call", args_dict)
+        msg, _ = agent._normalize_codex_response(response)
+        tc = msg.tool_calls[0]
+        parsed = json.loads(tc.function.arguments)
+        assert parsed == args_dict
+
+    def test_string_arguments_unchanged(self, agent):
+        """String arguments must pass through without modification."""
+        args_str = '{"query": "test"}'
+        response = self._make_codex_response("function_call", args_str)
+        msg, _ = agent._normalize_codex_response(response)
+        tc = msg.tool_calls[0]
+        assert tc.function.arguments == args_str

@@ -91,13 +91,13 @@ def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if security is None:
         security = {}
     if not isinstance(security, dict):
-        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+        raise WebsitePolicyError("security must be a mapping")
 
     website_blocklist = security.get("website_blocklist", {})
     if website_blocklist is None:
         website_blocklist = {}
     if not isinstance(website_blocklist, dict):
-        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+        raise WebsitePolicyError("security.website_blocklist must be a mapping")
 
     policy = dict(_DEFAULT_WEBSITE_BLOCKLIST)
     policy.update(website_blocklist)
@@ -116,7 +116,10 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     if not isinstance(raw_shared_files, list):
         raise WebsitePolicyError("security.website_blocklist.shared_files must be a list")
 
-    enabled = bool(policy.get("enabled", True))
+    enabled = policy.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise WebsitePolicyError("security.website_blocklist.enabled must be a boolean")
+
     rules: List[Dict[str, str]] = []
     seen: set[Tuple[str, str]] = set()
 

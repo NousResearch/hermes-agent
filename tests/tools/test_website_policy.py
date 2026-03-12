@@ -145,6 +145,52 @@ def test_load_website_blocklist_raises_clean_error_for_invalid_shared_files_type
         load_website_blocklist(config_path)
 
 
+def test_load_website_blocklist_raises_clean_error_for_invalid_security_type(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"security": []}, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(WebsitePolicyError, match="security must be a mapping"):
+        load_website_blocklist(config_path)
+
+
+def test_load_website_blocklist_raises_clean_error_for_invalid_website_blocklist_type(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": "block everything",
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebsitePolicyError, match="security.website_blocklist must be a mapping"):
+        load_website_blocklist(config_path)
+
+
+def test_load_website_blocklist_raises_clean_error_for_invalid_enabled_type(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": "false",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.enabled must be a boolean"):
+        load_website_blocklist(config_path)
+
+
 def test_load_website_blocklist_raises_clean_error_for_malformed_yaml(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("security: [oops\n", encoding="utf-8")

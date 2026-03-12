@@ -1,4 +1,4 @@
-"""Discord management tool for provisioning threads and, later, channels."""
+"""Primitive Discord management tool for creating threads and channels."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 DISCORD_MANAGE_SCHEMA = {
     "name": "discord_manage",
     "description": (
-        "Create or manage Discord spaces when Discord is connected. "
-        "Use this to create new threads or channels for focused conversations."
+        "Create Discord threads or text channels when Discord is connected. "
+        "This is a low-level primitive for explicit workspace creation requests."
     ),
     "parameters": {
         "type": "object",
@@ -162,7 +162,6 @@ async def _create_thread(args: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         starter_message_id = None
-        creation_mode = "without_message"
         thread_data: Optional[Dict[str, Any]] = None
 
         if "error" not in direct_result:
@@ -205,7 +204,6 @@ async def _create_thread(args: Dict[str, Any]) -> Dict[str, Any]:
             if "error" in thread_result:
                 return thread_result
             thread_data = thread_result
-            creation_mode = "from_message"
 
     return {
         "success": True,
@@ -215,8 +213,6 @@ async def _create_thread(args: Dict[str, Any]) -> Dict[str, Any]:
         "thread_name": thread_data.get("name") or name,
         "parent_channel_id": str(parent_channel_id),
         "starter_message_id": str(starter_message_id) if starter_message_id else None,
-        "creation_mode": creation_mode,
-        "note": target_note,
     }
 
 
@@ -304,7 +300,6 @@ async def _create_channel(args: Dict[str, Any]) -> Dict[str, Any]:
         "parent_category_id": str(parent_category_id) if parent_category_id else None,
         "topic": created.get("topic") if created.get("topic") is not None else topic,
         "nsfw": bool(created.get("nsfw", nsfw)),
-        "note": target_note,
     }
 
 

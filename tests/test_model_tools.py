@@ -38,6 +38,28 @@ class TestHandleFunctionCall:
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_execute_code_prefers_explicit_enabled_tools(self, monkeypatch):
+        captured = {}
+
+        def fake_dispatch(function_name, function_args, **kwargs):
+            captured["function_name"] = function_name
+            captured["function_args"] = function_args
+            captured["kwargs"] = kwargs
+            return json.dumps({"success": True})
+
+        monkeypatch.setattr("model_tools._last_resolved_tool_names", ["terminal", "browser_snapshot"])
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call(
+            "execute_code",
+            {"code": "print('hi')"},
+            enabled_tools=["web_search"],
+        ))
+
+        assert result == {"success": True}
+        assert captured["function_name"] == "execute_code"
+        assert captured["kwargs"]["enabled_tools"] == ["web_search"]
+
 
 # =========================================================================
 # Agent loop tools

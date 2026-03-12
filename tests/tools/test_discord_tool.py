@@ -96,7 +96,8 @@ async def test_create_thread_uses_parent_channel_when_origin_is_thread(monkeypat
     assert result["success"] is True
     assert result["thread_id"] == "999"
     assert result["parent_channel_id"] == "555"
-    assert result["creation_mode"] == "without_message"
+    assert "creation_mode" not in result
+    assert "note" not in result
     assert calls[1]["url"].endswith("/channels/555/threads")
 
 
@@ -119,8 +120,9 @@ async def test_create_thread_falls_back_to_message_seed_when_direct_create_fails
     result = await discord_tool._create_thread({"name": "Implementation"})
 
     assert result["success"] is True
-    assert result["creation_mode"] == "from_message"
     assert result["starter_message_id"] == "seed-1"
+    assert "creation_mode" not in result
+    assert "note" not in result
     assert calls[2]["url"].endswith("/channels/123/messages")
     assert calls[3]["url"].endswith("/channels/123/messages/seed-1/threads")
 
@@ -144,6 +146,8 @@ async def test_create_thread_posts_opening_message_when_direct_create_succeeds(m
 
     assert result["success"] is True
     assert result["starter_message_id"] == "msg-9"
+    assert "creation_mode" not in result
+    assert "note" not in result
     assert calls[2]["url"].endswith("/channels/thread-9/messages")
     assert calls[2]["json"] == {"content": "Track rough edges here."}
 
@@ -168,6 +172,7 @@ async def test_create_channel_uses_same_category_as_current_channel(monkeypatch)
     assert result["channel_id"] == "chan-2"
     assert result["guild_id"] == "guild-1"
     assert result["parent_category_id"] == "cat-9"
+    assert "note" not in result
     assert calls[1]["url"].endswith("/guilds/guild-1/channels")
     assert calls[1]["json"] == {"name": "planning-room", "type": 0, "nsfw": False, "parent_id": "cat-9", "topic": "Roadmap"}
 
@@ -192,6 +197,7 @@ async def test_create_channel_from_thread_uses_parent_channel_category(monkeypat
     assert result["success"] is True
     assert result["channel_id"] == "chan-8"
     assert result["parent_category_id"] == "cat-9"
+    assert "note" not in result
     assert calls[1]["url"].endswith("/channels/123")
     assert calls[2]["url"].endswith("/guilds/guild-1/channels")
 

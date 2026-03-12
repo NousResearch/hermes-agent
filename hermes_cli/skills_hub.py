@@ -416,8 +416,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     ensure_hub_dirs()
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
-    bundled_manifest = _read_manifest()
-    builtin_names = set(bundled_manifest.keys()) if isinstance(bundled_manifest, dict) else set()
+    builtin_names = set(_read_manifest())
 
     all_skills = _find_all_skills()
 

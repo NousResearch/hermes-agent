@@ -443,7 +443,7 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_key = os.getenv("OPENAI_API_KEY")
     if not custom_base or not custom_key:
         return None, None
-    model = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini"
+    model = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 

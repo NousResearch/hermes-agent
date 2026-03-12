@@ -681,7 +681,6 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", api_key)
         if model_name:
             config['model'] = model_name
-            save_env_value("LLM_MODEL", model_name)
 
         # Save provider and base_url to config.yaml so the gateway and CLI
         # both resolve the correct provider without relying on env-var heuristics.
@@ -913,7 +912,6 @@ def setup_model_provider(config: dict):
             custom = prompt(f"  Model name (Enter to keep '{current_model}')")
             if custom:
                 config['model'] = custom
-                save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
             from hermes_cli.codex_models import get_codex_model_ids
             codex_models = get_codex_model_ids()
@@ -927,12 +925,10 @@ def setup_model_provider(config: dict):
             model_idx = prompt_choice("Select default model:", model_choices, default_codex)
             if model_idx < len(codex_models):
                 config['model'] = codex_models[model_idx]
-                save_env_value("LLM_MODEL", codex_models[model_idx])
             elif model_idx == len(codex_models):
                 custom = prompt("Enter model name")
                 if custom:
                     config['model'] = custom
-                    save_env_value("LLM_MODEL", custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         elif selected_provider == "zai":
             # Coding Plan endpoints don't have GLM-5
@@ -950,12 +946,10 @@ def setup_model_provider(config: dict):
 
             if model_idx < len(zai_models):
                 config['model'] = zai_models[model_idx]
-                save_env_value("LLM_MODEL", zai_models[model_idx])
             elif model_idx == len(zai_models):
                 custom = prompt("Enter model name")
                 if custom:
                     config['model'] = custom
-                    save_env_value("LLM_MODEL", custom)
             # else: keep current
         elif selected_provider == "kimi-coding":
             kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
@@ -968,12 +962,10 @@ def setup_model_provider(config: dict):
 
             if model_idx < len(kimi_models):
                 config['model'] = kimi_models[model_idx]
-                save_env_value("LLM_MODEL", kimi_models[model_idx])
             elif model_idx == len(kimi_models):
                 custom = prompt("Enter model name")
                 if custom:
                     config['model'] = custom
-                    save_env_value("LLM_MODEL", custom)
             # else: keep current
         elif selected_provider in ("minimax", "minimax-cn"):
             minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
@@ -986,12 +978,10 @@ def setup_model_provider(config: dict):
 
             if model_idx < len(minimax_models):
                 config['model'] = minimax_models[model_idx]
-                save_env_value("LLM_MODEL", minimax_models[model_idx])
             elif model_idx == len(minimax_models):
                 custom = prompt("Enter model name")
                 if custom:
                     config['model'] = custom
-                    save_env_value("LLM_MODEL", custom)
             # else: keep current
         else:
             # Static list for OpenRouter / fallback (from canonical list)
@@ -1008,12 +998,10 @@ def setup_model_provider(config: dict):
 
             if model_idx < len(ids):
                 config['model'] = ids[model_idx]
-                save_env_value("LLM_MODEL", ids[model_idx])
             elif model_idx == len(ids):  # Custom
                 custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
                 if custom:
                     config['model'] = custom
-                    save_env_value("LLM_MODEL", custom)
             # else: Keep current
 
         _final_model = config.get('model', '')

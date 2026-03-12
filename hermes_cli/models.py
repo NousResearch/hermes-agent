@@ -276,6 +276,15 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
+    # Custom endpoints can serve any model — skip validation
+    if normalized == "custom":
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": None,
+        }
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 

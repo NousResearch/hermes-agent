@@ -105,11 +105,14 @@ class TelegramAdapter(BasePlatformAdapter):
     
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    MEDIA_GROUP_WAIT_SECONDS = 0.8
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._media_group_events: Dict[str, MessageEvent] = {}
+        self._media_group_tasks: Dict[str, asyncio.Task] = {}
     
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
@@ -872,8 +875,53 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
 
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            await self._queue_media_group_event(str(media_group_id), event)
+            return
+
         await self.handle_message(event)
     
+    async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
+        """Buffer Telegram media-group items so albums arrive as one logical event.
+
+        Telegram delivers albums as multiple updates with a shared media_group_id.
+        If we forward each item immediately, the gateway thinks the second image is a
+        new user message and interrupts the first. We debounce briefly and merge the
+        attachments into a single MessageEvent.
+        """
+        existing = self._media_group_events.get(media_group_id)
+        if existing is None:
+            self._media_group_events[media_group_id] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    if event.text not in existing.text.split("\n\n"):
+                        existing.text = f"{existing.text}\n\n{event.text}"
+                else:
+                    existing.text = event.text
+
+        prior_task = self._media_group_tasks.get(media_group_id)
+        if prior_task:
+            prior_task.cancel()
+
+        self._media_group_tasks[media_group_id] = asyncio.create_task(
+            self._flush_media_group_event(media_group_id)
+        )
+
+    async def _flush_media_group_event(self, media_group_id: str) -> None:
+        try:
+            await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
+            event = self._media_group_events.pop(media_group_id, None)
+            if event is not None:
+                await self.handle_message(event)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._media_group_tasks.pop(media_group_id, None)
+
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """
         Describe a Telegram sticker via vision analysis, with caching.

@@ -416,7 +416,7 @@ class WebToolsTester:
             ("https://docs.firecrawl.dev", None, 2),  # Test docs site
             ("https://firecrawl.dev", None, 3),  # Test main site
         ]
-        
+
         for url, instructions, expected_min_pages in test_sites:
             try:
                 print(f"\n  Testing crawl of: {url}")
@@ -425,11 +425,11 @@ class WebToolsTester:
                 else:
                     print(f"  No instructions (general crawl)")
                 print(f"  Expected minimum pages: {expected_min_pages}")
-                
+
                 # Show what's being called
                 if self.verbose:
                     print(f"  Calling web_crawl_tool(url='{url}', instructions={instructions}, use_llm_processing=False)")
-                
+
                 result = await web_crawl_tool(
                     url,
                     instructions=instructions,

@@ -167,6 +167,14 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "Cloudflare Browser Rendering",
+                "tag": "Crawl with headless browser rendering",
+                "env_vars": [
+                    {"key": "CF_ACCOUNT_ID", "prompt": "Cloudflare Account ID", "url": "https://dash.cloudflare.com"},
+                    {"key": "CF_BROWSER_TOKEN", "prompt": "Cloudflare API Token (Browser Rendering - Edit permission)", "url": "https://dash.cloudflare.com/profile/api-tokens"},
+                ],
+            },
         ],
     },
     "image_gen": {

@@ -48,6 +48,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
+import httpx
 from agent.auxiliary_client import get_async_text_auxiliary_client
 from tools.debug_helpers import DebugSession
 
@@ -80,6 +81,160 @@ def _get_firecrawl_client():
             kwargs["api_url"] = api_url
         _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
+
+def _get_crawl_backend() -> str:
+    """Determine which crawl backend to use.
+
+    Precedence:
+    1. WEB_CRAWL_BACKEND env var (explicit: "cloudflare" or "firecrawl")
+    2. If CF_BROWSER_TOKEN + CF_ACCOUNT_ID are set → cloudflare
+    3. If FIRECRAWL_API_KEY or FIRECRAWL_API_URL are set → firecrawl
+    4. Default → firecrawl
+    """
+    explicit = os.getenv("WEB_CRAWL_BACKEND", "").strip().lower()
+    if explicit in ("cloudflare", "cf"):
+        return "cloudflare"
+    if explicit == "firecrawl":
+        return "firecrawl"
+    if os.getenv("CF_BROWSER_TOKEN") and os.getenv("CF_ACCOUNT_ID"):
+        return "cloudflare"
+    return "firecrawl"
+
+
+def check_web_crawl_available() -> bool:
+    """Return True if at least one crawl backend is configured."""
+    if os.getenv("CF_BROWSER_TOKEN") and os.getenv("CF_ACCOUNT_ID"):
+        return True
+    return bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
+
+
+async def _cloudflare_crawl(
+    url: str,
+    limit: int = 20,
+    formats: List[str] | None = None,
+    render: bool = True,
+) -> List[Dict[str, Any]]:
+    """Crawl a website using the Cloudflare Browser Rendering /crawl API.
+
+    Initiates a crawl job via POST, polls for completion via GET, then
+    paginates through all result records.
+
+    Returns a list of page dicts: {url, title, content, raw_content, metadata}.
+    """
+    account_id = os.getenv("CF_ACCOUNT_ID")
+    token = os.getenv("CF_BROWSER_TOKEN")
+    if not account_id or not token:
+        raise ValueError(
+            "CF_ACCOUNT_ID and CF_BROWSER_TOKEN must be set for Cloudflare crawl"
+        )
+
+    base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/crawl"
+    auth_header = {"Authorization": f"Bearer {token}"}
+
+    if formats is None:
+        formats = ["markdown"]
+
+    payload: Dict[str, Any] = {
+        "url": url,
+        "limit": limit,
+        "formats": formats,
+        "render": render,
+    }
+
+    from tools.interrupt import is_interrupted as _is_int
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        # --- POST: start crawl job ---
+        resp = await client.post(
+            base_url,
+            headers={**auth_header, "Content-Type": "application/json"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if not body.get("success"):
+            raise RuntimeError(f"Cloudflare crawl POST failed: {body}")
+        job_id = body["result"]
+        logger.info("Cloudflare crawl job started: %s", job_id)
+
+        # --- Poll until terminal status ---
+        job_url = f"{base_url}/{job_id}"
+        max_attempts = 120
+        poll_interval = 5
+        status = "running"
+        for attempt in range(max_attempts):
+            if _is_int():
+                # Best-effort cancel
+                try:
+                    await client.delete(job_url, headers=auth_header)
+                except Exception:
+                    pass
+                raise RuntimeError("Interrupted while waiting for Cloudflare crawl")
+
+            await asyncio.sleep(poll_interval)
+            poll_resp = await client.get(
+                job_url, headers=auth_header, params={"limit": 1}
+            )
+            # Job may not be queryable immediately after creation
+            if poll_resp.status_code == 404:
+                logger.debug("Crawl poll #%d: 404 (job not ready yet)", attempt + 1)
+                continue
+            poll_resp.raise_for_status()
+            poll_body = poll_resp.json()
+            status = poll_body.get("result", {}).get("status", "unknown")
+            finished = poll_body.get("result", {}).get("finished", 0)
+            total = poll_body.get("result", {}).get("total", 0)
+            logger.info(
+                "Crawl poll #%d: status=%s finished=%d/%d",
+                attempt + 1, status, finished, total,
+            )
+            if status != "running":
+                break
+        else:
+            logger.warning("Crawl polling timed out after %d attempts", max_attempts)
+
+        if status not in ("completed", "running"):
+            logger.warning("Crawl finished with status: %s", status)
+
+        # --- Paginate through all records ---
+        all_records: List[Dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: Dict[str, Any] = {"limit": 100}
+            if cursor is not None:
+                params["cursor"] = cursor
+            page_resp = await client.get(job_url, headers=auth_header, params=params)
+            page_resp.raise_for_status()
+            page_body = page_resp.json()
+            result = page_body.get("result", {})
+            records = result.get("records", [])
+            all_records.extend(records)
+            cursor = result.get("cursor")
+            if not cursor or not records:
+                break
+
+    # --- Normalize to the same shape as Firecrawl output ---
+    pages: List[Dict[str, Any]] = []
+    for rec in all_records:
+        rec_status = rec.get("status", "")
+        if rec_status != "completed":
+            logger.debug("Skipping record %s (status=%s)", rec.get("url"), rec_status)
+            continue
+        content = rec.get("markdown") or rec.get("html") or ""
+        metadata = rec.get("metadata", {})
+        page_url = rec.get("url") or metadata.get("url", "Unknown URL")
+        title = metadata.get("title", "")
+        pages.append({
+            "url": page_url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": metadata,
+        })
+
+    logger.info("Cloudflare crawl returned %d completed pages", len(pages))
+    return pages
+
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
@@ -832,20 +987,112 @@ async def web_extract_tool(
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
+async def _firecrawl_crawl(url: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Crawl a website using Firecrawl v2 and return normalized page dicts."""
+    crawl_params = {
+        "limit": limit,
+        "scrape_options": {
+            "formats": ["markdown"]
+        }
+    }
+
+    crawl_result = _get_firecrawl_client().crawl(url=url, **crawl_params)
+
+    pages: List[Dict[str, Any]] = []
+    data_list = []
+
+    if hasattr(crawl_result, 'data'):
+        data_list = crawl_result.data if crawl_result.data else []
+        logger.info("Status: %s", getattr(crawl_result, 'status', 'unknown'))
+        logger.info("Retrieved %d pages", len(data_list))
+        if not data_list:
+            logger.debug("CrawlJob attributes: %s", [attr for attr in dir(crawl_result) if not attr.startswith('_')])
+            logger.debug("Status: %s", getattr(crawl_result, 'status', 'N/A'))
+            logger.debug("Total: %s", getattr(crawl_result, 'total', 'N/A'))
+            logger.debug("Completed: %s", getattr(crawl_result, 'completed', 'N/A'))
+    elif isinstance(crawl_result, dict) and 'data' in crawl_result:
+        data_list = crawl_result.get("data", [])
+    else:
+        logger.warning("Unexpected crawl result type")
+        logger.debug("Result type: %s", type(crawl_result))
+        if hasattr(crawl_result, '__dict__'):
+            logger.debug("Result attributes: %s", list(crawl_result.__dict__.keys()))
+
+    for item in data_list:
+        page_url = "Unknown URL"
+        title = ""
+        content_markdown = None
+        content_html = None
+        metadata = {}
+
+        if hasattr(item, 'model_dump'):
+            item_dict = item.model_dump()
+            content_markdown = item_dict.get('markdown')
+            content_html = item_dict.get('html')
+            metadata = item_dict.get('metadata', {})
+        elif hasattr(item, '__dict__'):
+            content_markdown = getattr(item, 'markdown', None)
+            content_html = getattr(item, 'html', None)
+            metadata_obj = getattr(item, 'metadata', {})
+            if hasattr(metadata_obj, 'model_dump'):
+                metadata = metadata_obj.model_dump()
+            elif hasattr(metadata_obj, '__dict__'):
+                metadata = metadata_obj.__dict__
+            elif isinstance(metadata_obj, dict):
+                metadata = metadata_obj
+            else:
+                metadata = {}
+        elif isinstance(item, dict):
+            content_markdown = item.get('markdown')
+            content_html = item.get('html')
+            metadata = item.get('metadata', {})
+
+        if not isinstance(metadata, dict):
+            if hasattr(metadata, 'model_dump'):
+                metadata = metadata.model_dump()
+            elif hasattr(metadata, '__dict__'):
+                metadata = metadata.__dict__
+            else:
+                metadata = {}
+
+        page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
+        title = metadata.get("title", "")
+        content = content_markdown or content_html or ""
+
+        pages.append({
+            "url": page_url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": metadata,
+        })
+
+    return pages
+
+
 async def web_crawl_tool(
-    url: str, 
-    instructions: str = None, 
-    depth: str = "basic", 
+    url: str,
+    instructions: str = None,
+    depth: str = "basic",
     use_llm_processing: bool = True,
     model: str = DEFAULT_SUMMARIZER_MODEL,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    backend: str | None = None,
 ) -> str:
     """
     Crawl a website with specific instructions using available crawling API backend.
-    
+
     This function provides a generic interface for web crawling that can work
-    with multiple backends. Currently uses Firecrawl.
-    
+    with multiple backends.
+
+    Supports two backends:
+    - Firecrawl (FIRECRAWL_API_KEY) — synchronous crawl via the Firecrawl SDK
+    - Cloudflare Browser Rendering (CF_BROWSER_TOKEN + CF_ACCOUNT_ID) — async
+      crawl via the /crawl REST API with headless browser rendering
+
+    Backend is selected automatically based on available env vars, or can be
+    forced via the ``backend`` parameter or WEB_CRAWL_BACKEND env var.
+
     Args:
         url (str): The base URL to crawl (can include or exclude https://)
         instructions (str): Instructions for what to crawl/extract using LLM intelligence (optional)
@@ -853,15 +1100,18 @@ async def web_crawl_tool(
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
         model (str): The model to use for LLM processing (default: google/gemini-3-flash-preview)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
-    
+        backend: Force a specific backend ("cloudflare" or "firecrawl"). Auto-detected if None.
+
     Returns:
         str: JSON string containing crawled content. If LLM processing is enabled and successful,
              the 'content' field will contain the processed markdown summary instead of raw content.
              Each page is processed individually.
-    
+
     Raises:
         Exception: If crawling fails or API key is not set
     """
+    chosen_backend = backend or _get_crawl_backend()
+
     debug_call_data = {
         "parameters": {
             "url": url,
@@ -869,7 +1119,8 @@ async def web_crawl_tool(
             "depth": depth,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "backend": chosen_backend,
         },
         "error": None,
         "pages_crawled": 0,
@@ -879,131 +1130,30 @@ async def web_crawl_tool(
         "compression_metrics": [],
         "processing_applied": []
     }
-    
+
     try:
         # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
             logger.info("Added https:// prefix to URL: %s", url)
-        
+
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
-        logger.info("Crawling %s%s", url, instructions_text)
-        
-        # Use Firecrawl's v2 crawl functionality
-        # Docs: https://docs.firecrawl.dev/features/crawl
-        # The crawl() method automatically waits for completion and returns all data
-        
-        # Build crawl parameters - keep it simple
-        crawl_params = {
-            "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
-            }
-        }
-        
+        logger.info("Crawling %s%s (backend=%s)", url, instructions_text, chosen_backend)
+
         # Note: The 'prompt' parameter is not documented for crawl
         # Instructions are typically used with the Extract endpoint, not Crawl
         if instructions:
             logger.info("Instructions parameter ignored (not supported in crawl API)")
-        
+
         from tools.interrupt import is_interrupted as _is_int
         if _is_int():
             return json.dumps({"error": "Interrupted", "success": False})
 
-        try:
-            crawl_result = _get_firecrawl_client().crawl(
-                url=url,
-                **crawl_params
-            )
-        except Exception as e:
-            logger.debug("Crawl API call failed: %s", e)
-            raise
-
-        pages: List[Dict[str, Any]] = []
-        
-        # Process crawl results - the crawl method returns a CrawlJob object with data attribute
-        data_list = []
-        
-        # The crawl_result is a CrawlJob object with a 'data' attribute containing list of Document objects
-        if hasattr(crawl_result, 'data'):
-            data_list = crawl_result.data if crawl_result.data else []
-            logger.info("Status: %s", getattr(crawl_result, 'status', 'unknown'))
-            logger.info("Retrieved %d pages", len(data_list))
-            
-            # Debug: Check other attributes if no data
-            if not data_list:
-                logger.debug("CrawlJob attributes: %s", [attr for attr in dir(crawl_result) if not attr.startswith('_')])
-                logger.debug("Status: %s", getattr(crawl_result, 'status', 'N/A'))
-                logger.debug("Total: %s", getattr(crawl_result, 'total', 'N/A'))
-                logger.debug("Completed: %s", getattr(crawl_result, 'completed', 'N/A'))
-                
-        elif isinstance(crawl_result, dict) and 'data' in crawl_result:
-            data_list = crawl_result.get("data", [])
+        # Dispatch to the chosen backend
+        if chosen_backend == "cloudflare":
+            pages = await _cloudflare_crawl(url, limit=20, formats=["markdown"])
         else:
-            logger.warning("Unexpected crawl result type")
-            logger.debug("Result type: %s", type(crawl_result))
-            if hasattr(crawl_result, '__dict__'):
-                logger.debug("Result attributes: %s", list(crawl_result.__dict__.keys()))
-        
-        for item in data_list:
-            # Process each crawled page - properly handle object serialization
-            page_url = "Unknown URL"
-            title = ""
-            content_markdown = None
-            content_html = None
-            metadata = {}
-            
-            # Extract data from the item
-            if hasattr(item, 'model_dump'):
-                # Pydantic model - use model_dump to get dict
-                item_dict = item.model_dump()
-                content_markdown = item_dict.get('markdown')
-                content_html = item_dict.get('html')
-                metadata = item_dict.get('metadata', {})
-            elif hasattr(item, '__dict__'):
-                # Regular object with attributes
-                content_markdown = getattr(item, 'markdown', None)
-                content_html = getattr(item, 'html', None)
-                
-                # Handle metadata - convert to dict if it's an object
-                metadata_obj = getattr(item, 'metadata', {})
-                if hasattr(metadata_obj, 'model_dump'):
-                    metadata = metadata_obj.model_dump()
-                elif hasattr(metadata_obj, '__dict__'):
-                    metadata = metadata_obj.__dict__
-                elif isinstance(metadata_obj, dict):
-                    metadata = metadata_obj
-                else:
-                    metadata = {}
-            elif isinstance(item, dict):
-                # Already a dictionary
-                content_markdown = item.get('markdown')
-                content_html = item.get('html')
-                metadata = item.get('metadata', {})
-            
-            # Ensure metadata is a dict (not an object)
-            if not isinstance(metadata, dict):
-                if hasattr(metadata, 'model_dump'):
-                    metadata = metadata.model_dump()
-                elif hasattr(metadata, '__dict__'):
-                    metadata = metadata.__dict__
-                else:
-                    metadata = {}
-            
-            # Extract URL and title from metadata
-            page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
-            title = metadata.get("title", "")
-            
-            # Choose content (prefer markdown)
-            content = content_markdown or content_html or ""
-            
-            pages.append({
-                "url": page_url,
-                "title": title,
-                "content": content,
-                "raw_content": content,
-                "metadata": metadata  # Now guaranteed to be a dict
-            })
+            pages = await _firecrawl_crawl(url, limit=20)
 
         response = {"results": pages}
         
@@ -1282,5 +1432,43 @@ registry.register(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_firecrawl_api_key,
     requires_env=["FIRECRAWL_API_KEY"],
+    is_async=True,
+)
+
+WEB_CRAWL_SCHEMA = {
+    "name": "web_crawl",
+    "description": (
+        "Crawl an entire website starting from a URL. Automatically discovers and "
+        "visits linked pages (up to 20). Returns page content in markdown. "
+        "Supports Firecrawl and Cloudflare Browser Rendering backends — the backend "
+        "is auto-detected from env vars, or can be forced with the 'backend' parameter."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The starting URL to crawl (e.g. 'https://docs.example.com')"
+            },
+            "backend": {
+                "type": "string",
+                "enum": ["firecrawl", "cloudflare"],
+                "description": "Force a specific crawl backend. Omit to auto-detect from env vars."
+            },
+        },
+        "required": ["url"]
+    }
+}
+
+registry.register(
+    name="web_crawl",
+    toolset="web",
+    schema=WEB_CRAWL_SCHEMA,
+    handler=lambda args, **kw: web_crawl_tool(
+        args.get("url", ""),
+        backend=args.get("backend"),
+    ),
+    check_fn=check_web_crawl_available,
+    requires_env=[],  # checked dynamically by check_web_crawl_available
     is_async=True,
 )

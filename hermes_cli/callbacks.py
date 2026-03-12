@@ -105,10 +105,14 @@ def approval_callback(cli, command: str, description: str) -> str:
     """Prompt for dangerous command approval through the TUI.
 
     Shows a selection UI with choices: once / session / always / deny.
+    When the command is longer than 70 characters, a "view" option is
+    included so the user can reveal the full text before deciding.
     """
     timeout = 60
     response_queue = queue.Queue()
     choices = ["once", "session", "always", "deny"]
+    if len(command) > 70:
+        choices.append("view")
 
     cli._approval_state = {
         "command": command,

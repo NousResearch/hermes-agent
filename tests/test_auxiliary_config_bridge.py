@@ -229,13 +229,14 @@ class TestVisionModelOverride:
 
     def test_default_model_when_no_override(self, monkeypatch):
         monkeypatch.delenv("AUXILIARY_VISION_MODEL", raising=False)
-        from tools.vision_tools import _handle_vision_analyze, DEFAULT_VISION_MODEL
+        from tools.vision_tools import _handle_vision_analyze
         with patch("tools.vision_tools.vision_analyze_tool", new_callable=MagicMock) as mock_tool:
             mock_tool.return_value = '{"success": true}'
             _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
-            expected = DEFAULT_VISION_MODEL or "google/gemini-3-flash-preview"
-            assert call_args[0][2] == expected
+            # With no AUXILIARY_VISION_MODEL env var, model should be None
+            # (the centralized call_llm router picks the provider default)
+            assert call_args[0][2] is None
 
 
 # ── DEFAULT_CONFIG shape tests ───────────────────────────────────────────────

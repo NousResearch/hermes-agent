@@ -51,7 +51,7 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
 
-from hermes_cli import __version__
+from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -495,6 +495,7 @@ def cmd_chat(args):
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
+        "pass_session_id": getattr(args, "pass_session_id", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -831,7 +832,9 @@ def cmd_model(args):
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
-    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+    elif selected_provider == "kimi-coding":
+        _model_flow_kimi(config, current_model)
+    elif selected_provider in ("zai", "minimax", "minimax-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1342,8 +1345,10 @@ _PROVIDER_MODELS = {
         "glm-4.5-flash",
     ],
     "kimi-coding": [
+        "kimi-for-coding",
         "kimi-k2.5",
         "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
@@ -1360,8 +1365,112 @@ _PROVIDER_MODELS = {
 }
 
 
+def _model_flow_kimi(config, current_model=""):
+    """Kimi / Moonshot model selection with automatic endpoint routing.
+
+    - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)
+    - Other keys        → api.moonshot.ai/v1      (legacy Moonshot)
+
+    No manual base URL prompt — endpoint is determined by key prefix.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, KIMI_CODE_BASE_URL, _prompt_model_selection,
+        _save_model_choice, deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    provider_id = "kimi-coding"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    # Step 1: Check / prompt for API key
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                new_key = input(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            existing_key = new_key
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    # Step 2: Auto-detect endpoint from key prefix
+    is_coding_plan = existing_key.startswith("sk-kimi-")
+    if is_coding_plan:
+        effective_base = KIMI_CODE_BASE_URL
+        print(f"  Detected Kimi Coding Plan key → {effective_base}")
+    else:
+        effective_base = pconfig.inference_base_url
+        print(f"  Using Moonshot endpoint → {effective_base}")
+    # Clear any manual base URL override so auto-detection works at runtime
+    if base_url_env and get_env_value(base_url_env):
+        save_env_value(base_url_env, "")
+    print()
+
+    # Step 3: Model selection — show appropriate models for the endpoint
+    if is_coding_plan:
+        # Coding Plan models (kimi-for-coding first)
+        model_list = [
+            "kimi-for-coding",
+            "kimi-k2.5",
+            "kimi-k2-thinking",
+            "kimi-k2-thinking-turbo",
+        ]
+    else:
+        # Legacy Moonshot models
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Enter model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        # Clear custom endpoint if set (avoid confusion)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        _save_model_choice(selected)
+
+        # Update config with provider and base URL
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        save_config(cfg)
+        deactivate_provider()
+
+        endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
+        print(f"Default model set to: {selected} (via {endpoint_label})")
+    else:
+        print("No change.")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
-    """Generic flow for API-key providers (z.ai, Kimi, MiniMax)."""
+    """Generic flow for API-key providers (z.ai, MiniMax)."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
         _update_config_for_provider, deactivate_provider,
@@ -1484,7 +1593,7 @@ def cmd_config(args):
 
 def cmd_version(args):
     """Show version."""
-    print(f"Hermes Agent v{__version__}")
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
     # Show Python version
@@ -1895,6 +2004,12 @@ For more help on a command:
         default=False,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
+    parser.add_argument(
+        "--pass-session-id",
+        action="store_true",
+        default=False,
+        help="Include the session ID in the agent's system prompt"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -1965,6 +2080,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
+    chat_parser.add_argument(
+        "--pass-session-id",
+        action="store_true",
+        default=False,
+        help="Include the session ID in the agent's system prompt"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

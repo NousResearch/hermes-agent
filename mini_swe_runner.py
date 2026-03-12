@@ -189,29 +189,30 @@ class MiniSWERunner:
         )
         self.logger = logging.getLogger(__name__)
         
-        # Initialize OpenAI client - defaults to OpenRouter
-        from openai import OpenAI
-        
-        client_kwargs = {}
-        
-        # Default to OpenRouter if no base_url provided
-        if base_url:
-            client_kwargs["base_url"] = base_url
+        # Initialize LLM client via centralized provider router.
+        # If explicit api_key/base_url are provided (e.g. from CLI args),
+        # construct directly.  Otherwise use the router for OpenRouter.
+        if api_key or base_url:
+            from openai import OpenAI
+            client_kwargs = {
+                "base_url": base_url or "https://openrouter.ai/api/v1",
+                "api_key": api_key or os.getenv(
+                    "OPENROUTER_API_KEY",
+                    os.getenv("ANTHROPIC_API_KEY",
+                              os.getenv("OPENAI_API_KEY", ""))),
+            }
+            self.client = OpenAI(**client_kwargs)
         else:
-            client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
-
-
-        
-        # Handle API key - OpenRouter is the primary provider
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        else:
-            client_kwargs["api_key"] = os.getenv(
-                "OPENROUTER_API_KEY",
-                os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-            )
-        
-        self.client = OpenAI(**client_kwargs)
+            from agent.auxiliary_client import resolve_provider_client
+            self.client, _ = resolve_provider_client("openrouter", model=model)
+            if self.client is None:
+                # Fallback: try auto-detection
+                self.client, _ = resolve_provider_client("auto", model=model)
+            if self.client is None:
+                from openai import OpenAI
+                self.client = OpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=os.getenv("OPENROUTER_API_KEY", ""))
         
         # Environment will be created per-task
         self.env = None

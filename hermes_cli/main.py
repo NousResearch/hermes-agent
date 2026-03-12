@@ -1373,6 +1373,12 @@ _PROVIDER_MODELS = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "moonshot": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
     "minimax": [
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
@@ -1454,8 +1460,8 @@ def _model_flow_kimi(config, current_model=""):
             "kimi-k2-thinking-turbo",
         ]
     else:
-        # Legacy Moonshot models
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        # Legacy Moonshot models (excludes Coding Plan-only models)
+        model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)

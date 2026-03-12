@@ -2430,7 +2430,7 @@ Read the checkpoint metadata.
 
 The metadata object associated with the checkpoint being loaded.
 
-Calls to indicates a brand new checkpoint read is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint read. The meaning of the checkpiont_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
+Calls to indicates a brand new checkpoint read is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint read. The meaning of the checkpoint_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
 
 checkpoint_id (Union[str, os.PathLike, None]) – The ID of this checkpoint instance. The meaning of the checkpoint_id depends on the storage. It can be a path to a folder or to a file. It can also be a key if the storage is more like a key-value store. (Default: None)
 
@@ -2488,7 +2488,7 @@ plan (SavePlan) – The local plan from the SavePlanner in use.
 
 A transformed SavePlan after storage local planning
 
-Calls to indicates a brand new checkpoint write is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint write. The meaning of the checkpiont_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
+Calls to indicates a brand new checkpoint write is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint write. The meaning of the checkpoint_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
 
 checkpoint_id (Union[str, os.PathLike, None]) – The ID of this checkpoint instance. The meaning of the checkpoint_id depends on the storage. It can be a path to a folder or to a file. It can also be a key if the storage is a key-value store. (Default: None)
 
@@ -2498,7 +2498,19 @@ is_coordinator (bool) – Whether this instance is responsible for coordinating 
 
 Return the storage-specific metadata. This is used to store additional information in a checkpoint that can be useful for providing request-level observability. StorageMeta is passed to the SavePlanner during save calls. Returns None by default.
 
-TODO: provide an example
+Example:
+
+```python
+from torch.distributed.checkpoint.storage import StorageMeta
+
+class CustomStorageBackend:
+    def get_storage_metadata(self):
+        # Return storage-specific metadata that will be stored with the checkpoint
+        return StorageMeta()
+```
+
+This example shows how a storage backend can return `StorageMeta`
+to attach additional metadata to a checkpoint.
 
 Optional[StorageMeta]
 

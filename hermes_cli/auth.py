@@ -147,6 +147,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "local": ProviderConfig(
+        id="local",
+        name="Local (Apple Silicon)",
+        auth_type="local",
+        inference_base_url="http://localhost:8899/v1",
+    ),
 }
 
 

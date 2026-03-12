@@ -84,6 +84,7 @@ _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",
     "nous": "Nous Portal",
+    "local": "Local (Apple Silicon)",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -103,6 +104,9 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "mlx": "local",
+    "apple-silicon": "local",
+    "apple_silicon": "local",
 }
 
 
@@ -135,7 +139,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex",
+        "openrouter", "nous", "openai-codex", "local",
         "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
     ]
     # Build reverse alias map

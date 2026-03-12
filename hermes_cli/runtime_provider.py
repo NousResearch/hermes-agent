@@ -128,6 +128,36 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
 
+    if provider == "local":
+        from hermes_cli.local_provider import (
+            DEFAULT_PORT,
+            check_mlx_lm_installed,
+            ensure_server,
+        )
+
+        local_cfg = load_config().get("local", {})
+        port = local_cfg.get("port", DEFAULT_PORT)
+        model_id = local_cfg.get("model_id")
+        auto_start = local_cfg.get("auto_start", True)
+
+        if auto_start and model_id and check_mlx_lm_installed():
+            try:
+                ensure_server(model_id, port)
+            except Exception:
+                pass
+
+        base_url = f"http://localhost:{port}/v1"
+        return {
+            "provider": "local",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            # Local inference does not need a real API key; keep a non-empty
+            # sentinel so shared runtime credential checks pass.
+            "api_key": "***",
+            "source": "local",
+            "requested_provider": requested_provider,
+        }
+
     if provider == "nous":
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),

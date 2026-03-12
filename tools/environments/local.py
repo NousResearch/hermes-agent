@@ -12,6 +12,30 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
 
+# Provider-specific environment variables that should NOT leak into
+# subprocesses.  Hermes may be configured with a custom OPENAI_BASE_URL
+# (via ~/.hermes/.env), but external CLIs spawned by tool calls (e.g.
+# Codex, npm, pip) should use their own defaults, not Hermes's.
+# Tools that genuinely need these vars can still opt-in by setting
+# them explicitly in the ``env`` parameter passed to ``__init__``.
+_BLOCKED_ENV_VARS = frozenset({
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GOOGLE_API_KEY",
+    "MISTRAL_API_KEY",
+    "COHERE_API_KEY",
+    "GROQ_API_KEY",
+    "TOGETHER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+    "FIREWORKS_API_KEY",
+    "NOUS_API_KEY",
+})
+
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
 _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
@@ -192,7 +216,8 @@ class LocalEnvironment(BaseEnvironment):
             # Ensure PATH always includes standard dirs — systemd services
             # and some terminal multiplexers inherit a minimal PATH.
             _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            run_env = dict(os.environ | self.env)
+            run_env = {k: v for k, v in os.environ.items() if k not in _BLOCKED_ENV_VARS}
+            run_env.update(self.env)  # explicit self.env overrides always apply
             existing_path = run_env.get("PATH", "")
             if "/usr/bin" not in existing_path.split(":"):
                 run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH

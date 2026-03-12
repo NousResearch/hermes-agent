@@ -1315,7 +1315,7 @@ class GatewayRunner:
                 )
                 if is_audio:
                     audio_paths.append(path)
-            if audio_paths:
+            if audio_paths and self.config.stt_enabled:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )

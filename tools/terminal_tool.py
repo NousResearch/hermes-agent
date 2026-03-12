@@ -503,6 +503,7 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_persistent": os.getenv("TERMINAL_SSH_PERSISTENT", "false").lower() in ("true", "1", "yes"),
         # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
@@ -594,6 +595,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
+            persistent=ssh_config.get("persistent", False),
         )
 
     else:
@@ -923,6 +925,7 @@ def terminal_tool(
                                 "user": config.get("ssh_user", ""),
                                 "port": config.get("ssh_port", 22),
                                 "key": config.get("ssh_key", ""),
+                                "persistent": config.get("ssh_persistent", False),
                             }
 
                         container_config = None

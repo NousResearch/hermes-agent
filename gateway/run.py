@@ -157,6 +157,33 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_hermes_bin():
+    """Resolve the hermes executable path.
+
+    Tries in order:
+    1. ``shutil.which("hermes")`` -- standard PATH lookup.
+    2. ``sys.executable -m hermes_cli.main`` -- works when Hermes is launched
+       via a venv or module invocation where the ``hermes`` symlink is not on
+       PATH for the gateway process.
+
+    Returns the command string to use, or None if neither works.
+    """
+    import shutil
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return hermes_bin
+
+    # Fallback: use the current Python interpreter with -m hermes_cli.main
+    try:
+        import importlib.util
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return f"{sys.executable} -m hermes_cli.main"
+    except Exception:
+        pass
+
+    return None
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1980,9 +2007,14 @@ class GatewayRunner:
         if not git_dir.exists():
             return "✗ Not a git repository — cannot update."
 
-        hermes_bin = shutil.which("hermes")
+        hermes_bin = _resolve_hermes_bin()
         if not hermes_bin:
-            return "✗ `hermes` command not found on PATH."
+            return (
+                "✗ Could not locate the `hermes` command. "
+                "Hermes is running, but the update command could not find the "
+                "executable on PATH or via the current Python interpreter. "
+                "Try running `hermes update` manually in your terminal."
+            )
 
         # Write marker so the restarted gateway can notify this chat
         pending_path = _hermes_home / ".update_pending.json"

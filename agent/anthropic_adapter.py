@@ -26,8 +26,16 @@ logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 
-# Beta headers required for OAuth/subscription auth
-_OAUTH_BETAS = ["oauth-2025-04-20"]
+# Beta headers for enhanced features (sent with ALL auth types)
+_COMMON_BETAS = [
+    "interleaved-thinking-2025-05-14",
+    "fine-grained-tool-streaming-2025-05-14",
+]
+
+# Additional beta headers required for OAuth/subscription auth
+_OAUTH_ONLY_BETAS = [
+    "oauth-2025-04-20",
+]
 
 
 def _is_oauth_token(key: str) -> bool:
@@ -54,12 +62,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         kwargs["base_url"] = base_url
 
     if _is_oauth_token(api_key):
-        # OAuth access token / setup-token → Bearer auth + beta header
+        # OAuth access token / setup-token → Bearer auth + beta headers
+        all_betas = _COMMON_BETAS + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
-        kwargs["default_headers"] = {"anthropic-beta": ",".join(_OAUTH_BETAS)}
+        kwargs["default_headers"] = {"anthropic-beta": ",".join(all_betas)}
     else:
-        # Regular API key → x-api-key header
+        # Regular API key → x-api-key header + common betas
         kwargs["api_key"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -173,6 +184,58 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _convert_vision_content(content: Any) -> Any:
+    """Convert OpenAI multimodal content blocks to Anthropic format.
+
+    OpenAI format:  [{"type": "image_url", "image_url": {"url": "data:...;base64,..."}}]
+    Anthropic format: [{"type": "image", "source": {"type": "base64", ...}}]
+    """
+    if not isinstance(content, list):
+        return content
+
+    result = []
+    for block in content:
+        if not isinstance(block, dict):
+            result.append(block)
+            continue
+
+        if block.get("type") == "image_url":
+            image_url = block.get("image_url", {})
+            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+
+            if url.startswith("data:"):
+                # data:image/png;base64,iVBOR...
+                try:
+                    header, b64_data = url.split(",", 1)
+                    media_type = header.split(":")[1].split(";")[0]
+                    result.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64_data,
+                        },
+                    })
+                except (ValueError, IndexError):
+                    logger.warning("Could not parse data URL for image, skipping")
+            else:
+                # Regular URL — Anthropic supports url source type
+                result.append({
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": url,
+                    },
+                })
+        elif block.get("type") == "text":
+            result.append({"type": "text", "text": block.get("text", "")})
+        else:
+            # Pass through unknown block types
+            result.append(block)
+
+    return result
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
 ) -> Tuple[Optional[Any], List[Dict]]:
@@ -241,8 +304,9 @@ def convert_messages_to_anthropic(
                 result.append({"role": "user", "content": [tool_result]})
             continue
 
-        # Regular user message
-        result.append({"role": "user", "content": content})
+        # Regular user message — convert vision content if multimodal
+        converted = _convert_vision_content(content) if isinstance(content, list) else content
+        result.append({"role": "user", "content": converted})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()
@@ -261,6 +325,40 @@ def convert_messages_to_anthropic(
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
+    # Enforce strict role alternation (Anthropic rejects consecutive same-role messages)
+    fixed = []
+    for m in result:
+        if fixed and fixed[-1]["role"] == m["role"]:
+            if m["role"] == "user":
+                # Merge consecutive user messages
+                prev_content = fixed[-1]["content"]
+                curr_content = m["content"]
+                if isinstance(prev_content, str) and isinstance(curr_content, str):
+                    fixed[-1]["content"] = prev_content + "\n" + curr_content
+                elif isinstance(prev_content, list) and isinstance(curr_content, list):
+                    fixed[-1]["content"] = prev_content + curr_content
+                else:
+                    # Mixed types — wrap string in list
+                    if isinstance(prev_content, str):
+                        prev_content = [{"type": "text", "text": prev_content}]
+                    if isinstance(curr_content, str):
+                        curr_content = [{"type": "text", "text": curr_content}]
+                    fixed[-1]["content"] = prev_content + curr_content
+            else:
+                # Consecutive assistant messages — merge text content
+                prev_blocks = fixed[-1]["content"]
+                curr_blocks = m["content"]
+                if isinstance(prev_blocks, list) and isinstance(curr_blocks, list):
+                    fixed[-1]["content"] = prev_blocks + curr_blocks
+                elif isinstance(prev_blocks, str) and isinstance(curr_blocks, str):
+                    fixed[-1]["content"] = prev_blocks + "\n" + curr_blocks
+                else:
+                    # Keep the later message
+                    fixed[-1] = m
+        else:
+            fixed.append(m)
+    result = fixed
+
     return system, result
 
 
@@ -270,6 +368,7 @@ def build_anthropic_kwargs(
     tools: Optional[List[Dict]],
     max_tokens: Optional[int],
     reasoning_config: Optional[Dict[str, Any]],
+    tool_choice: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create()."""
     system, anthropic_messages = convert_messages_to_anthropic(messages)
@@ -289,6 +388,16 @@ def build_anthropic_kwargs(
 
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
+        # Map OpenAI tool_choice to Anthropic format
+        if tool_choice == "auto" or tool_choice is None:
+            kwargs["tool_choice"] = {"type": "auto"}
+        elif tool_choice == "required":
+            kwargs["tool_choice"] = {"type": "any"}
+        elif tool_choice == "none":
+            pass  # Don't send tool_choice — Anthropic will use tools if needed
+        elif isinstance(tool_choice, str):
+            # Specific tool name
+            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
     # Map reasoning_config to Anthropic's thinking parameter
     if reasoning_config and isinstance(reasoning_config, dict):

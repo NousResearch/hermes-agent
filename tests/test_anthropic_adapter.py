@@ -43,7 +43,10 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-oat01-" + "x" * 60)
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert "auth_token" in kwargs
-            assert "oauth-2025-04-20" in kwargs["default_headers"]["anthropic-beta"]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "oauth-2025-04-20" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
 
     def test_api_key_uses_api_key(self):
@@ -52,6 +55,10 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["api_key"] == "sk-ant-api03-something"
             assert "auth_token" not in kwargs
+            # API key auth should still get common betas
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -404,3 +411,119 @@ class TestNormalizeResponse:
         )
         assert msg.content is None
         assert len(msg.tool_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Vision content conversion
+# ---------------------------------------------------------------------------
+
+
+class TestVisionContentConversion:
+    def test_base64_image(self):
+        from agent.anthropic_adapter import _convert_vision_content
+
+        content = [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
+        ]
+        result = _convert_vision_content(content)
+        assert result[0] == {"type": "text", "text": "What's in this image?"}
+        assert result[1]["type"] == "image"
+        assert result[1]["source"]["type"] == "base64"
+        assert result[1]["source"]["media_type"] == "image/png"
+        assert result[1]["source"]["data"] == "iVBOR"
+
+    def test_url_image(self):
+        from agent.anthropic_adapter import _convert_vision_content
+
+        content = [
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+        ]
+        result = _convert_vision_content(content)
+        assert result[0]["type"] == "image"
+        assert result[0]["source"]["type"] == "url"
+        assert result[0]["source"]["url"] == "https://example.com/img.png"
+
+    def test_passthrough_non_list(self):
+        from agent.anthropic_adapter import _convert_vision_content
+
+        assert _convert_vision_content("plain text") == "plain text"
+
+
+# ---------------------------------------------------------------------------
+# Role alternation
+# ---------------------------------------------------------------------------
+
+
+class TestRoleAlternation:
+    def test_merges_consecutive_user_messages(self):
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "World"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert "Hello" in result[0]["content"]
+        assert "World" in result[0]["content"]
+
+    def test_preserves_proper_alternation(self):
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "How are you?"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert len(result) == 3
+        assert [m["role"] for m in result] == ["user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------------------
+# Tool choice
+# ---------------------------------------------------------------------------
+
+
+class TestToolChoice:
+    _DUMMY_TOOL = [
+        {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    def test_auto_tool_choice(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._DUMMY_TOOL,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice="auto",
+        )
+        assert kwargs["tool_choice"] == {"type": "auto"}
+
+    def test_required_tool_choice(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._DUMMY_TOOL,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice="required",
+        )
+        assert kwargs["tool_choice"] == {"type": "any"}
+
+    def test_specific_tool_choice(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._DUMMY_TOOL,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice="search",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}

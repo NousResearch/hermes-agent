@@ -3830,9 +3830,15 @@ class AIAgent:
                         
                         # Log cache hit stats when prompt caching is active
                         if self._use_prompt_caching:
-                            details = getattr(response.usage, 'prompt_tokens_details', None)
-                            cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
-                            written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
+                            if self.api_mode == "anthropic_messages":
+                                # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
+                                cached = getattr(response.usage, 'cache_read_input_tokens', 0) or 0
+                                written = getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
+                            else:
+                                # OpenRouter uses prompt_tokens_details.cached_tokens
+                                details = getattr(response.usage, 'prompt_tokens_details', None)
+                                cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
+                                written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
                             prompt = usage_dict["prompt_tokens"]
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:
@@ -3881,6 +3887,19 @@ class AIAgent:
                         nous_auth_retry_attempted = True
                         if self._try_refresh_nous_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                            continue
+                    if (
+                        self.api_mode == "anthropic_messages"
+                        and status_code == 401
+                        and hasattr(self, '_anthropic_api_key')
+                    ):
+                        # Try re-reading Claude Code credentials (they may have been refreshed)
+                        from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+                        new_token = resolve_anthropic_token()
+                        if new_token and new_token != self._anthropic_api_key:
+                            self._anthropic_api_key = new_token
+                            self._anthropic_client = build_anthropic_client(new_token)
+                            print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
 
                     retry_count += 1

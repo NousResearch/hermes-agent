@@ -296,6 +296,34 @@ Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT i
 
 Cache-breaking forces dramatically higher costs. The ONLY time we alter context is during context compression.
 
+### Memory Governance (Anti-Bloat Defaults)
+When implementing or modifying memory behavior, follow these defaults to avoid drift and memory bloat:
+
+- **Source of truth split**
+  - Operational project/task state lives in workspace notes (e.g., Obsidian), not long-term profile memory.
+  - Hermes/Honcho long-term memory should store durable user preferences, stable behavior patterns, and high-value context only.
+  - Session/chat history is transient working memory.
+
+- **Write gate (default NOOP)** — only persist if all are true:
+  1. Durable beyond this session
+  2. Actionable for future responses/decisions
+  3. Explicitly user-confirmed or strongly validated
+
+- **Prefer UPDATE/DELETE over append-only ADD**
+  - Reconcile conflicting facts.
+  - Replace stale preferences.
+  - Prune low-value or obsolete entries.
+
+- **Conflict precedence**
+  1. Latest explicit user statement
+  2. Operational workspace state for project status
+  3. Long-term memory stores
+
+- **Consolidation cadence**
+  - Collect candidate memories during session.
+  - Consolidate/dedupe in background or end-of-session.
+  - Do periodic pruning to keep stores small and accurate.
+
 ### Working Directory Behavior
 - **CLI**: Uses current directory (`.` → `os.getcwd()`)
 - **Messaging**: Uses `MESSAGING_CWD` env var (default: home directory)
@@ -321,8 +349,8 @@ Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) inst
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
 
-### `_last_resolved_tool_names` is a process-global in `model_tools.py`
-When subagents overwrite this global, `execute_code` calls after delegation may fail with missing tool imports. Known bug.
+### `execute_code` tool availability must remain session-scoped
+Pass `enabled_tools` explicitly from the caller context. Do not reintroduce process-global caches for resolved tool names in `model_tools.py`, or subagent/delegation paths can cross-contaminate.
 
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.

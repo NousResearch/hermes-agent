@@ -2395,7 +2395,9 @@ class AIAgent:
         _is_openrouter = "openrouter" in self.base_url.lower()
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
-        # specific — don't send them to other providers (Nous, Codex, etc.)
+        # specific.  Only send to OpenRouter-compatible endpoints.
+        # TODO: Nous Portal will add transparent proxy support — re-enable
+        # for _is_nous when their backend is updated.
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self.base_url.lower()

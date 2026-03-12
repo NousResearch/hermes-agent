@@ -94,6 +94,15 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def setUp(self):
+        # Keep these unit tests isolated from any real ~/.hermes delegation config
+        # on the machine running the suite.
+        self._load_config_patcher = patch("tools.delegate_tool._load_config", return_value={})
+        self._load_config_patcher.start()
+
+    def tearDown(self):
+        self._load_config_patcher.stop()
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)

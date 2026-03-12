@@ -165,9 +165,17 @@ class SlackAdapter(BasePlatformAdapter):
 
             result = await self._app.client.chat_postMessage(**kwargs)
 
+            message_id = None
+            if isinstance(result, dict):
+                message_id = result.get("ts")
+            else:
+                maybe_ts = getattr(result, "ts", None)
+                if isinstance(maybe_ts, str):
+                    message_id = maybe_ts
+
             return SendResult(
                 success=True,
-                message_id=result.get("ts"),
+                message_id=message_id,
                 raw_response=result,
             )
 

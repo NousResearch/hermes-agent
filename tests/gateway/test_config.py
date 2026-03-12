@@ -5,6 +5,7 @@ from gateway.config import (
     HomeChannel,
     Platform,
     PlatformConfig,
+    SessionLifecycleConfig,
     SessionResetPolicy,
 )
 
@@ -83,6 +84,19 @@ class TestSessionResetPolicy:
         assert policy.idle_minutes == 1440
 
 
+class TestSessionLifecycleConfig:
+    def test_roundtrip(self):
+        cfg = SessionLifecycleConfig(
+            isolate_threads=False,
+            clear_runtime_on_reset=False,
+            clear_runtime_on_resume=True,
+        )
+        restored = SessionLifecycleConfig.from_dict(cfg.to_dict())
+        assert restored.isolate_threads is False
+        assert restored.clear_runtime_on_reset is False
+        assert restored.clear_runtime_on_resume is True
+
+
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
         config = GatewayConfig(
@@ -93,6 +107,12 @@ class TestGatewayConfigRoundtrip:
                     home_channel=HomeChannel(Platform.TELEGRAM, "123", "Home"),
                 ),
             },
+            session_lifecycle=SessionLifecycleConfig(
+                isolate_threads=False,
+                clear_runtime_on_reset=True,
+                clear_runtime_on_resume=False,
+            ),
+            agent_max_iterations=175,
             reset_triggers=["/new"],
         )
         d = config.to_dict()
@@ -100,4 +120,8 @@ class TestGatewayConfigRoundtrip:
 
         assert Platform.TELEGRAM in restored.platforms
         assert restored.platforms[Platform.TELEGRAM].token == "tok"
+        assert restored.session_lifecycle.isolate_threads is False
+        assert restored.session_lifecycle.clear_runtime_on_reset is True
+        assert restored.session_lifecycle.clear_runtime_on_resume is False
+        assert restored.agent_max_iterations == 175
         assert restored.reset_triggers == ["/new"]

@@ -1053,8 +1053,14 @@ class TestConfigurableTimeouts:
 
         try:
             handler = _make_tool_handler("test_srv", "my_tool", 180)
-            with patch("tools.mcp_tool._run_on_mcp_loop") as mock_run:
-                mock_run.return_value = json.dumps({"result": "ok"})
+
+            def fake_run(coro, timeout=30):
+                # Handler creates a coroutine before invoking _run_on_mcp_loop.
+                # Close it here since this test is only asserting timeout wiring.
+                coro.close()
+                return json.dumps({"result": "ok"})
+
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run) as mock_run:
                 handler({})
                 # Verify timeout=180 was passed
                 call_kwargs = mock_run.call_args

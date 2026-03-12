@@ -2777,6 +2777,34 @@ class AIAgent:
 
         return compressed, new_system_prompt
 
+    def _tighten_context_compression(self, attempt: int) -> None:
+        """Make compression progressively more aggressive on repeated overflows."""
+        if attempt <= 1:
+            return
+
+        compressor = self.context_compressor
+        profiles = {
+            2: {"protect_first_n": 2, "protect_last_n": 3, "summary_target_tokens": 1200},
+            3: {"protect_first_n": 1, "protect_last_n": 2, "summary_target_tokens": 600},
+        }
+        target = profiles.get(min(attempt, max(profiles)), profiles[max(profiles)])
+
+        changes = []
+        for attr, new_value in target.items():
+            current_value = getattr(compressor, attr, None)
+            if current_value is None:
+                continue
+            tightened_value = min(current_value, new_value)
+            if tightened_value < current_value:
+                setattr(compressor, attr, tightened_value)
+                changes.append(f"{attr}={tightened_value}")
+
+        if changes:
+            print(
+                f"{self.log_prefix}   🧷 Tightening compression for retry {attempt}: "
+                + ", ".join(changes)
+            )
+
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages."""
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -3915,6 +3943,7 @@ class AIAgent:
                             }
                         print(f"{self.log_prefix}⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
+                        self._tighten_context_compression(compression_attempts)
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
@@ -3985,6 +4014,7 @@ class AIAgent:
                             }
                         print(f"{self.log_prefix}   🗜️  Context compression attempt {compression_attempts}/{max_compression_attempts}...")
 
+                        self._tighten_context_compression(compression_attempts)
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,

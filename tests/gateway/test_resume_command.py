@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
@@ -36,8 +36,11 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner.config = GatewayConfig()
     runner._session_db = session_db
     runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
 
     # Compute the real session key if an event is provided
     session_key = build_session_key(event.source) if event else "agent:main:telegram:dm"
@@ -50,6 +53,7 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.get_or_create_session.return_value = mock_session_entry
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
+    mock_store._generate_session_key.return_value = session_key
     runner.session_store = mock_store
 
     # Stub out memory flushing
@@ -197,4 +201,47 @@ class TestHandleResumeCommand:
         await runner._handle_resume_command(event)
 
         assert real_key not in runner._running_agents
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_clears_pending_runtime_state(self, tmp_path):
+        """Resume should clear queued interrupts and approval prompts for the key."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        real_key = _session_key_for_event(event)
+        runner._pending_messages[real_key] = "queued message"
+        runner._pending_approvals[real_key] = {"command": "rm -rf /", "pattern_key": "danger"}
+
+        await runner._handle_resume_command(event)
+
+        assert real_key not in runner._pending_messages
+        assert real_key not in runner._pending_approvals
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_can_preserve_runtime_state_when_config_disabled(self, tmp_path):
+        """When lifecycle toggle is off, /resume should not clear pending runtime maps."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        runner.config.session_lifecycle.clear_runtime_on_resume = False
+        real_key = _session_key_for_event(event)
+        runner._pending_messages[real_key] = "queued message"
+        runner._pending_approvals[real_key] = {"command": "rm -rf /", "pattern_key": "danger"}
+
+        await runner._handle_resume_command(event)
+
+        assert real_key in runner._pending_messages
+        assert real_key in runner._pending_approvals
         db.close()

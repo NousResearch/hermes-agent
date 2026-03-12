@@ -14,15 +14,19 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
 import signal
 import threading
+import time
+import shlex
+from collections import deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
 # Add parent directory to path
@@ -155,9 +159,9 @@ from gateway.session import (
     SessionStore,
     SessionSource,
     SessionContext,
+    build_session_key,
     build_session_context,
     build_session_context_prompt,
-    build_session_key,
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
@@ -230,6 +234,7 @@ class GatewayRunner:
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
+        self._task_routing_policy = self._load_task_routing_policy()
         self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
@@ -246,11 +251,24 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._session_runtime_overrides: Dict[str, Dict[str, Any]] = {}
         
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
-        
+
+        # Runtime ops metrics (/ops) -- in-memory rolling window
+        self._ops_window_seconds = int(os.getenv("HERMES_OPS_WINDOW_SECONDS", str(24 * 3600)))
+        self._ops_stall_threshold_seconds = int(os.getenv("HERMES_OPS_STALL_SECONDS", "180"))
+        self._ops_runs = deque(maxlen=int(os.getenv("HERMES_OPS_MAX_RUNS", "5000")))
+        self._ops_active_runs: Dict[str, Dict[str, Any]] = {}
+        self._ops_run_seq = 0
+        self._ops_recent_debug_limit = int(os.getenv("HERMES_OPS_RECENT_DEBUG_LIMIT", "5"))
+        self._ops_alerted_run_ids: set[str] = set()
+        self._ops_stall_alerts_enabled = os.getenv("HERMES_OPS_STALL_ALERTS", "true").lower() in {"1", "true", "yes", "on"}
+        self._ops_stall_recovery_notices_enabled = os.getenv("HERMES_OPS_STALL_RECOVERY_NOTICES", "true").lower() in {"1", "true", "yes", "on"}
+        self._ops_stall_alert_home_fanout_main_enabled = os.getenv("HERMES_OPS_STALL_ALERT_HOME_FANOUT_MAIN", "false").lower() in {"1", "true", "yes", "on"}
+
         # Initialize session database for session_search tool support
         self._session_db = None
         try:
@@ -331,7 +349,739 @@ class GatewayRunner:
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._flush_memories_for_session, old_session_id)
+
+    def _clear_session_runtime_state(self, session_key: str) -> None:
+        """Clear in-memory runtime state for a session key.
+
+        Used by lifecycle transitions (reset/resume) so stale interrupt queues or
+        pending approvals do not leak into a newly-created/rebound session.
+        """
+        self._running_agents.pop(session_key, None)
+        self._pending_messages.pop(session_key, None)
+        self._pending_approvals.pop(session_key, None)
+        if hasattr(self, "_session_runtime_overrides"):
+            self._session_runtime_overrides.pop(session_key, None)
+        if hasattr(self, "_ops_active_runs"):
+            self._ops_active_runs.pop(session_key, None)
+
+    @staticmethod
+    def _classify_task_type(event: MessageEvent, message_text: str) -> str:
+        """Best-effort task classification for telemetry/routing signals."""
+        if event.is_command():
+            return "command"
+        if event.message_type in (MessageType.PHOTO, MessageType.VIDEO):
+            return "vision"
+        if event.message_type in (MessageType.VOICE, MessageType.AUDIO):
+            return "audio"
+        if event.message_type == MessageType.DOCUMENT:
+            return "document"
+
+        lowered = (message_text or "").lower()
+        if any(tok in lowered for tok in ("```", "traceback", "stack", "exception", "pytest")):
+            return "code"
+        if any(tok in lowered for tok in ("summarize", "summary", "explain", "research")):
+            return "analysis"
+        return "chat"
+
+    @staticmethod
+    def _token_cost_class(total_tokens: int) -> str:
+        if total_tokens <= 2_000:
+            return "tiny"
+        if total_tokens <= 8_000:
+            return "small"
+        if total_tokens <= 24_000:
+            return "medium"
+        return "large"
+
+    async def _emit_message_telemetry(self, payload: Dict[str, Any]) -> None:
+        """Emit non-invasive gateway telemetry event (best effort)."""
+        try:
+            await self.hooks.emit("telemetry:message", payload)
+        except Exception as e:
+            logger.debug("Telemetry hook emission failed: %s", e)
+
+    @staticmethod
+    def _is_thread_source(source: SessionSource) -> bool:
+        """Return True when a message source is scoped to a thread/topic."""
+        if not source:
+            return False
+        if getattr(source, "thread_id", None):
+            return True
+        return str(getattr(source, "chat_type", "")).lower() == "thread"
+
+    def _next_ops_run_id(self) -> str:
+        """Return a compact monotonic run id for /ops correlation."""
+        self._ops_run_seq = int(getattr(self, "_ops_run_seq", 0)) + 1
+        return f"run-{self._ops_run_seq:06d}"
+
+    def _record_run_started(self, session_key: str, source: SessionSource) -> Optional[str]:
+        """Track an active run for live /ops reporting and return run_id."""
+        if not session_key:
+            return None
+
+        active_runs = getattr(self, "_ops_active_runs", None)
+        if active_runs is None:
+            active_runs = {}
+            self._ops_active_runs = active_runs
+
+        run_id = self._next_ops_run_id()
+        active_runs[session_key] = {
+            "run_id": run_id,
+            "session_key": session_key,
+            "started_at": time.time(),
+            "thread": self._is_thread_source(source),
+            "platform": source.platform.value if source and source.platform else "",
+            "chat_id": getattr(source, "chat_id", ""),
+            "thread_id": getattr(source, "thread_id", None),
+        }
+        return run_id
+
+    def _record_run_outcome(self, session_key: str, source: SessionSource, outcome: str, latency_ms: int) -> Dict[str, Any]:
+        """Record a completed run outcome in the rolling /ops window and return run metadata."""
+        now_ts = time.time()
+
+        active_runs = getattr(self, "_ops_active_runs", None)
+        if active_runs is None:
+            active_runs = {}
+            self._ops_active_runs = active_runs
+
+        alerted_run_ids = getattr(self, "_ops_alerted_run_ids", None)
+        if alerted_run_ids is None:
+            alerted_run_ids = set()
+            self._ops_alerted_run_ids = alerted_run_ids
+
+        runs = getattr(self, "_ops_runs", None)
+        if runs is None:
+            runs = deque()
+            self._ops_runs = runs
+
+        run_meta = active_runs.pop(session_key, None)
+        started_at = float(run_meta.get("started_at", now_ts)) if isinstance(run_meta, dict) else now_ts
+        run_id = (run_meta or {}).get("run_id") if isinstance(run_meta, dict) else None
+        stall_alerted = bool(run_id and run_id in alerted_run_ids)
+        run_record: Dict[str, Any] = {
+            "ts": now_ts,
+            "started_at": started_at,
+            "finished_at": now_ts,
+            "outcome": outcome,
+            "latency_ms": max(0, int(latency_ms or 0)),
+            "thread": bool(run_meta.get("thread")) if isinstance(run_meta, dict) else self._is_thread_source(source),
+            "run_id": run_id,
+            "session_key": session_key,
+            "platform": (run_meta or {}).get("platform") if isinstance(run_meta, dict) else (source.platform.value if source and source.platform else ""),
+            "chat_id": (run_meta or {}).get("chat_id") if isinstance(run_meta, dict) else getattr(source, "chat_id", ""),
+            "thread_id": (run_meta or {}).get("thread_id") if isinstance(run_meta, dict) else getattr(source, "thread_id", None),
+            "stall_alerted": stall_alerted,
+        }
+        runs.append(run_record)
+
+        # Prune stale entries outside the rolling window.
+        cutoff = now_ts - max(60, int(getattr(self, "_ops_window_seconds", 3600)))
+        while runs and runs[0].get("ts", 0) < cutoff:
+            runs.popleft()
+
+        return run_record
+
+    @staticmethod
+    def _p95(values: List[int]) -> int:
+        if not values:
+            return 0
+        ordered = sorted(int(v) for v in values)
+        idx = int(round(0.95 * (len(ordered) - 1)))
+        idx = max(0, min(idx, len(ordered) - 1))
+        return ordered[idx]
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds or 0))
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m"
+        return f"{seconds // 3600}h"
+
+    @staticmethod
+    def _format_timestamp_iso(ts: Optional[float]) -> str:
+        if not ts:
+            return "never"
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    def _find_ops_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Locate a run by id in active or recent history."""
+        run_id = (run_id or "").strip()
+        if not run_id:
+            return None
+
+        for item in self._ops_active_runs.values():
+            if str(item.get("run_id", "")).strip() == run_id:
+                now_ts = time.time()
+                started_at = float(item.get("started_at", now_ts))
+                return {
+                    **item,
+                    "status": "active",
+                    "elapsed_seconds": max(0, int(now_ts - started_at)),
+                }
+
+        for item in reversed(self._ops_runs):
+            if str(item.get("run_id", "")).strip() == run_id:
+                started_at = float(item.get("started_at", item.get("ts", 0) or 0) or 0)
+                finished_at = float(item.get("finished_at", item.get("ts", 0) or 0) or 0)
+                return {
+                    **item,
+                    "status": "finished",
+                    "elapsed_seconds": max(0, int(finished_at - started_at)) if started_at and finished_at else 0,
+                }
+        return None
+
+    def _resolve_ops_debug_run_id(self, selector: str) -> str:
+        """Resolve `/ops debug` selector tokens into a concrete run id."""
+        token = (selector or "").strip()
+        if not token:
+            return ""
+        if token.lower() != "latest":
+            return token
+
+        # Prefer most recent active run, otherwise most recent finished run.
+        active_runs = [
+            item for item in self._ops_active_runs.values()
+            if str(item.get("run_id") or "").strip()
+        ]
+        if active_runs:
+            newest_active = max(active_runs, key=lambda item: float(item.get("started_at", 0) or 0))
+            return str(newest_active.get("run_id") or "").strip()
+
+        for item in reversed(self._ops_runs):
+            run_id = str(item.get("run_id") or "").strip()
+            if run_id:
+                return run_id
+        return ""
+
+    def _resolve_ops_debug_selector(self, selector: str) -> str:
+        """Resolve selector aliases for `/ops debug` across main/thread run classes."""
+        token = (selector or "").strip()
+        mode = token.lower()
+        if mode not in {"latest-main", "latest-thread"}:
+            return self._resolve_ops_debug_run_id(token)
+
+        want_thread = (mode == "latest-thread")
+
+        active_runs = [
+            item
+            for item in self._ops_active_runs.values()
+            if str(item.get("run_id") or "").strip() and bool(item.get("thread")) == want_thread
+        ]
+        if active_runs:
+            newest_active = max(active_runs, key=lambda item: float(item.get("started_at", 0) or 0))
+            return str(newest_active.get("run_id") or "").strip()
+
+        for item in reversed(self._ops_runs):
+            run_id = str(item.get("run_id") or "").strip()
+            if run_id and bool(item.get("thread")) == want_thread:
+                return run_id
+        return ""
+
+    async def _send_ops_stall_alert(self, run_id: str, session_key: str, source: SessionSource, elapsed_seconds: int) -> None:
+        """Emit one-shot stall alert to the originating chat."""
+        if not run_id or not getattr(self, "_ops_stall_alerts_enabled", True):
+            return
+
+        alerted = getattr(self, "_ops_alerted_run_ids", set())
+        if run_id in alerted:
+            return
+
+        adapter = self.adapters.get(source.platform) if source else None
+        if not adapter:
+            return
+
+        message = (
+            "⚠️ **Ops stall alert**\n"
+            f"- Run: `{run_id}`\n"
+            f"- Session: `{session_key}`\n"
+            f"- Elapsed: {self._format_duration(elapsed_seconds)}\n"
+            f"- Threshold: {self._format_duration(getattr(self, '_ops_stall_threshold_seconds', 0))}\n"
+            "Use `/ops` for board view or `/ops debug <run_id|latest|latest-main|latest-thread>` for details."
+        )
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+
+        try:
+            result = await adapter.send(chat_id=source.chat_id, content=message, metadata=metadata)
+            if getattr(result, "success", True):
+                alerted.add(run_id)
+                self._ops_alerted_run_ids = alerted
+
+                should_fanout_home = (
+                    getattr(self, "_ops_stall_alert_home_fanout_main_enabled", False)
+                    and source
+                    and source.platform == Platform.DISCORD
+                    and not self._is_thread_source(source)
+                )
+                if should_fanout_home:
+                    home_channel_id = str(os.getenv("DISCORD_HOME_CHANNEL", "")).strip()
+                    if home_channel_id and home_channel_id != str(getattr(source, "chat_id", "")):
+                        fanout_message = (
+                            "📣 **Home mirror: ops stall alert (main channel run)**\n"
+                            + message
+                        )
+                        try:
+                            await adapter.send(chat_id=home_channel_id, content=fanout_message)
+                        except Exception as e:
+                            logger.debug("Failed to fanout ops stall alert for %s to home channel: %s", run_id, e)
+        except Exception as e:
+            logger.debug("Failed to send ops stall alert for %s: %s", run_id, e)
+
+    async def _send_ops_stall_recovered_notice(
+        self,
+        run_id: str,
+        session_key: str,
+        source: SessionSource,
+        elapsed_seconds: int,
+        outcome: str,
+    ) -> None:
+        """Notify when a previously alerted stall run completes."""
+        if not run_id or not getattr(self, "_ops_stall_recovery_notices_enabled", True):
+            return
+
+        alerted = getattr(self, "_ops_alerted_run_ids", set())
+        if run_id not in alerted:
+            return
+
+        adapter = self.adapters.get(source.platform) if source else None
+        if not adapter:
+            return
+
+        message = (
+            "✅ **Ops stall recovered**\n"
+            f"- Run: `{run_id}`\n"
+            f"- Session: `{session_key}`\n"
+            f"- Outcome: {outcome}\n"
+            f"- Total elapsed: {self._format_duration(elapsed_seconds)}"
+        )
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+
+        try:
+            result = await adapter.send(chat_id=source.chat_id, content=message, metadata=metadata)
+            if getattr(result, "success", True):
+                should_fanout_home = (
+                    getattr(self, "_ops_stall_alert_home_fanout_main_enabled", False)
+                    and source
+                    and source.platform == Platform.DISCORD
+                    and not self._is_thread_source(source)
+                )
+                if should_fanout_home:
+                    home_channel_id = str(os.getenv("DISCORD_HOME_CHANNEL", "")).strip()
+                    if home_channel_id and home_channel_id != str(getattr(source, "chat_id", "")):
+                        fanout_message = (
+                            "📣 **Home mirror: ops stall recovered (main channel run)**\n"
+                            + message
+                        )
+                        try:
+                            await adapter.send(chat_id=home_channel_id, content=fanout_message)
+                        except Exception as e:
+                            logger.debug(
+                                "Failed to fanout ops stall recovery notice for %s to home channel: %s",
+                                run_id,
+                                e,
+                            )
+
+                alerted.discard(run_id)
+                self._ops_alerted_run_ids = alerted
+        except Exception as e:
+            logger.debug("Failed to send ops stall recovery notice for %s: %s", run_id, e)
+
+    def _build_ops_snapshot(self) -> Dict[str, Any]:
+        """Build live gateway ops metrics for /ops."""
+        now_ts = time.time()
+        cutoff = now_ts - max(60, int(self._ops_window_seconds))
+        runs_window = [r for r in self._ops_runs if r.get("ts", 0) >= cutoff]
+
+        success_runs = [r for r in runs_window if r.get("outcome") == "success"]
+        error_runs = [r for r in runs_window if r.get("outcome") == "error"]
+
+        main_success_lat = [r.get("latency_ms", 0) for r in success_runs if not r.get("thread")]
+        thread_success_lat = [r.get("latency_ms", 0) for r in success_runs if r.get("thread")]
+
+        active_items = list(self._ops_active_runs.values())
+        active_main = sum(1 for item in active_items if not item.get("thread"))
+        active_thread = sum(1 for item in active_items if item.get("thread"))
+        stalled = [
+            item for item in active_items
+            if (now_ts - float(item.get("started_at", now_ts))) >= self._ops_stall_threshold_seconds
+        ]
+
+        started = len(runs_window)
+        completed = len(success_runs)
+        failed = len(error_runs)
+        success_rate = (completed / started * 100.0) if started else 0.0
+        last_success_ts = max((r.get("ts", 0) for r in success_runs), default=0)
+
+        recent_limit = max(1, int(getattr(self, "_ops_recent_debug_limit", 5) or 5))
+        recent_runs = []
+        for item in list(reversed(runs_window)):
+            run_id = str(item.get("run_id") or "").strip()
+            if not run_id:
+                continue
+            recent_runs.append(
+                {
+                    "run_id": run_id,
+                    "outcome": str(item.get("outcome", "unknown")),
+                    "thread": bool(item.get("thread")),
+                    "latency_ms": int(item.get("latency_ms", 0) or 0),
+                }
+            )
+            if len(recent_runs) >= recent_limit:
+                break
+
+        return {
+            "window_hours": round(self._ops_window_seconds / 3600, 2),
+            "started": started,
+            "completed": completed,
+            "failed": failed,
+            "success_rate": success_rate,
+            "p95_latency_main_ms": self._p95(main_success_lat),
+            "p95_latency_thread_ms": self._p95(thread_success_lat),
+            "active_total": len(active_items),
+            "active_main": active_main,
+            "active_thread": active_thread,
+            "queue_depth": len(self._pending_messages),
+            "stalled_active": len(stalled),
+            "stall_threshold_seconds": self._ops_stall_threshold_seconds,
+            "stalled_longest_seconds": max(
+                (int(now_ts - float(item.get("started_at", now_ts))) for item in stalled),
+                default=0,
+            ),
+            "last_success_ts": last_success_ts or None,
+            "recent_runs": recent_runs,
+        }
+
+    @staticmethod
+    def _get_write_command_set() -> set[str]:
+        """Resolve slash commands that mutate gateway/runtime state."""
+        configured = os.getenv("GATEWAY_WRITE_COMMANDS", "").strip()
+        if not configured:
+            configured = "sethome,set-home,model,update,reload-mcp,reload_mcp"
+        return {cmd.strip().lower() for cmd in configured.split(",") if cmd.strip()}
+
+    @classmethod
+    def _is_write_command(cls, command: str) -> bool:
+        return bool(command and command.lower() in cls._get_write_command_set())
+
+    @staticmethod
+    def _parse_allowlist(value: str) -> set[str]:
+        return {token.strip() for token in (value or "").split(",") if token.strip()}
+
+    @classmethod
+    def _is_write_command_authorized(cls, source: SessionSource, command: str) -> tuple[bool, str]:
+        """Check command-level RBAC for write commands.
+
+        Returns (authorized, reason).
+        """
+        if not cls._is_write_command(command):
+            return True, "read_command"
+
+        if os.getenv("GATEWAY_WRITE_ALLOW_ALL", "false").lower() == "true":
+            return True, "allow_all"
+
+        platform_name = source.platform.value.upper() if source.platform else ""
+        global_allow = cls._parse_allowlist(os.getenv("GATEWAY_WRITE_ALLOWLIST", ""))
+        platform_allow = cls._parse_allowlist(os.getenv(f"{platform_name}_WRITE_ALLOWLIST", "")) if platform_name else set()
+        allowed = global_allow | platform_allow
+
+        # Backward-compatible default: if no explicit write allowlist exists, do not block.
+        if not allowed:
+            return True, "no_allowlist_configured"
+
+        user_id = source.user_id
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+
+        if check_ids & allowed:
+            return True, "allowlist"
+        return False, "missing_write_permission"
+
+    async def _audit_write_command(
+        self,
+        *,
+        event: MessageEvent,
+        command: str,
+        args: str,
+        authorized: bool,
+        reason: str,
+    ) -> None:
+        """Best-effort write-command audit log + hook emission."""
+        source = event.source
+        payload = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "platform": source.platform.value if source.platform else "",
+            "chat_id": source.chat_id,
+            "chat_type": source.chat_type,
+            "user_id": source.user_id,
+            "user_name": source.user_name,
+            "command": command,
+            "args": args,
+            "authorized": authorized,
+            "reason": reason,
+        }
+
+        try:
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            audit_path = log_dir / "gateway_command_audit.jsonl"
+            with audit_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug("Write-command audit file write failed: %s", e)
+
+        try:
+            await self.hooks.emit("audit:command", payload)
+        except Exception as e:
+            logger.debug("Write-command audit hook emission failed: %s", e)
+
+    @staticmethod
+    def _parse_runtime_message_control(text: str) -> tuple[str, str]:
+        """Parse runtime control syntax for in-flight messages.
+
+        Returns a tuple of ``(mode, payload)`` where mode is one of:
+        - ``steer``: interrupt the active run and steer immediately (default)
+        - ``queue``: queue follow-up intent to run deterministically after current run
+
+        Supported explicit prefixes:
+        - /queue <message>
+        - queue: <message>
+        - q: <message>
+        - /steer <message>
+        - steer: <message>
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return ("steer", "")
+
+        queue_match = re.match(r"^(?:/queue\b|queue:|q:)\s*(.*)$", raw, flags=re.IGNORECASE)
+        if queue_match:
+            payload = queue_match.group(1).strip()
+            return ("queue", payload)
+
+        steer_match = re.match(r"^(?:/steer\b|steer:)\s*(.*)$", raw, flags=re.IGNORECASE)
+        if steer_match:
+            payload = steer_match.group(1).strip()
+            return ("steer", payload)
+
+        return ("steer", raw)
+
+    @staticmethod
+    def _derive_parent_thread_source(source: SessionSource, event: MessageEvent) -> Optional[SessionSource]:
+        """Derive parent-channel source for a thread/topic message.
+
+        Returns ``None`` when parent source cannot be resolved.
+        """
+        if not source.thread_id:
+            return None
+
+        parent_chat_id = source.chat_id
+        parent_chat_type = source.chat_type
+
+        if source.chat_type == "thread":
+            raw_channel = getattr(event.raw_message, "channel", None)
+            parent_candidate = getattr(raw_channel, "parent_id", None)
+            if not parent_candidate:
+                parent_obj = getattr(raw_channel, "parent", None)
+                parent_candidate = getattr(parent_obj, "id", None)
+            if not parent_candidate:
+                return None
+            parent_chat_id = str(parent_candidate)
+            parent_chat_type = "group"
+
+        return SessionSource(
+            platform=source.platform,
+            chat_id=parent_chat_id,
+            chat_name=source.chat_name,
+            chat_type=parent_chat_type,
+            user_id=source.user_id,
+            user_name=source.user_name,
+            thread_id=None,
+            chat_topic=source.chat_topic,
+            user_id_alt=source.user_id_alt,
+            chat_id_alt=source.chat_id_alt,
+        )
+
+    def _build_thread_bootstrap_context(
+        self,
+        source: SessionSource,
+        event: MessageEvent,
+        history: list[dict],
+    ) -> str:
+        """Build context note for first turn in a thread from parent session history."""
+        if history or not source.thread_id:
+            return ""
+
+        parent_source = self._derive_parent_thread_source(source, event)
+        if not parent_source:
+            return ""
+
+        parent_key = build_session_key(
+            parent_source,
+            isolate_threads=self.config.session_lifecycle.isolate_threads,
+        )
+        parent_entry = self.session_store._entries.get(parent_key)
+        if not parent_entry:
+            return ""
+
+        try:
+            parent_history = self.session_store.load_transcript(parent_entry.session_id)
+        except Exception:
+            return ""
+
+        if not parent_history:
+            return ""
+
+        recent_turns: list[str] = []
+        for msg in parent_history:
+            role = msg.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            content = " ".join(content.split())
+            if len(content) > 240:
+                content = content[:237] + "..."
+            label = "User" if role == "user" else "Assistant"
+            recent_turns.append(f"- {label}: {content}")
+
+        if not recent_turns:
+            return ""
+
+        recent_turns = recent_turns[-8:]
+        return (
+            "[System note: New thread detected. Bootstrap with recent parent-channel context "
+            "for continuity, then prioritize this thread independently.]\n"
+            + "\n".join(recent_turns)
+        )
+
+    @staticmethod
+    def _format_command_confirmation(command: str, body: str) -> str:
+        """Format slash-command responses with consistent, tool-style confirmation framing."""
+        cmd = (command or "").strip().lstrip("/") or "command"
+        text = (body or "").strip() or "(no details)"
+
+        emoji = "✅"
+        lowered = text.lower()
+        if text.startswith(("❌", "⛔")) or " not authorized" in lowered:
+            emoji = "❌"
+        elif text.startswith("⚠️") or "invalid" in lowered or "missing" in lowered:
+            emoji = "⚠️"
+        elif text.startswith(("ℹ️", "🔎", "📊", "📋")):
+            emoji = "ℹ️"
+
+        details = "\n".join((f"┊ {line}" if line else "┊") for line in text.splitlines())
+        return f"{emoji} **/{cmd}**\n{details}"
+
+    @staticmethod
+    def _format_ask_runtime_confirmation(runtime_policy: dict) -> str:
+        """Build a visible runtime receipt for /ask one-turn overrides."""
+
+        def _fmt_reasoning(cfg: dict | None) -> str:
+            if not cfg:
+                return "default"
+            if cfg.get("enabled") is False:
+                return "none"
+            return str(cfg.get("effort") or "default")
+
+        model = runtime_policy.get("model") or "unset"
+        provider = runtime_policy.get("provider") or "default"
+        task_type = runtime_policy.get("effective_task_type") or "chat"
+        reasoning = _fmt_reasoning(runtime_policy.get("reasoning_config"))
+        return (
+            "🚀 **/ask** runtime applied\n"
+            f"┊ model: `{model}`\n"
+            f"┊ provider: `{provider}`\n"
+            f"┊ reasoning: `{reasoning}`\n"
+            f"┊ task: `{task_type}`"
+        )
     
+    @staticmethod
+    def _parse_ask_runtime_overrides(text: str) -> tuple[dict, str, str | None]:
+        """Parse one-turn runtime overrides from /ask arguments.
+
+        Supported forms (prefix options only, then prompt):
+          - /ask model=<provider:model> reasoning=<high|...> <prompt>
+          - /ask --model <provider:model> --reasoning <level> <prompt>
+          - /ask provider=<provider> model=<model> <prompt>
+
+        Returns: (overrides, prompt, error)
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return {}, "", "Usage: /ask [model=<provider:model>|provider=<provider>|reasoning=<level>] <prompt>"
+
+        try:
+            tokens = shlex.split(raw)
+        except ValueError as exc:
+            return {}, "", f"⚠️ Invalid /ask arguments: {exc}"
+
+        if not tokens:
+            return {}, "", "Usage: /ask [model=<provider:model>|provider=<provider>|reasoning=<level>] <prompt>"
+
+        overrides: dict[str, str] = {}
+        i = 0
+        valid_reasoning = {"xhigh", "high", "medium", "low", "minimal", "none", "default", "auto", "clear"}
+
+        while i < len(tokens):
+            token = tokens[i]
+            key = ""
+            value = ""
+
+            if token == "--":
+                i += 1
+                break
+
+            if token.startswith("--"):
+                key = token[2:].strip().lower()
+                if key not in {"model", "provider", "reasoning", "effort"}:
+                    break
+                if i + 1 >= len(tokens):
+                    return {}, "", f"⚠️ Missing value for --{key}."
+                value = tokens[i + 1].strip()
+                i += 2
+            elif "=" in token:
+                maybe_key, maybe_value = token.split("=", 1)
+                key = maybe_key.strip().lower()
+                value = maybe_value.strip()
+                if key not in {"model", "provider", "reasoning", "effort"}:
+                    break
+                if not value:
+                    return {}, "", f"⚠️ Missing value for {key}=..."
+                i += 1
+            else:
+                break
+
+            if key in {"reasoning", "effort"}:
+                norm = value.lower()
+                if norm not in valid_reasoning:
+                    opts = "xhigh, high, medium, low, minimal, none, default"
+                    return {}, "", f"⚠️ Invalid reasoning value `{value}`. Use one of: {opts}."
+                if norm in {"default", "auto", "clear"}:
+                    continue
+                overrides["reasoning_effort"] = norm
+            elif key == "provider":
+                overrides["provider"] = value
+            elif key == "model":
+                from hermes_cli.models import parse_model_input
+
+                default_provider = overrides.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+                try:
+                    provider, model = parse_model_input(value, default_provider)
+                except Exception:
+                    provider, model = default_provider, value
+                overrides["provider"] = provider
+                overrides["model"] = model
+
+        prompt = " ".join(tokens[i:]).strip()
+        if not prompt:
+            return {}, "", "⚠️ Missing prompt. Usage: /ask [model=<...>] [reasoning=<...>] <prompt>"
+
+        return overrides, prompt, None
+
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
@@ -484,6 +1234,113 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_task_routing_policy() -> dict:
+        """Load task routing policy from config.yaml.
+
+        Shape (all keys optional):
+          task_routing:
+            defaults: {model, provider, reasoning_effort, fallback_ladder}
+            by_task:
+              code: {model, provider, reasoning_effort, fallback_ladder}
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                policy = cfg.get("task_routing", {}) or {}
+                return policy if isinstance(policy, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _normalize_reasoning_config(effort: str | None) -> dict | None:
+        """Normalize reasoning effort string to agent reasoning_config payload."""
+        if not effort:
+            return None
+        normalized = str(effort).strip().lower()
+        if normalized in ("default", "auto", ""):
+            return None
+        if normalized == "none":
+            return {"enabled": False}
+        valid = {"xhigh", "high", "medium", "low", "minimal"}
+        if normalized in valid:
+            return {"enabled": True, "effort": normalized}
+        return None
+
+    @staticmethod
+    def _valid_task_types() -> set[str]:
+        return {"command", "vision", "audio", "document", "code", "analysis", "chat"}
+
+    @staticmethod
+    def _normalize_fallback_ladder(value: Any) -> list[dict]:
+        """Normalize fallback ladder entries to [{provider, model}, ...]."""
+        if not isinstance(value, list):
+            return []
+        normalized: list[dict] = []
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            provider = str(entry.get("provider", "")).strip()
+            model = str(entry.get("model", "")).strip()
+            if provider and model:
+                normalized.append({"provider": provider, "model": model})
+        return normalized
+
+    def _resolve_runtime_policy(self, session_key: str, task_type: str) -> dict:
+        """Resolve per-turn runtime policy with thread-local overrides."""
+        runtime_overrides = getattr(self, "_session_runtime_overrides", {}) or {}
+        overrides = runtime_overrides.get(session_key, {}) if session_key else {}
+        forced_task = str(overrides.get("forced_task_type", "")).strip().lower()
+        effective_task = forced_task if forced_task in self._valid_task_types() else task_type
+
+        task_routing_policy = getattr(self, "_task_routing_policy", {})
+        policy = task_routing_policy if isinstance(task_routing_policy, dict) else {}
+        defaults = policy.get("defaults", {}) if isinstance(policy.get("defaults"), dict) else {}
+        by_task = policy.get("by_task", {}) if isinstance(policy.get("by_task"), dict) else {}
+        task_cfg = by_task.get(effective_task, {}) if isinstance(by_task.get(effective_task), dict) else {}
+
+        provider = str(
+            overrides.get("provider")
+            or task_cfg.get("provider")
+            or defaults.get("provider")
+            or ""
+        ).strip()
+        model = str(
+            overrides.get("model")
+            or task_cfg.get("model")
+            or defaults.get("model")
+            or os.getenv("HERMES_MODEL")
+            or os.getenv("LLM_MODEL")
+            or ""
+        ).strip()
+
+        reasoning_effort = str(
+            overrides.get("reasoning_effort")
+            or task_cfg.get("reasoning_effort")
+            or defaults.get("reasoning_effort")
+            or ""
+        ).strip().lower()
+        default_reasoning = getattr(self, "_reasoning_config", None)
+        reasoning_config = self._normalize_reasoning_config(reasoning_effort) or default_reasoning
+
+        ladder = self._normalize_fallback_ladder(task_cfg.get("fallback_ladder"))
+        if not ladder:
+            ladder = self._normalize_fallback_ladder(defaults.get("fallback_ladder"))
+        fallback_model = ladder[0] if ladder else getattr(self, "_fallback_model", None)
+
+        return {
+            "task_type": task_type,
+            "effective_task_type": effective_task,
+            "provider": provider,
+            "model": model,
+            "reasoning_config": reasoning_config,
+            "fallback_model": fallback_model,
+        }
 
     @staticmethod
     def _load_fallback_model() -> dict | None:
@@ -678,42 +1535,42 @@ class GatewayRunner:
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
             if not check_telegram_requirements():
-                logger.warning("Telegram: python-telegram-bot not installed")
+                logger.info("Telegram unavailable: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
             if not check_discord_requirements():
-                logger.warning("Discord: discord.py not installed")
+                logger.info("Discord unavailable: discord.py not installed")
                 return None
             return DiscordAdapter(config)
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
             if not check_whatsapp_requirements():
-                logger.warning("WhatsApp: Node.js not installed or bridge not configured")
+                logger.info("WhatsApp unavailable: Node.js not installed or bridge not configured")
                 return None
             return WhatsAppAdapter(config)
         
         elif platform == Platform.SLACK:
             from gateway.platforms.slack import SlackAdapter, check_slack_requirements
             if not check_slack_requirements():
-                logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
+                logger.info("Slack unavailable: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
             return SlackAdapter(config)
 
         elif platform == Platform.SIGNAL:
             from gateway.platforms.signal import SignalAdapter, check_signal_requirements
             if not check_signal_requirements():
-                logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
+                logger.info("Signal unavailable: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
             return SignalAdapter(config)
 
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
-                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
+                logger.info("HomeAssistant unavailable: aiohttp not installed or HASS_TOKEN not set")
                 return None
             return HomeAssistantAdapter(config)
 
@@ -842,93 +1699,157 @@ class GatewayRunner:
         # PRIORITY: If an agent is already running for this session, interrupt it
         # immediately. This is before command parsing to minimize latency -- the
         # user's "stop" message reaches the agent as fast as possible.
-        _quick_key = build_session_key(source)
+        session_store = getattr(self, "session_store", None)
+        if session_store is not None:
+            _quick_key = session_store._generate_session_key(source)
+        else:
+            # __new__-constructed test instances may not initialize session_store.
+            _quick_key = build_session_key(source)
+
         if _quick_key in self._running_agents:
             running_agent = self._running_agents[_quick_key]
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
+            mode, payload = self._parse_runtime_message_control(event.text)
+            payload = payload.strip() if payload else ""
+            if not payload:
+                payload = event.text.strip()
+
+            if mode == "queue":
+                logger.debug("Queued follow-up for active session %s", _quick_key[:20])
             else:
-                self._pending_messages[_quick_key] = event.text
+                logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+                running_agent.interrupt(payload)
+
+            if _quick_key in self._pending_messages:
+                self._pending_messages[_quick_key] += "\n" + payload
+            else:
+                self._pending_messages[_quick_key] = payload
             return None
         
         # Check for commands
         command = event.get_command()
-        
+        command_args = event.get_command_args().strip()
+        one_turn_runtime_overrides: dict[str, str] = {}
+
+        if command and self._is_write_command(command):
+            authorized, reason = self._is_write_command_authorized(source, command)
+            await self._audit_write_command(
+                event=event,
+                command=command,
+                args=command_args,
+                authorized=authorized,
+                reason=reason,
+            )
+            if not authorized:
+                return (
+                    "⛔ You are not authorized to run this write command. "
+                    "Ask the operator to add your user ID to GATEWAY_WRITE_ALLOWLIST "
+                    "or DISCORD_WRITE_ALLOWLIST."
+                )
+
         # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "status", "stop", "model",
-                          "personality", "retry", "undo", "sethome", "set-home",
+        _known_commands = {"new", "reset", "help", "status", "ops", "stop", "model", "ask",
+                          "modelpin", "reasoning", "route", "runtime", "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider", "rollback",
-                          "background", "reasoning"}
+                          "update", "title", "resume", "provider", "rollback", "background", "now", "blocked", "next"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "command": command,
-                "args": event.get_command_args().strip(),
+                "args": command_args,
             })
         
+        def _confirm(cmd_name: str, output: str) -> str:
+            return self._format_command_confirmation(cmd_name, output)
+
         if command in ["new", "reset"]:
-            return await self._handle_reset_command(event)
+            return _confirm(command, await self._handle_reset_command(event))
         
         if command == "help":
-            return await self._handle_help_command(event)
+            return _confirm(command, await self._handle_help_command(event))
         
         if command == "status":
-            return await self._handle_status_command(event)
+            return _confirm(command, await self._handle_status_command(event))
+
+        if command == "ops":
+            return _confirm(command, await self._handle_ops_command(event))
+
+        if command == "now":
+            return _confirm(command, await self._handle_now_command(event))
+
+        if command == "blocked":
+            return _confirm(command, await self._handle_blocked_command(event))
+
+        if command == "next":
+            return _confirm(command, await self._handle_next_command(event))
         
         if command == "stop":
-            return await self._handle_stop_command(event)
+            return _confirm(command, await self._handle_stop_command(event))
         
         if command == "model":
-            return await self._handle_model_command(event)
-        
-        if command == "provider":
-            return await self._handle_provider_command(event)
-        
-        if command == "personality":
-            return await self._handle_personality_command(event)
-        
-        if command == "retry":
-            return await self._handle_retry_command(event)
-        
-        if command == "undo":
-            return await self._handle_undo_command(event)
-        
-        if command in ["sethome", "set-home"]:
-            return await self._handle_set_home_command(event)
+            return _confirm(command, await self._handle_model_command(event))
 
-        if command == "compress":
-            return await self._handle_compress_command(event)
+        if command == "ask":
+            overrides, prompt, parse_error = self._parse_ask_runtime_overrides(command_args)
+            if parse_error:
+                return _confirm("ask", parse_error)
+            one_turn_runtime_overrides = overrides
+            event.text = prompt
+            command = None
 
-        if command == "usage":
-            return await self._handle_usage_command(event)
-
-        if command == "insights":
-            return await self._handle_insights_command(event)
-
-        if command in ("reload-mcp", "reload_mcp"):
-            return await self._handle_reload_mcp_command(event)
-
-        if command == "update":
-            return await self._handle_update_command(event)
-
-        if command == "title":
-            return await self._handle_title_command(event)
-
-        if command == "resume":
-            return await self._handle_resume_command(event)
-
-        if command == "rollback":
-            return await self._handle_rollback_command(event)
-
-        if command == "background":
-            return await self._handle_background_command(event)
+        if command == "modelpin":
+            return _confirm(command, await self._handle_modelpin_command(event))
 
         if command == "reasoning":
-            return await self._handle_reasoning_command(event)
+            return _confirm(command, await self._handle_reasoning_command(event))
+
+        if command == "route":
+            return _confirm(command, await self._handle_route_command(event))
+
+        if command == "runtime":
+            return _confirm(command, await self._handle_runtime_command(event))
+        
+        if command == "provider":
+            return _confirm(command, await self._handle_provider_command(event))
+        
+        if command == "personality":
+            return _confirm(command, await self._handle_personality_command(event))
+        
+        if command == "retry":
+            return _confirm(command, await self._handle_retry_command(event))
+        
+        if command == "undo":
+            return _confirm(command, await self._handle_undo_command(event))
+        
+        if command in ["sethome", "set-home"]:
+            return _confirm(command, await self._handle_set_home_command(event))
+
+        if command == "compress":
+            return _confirm(command, await self._handle_compress_command(event))
+
+        if command == "usage":
+            return _confirm(command, await self._handle_usage_command(event))
+
+        if command == "insights":
+            return _confirm(command, await self._handle_insights_command(event))
+
+        if command in ("reload-mcp", "reload_mcp"):
+            return _confirm(command, await self._handle_reload_mcp_command(event))
+
+        if command == "update":
+            return _confirm(command, await self._handle_update_command(event))
+
+        if command == "title":
+            return _confirm(command, await self._handle_title_command(event))
+
+        if command == "resume":
+            return _confirm(command, await self._handle_resume_command(event))
+
+        if command == "rollback":
+            return _confirm(command, await self._handle_rollback_command(event))
+
+        if command == "background":
+            return _confirm(command, await self._handle_background_command(event))
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -972,7 +1893,7 @@ class GatewayRunner:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
         # Check for pending exec approval responses
-        session_key_preview = build_session_key(source)
+        session_key_preview = self.session_store._generate_session_key(source)
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -1032,7 +1953,14 @@ class GatewayRunner:
         
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
+        # For brand-new threads/topics, seed context from recent parent-channel
+        # turns so thread work starts with relevant continuity while remaining
+        # independently runnable.
+        thread_bootstrap = self._build_thread_bootstrap_context(source, event, history)
+        if thread_bootstrap:
+            context_prompt = f"{thread_bootstrap}\n\n{context_prompt}"
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -1352,6 +2280,34 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        task_type = self._classify_task_type(event, message_text)
+        runtime_policy = self._resolve_runtime_policy(session_key=session_key, task_type=task_type)
+
+        if one_turn_runtime_overrides:
+            merged_policy = dict(runtime_policy)
+            provider_override = one_turn_runtime_overrides.get("provider")
+            model_override = one_turn_runtime_overrides.get("model")
+            reasoning_override = one_turn_runtime_overrides.get("reasoning_effort")
+            if provider_override:
+                merged_policy["provider"] = provider_override
+            if model_override:
+                merged_policy["model"] = model_override
+            if reasoning_override:
+                merged_policy["reasoning_config"] = self._normalize_reasoning_config(reasoning_override) or merged_policy.get("reasoning_config")
+            runtime_policy = merged_policy
+
+        telemetry_started = time.perf_counter()
+        telemetry_base = {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_id": session_entry.session_id,
+            "session_key": session_key,
+            "task_type": runtime_policy.get("effective_task_type", task_type),
+            "task_type_original": task_type,
+            "model": runtime_policy.get("model") or os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "",
+            "provider": runtime_policy.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER") or "",
+        }
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -1369,7 +2325,8 @@ class GatewayRunner:
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
-                session_key=session_key
+                session_key=session_key,
+                runtime_policy=runtime_policy,
             )
             
             response = agent_result.get("final_response", "")
@@ -1388,6 +2345,13 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            if one_turn_runtime_overrides:
+                ask_runtime_receipt = self._format_ask_runtime_confirmation(runtime_policy)
+                if response:
+                    response = f"{ask_runtime_receipt}\n\n{response}"
+                else:
+                    response = ask_runtime_receipt
+            
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -1474,11 +2438,57 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
-            
+
+            total_tokens = 0
+            try:
+                usage = agent_result.get("usage") or {}
+                if isinstance(usage, dict):
+                    total_tokens = int(usage.get("total_tokens", 0) or 0)
+            except Exception:
+                total_tokens = 0
+
+            latency_ms = int((time.perf_counter() - telemetry_started) * 1000)
+            await self._emit_message_telemetry({
+                **telemetry_base,
+                "outcome": "success",
+                "latency_ms": latency_ms,
+                "token_total": total_tokens,
+                "cost_class": self._token_cost_class(total_tokens),
+            })
+            run_record = self._record_run_outcome(session_key, source, "success", latency_ms)
+            run_id = str(run_record.get("run_id") or "").strip()
+            if run_record.get("stall_alerted") and run_id:
+                elapsed_seconds = max(0, int(float(run_record.get("finished_at", 0) or 0) - float(run_record.get("started_at", 0) or 0)))
+                await self._send_ops_stall_recovered_notice(
+                    run_id=run_id,
+                    session_key=session_key,
+                    source=source,
+                    elapsed_seconds=elapsed_seconds,
+                    outcome="success",
+                )
+
             return response
             
         except Exception as e:
             logger.exception("Agent error in session %s", session_key)
+            latency_ms = int((time.perf_counter() - telemetry_started) * 1000)
+            await self._emit_message_telemetry({
+                **telemetry_base,
+                "outcome": "error",
+                "latency_ms": latency_ms,
+                "error": str(e)[:240],
+            })
+            run_record = self._record_run_outcome(session_key, source, "error", latency_ms)
+            run_id = str(run_record.get("run_id") or "").strip()
+            if run_record.get("stall_alerted") and run_id:
+                elapsed_seconds = max(0, int(float(run_record.get("finished_at", 0) or 0) - float(run_record.get("started_at", 0) or 0)))
+                await self._send_ops_stall_recovered_notice(
+                    run_id=run_id,
+                    session_key=session_key,
+                    source=source,
+                    elapsed_seconds=elapsed_seconds,
+                    outcome="error",
+                )
             return (
                 "Sorry, I encountered an unexpected error. "
                 "The details have been logged for debugging. "
@@ -1504,7 +2514,9 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
         
-        # Reset the session
+        # Clear runtime state (configurable) and reset the session
+        if self.config.session_lifecycle.clear_runtime_on_reset:
+            self._clear_session_runtime_state(session_key)
         new_entry = self.session_store.reset_session(session_key)
         
         # Emit session:reset hook
@@ -1525,13 +2537,13 @@ class GatewayRunner:
         """Handle /status command."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        
+
         connected_platforms = [p.value for p in self.adapters.keys()]
-        
+
         # Check if there's an active agent
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
-        
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -1543,9 +2555,344 @@ class GatewayRunner:
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ]
-        
+
         return "\n".join(lines)
-    
+
+    async def _handle_ops_command(self, event: MessageEvent) -> str:
+        """Handle /ops command -- live reliability/throughput snapshot."""
+        args = (event.get_command_args() if event else "") or ""
+        tokens = args.strip().split()
+
+        if tokens and tokens[0].lower() == "debug":
+            selector = tokens[1].strip() if len(tokens) > 1 else ""
+            if not selector:
+                return "Usage: `/ops debug <run_id|latest|latest-main|latest-thread>`"
+
+            run_id = self._resolve_ops_debug_selector(selector)
+            if not run_id:
+                selector_mode = selector.lower()
+                if selector_mode == "latest-main":
+                    return "No main-channel runs available yet. Use `/ops` to inspect recent run IDs."
+                if selector_mode == "latest-thread":
+                    return "No thread runs available yet. Use `/ops` to inspect recent run IDs."
+                return "No runs available yet. Use `/ops` after at least one run completes."
+
+            run = self._find_ops_run(run_id)
+            if not run:
+                return f"Run `{selector}` not found. Use `/ops` to see recent run IDs."
+
+            started_at = run.get("started_at")
+            finished_at = run.get("finished_at")
+            lines = [
+                "🧪 **Ops Run Debug**",
+                f"- Run: `{run_id}`",
+                f"- Status: {run.get('status', 'unknown')}",
+                f"- Outcome: {run.get('outcome', 'in_progress')}",
+                f"- Thread: {'yes' if run.get('thread') else 'no'}",
+                f"- Session: `{run.get('session_key', 'unknown')}`",
+                f"- Platform: `{run.get('platform', 'unknown')}`",
+                f"- Chat: `{run.get('chat_id', '')}`",
+                f"- Thread ID: `{run.get('thread_id', '')}`",
+                f"- Started: {self._format_timestamp_iso(float(started_at) if started_at else None)}",
+                f"- Finished: {self._format_timestamp_iso(float(finished_at) if finished_at else None)}",
+                f"- Elapsed: {self._format_duration(run.get('elapsed_seconds', 0))}",
+                f"- Latency: {int(run.get('latency_ms', 0) or 0)} ms",
+            ]
+            return "\n".join(lines)
+
+        ops = self._build_ops_snapshot()
+        portfolio = self._load_exec_portfolio_snapshot()
+
+        blocked = portfolio.get("blocked", [])
+        health = portfolio.get("health", "unknown")
+        status_line = portfolio.get("status_line", "")
+
+        lines = [
+            "🛟 **Hermes Ops Board (live)**",
+            f"`window={ops.get('window_hours')}h | success={ops.get('success_rate', 0):.1f}% | ingest={health}`",
+            "",
+            "**Execution**",
+            f"- Started: {ops.get('started', 0)}",
+            f"- Completed: {ops.get('completed', 0)}",
+            f"- Failed: {ops.get('failed', 0)}",
+            f"- Queue depth: {ops.get('queue_depth', 0)}",
+            "",
+            "**Concurrency (active now)**",
+            f"- Total: {ops.get('active_total', 0)}",
+            f"- Main: {ops.get('active_main', 0)}",
+            f"- Thread: {ops.get('active_thread', 0)}",
+            "",
+            "**Latency (P95, successful runs)**",
+            f"- Main: {ops.get('p95_latency_main_ms', 0)} ms",
+            f"- Thread: {ops.get('p95_latency_thread_ms', 0)} ms",
+            "",
+            "**Stalls**",
+            (
+                f"- Active stalled (>{ops.get('stall_threshold_seconds', 0)}s): "
+                f"{ops.get('stalled_active', 0)}"
+            ),
+            f"- Longest active stall: {self._format_duration(ops.get('stalled_longest_seconds', 0))}",
+            "",
+            "**Freshness / Sync**",
+            f"- Last success: {self._format_timestamp_iso(ops.get('last_success_ts'))}",
+            f"- Snapshot: `{status_line}`",
+        ]
+
+        recent_runs = ops.get("recent_runs") or []
+        if recent_runs:
+            lines.extend(["", "**Recent runs**"])
+            for item in recent_runs:
+                lines.append(
+                    f"- `{item.get('run_id')}` · {item.get('outcome')} · "
+                    f"{'thread' if item.get('thread') else 'main'} · {int(item.get('latency_ms', 0) or 0)} ms"
+                )
+
+        if blocked:
+            lines.append("- Top blocker: " + str(blocked[0]))
+
+        return "\n".join(lines)
+
+    def _load_exec_portfolio_snapshot(self) -> dict[str, Any]:
+        """Load execution-owner snapshot from local report artifacts with freshness metadata."""
+        import json
+
+        reports_dir = _hermes_home / "reports"
+        kb_dir = _hermes_home / "kb"
+        now_ts = time.time()
+
+        def _read_json(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+            exists = path.exists()
+            meta: dict[str, Any] = {
+                "path": str(path),
+                "exists": exists,
+                "read_ok": False,
+                "age_seconds": None,
+            }
+            if not exists:
+                return {}, meta
+
+            try:
+                stat = path.stat()
+                meta["age_seconds"] = max(0, int(now_ts - stat.st_mtime))
+            except Exception:
+                meta["age_seconds"] = None
+
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    meta["read_ok"] = True
+                    return payload, meta
+            except Exception:
+                pass
+            return {}, meta
+
+        github, github_meta = _read_json(reports_dir / "github_sync_latest.json")
+        bookmarks, bookmarks_meta = _read_json(kb_dir / "twitter_bookmarks_state.json")
+        vector, vector_meta = _read_json(kb_dir / "twitter_vector_state.json")
+
+        counts = github.get("counts", {}) if isinstance(github, dict) else {}
+        freshness = bookmarks.get("freshness", {}) if isinstance(bookmarks, dict) else {}
+        ingest = github.get("ingest", {}) if isinstance(github.get("ingest", {}), dict) else {}
+        projects = github.get("projects_v2", {}) if isinstance(github.get("projects_v2", {}), dict) else {}
+        event_source = str(ingest.get("event_source", "unknown"))
+
+        def _to_int(value: Any, default: int = 0) -> int:
+            try:
+                if value is None or value == "":
+                    return default
+                return int(value)
+            except Exception:
+                return default
+
+        ages = [
+            m.get("age_seconds")
+            for m in (github_meta, bookmarks_meta, vector_meta)
+            if m.get("age_seconds") is not None
+        ]
+        snapshot_age_seconds = max(ages) if ages else None
+
+        def _format_age(age_seconds: Optional[int]) -> str:
+            if age_seconds is None:
+                return "unknown"
+            if age_seconds < 60:
+                return f"{age_seconds}s"
+            if age_seconds < 3600:
+                return f"{age_seconds // 60}m"
+            return f"{age_seconds // 3600}h"
+
+        # Ingest reliability contract
+        checkpoint_id = str(ingest.get("processor_checkpoint", "")).strip()
+        checkpoint_age_minutes = _to_int(ingest.get("checkpoint_age_minutes"), default=-1)
+        last_event_id = str(ingest.get("last_event_id", "")).strip()
+        replay_backlog = _to_int(ingest.get("replay_backlog"), default=0)
+        dlq_depth = _to_int(ingest.get("dlq_depth"), default=0)
+        duplicates_dropped = _to_int(ingest.get("duplicate_events_dropped"), default=0)
+        idempotency = ingest.get("idempotency", {}) if isinstance(ingest.get("idempotency", {}), dict) else {}
+        idempotency_enabled = bool(idempotency.get("enabled", False))
+
+        # GitHub Projects v2 field-model signals
+        field_drift_count = _to_int(projects.get("field_drift_count"), default=0)
+        unmapped_labels = _to_int(projects.get("unmapped_labels"), default=0)
+        projects_health = str(projects.get("health", "unknown"))
+        missing_fields = projects.get("missing_fields", []) if isinstance(projects.get("missing_fields", []), list) else []
+        canonical_fields = projects.get("canonical_fields", []) if isinstance(projects.get("canonical_fields", []), list) else []
+
+        warnings: list[str] = []
+        missing = [
+            name
+            for name, meta in (
+                ("github_sync_latest.json", github_meta),
+                ("twitter_bookmarks_state.json", bookmarks_meta),
+                ("twitter_vector_state.json", vector_meta),
+            )
+            if not meta.get("exists") or not meta.get("read_ok")
+        ]
+        if missing:
+            warnings.append(f"Missing/unreadable artifacts: {', '.join(missing)}")
+
+        if event_source == "polling":
+            warnings.append("GitHub webhook stream inactive; ingest is on polling fallback.")
+
+        if snapshot_age_seconds is not None and snapshot_age_seconds > 15 * 60:
+            warnings.append(
+                f"Snapshot is stale ({_format_age(snapshot_age_seconds)} old; target <= 15m)."
+            )
+
+        if not checkpoint_id:
+            warnings.append("Ingest checkpoint missing: no processor checkpoint ID in github_sync_latest.json")
+        if not last_event_id:
+            warnings.append("Ingest event cursor missing: no last_event_id recorded for replay safety")
+        if checkpoint_age_minutes >= 0 and checkpoint_age_minutes > 15:
+            warnings.append(f"Ingest checkpoint is stale ({checkpoint_age_minutes}m since advance; target <= 15m).")
+        if not idempotency_enabled:
+            warnings.append("Idempotency guard not enabled for ingest pipeline (duplicate event risk).")
+        if replay_backlog > 0:
+            warnings.append(f"Replay backlog pending: {replay_backlog} events.")
+        if dlq_depth > 0:
+            warnings.append(f"DLQ has pending failed events: {dlq_depth}.")
+
+        if missing_fields:
+            warnings.append(f"Projects v2 field drift detected: missing {', '.join(str(x) for x in missing_fields)}")
+        if field_drift_count > 0:
+            warnings.append(f"Projects v2 drift count: {field_drift_count}")
+        if unmapped_labels > 0:
+            warnings.append(f"Label taxonomy drift: {unmapped_labels} unmapped labels still active.")
+
+        owner_open_prs = _to_int(counts.get("owner_open_prs"), default=0)
+        bookmarks_updated = _to_int(bookmarks.get("updated"), default=0)
+        bookmarks_inserted = _to_int(bookmarks.get("inserted"), default=0)
+
+        bridge_suggestions: list[str] = []
+        if owner_open_prs > 0:
+            bridge_suggestions.append("Link open owner PRs to matching bookmarked context before merge.")
+        if bookmarks_updated > 0 or bookmarks_inserted > 0:
+            bridge_suggestions.append("Run semantic bookmark query for active GitHub items to surface relevant prior decisions.")
+        if vector.get("errors", 0):
+            bridge_suggestions.append("Resolve vector indexing errors so cross-app retrieval stays reliable.")
+
+        now_items = [
+            f"Owner open PRs: {counts.get('owner_open_prs', 0)}",
+            f"Review queue: {counts.get('review_requested_prs', 0)}",
+            f"Assigned issues: {counts.get('assigned_open_issues', 0)}",
+            f"Bookmarks fetched: {bookmarks.get('fetched_items', 0)}",
+            f"Bookmarks freshness stale_minutes: {freshness.get('stale_minutes')}",
+            f"Ingest: checkpoint={'set' if checkpoint_id else 'missing'}, replay_backlog={replay_backlog}, dlq={dlq_depth}, idempotency={'on' if idempotency_enabled else 'off'}",
+            f"Projects v2: health={projects_health}, field_drift={field_drift_count}, unmapped_labels={unmapped_labels}",
+        ]
+
+        if canonical_fields:
+            now_items.append(f"Projects canonical fields: {', '.join(str(x) for x in canonical_fields)}")
+
+        blocked_items: list[str] = []
+        if bookmarks.get("error"):
+            blocked_items.append(f"Bookmarks fetch error: {bookmarks.get('error')}")
+        if freshness.get("alert_triggered"):
+            blocked_items.append("Bookmarks freshness alert triggered.")
+        if vector.get("errors", 0):
+            blocked_items.append(f"Vector index errors: {vector.get('errors')}")
+        blocked_items.extend(warnings)
+
+        next_items: list[str] = []
+        if owner_open_prs > 0:
+            next_items.append("Triage owner PR queue to zero (merge or comment unblockers).")
+        if event_source == "polling":
+            next_items.append("Restore webhook flow and keep polling as fallback only.")
+        if freshness.get("sla_met") is False:
+            next_items.append("Fix bookmark freshness SLA miss (target <= 15m).")
+        if snapshot_age_seconds is not None and snapshot_age_seconds > 15 * 60:
+            next_items.append("Fix delayed sync job before using this snapshot for decision-making.")
+        if missing:
+            next_items.append("Repair missing artifact generation to avoid blind spots in /now, /blocked, and /next.")
+        if not idempotency_enabled:
+            next_items.append("Enable ingest idempotency keys before trusting replay/retry processing.")
+        if replay_backlog > 0:
+            next_items.append("Drain replay backlog and verify checkpoint progression is monotonic.")
+        if dlq_depth > 0:
+            next_items.append("Process DLQ items and add replay-safe recovery for failed events.")
+        if not checkpoint_id or not last_event_id:
+            next_items.append("Persist processor checkpoints + last_event_id for deterministic replay recovery.")
+        if checkpoint_age_minutes >= 0 and checkpoint_age_minutes > 15:
+            next_items.append("Advance ingest checkpoint cadence (target checkpoint_age_minutes <= 15).")
+        if missing_fields or field_drift_count > 0:
+            next_items.append("Apply canonical Projects v2 field schema and backfill missing fields.")
+        if unmapped_labels > 0:
+            next_items.append("Map legacy labels into Projects v2 fields and retire duplicate label taxonomy.")
+        if not next_items:
+            next_items.append("No urgent blockers detected. Continue planned roadmap execution.")
+
+        health = "degraded" if blocked_items else "ok"
+        status_line = (
+            f"source={event_source} | age={_format_age(snapshot_age_seconds)} | health={health}"
+        )
+
+        return {
+            "now": now_items,
+            "blocked": blocked_items,
+            "next": next_items,
+            "bridge": bridge_suggestions,
+            "status_line": status_line,
+            "health": health,
+            "event_source": event_source,
+            "snapshot_age_seconds": snapshot_age_seconds,
+            "ingest": ingest,
+            "projects_v2": projects,
+            "github": github,
+            "bookmarks": bookmarks,
+            "vector": vector,
+            "duplicates_dropped": duplicates_dropped,
+        }
+
+    async def _handle_now_command(self, event: MessageEvent) -> str:
+        """Handle /now command - show current priorities and bridge opportunities."""
+        snap = self._load_exec_portfolio_snapshot()
+        lines = ["📍 **Execution Owner — NOW**", f"`{snap.get('status_line', '')}`", ""]
+        lines.extend([f"- {x}" for x in snap.get("now", [])])
+
+        bridge = snap.get("bridge", [])
+        if bridge:
+            lines.extend(["", "🔗 **Cross-app bridge suggestions**"])
+            lines.extend([f"- {x}" for x in bridge])
+
+        return "\n".join(lines)
+
+    async def _handle_blocked_command(self, event: MessageEvent) -> str:
+        """Handle /blocked command - show blocked items and reasons."""
+        snap = self._load_exec_portfolio_snapshot()
+        blocked = snap.get("blocked", [])
+        if not blocked:
+            return "✅ **Blocked**\n\n- none"
+
+        lines = ["🚧 **Blocked**", f"`{snap.get('status_line', '')}`", ""]
+        lines.extend([f"- {x}" for x in blocked])
+        return "\n".join(lines)
+
+    async def _handle_next_command(self, event: MessageEvent) -> str:
+        """Handle /next command - show recommended next actions."""
+        snap = self._load_exec_portfolio_snapshot()
+        lines = ["⏭️ **Next Actions**", f"`{snap.get('status_line', '')}`", ""]
+        lines.extend([f"- {x}" for x in snap.get("next", [])])
+        return "\n".join(lines)
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent."""
         source = event.source
@@ -1566,8 +2913,17 @@ class GatewayRunner:
             "`/new` — Start a new conversation",
             "`/reset` — Reset conversation history",
             "`/status` — Show session info",
+            "`/ops` — Show live reliability board (queue, active runs, latency, stalls; `/ops debug <run_id|latest|latest-main|latest-thread>` for details)",
+            "`/now` — Show active priorities + cross-app bridge suggestions",
+            "`/blocked` — Show currently blocked items and reasons",
+            "`/next` — Show recommended next actions",
             "`/stop` — Interrupt the running agent",
-            "`/model [provider:model]` — Show/change model (or switch provider)",
+            "`/model [provider:model]` — Show/change default model (global)",
+            "`/ask [model=<provider:model>] [reasoning=<level>] <prompt>` — Run one message with per-query runtime overrides",
+            "`/modelpin [provider:model|clear]` — Pin model for this thread/session only",
+            "`/reasoning [xhigh|high|medium|low|minimal|none|default]` — Thread-local reasoning override",
+            "`/route [auto|command|vision|audio|document|code|analysis|chat]` — Force routing class for this thread",
+            "`/runtime` — Show active thread runtime overrides and resolved routing",
             "`/provider` — Show available providers and auth status",
             "`/personality [name]` — Set a personality",
             "`/retry` — Retry your last message",
@@ -1735,6 +3091,131 @@ class GatewayRunner:
         else:
             persist_note = "this session only — will revert on restart"
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
+
+    async def _handle_modelpin_command(self, event: MessageEvent) -> str:
+        """Handle /modelpin command - set thread-local model/provider override."""
+        from hermes_cli.models import parse_model_input
+
+        source = event.source
+        session_key = self.session_store._generate_session_key(source)
+        args = event.get_command_args().strip()
+        state = self._session_runtime_overrides.setdefault(session_key, {})
+
+        if not args:
+            model = state.get("model")
+            provider = state.get("provider")
+            if model:
+                provider_label = f" ({provider})" if provider else ""
+                return f"📌 Thread model pin: `{model}`{provider_label}"
+            return "No thread model pin set. Use `/modelpin provider:model` or `/modelpin model-name`."
+
+        if args.lower() in {"clear", "off", "none", "reset", "default"}:
+            state.pop("model", None)
+            state.pop("provider", None)
+            return "✅ Cleared thread model pin. Routing will use policy/default model again."
+
+        default_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+        try:
+            provider, model = parse_model_input(args, default_provider)
+        except Exception:
+            provider, model = default_provider, args
+
+        state["provider"] = provider
+        state["model"] = model
+        return f"✅ Thread model pinned to `{model}` ({provider})."
+
+    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
+        """Handle /reasoning command - set thread-local reasoning override."""
+        source = event.source
+        session_key = self.session_store._generate_session_key(source)
+        args = event.get_command_args().strip().lower()
+        state = self._session_runtime_overrides.setdefault(session_key, {})
+
+        if not args:
+            current = state.get("reasoning_effort")
+            if current:
+                return f"🧠 Thread reasoning override: `{current}`"
+            if self._reasoning_config:
+                if self._reasoning_config.get("enabled") is False:
+                    return "🧠 Thread reasoning override: none (default config disables reasoning)."
+                return f"🧠 Thread reasoning override: default (`{self._reasoning_config.get('effort', 'medium')}`)"
+            return "🧠 Thread reasoning override: default (`medium`)."
+
+        valid = {"xhigh", "high", "medium", "low", "minimal", "none", "default", "auto", "clear"}
+        if args not in valid:
+            return "⚠️ Invalid reasoning value. Use one of: xhigh, high, medium, low, minimal, none, default."
+
+        if args in {"default", "auto", "clear"}:
+            state.pop("reasoning_effort", None)
+            return "✅ Cleared thread reasoning override (back to default policy)."
+
+        state["reasoning_effort"] = args
+        return f"✅ Thread reasoning set to `{args}`."
+
+    async def _handle_route_command(self, event: MessageEvent) -> str:
+        """Handle /route command - force task-class routing for this thread."""
+        source = event.source
+        session_key = self.session_store._generate_session_key(source)
+        args = event.get_command_args().strip().lower()
+        state = self._session_runtime_overrides.setdefault(session_key, {})
+
+        if not args:
+            current = state.get("forced_task_type", "auto")
+            return (
+                f"🧭 Thread route mode: `{current}`\n"
+                "Use `/route auto` to clear, or `/route code|analysis|chat|vision|audio|document|command`."
+            )
+
+        if args in {"auto", "default", "clear", "off"}:
+            state.pop("forced_task_type", None)
+            return "✅ Cleared thread route override (auto classification restored)."
+
+        if args not in self._valid_task_types():
+            options = ", ".join(sorted(self._valid_task_types()))
+            return f"⚠️ Invalid route class `{args}`. Valid: {options}."
+
+        state["forced_task_type"] = args
+        return f"✅ Thread route class forced to `{args}`."
+
+    async def _handle_runtime_command(self, event: MessageEvent) -> str:
+        """Handle /runtime command - show resolved runtime policy for this thread."""
+        source = event.source
+        session_key = self.session_store._generate_session_key(source)
+        overrides = (self._session_runtime_overrides.get(session_key, {}) or {}).copy()
+
+        forced_task_type = str(overrides.get("forced_task_type") or "").strip().lower()
+        probe_task_type = forced_task_type if forced_task_type in self._valid_task_types() else "chat"
+        resolved = self._resolve_runtime_policy(session_key=session_key, task_type=probe_task_type)
+
+        def _fmt_reasoning(cfg: dict | None) -> str:
+            if not cfg:
+                return "default"
+            if cfg.get("enabled") is False:
+                return "none"
+            return str(cfg.get("effort") or "default")
+
+        lines = [
+            "⚙️ **Thread Runtime Policy**",
+            f"**Session Key:** `{session_key}`",
+            "",
+            "**Overrides (thread-local):**",
+            f"- model pin: `{overrides.get('model') or 'none'}`",
+            f"- provider pin: `{overrides.get('provider') or 'none'}`",
+            f"- reasoning override: `{overrides.get('reasoning_effort') or 'none'}`",
+            f"- route override: `{overrides.get('forced_task_type') or 'auto'}`",
+            "",
+            "**Resolved (next turn):**",
+            f"- effective task type: `{resolved.get('effective_task_type') or 'chat'}`",
+            f"- model: `{resolved.get('model') or 'unset'}`",
+            f"- provider: `{resolved.get('provider') or 'default'}`",
+            f"- reasoning: `{_fmt_reasoning(resolved.get('reasoning_config'))}`",
+        ]
+
+        fallback = resolved.get("fallback_model")
+        if isinstance(fallback, dict) and fallback.get("provider") and fallback.get("model"):
+            lines.append(f"- fallback: `{fallback['provider']}:{fallback['model']}`")
+
+        return "\n".join(lines)
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
@@ -2206,8 +3687,11 @@ class GatewayRunner:
             except Exception:
                 pass
 
-    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
-        """Handle /reasoning command — manage reasoning effort and display toggle.
+    async def _handle_reasoning_display_command(self, event: MessageEvent) -> str:
+        """Legacy reasoning settings handler (unused).
+
+        Kept for backward compatibility with older call sites; primary `/reasoning`
+        behavior is defined earlier as thread-local runtime override.
 
         Usage:
             /reasoning              Show current effort level and display state
@@ -2387,7 +3871,7 @@ class GatewayRunner:
             return "Session database not available."
 
         source = event.source
-        session_key = build_session_key(source)
+        session_key = self.session_store._generate_session_key(source)
         name = event.get_command_args().strip()
 
         if not name:
@@ -2435,9 +3919,9 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
-        # Clear any running agent for this session key
-        if session_key in self._running_agents:
-            del self._running_agents[session_key]
+        # Clear runtime state before switching this key to a different session ID
+        if self.config.session_lifecycle.clear_runtime_on_resume:
+            self._clear_session_runtime_state(session_key)
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
@@ -2457,7 +3941,7 @@ class GatewayRunner:
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
         source = event.source
-        session_key = build_session_key(source)
+        session_key = self.session_store._generate_session_key(source)
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
@@ -2950,7 +4434,8 @@ class GatewayRunner:
         history: List[Dict[str, Any]],
         source: SessionSource,
         session_id: str,
-        session_key: str = None
+        session_key: str = None,
+        runtime_policy: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -3099,10 +4584,11 @@ class GatewayRunner:
                 return
             
             if preview:
-                # Truncate preview to keep messages clean
-                if len(preview) > 80:
-                    preview = preview[:77] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                # Truncate preview to keep messages clean while preserving more context
+                # in Discord progress lines (80 -> 240 chars).
+                if len(preview) > 240:
+                    preview = preview[:237] + "..."
+                msg = f'{emoji} {tool_name}: "{preview}"'
             else:
                 msg = f"{emoji} {tool_name}..."
             
@@ -3122,15 +4608,38 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            can_edit = True          # False once an edit fails permanently
+            pending_since_last_flush = 0
+            last_flush = 0.0
+            min_flush_interval = 1.2  # avoid Discord PATCH 429 storms on rapid tool bursts
 
             while True:
                 try:
-                    msg = progress_queue.get_nowait()
-                    progress_lines.append(msg)
+                    # Drain all queued lines in one pass (batch updates)
+                    drained_any = False
+                    while True:
+                        try:
+                            msg = progress_queue.get_nowait()
+                            progress_lines.append(msg)
+                            pending_since_last_flush += 1
+                            drained_any = True
+                        except queue.Empty:
+                            break
+
+                    # Retry previously buffered lines even when no new events arrived
+                    # (e.g. after a transient 429 on edit/send). Without this, progress
+                    # output can appear "stuck" until another tool event is emitted.
+                    if not drained_any and pending_since_last_flush == 0:
+                        await asyncio.sleep(0.25)
+                        continue
+
+                    now = asyncio.get_event_loop().time()
+                    # Throttle edits/sends to reduce rate-limit risk.
+                    if now - last_flush < min_flush_interval:
+                        await asyncio.sleep(min_flush_interval - (now - last_flush))
 
                     if can_edit and progress_msg_id is not None:
-                        # Try to edit the existing progress message
+                        # Edit existing progress message with batched lines.
                         full_text = "\n".join(progress_lines)
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
@@ -3138,27 +4647,42 @@ class GatewayRunner:
                             content=full_text,
                         )
                         if not result.success:
-                            # Platform doesn't support editing — stop trying,
-                            # send just this new line as a separate message
+                            # If we're being rate-limited, keep edit mode and retry later.
+                            err = (result.error or "").lower()
+                            if "429" in err or "rate limit" in err:
+                                await asyncio.sleep(1.5)
+                                continue
+
+                            # Editing unsupported/hard failure — degrade to append-only sends.
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            tail = progress_lines[-pending_since_last_flush:]
+                            for line in tail:
+                                await adapter.send(chat_id=source.chat_id, content=line, metadata=_progress_metadata)
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
+                            # First tool: send aggregated text as one message, then edit it.
                             full_text = "\n".join(progress_lines)
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                            elif not result.success:
+                                can_edit = False
+                                tail = progress_lines[-pending_since_last_flush:]
+                                for line in tail:
+                                    await adapter.send(chat_id=source.chat_id, content=line, metadata=_progress_metadata)
                         else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
+                            # Editing unavailable: emit only newly queued lines.
+                            tail = progress_lines[-pending_since_last_flush:]
+                            for line in tail:
+                                await adapter.send(chat_id=source.chat_id, content=line, metadata=_progress_metadata)
+
+                    pending_since_last_flush = 0
+                    last_flush = asyncio.get_event_loop().time()
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
                     await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
-                except queue.Empty:
-                    await asyncio.sleep(0.3)
                 except asyncio.CancelledError:
                     # Drain remaining queued messages
                     while not progress_queue.empty():
@@ -3212,8 +4736,11 @@ class GatewayRunner:
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            # Use gateway-configured cap, with env override support.
+            max_iterations = 90
+            cfg = getattr(self, "config", None)
+            if cfg is not None:
+                max_iterations = getattr(cfg, "agent_max_iterations", max_iterations)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -3235,8 +4762,30 @@ class GatewayRunner:
 
             model = _resolve_gateway_model()
 
+            if runtime_policy and runtime_policy.get("model"):
+                model = runtime_policy.get("model")
+
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                provider_override = ""
+                if runtime_policy:
+                    provider_override = str(runtime_policy.get("provider", "")).strip()
+                if provider_override:
+                    from hermes_cli.runtime_provider import (
+                        resolve_runtime_provider,
+                        format_runtime_provider_error,
+                    )
+                    try:
+                        runtime = resolve_runtime_provider(requested=provider_override)
+                    except RuntimeError as exc:
+                        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+                    runtime_kwargs = {
+                        "api_key": runtime.get("api_key"),
+                        "base_url": runtime.get("base_url"),
+                        "provider": runtime.get("provider"),
+                        "api_mode": runtime.get("api_mode"),
+                    }
+                else:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -3255,7 +4804,7 @@ class GatewayRunner:
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
-                reasoning_config=self._reasoning_config,
+                reasoning_config=(runtime_policy.get("reasoning_config") if runtime_policy else self._reasoning_config),
                 providers_allowed=pr.get("only"),
                 providers_ignored=pr.get("ignore"),
                 providers_order=pr.get("order"),
@@ -3268,7 +4817,7 @@ class GatewayRunner:
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,
-                fallback_model=self._fallback_model,
+                fallback_model=(runtime_policy.get("fallback_model") if runtime_policy else self._fallback_model),
             )
             
             # Store agent reference for interrupt support
@@ -3404,6 +4953,8 @@ class GatewayRunner:
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
         
+        run_ref: Dict[str, Optional[str]] = {"run_id": None}
+
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
         async def track_agent():
@@ -3412,25 +4963,50 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
             if session_key:
                 self._running_agents[session_key] = agent_holder[0]
-        
+                run_ref["run_id"] = self._record_run_started(session_key, source)
+
         tracking_task = asyncio.create_task(track_agent())
-        
+
+        async def stall_watchdog():
+            threshold = max(1, int(getattr(self, "_ops_stall_threshold_seconds", 180) or 180))
+            await asyncio.sleep(threshold)
+            if not session_key:
+                return
+
+            active_runs = getattr(self, "_ops_active_runs", {})
+            active = active_runs.get(session_key)
+            if not isinstance(active, dict):
+                return
+
+            run_id = str(active.get("run_id") or run_ref.get("run_id") or "").strip()
+            started_at = float(active.get("started_at", time.time()))
+            elapsed_seconds = max(0, int(time.time() - started_at))
+            if elapsed_seconds >= threshold:
+                await self._send_ops_stall_alert(
+                    run_id=run_id,
+                    session_key=session_key,
+                    source=source,
+                    elapsed_seconds=elapsed_seconds,
+                )
+
+        stall_watchdog_task = asyncio.create_task(stall_watchdog())
+
         # Monitor for interrupts from the adapter (new messages arriving)
         async def monitor_for_interrupt():
             adapter = self.adapters.get(source.platform)
             if not adapter or not session_key:
                 return
-            
+            interrupt_key = session_key or source.chat_id
+            if hasattr(adapter, "get_interrupt_session_key"):
+                interrupt_key = adapter.get_interrupt_session_key(source)
             while True:
                 await asyncio.sleep(0.2)  # Check every 200ms
                 # Check if adapter has a pending interrupt for this session.
-                # Must use session_key (build_session_key output) — NOT
-                # source.chat_id — because the adapter stores interrupt events
-                # under the full session key.
-                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
+                # Prefer adapter-provided key mapping; fall back to session_key.
+                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(interrupt_key):
                     agent = agent_holder[0]
                     if agent:
-                        pending_event = adapter.get_pending_message(session_key)
+                        pending_event = adapter.get_pending_message(interrupt_key)
                         pending_text = pending_event.text if pending_event else None
                         logger.debug("Interrupt detected from adapter, signaling agent...")
                         agent.interrupt(pending_text)
@@ -3450,8 +5026,11 @@ class GatewayRunner:
             # Get pending message from adapter if interrupted.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
+            interrupt_key = source.chat_id
+            if adapter and hasattr(adapter, "get_interrupt_session_key"):
+                interrupt_key = adapter.get_interrupt_session_key(source)
             if result and result.get("interrupted") and adapter:
-                pending_event = adapter.get_pending_message(session_key) if session_key else None
+                pending_event = adapter.get_pending_message(interrupt_key)
                 if pending_event:
                     pending = pending_event.text
                 elif result.get("interrupt_message"):
@@ -3463,8 +5042,8 @@ class GatewayRunner:
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
                 # even makes its first API call (this was causing an infinite loop).
-                if adapter and hasattr(adapter, '_active_sessions') and session_key and session_key in adapter._active_sessions:
-                    adapter._active_sessions[session_key].clear()
+                if adapter and hasattr(adapter, '_active_sessions') and interrupt_key in adapter._active_sessions:
+                    adapter._active_sessions[interrupt_key].clear()
                 
                 # Don't send the interrupted response to the user — it's just noise
                 # like "Operation interrupted." They already know they sent a new
@@ -3472,27 +5051,59 @@ class GatewayRunner:
                 
                 # Now process the pending message with updated history
                 updated_history = result.get("messages", history)
+                next_policy = self._resolve_runtime_policy(
+                    session_key=session_key,
+                    task_type=self._classify_task_type(MessageEvent(text=pending, source=source), pending),
+                )
                 return await self._run_agent(
                     message=pending,
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=source,
                     session_id=session_id,
-                    session_key=session_key
+                    session_key=session_key,
+                    runtime_policy=next_policy,
                 )
+
+            # Explicit queue mode (/queue, queue:, q:) does not interrupt the
+            # current run, but it should execute deterministically afterward.
+            pending_map = getattr(self, "_pending_messages", {})
+            queued = pending_map.pop(session_key, None) if session_key else None
+            if queued and result and not result.get("interrupted"):
+                logger.debug("Processing queued follow-up for session %s", (session_key or "")[:20])
+                updated_history = result.get("messages", history)
+                queued_policy = self._resolve_runtime_policy(
+                    session_key=session_key,
+                    task_type=self._classify_task_type(MessageEvent(text=queued, source=source), queued),
+                )
+                queued_response = await self._run_agent(
+                    message=queued,
+                    context_prompt=context_prompt,
+                    history=updated_history,
+                    source=source,
+                    session_id=session_id,
+                    session_key=session_key,
+                    runtime_policy=queued_policy,
+                )
+                if response and queued_response:
+                    return f"{response}\n\n{queued_response}"
+                return queued_response or response
         finally:
             # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
-            
+            stall_watchdog_task.cancel()
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
-            
+            if session_key:
+                getattr(self, "_ops_active_runs", {}).pop(session_key, None)
+
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, stall_watchdog_task]:
                 if task:
                     try:
                         await task

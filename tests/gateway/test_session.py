@@ -377,7 +377,40 @@ class TestWhatsAppDMSessionKeyConsistency:
             thread_id="17585",
         )
         key = build_session_key(source)
-        assert key == "agent:main:telegram:group:-1002285219667:17585"
+        assert key == "agent:main:telegram:group:-1002285219667:thread:17585"
+
+    def test_non_dm_with_thread_id_appends_thread_suffix(self):
+        """Thread/topic context must be isolated from parent chat session."""
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            thread_id="1700000000.1234",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:slack:group:C123:thread:1700000000.1234"
+
+    def test_dm_ignores_thread_id(self):
+        """DM lifecycle remains unchanged even if a thread_id is present."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="42",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm"
+
+    def test_store_respects_isolate_threads_toggle(self, store):
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            thread_id="1700000000.1234",
+        )
+        store.config.session_lifecycle.isolate_threads = False
+        key = store._generate_session_key(source)
+        assert key == "agent:main:slack:group:C123"
 
 
 class TestSessionStoreEntriesAttribute:

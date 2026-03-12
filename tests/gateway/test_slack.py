@@ -130,7 +130,7 @@ class TestAppMentionHandler:
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("asyncio.create_task"):
-            asyncio.get_event_loop().run_until_complete(adapter.connect())
+            asyncio.run(adapter.connect())
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
@@ -140,6 +140,19 @@ class TestAppMentionHandler:
 # ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
+
+class TestSendBehavior:
+    @pytest.mark.asyncio
+    async def test_send_handles_non_mapping_chat_postmessage_response(self, adapter):
+        raw = MagicMock()
+        raw.ts = "12345.678"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value=raw)
+
+        result = await adapter.send(chat_id="C123", content="hello")
+
+        assert result.success
+        assert result.message_id == "12345.678"
+
 
 class TestSendDocument:
     @pytest.mark.asyncio

@@ -9,7 +9,9 @@ Uses discord.py library for:
 
 import asyncio
 import logging
+import mimetypes
 import os
+import re
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -38,12 +40,36 @@ from gateway.platforms.base import (
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
+    cache_document_from_bytes,
 )
 
 
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _is_free_response_channel(channel: Any, free_channels: set[str]) -> bool:
+    """Return True when the channel should bypass mention gating.
+
+    Threads inherit free-response behavior from their parent channel so a
+    free-response channel remains free-response inside new threads.
+    """
+    channel_id = getattr(channel, "id", None)
+    if channel_id is not None and str(channel_id) in free_channels:
+        return True
+
+    parent_id = getattr(channel, "parent_id", None)
+    if parent_id is not None and str(parent_id) in free_channels:
+        return True
+
+    parent = getattr(channel, "parent", None)
+    if parent is not None:
+        parent_channel_id = getattr(parent, "id", None)
+        if parent_channel_id is not None and str(parent_channel_id) in free_channels:
+            return True
+
+    return False
 
 
 class DiscordAdapter(BasePlatformAdapter):
@@ -514,10 +540,25 @@ class DiscordAdapter(BasePlatformAdapter):
         tree = self._client.tree
 
         @tree.command(name="ask", description="Ask Hermes a question")
-        @discord.app_commands.describe(question="Your question for Hermes")
-        async def slash_ask(interaction: discord.Interaction, question: str):
+        @discord.app_commands.describe(
+            question="Your question for Hermes",
+            model="Optional model override for this query only (e.g. anthropic/claude-sonnet-4.5)",
+            reasoning="Optional reasoning effort for this query (xhigh|high|medium|low|minimal|none)",
+        )
+        async def slash_ask(
+            interaction: discord.Interaction,
+            question: str,
+            model: str = "",
+            reasoning: str = "",
+        ):
             await interaction.response.defer()
-            event = self._build_slash_event(interaction, question)
+            parts = []
+            if model:
+                parts.append(f"model={model.strip()}")
+            if reasoning:
+                parts.append(f"reasoning={reasoning.strip().lower()}")
+            parts.append(question)
+            event = self._build_slash_event(interaction, f"/ask {' '.join(parts)}".strip())
             await self.handle_message(event)
             # The response is sent via the normal send() flow
             # Send a followup to close the interaction if needed
@@ -551,6 +592,49 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/model {name}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="modelpin", description="Pin a model for this thread/session")
+        @discord.app_commands.describe(name="provider:model, model name, or clear")
+        async def slash_modelpin(interaction: discord.Interaction, name: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/modelpin {name}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="reasoning", description="Set thread-local reasoning effort")
+        @discord.app_commands.describe(level="xhigh|high|medium|low|minimal|none|default")
+        async def slash_reasoning(interaction: discord.Interaction, level: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/reasoning {level}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="route", description="Force task-class routing for this thread")
+        @discord.app_commands.describe(mode="auto|command|vision|audio|document|code|analysis|chat")
+        async def slash_route(interaction: discord.Interaction, mode: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/route {mode}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="runtime", description="Show active runtime routing policy for this thread")
+        async def slash_runtime(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/runtime")
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Done~", ephemeral=True)
@@ -595,6 +679,49 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Status sent~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="ops", description="Show live Hermes ops board")
+        @discord.app_commands.describe(run_id="Optional run id (or 'latest'/'latest-main'/'latest-thread') for debug details")
+        async def slash_ops(interaction: discord.Interaction, run_id: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            selector = run_id.strip()
+            command = f"/ops debug {selector}" if selector else "/ops"
+            event = self._build_slash_event(interaction, command)
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Ops snapshot sent~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="now", description="Show active priorities and bridge suggestions")
+        async def slash_now(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/now")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="blocked", description="Show blocked execution items")
+        async def slash_blocked(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/blocked")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="next", description="Show recommended next actions")
+        async def slash_next(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/next")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
@@ -837,12 +964,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel):
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
-
+            # Global override: if DISCORD_REQUIRE_MENTION=false, all channels are free
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
-            is_free_channel = bool(channel_ids & free_channels)
+
+            is_free_channel = _is_free_response_channel(message.channel, free_channels)
 
             if require_mention and not is_free_channel:
                 if self._client.user not in message.mentions:
@@ -856,19 +981,6 @@ class DiscordAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT
         if message.content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif message.attachments:
-            # Check attachment types
-            for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        msg_type = MessageType.DOCUMENT
-                    break
         
         # Determine chat type
         if isinstance(message.channel, discord.DMChannel):
@@ -897,13 +1009,32 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
         )
         
-        # Build media URLs -- download image attachments to local cache so the
-        # vision tool can access them reliably (Discord CDN URLs can expire).
+        # Build media URLs and cache attachments locally for reliable downstream
+        # processing. This includes markdown/doc files and archives.
         media_urls = []
         media_types = []
+        event_text = message.content
+        has_image = False
+        has_audio = False
+        has_video = False
+        has_document = False
+
+        raw_document_limit = os.getenv("DISCORD_MAX_DOCUMENT_BYTES", str(20 * 1024 * 1024))
+        try:
+            max_document_bytes = int(raw_document_limit)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid DISCORD_MAX_DOCUMENT_BYTES=%r; falling back to default 20MB",
+                raw_document_limit,
+            )
+            max_document_bytes = 20 * 1024 * 1024
+
         for att in message.attachments:
-            content_type = att.content_type or "unknown"
+            guessed_type, _ = mimetypes.guess_type(att.filename or "")
+            content_type = (att.content_type or guessed_type or "application/octet-stream").lower()
+
             if content_type.startswith("image/"):
+                has_image = True
                 try:
                     # Determine extension from content type (image/png -> .png)
                     ext = "." + content_type.split("/")[-1].split(";")[0]
@@ -919,6 +1050,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     media_urls.append(att.url)
                     media_types.append(content_type)
             elif content_type.startswith("audio/"):
+                has_audio = True
                 try:
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
@@ -931,13 +1063,61 @@ class DiscordAdapter(BasePlatformAdapter):
                     print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
                     media_urls.append(att.url)
                     media_types.append(content_type)
-            else:
-                # Other attachments: keep the original URL
+            elif content_type.startswith("video/"):
+                has_video = True
                 media_urls.append(att.url)
                 media_types.append(content_type)
+            else:
+                has_document = True
+                try:
+                    # Security/latency guardrails for large docs/archives
+                    att_size = getattr(att, "size", None)
+                    if att_size is not None and att_size > max_document_bytes:
+                        print(
+                            f"[Discord] Document too large to cache ({att_size} bytes): {att.filename}",
+                            flush=True,
+                        )
+                        media_urls.append(att.url)
+                        media_types.append(content_type)
+                        continue
+
+                    raw_bytes = await att.read()
+                    original_filename = att.filename or "attachment"
+                    cached_path = cache_document_from_bytes(raw_bytes, original_filename)
+                    media_urls.append(cached_path)
+                    media_types.append(content_type)
+                    print(f"[Discord] Cached user document: {cached_path}", flush=True)
+
+                    # For text files, inject content into event text (capped at 100 KB)
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                    max_text_inject_bytes = 100 * 1024
+                    if ext in (".md", ".txt") and len(raw_bytes) <= max_text_inject_bytes:
+                        try:
+                            text_content = raw_bytes.decode("utf-8")
+                            display_name = re.sub(r'[^\w.\- ]', '_', original_filename)
+                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            event_text = f"{injection}\n\n{event_text}" if event_text else injection
+                        except UnicodeDecodeError:
+                            print("[Discord] Could not decode UTF-8 text attachment", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache document attachment: {e}", flush=True)
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
+
+        # Keep command classification if user intentionally sent a slash command.
+        if msg_type != MessageType.COMMAND:
+            if has_image:
+                msg_type = MessageType.PHOTO
+            elif has_audio:
+                msg_type = MessageType.AUDIO
+            elif has_video:
+                msg_type = MessageType.VIDEO
+            elif has_document:
+                msg_type = MessageType.DOCUMENT
         
         event = MessageEvent(
-            text=message.content,
+            text=event_text,
             message_type=msg_type,
             source=source,
             raw_message=message,

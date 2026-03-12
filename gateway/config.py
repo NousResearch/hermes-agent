@@ -91,6 +91,29 @@ class SessionResetPolicy:
 
 
 @dataclass
+class SessionLifecycleConfig:
+    """Runtime lifecycle toggles for session/thread behavior."""
+    isolate_threads: bool = True
+    clear_runtime_on_reset: bool = True
+    clear_runtime_on_resume: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "isolate_threads": self.isolate_threads,
+            "clear_runtime_on_reset": self.clear_runtime_on_reset,
+            "clear_runtime_on_resume": self.clear_runtime_on_resume,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SessionLifecycleConfig":
+        return cls(
+            isolate_threads=data.get("isolate_threads", True),
+            clear_runtime_on_reset=data.get("clear_runtime_on_reset", True),
+            clear_runtime_on_resume=data.get("clear_runtime_on_resume", True),
+        )
+
+
+@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
@@ -143,6 +166,12 @@ class GatewayConfig:
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
     reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
     reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
+
+    # Runtime lifecycle controls (thread isolation + in-memory state cleanup)
+    session_lifecycle: SessionLifecycleConfig = field(default_factory=SessionLifecycleConfig)
+
+    # Agent runtime controls
+    agent_max_iterations: int = 140
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
@@ -212,6 +241,8 @@ class GatewayConfig:
             "reset_by_platform": {
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
             },
+            "session_lifecycle": self.session_lifecycle.to_dict(),
+            "agent_max_iterations": self.agent_max_iterations,
             "reset_triggers": self.reset_triggers,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
@@ -242,16 +273,27 @@ class GatewayConfig:
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
+
+        lifecycle_policy = SessionLifecycleConfig()
+        if "session_lifecycle" in data and isinstance(data["session_lifecycle"], dict):
+            lifecycle_policy = SessionLifecycleConfig.from_dict(data["session_lifecycle"])
         
         sessions_dir = Path.home() / ".hermes" / "sessions"
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
+
+        try:
+            agent_max_iterations = int(data.get("agent_max_iterations", 140) or 140)
+        except (TypeError, ValueError):
+            agent_max_iterations = 140
         
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
+            session_lifecycle=lifecycle_policy,
+            agent_max_iterations=agent_max_iterations,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
@@ -292,6 +334,26 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            gateway_cfg = yaml_cfg.get("gateway", {})
+            if isinstance(gateway_cfg, dict):
+                lifecycle = gateway_cfg.get("session_lifecycle")
+                if lifecycle and isinstance(lifecycle, dict):
+                    config.session_lifecycle = SessionLifecycleConfig.from_dict(lifecycle)
+
+                # Prefer explicit gateway max_iterations; fallback to agent.max_turns.
+                if "max_iterations" in gateway_cfg:
+                    try:
+                        config.agent_max_iterations = int(gateway_cfg.get("max_iterations") or config.agent_max_iterations)
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    agent_cfg = yaml_cfg.get("agent", {})
+                    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
+                        try:
+                            config.agent_max_iterations = int(agent_cfg.get("max_turns") or config.agent_max_iterations)
+                        except (TypeError, ValueError):
+                            pass
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
@@ -470,6 +532,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if reset_hour:
         try:
             config.default_reset_policy.at_hour = int(reset_hour)
+        except ValueError:
+            pass
+
+    thread_isolation = os.getenv("SESSION_ISOLATE_THREADS")
+    if thread_isolation is not None and thread_isolation != "":
+        config.session_lifecycle.isolate_threads = thread_isolation.lower() in ("1", "true", "yes", "on")
+
+    clear_reset = os.getenv("SESSION_CLEAR_RUNTIME_ON_RESET")
+    if clear_reset is not None and clear_reset != "":
+        config.session_lifecycle.clear_runtime_on_reset = clear_reset.lower() in ("1", "true", "yes", "on")
+
+    clear_resume = os.getenv("SESSION_CLEAR_RUNTIME_ON_RESUME")
+    if clear_resume is not None and clear_resume != "":
+        config.session_lifecycle.clear_runtime_on_resume = clear_resume.lower() in ("1", "true", "yes", "on")
+
+    max_iterations = os.getenv("HERMES_MAX_ITERATIONS")
+    if max_iterations not in (None, ""):
+        try:
+            config.agent_max_iterations = int(max_iterations)
         except ValueError:
             pass
 

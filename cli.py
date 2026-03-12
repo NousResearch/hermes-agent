@@ -1137,6 +1137,7 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
+        self._config_default_model = str(_config_model or "").strip()
         self.model = model or _config_model or "anthropic/claude-opus-4.6"
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
@@ -1309,23 +1310,34 @@ class HermesCLI:
             current_model = slug
             changed = True
 
-        # 2. Replace untouched default with a Codex model
+        # 2. Replace untouched defaults with a Codex model.
+        # If the configured default is already a Codex slug (e.g. user set
+        # gpt-5.2-codex in config.yaml), preserve it.
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
-            try:
-                from hermes_cli.codex_models import get_codex_model_ids
+            configured_default = (getattr(self, "_config_default_model", "") or "").strip().lower()
+            current_lower = current_model.lower()
+            preserve_configured_codex = (
+                bool(configured_default)
+                and "codex" in configured_default
+                and current_lower != "gpt-5.3-codex"
+            )
 
-                available = get_codex_model_ids(
-                    access_token=self.api_key if self.api_key else None,
-                )
-                if available:
-                    fallback_model = available[0]
-            except Exception:
-                pass
+            if not preserve_configured_codex:
+                fallback_model = "gpt-5.3-codex"
+                try:
+                    from hermes_cli.codex_models import get_codex_model_ids
 
-            if current_model != fallback_model:
-                self.model = fallback_model
-                changed = True
+                    available = get_codex_model_ids(
+                        access_token=self.api_key if self.api_key else None,
+                    )
+                    if available:
+                        fallback_model = available[0]
+                except Exception:
+                    pass
+
+                if current_model != fallback_model:
+                    self.model = fallback_model
+                    changed = True
 
         return changed
 

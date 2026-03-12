@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
+import re
 
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
@@ -151,6 +152,48 @@ def list_available_providers() -> list[dict[str, str]]:
     return result
 
 
+def _normalize_model_alias(value: str) -> str:
+    """Normalize user model shorthand for alias matching."""
+    lowered = value.strip().lower()
+    # Keep dots (for 5.1), collapse all other punctuation/separators to spaces.
+    normalized = re.sub(r"[^a-z0-9.]+", " ", lowered)
+    return " ".join(normalized.split())
+
+
+def _infer_codex_model_from_shorthand(raw: str) -> Optional[str]:
+    """Best-effort map for common Codex shorthand like ``5.1 mini``."""
+    try:
+        from hermes_cli.codex_models import get_codex_model_ids
+
+        codex_ids = get_codex_model_ids()
+    except Exception:
+        codex_ids = []
+
+    query = _normalize_model_alias(raw)
+    if not query:
+        return None
+
+    # Guardrail: only infer Codex for clearly Codex-like shorthand.
+    # Avoid hijacking generic OpenRouter inputs like "gpt-5.4".
+    starts_with_numeric_generation = bool(re.match(r"^\d+(?:\.\d+)?\b", query))
+    if "codex" not in query and not starts_with_numeric_generation:
+        return None
+
+    alias_map: dict[str, str] = {}
+    for model_id in codex_ids:
+        m = model_id.strip().lower()
+        variants = {
+            m,
+            m.replace("gpt-", "", 1),
+            m.replace("-codex", ""),
+            m.replace("-codex", "").replace("gpt-", "", 1),
+        }
+        for variant in variants:
+            alias_map[_normalize_model_alias(variant)] = model_id
+
+    return alias_map.get(query)
+
+
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``.
 
@@ -175,6 +218,27 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             return (normalize_provider(provider_part), model_part)
+
+    # Also accept provider/model syntax for provider IDs that contain hyphens,
+    # e.g. ``openai-codex/gpt-5.3-codex``.
+    slash = stripped.find("/")
+    if slash > 0:
+        provider_part = stripped[:slash].strip().lower()
+        model_part = stripped[slash + 1:].strip()
+        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+            return (normalize_provider(provider_part), model_part)
+
+    # If the current provider is ambiguous/defaulting to OpenRouter, but the
+    # user entered a Codex-specific slug/shorthand, route it to Codex.
+    current_normalized = normalize_provider(current_provider)
+    stripped_lower = stripped.lower()
+    if current_normalized in {"auto", "openrouter"}:
+        if "codex" in stripped_lower:
+            return ("openai-codex", stripped)
+        inferred_codex = _infer_codex_model_from_shorthand(stripped)
+        if inferred_codex:
+            return ("openai-codex", inferred_codex)
+
     return (current_provider, stripped)
 
 

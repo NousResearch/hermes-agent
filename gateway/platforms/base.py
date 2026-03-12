@@ -341,7 +341,7 @@ class BasePlatformAdapter(ABC):
         self._running = False
         
         # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Key: adapter interrupt key (chat_id[:thread:thread_id]), Value: asyncio.Event
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
     
@@ -413,7 +413,7 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """
         Send a typing indicator.
         
@@ -625,7 +625,12 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
     
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -634,7 +639,11 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
-                await self.send_typing(chat_id, metadata=metadata)
+                try:
+                    await self.send_typing(chat_id, metadata=metadata)
+                except TypeError:
+                    # Some platform adapters still implement send_typing(chat_id) only.
+                    await self.send_typing(chat_id)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
@@ -650,20 +659,43 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = build_session_key(event.source)
-        
-        # Check if there's already an active handler for this session
-        if session_key in self._active_sessions:
+        session_key = self._interrupt_session_key(event.source)
+        legacy_key = build_session_key(event.source)
+
+        # Check if there's already an active handler for this session.
+        # Prefer the interrupt key, but fall back to the legacy key shape for
+        # compatibility with existing tests/mocks that seed _active_sessions
+        # using build_session_key().
+        active_key = session_key if session_key in self._active_sessions else (
+            legacy_key if legacy_key in self._active_sessions else None
+        )
+        if active_key is not None:
             # Store this as a pending message - it will interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
-            self._pending_messages[session_key] = event
+            print(f"[{self.name}] ⚡ New message while session {active_key} is active - triggering interrupt")
+            self._pending_messages[active_key] = event
             # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
+            self._active_sessions[active_key].set()
             return  # Don't process now - will be handled after current task finishes
         
         # Spawn background task to process this message
         asyncio.create_task(self._process_message_background(event, session_key))
     
+    @staticmethod
+    def _interrupt_session_key(source: SessionSource) -> str:
+        """Build adapter-local interrupt key.
+
+        Includes thread/topic ID when present so thread runs do not interrupt
+        parent-channel runs (and vice versa).
+        """
+        base = source.chat_id or ""
+        if source.thread_id:
+            return f"{base}:thread:{source.thread_id}"
+        return base
+
+    def get_interrupt_session_key(self, source: SessionSource) -> str:
+        """Public accessor used by gateway runner interrupt monitor."""
+        return self._interrupt_session_key(source)
+
     @staticmethod
     def _get_human_delay() -> float:
         """

@@ -78,6 +78,17 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "http://localhost:8080/model"
 
+    def test_provider_slash_model_switches_provider(self):
+        provider, model = parse_model_input("openai-codex/gpt-5.3-codex", "openrouter")
+        assert provider == "openai-codex"
+        assert model == "gpt-5.3-codex"
+
+    def test_codex_shorthand_infers_provider_and_model(self):
+        with patch("hermes_cli.codex_models.get_codex_model_ids", return_value=["gpt-5.1-codex-mini"]):
+            provider, model = parse_model_input("5.1 mini", "openrouter")
+        assert provider == "openai-codex"
+        assert model == "gpt-5.1-codex-mini"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

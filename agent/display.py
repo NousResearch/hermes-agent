@@ -63,7 +63,7 @@ def get_skin_tool_prefix() -> str:
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
+def build_tool_preview(tool_name: str, args: dict, max_len: int = 120) -> str:
     """Build a short preview of a tool call's primary argument for display."""
     if not args:
         return None

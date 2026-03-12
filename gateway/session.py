@@ -295,20 +295,28 @@ class SessionEntry:
         )
 
 
-def build_session_key(source: SessionSource) -> str:
+def build_session_key(source: SessionSource, isolate_threads: bool = True) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
-    WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+
+    Rules:
+    - WhatsApp DMs include ``chat_id`` (multi-user DM surface).
+    - Other DMs omit ``chat_id`` (single-owner DM semantics).
+    - Non-DM chats include ``chat_type`` + ``chat_id``.
+    - If ``thread_id`` is present and ``isolate_threads`` is true, append it
+      so each thread/topic has an isolated lifecycle independent of its parent.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
-    if source.thread_id:
-        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
-    return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+
+    base = f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+    if isolate_threads and source.thread_id:
+        return f"{base}:thread:{source.thread_id}"
+    return base
 
 
 class SessionStore:
@@ -383,7 +391,10 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(source)
+        return build_session_key(
+            source,
+            isolate_threads=self.config.session_lifecycle.isolate_threads,
+        )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

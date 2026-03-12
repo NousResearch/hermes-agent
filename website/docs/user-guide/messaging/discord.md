@@ -206,6 +206,34 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 - **Direct messages**: DMs always work, even without the Message Content Intent enabled (Discord exempts DMs from this requirement). However, you should still enable the intent for server channel support.
 - **Conversations**: Each channel or DM maintains its own conversation context.
 
+## In-Flight Control: Steer vs Queue
+
+When a session is already running (long tool call, web task, etc.), new messages can either interrupt or queue:
+
+- **Default behavior = steer now**: plain messages interrupt the active run and become the next instruction.
+- **Explicit queue behavior**: use one of these prefixes to run your follow-up *after* the current run finishes:
+  - `/queue <message>`
+  - `queue: <message>`
+  - `q: <message>`
+- **Explicit steer behavior** (same as default, but explicit):
+  - `/steer <message>`
+  - `steer: <message>`
+
+This gives deterministic control over “stop and pivot now” vs “finish current task, then do this”.
+
+## Runtime Routing Controls (Per Thread)
+
+Hermes now supports thread-local runtime overrides so you can steer model/routing behavior without changing global config:
+
+- `/modelpin provider:model` — pin a model/provider for this thread/session only
+- `/modelpin clear` — remove the thread model pin
+- `/reasoning xhigh|high|medium|low|minimal|none|default` — set reasoning effort for this thread
+- `/route command|vision|audio|document|code|analysis|chat` — force the task class for routing decisions
+- `/route auto` — restore automatic task classification
+- `/runtime` — show active thread overrides and the resolved next-turn routing policy
+
+These controls are in-memory and reset with `/reset` (or when runtime state is cleared on resume).
+
 ## Voice Messages
 
 Hermes Agent supports Discord voice messages:
@@ -214,6 +242,25 @@ Hermes Agent supports Discord voice messages:
 - **Text-to-speech**: When TTS is enabled, the bot can send spoken responses as MP3 file attachments.
 
 ## Troubleshooting
+
+### Quick Operational Checks (Failure Drills)
+
+When rolling out gateway/session changes, run these quick drills:
+
+1. **Thread isolation check**
+   - Start two Discord threads, ask unrelated questions in each.
+   - Confirm replies stay context-isolated.
+2. **Steer interrupt check**
+   - Start a long task, then send a plain follow-up message.
+   - Confirm the active run is interrupted and pivots immediately.
+3. **Queue check**
+   - Start a long task, then send `q: <follow-up>`.
+   - Confirm current run finishes first, then queued follow-up executes.
+4. **Reset hygiene check**
+   - Run `/reset`, then send a new prompt.
+   - Confirm no stale pending interrupts/approvals leak into the new run.
+
+If any drill fails, verify session lifecycle env vars (`SESSION_ISOLATE_THREADS`, `SESSION_CLEAR_RUNTIME_ON_RESET`, `SESSION_CLEAR_RUNTIME_ON_RESUME`) and restart the gateway.
 
 ### Bot is online but not responding to messages
 

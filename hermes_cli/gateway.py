@@ -172,7 +172,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
-ExecStop={hermes_cli} gateway stop
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"

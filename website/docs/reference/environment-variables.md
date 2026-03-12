@@ -119,7 +119,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
+| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 90 CLI / 140 gateway) |
 | `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
 | `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
 | `HERMES_HUMAN_DELAY_MODE` | Response pacing: `off`/`natural`/`custom` |
@@ -134,6 +134,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 |----------|-------------|
 | `SESSION_IDLE_MINUTES` | Reset sessions after N minutes of inactivity (default: 120) |
 | `SESSION_RESET_HOUR` | Daily reset hour in 24h format (default: 4 = 4am) |
+| `SESSION_ISOLATE_THREADS` | Include thread/topic ID in session keys for isolated per-thread lifecycles (`true`/`false`, default: `true`) |
+| `SESSION_CLEAR_RUNTIME_ON_RESET` | Clear in-memory running/approval/interrupt state when `/reset` is used (`true`/`false`, default: `true`) |
+| `SESSION_CLEAR_RUNTIME_ON_RESUME` | Clear in-memory running/approval/interrupt state when `/resume` switches sessions (`true`/`false`, default: `true`) |
 
 ## Context Compression
 

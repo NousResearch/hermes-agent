@@ -58,6 +58,17 @@ class TestQQConfigLoading:
 
         assert Platform.QQ in config.get_connected_platforms()
 
+    def test_connected_platforms_excludes_half_configured_qq(self):
+        from gateway.config import GatewayConfig
+
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ: PlatformConfig(enabled=True, token="1024", api_key=""),
+            }
+        )
+
+        assert Platform.QQ not in config.get_connected_platforms()
+
 
 class TestQQAdapterHelpers:
     def test_check_requirements_reflects_sdk_availability(self, monkeypatch):

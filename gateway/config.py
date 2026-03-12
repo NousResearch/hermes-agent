@@ -163,7 +163,7 @@ class GatewayConfig:
             if platform == Platform.QQ and config.token and config.api_key:
                 connected.append(platform)
             # Platforms that use token/api_key auth
-            elif config.token or config.api_key:
+            elif platform != Platform.QQ and (config.token or config.api_key):
                 connected.append(platform)
             # Platforms that use token/api_key auth
             elif platform == Platform.WHATSAPP:

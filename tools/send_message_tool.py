@@ -238,6 +238,11 @@ async def _send_discord(token, chat_id, message):
 
 async def _send_qq(pconfig, chat_id, message):
     """Send via QQ bot REST API using AppID/AppSecret."""
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "QQ sending requires the 'httpx' package. Please install it (e.g. 'pip install httpx')."}
+
     app_id = str(getattr(pconfig, "token", "") or "").strip()
     secret = str(getattr(pconfig, "api_key", "") or "").strip()
     sandbox = bool(getattr(pconfig, "extra", {}).get("sandbox"))
@@ -268,15 +273,30 @@ async def _send_qq(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "X-Union-Appid": app_id,
             }
-            payload = {"msg_type": 0, "content": message}
             if target_type == "group":
                 url = f"{api_base}/v2/groups/{target_id}/messages"
             else:
                 url = f"{api_base}/v2/users/{target_id}/messages"
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return {"success": True, "platform": "qq", "chat_id": chat_id, "message_id": data.get("id")}
+            chunks = [message[i:i+2000] for i in range(0, len(message), 2000)] or [""]
+            message_ids = []
+            for chunk in chunks:
+                resp = await client.post(
+                    url,
+                    headers=headers,
+                    json={"msg_type": 0, "content": chunk},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                message_id = data.get("id")
+                if message_id:
+                    message_ids.append(message_id)
+            return {
+                "success": True,
+                "platform": "qq",
+                "chat_id": chat_id,
+                "message_id": message_ids[0] if message_ids else None,
+                "message_ids": message_ids,
+            }
     except Exception as e:
         return {"error": f"QQ send failed: {e}"}
 

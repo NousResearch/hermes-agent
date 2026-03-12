@@ -300,7 +300,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 
-def _transform_sudo_command(command: str) -> tuple[str, str | None]:
+def _transform_sudo_command(command: str) -> tuple[str, Optional[str]]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 

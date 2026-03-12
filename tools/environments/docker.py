@@ -306,8 +306,8 @@ class DockerEnvironment(BaseEnvironment):
         return _storage_opt_ok
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         exec_command, sudo_stdin = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout

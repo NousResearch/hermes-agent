@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
@@ -66,8 +67,8 @@ class SSHEnvironment(BaseEnvironment):
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
         wrapped = f'cd {work_dir} && {exec_command}'

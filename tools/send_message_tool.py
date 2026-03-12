@@ -512,4 +512,5 @@ registry.register(
     schema=SEND_MESSAGE_SCHEMA,
     handler=send_message_tool,
     check_fn=_check_send_message,
+    emoji="📨",
 )

@@ -157,11 +157,10 @@ class SlackAdapter(BasePlatformAdapter):
                 "text": content,
             }
 
-            # Reply in thread if thread_ts is available
-            if reply_to:
-                kwargs["thread_ts"] = reply_to
-            elif metadata and metadata.get("thread_ts"):
-                kwargs["thread_ts"] = metadata["thread_ts"]
+            # Reply in thread if thread context is available.
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
 
             result = await self._app.client.chat_postMessage(**kwargs)
 
@@ -205,12 +204,30 @@ class SlackAdapter(BasePlatformAdapter):
         """Slack doesn't have a direct typing indicator API for bots."""
         pass
 
+    def _resolve_thread_ts(
+        self,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Resolve the correct thread_ts for a Slack API call.
+
+        Prefers metadata thread_id (the thread parent's ts, set by the
+        gateway) over reply_to (which may be a child message's ts).
+        """
+        if metadata:
+            if metadata.get("thread_id"):
+                return metadata["thread_id"]
+            if metadata.get("thread_ts"):
+                return metadata["thread_ts"]
+        return reply_to
+
     async def send_image_file(
         self,
         chat_id: str,
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file to Slack by uploading it."""
         if not self._app:
@@ -226,7 +243,7 @@ class SlackAdapter(BasePlatformAdapter):
                 file=image_path,
                 filename=os.path.basename(image_path),
                 initial_comment=caption or "",
-                thread_ts=reply_to,
+                thread_ts=self._resolve_thread_ts(reply_to, metadata),
             )
             return SendResult(success=True, raw_response=result)
 
@@ -246,6 +263,7 @@ class SlackAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
@@ -264,7 +282,7 @@ class SlackAdapter(BasePlatformAdapter):
                 content=response.content,
                 filename="image.png",
                 initial_comment=caption or "",
-                thread_ts=reply_to,
+                thread_ts=self._resolve_thread_ts(reply_to, metadata),
             )
 
             return SendResult(success=True, raw_response=result)
@@ -286,6 +304,7 @@ class SlackAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an audio file to Slack."""
         if not self._app:
@@ -297,7 +316,7 @@ class SlackAdapter(BasePlatformAdapter):
                 file=audio_path,
                 filename=os.path.basename(audio_path),
                 initial_comment=caption or "",
-                thread_ts=reply_to,
+                thread_ts=self._resolve_thread_ts(reply_to, metadata),
             )
             return SendResult(success=True, raw_response=result)
 
@@ -316,6 +335,7 @@ class SlackAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a video file to Slack."""
         if not self._app:
@@ -330,7 +350,7 @@ class SlackAdapter(BasePlatformAdapter):
                 file=video_path,
                 filename=os.path.basename(video_path),
                 initial_comment=caption or "",
-                thread_ts=reply_to,
+                thread_ts=self._resolve_thread_ts(reply_to, metadata),
             )
             return SendResult(success=True, raw_response=result)
 
@@ -351,6 +371,7 @@ class SlackAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a document/file attachment to Slack."""
         if not self._app:
@@ -367,7 +388,7 @@ class SlackAdapter(BasePlatformAdapter):
                 file=file_path,
                 filename=display_name,
                 initial_comment=caption or "",
-                thread_ts=reply_to,
+                thread_ts=self._resolve_thread_ts(reply_to, metadata),
             )
             return SendResult(success=True, raw_response=result)
 
@@ -419,12 +440,21 @@ class SlackAdapter(BasePlatformAdapter):
         text = event.get("text", "")
         user_id = event.get("user", "")
         channel_id = event.get("channel", "")
-        thread_ts = event.get("thread_ts") or event.get("ts")
         ts = event.get("ts", "")
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
         is_dm = channel_type == "im"
+
+        # Build thread_ts for session keying.
+        # In channels: fall back to ts so each top-level @mention starts a
+        #   new thread/session (the bot always replies in a thread).
+        # In DMs: only use the real thread_ts — top-level DMs should share
+        #   one continuous session, threaded DMs get their own session.
+        if is_dm:
+            thread_ts = event.get("thread_ts")  # None for top-level DMs
+        else:
+            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
         # In channels, only respond if bot is mentioned
         if not is_dm and self._bot_user_id:

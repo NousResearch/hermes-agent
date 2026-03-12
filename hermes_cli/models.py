@@ -66,6 +66,48 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
+    "opencode-zen": [
+        "gpt-5.4-pro",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-5-nano",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4",
+        "claude-haiku-4-5",
+        "claude-3-5-haiku",
+        "gemini-3.1-pro",
+        "gemini-3-pro",
+        "gemini-3-flash",
+        "minimax-m2.5",
+        "minimax-m2.5-free",
+        "minimax-m2.1",
+        "glm-5",
+        "glm-4.7",
+        "glm-4.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2",
+        "qwen3-coder",
+        "big-pickle",
+    ],
+    "opencode-go": [
+        "glm-5",
+        "kimi-k2.5",
+        "minimax-m2.5",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -76,6 +118,8 @@ _PROVIDER_LABELS = {
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
+    "opencode-zen": "OpenCode Zen",
+    "opencode-go": "OpenCode Go",
     "custom": "Custom endpoint",
 }
 
@@ -88,6 +132,10 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "opencode": "opencode-zen",
+    "zen": "opencode-zen",
+    "go": "opencode-go",
+    "opencode-go-sub": "opencode-go",
 }
 
 
@@ -122,6 +170,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
         "zai", "kimi-coding", "minimax", "minimax-cn",
+        "opencode-zen", "opencode-go",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

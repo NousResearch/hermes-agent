@@ -355,19 +355,26 @@ class AIAgent:
 
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
-        from agent.redact import RedactingFormatter
-        _error_log_dir = Path.home() / ".hermes" / "logs"
-        _error_log_dir.mkdir(parents=True, exist_ok=True)
-        _error_log_path = _error_log_dir / "errors.log"
+        # Guard: only add the handler once (delegate children create new AIAgent
+        # instances, which would otherwise leak duplicate handlers).
         from logging.handlers import RotatingFileHandler
-        _error_file_handler = RotatingFileHandler(
-            _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+        _root = logging.getLogger()
+        _has_error_handler = any(
+            isinstance(h, RotatingFileHandler) for h in _root.handlers
         )
-        _error_file_handler.setLevel(logging.WARNING)
-        _error_file_handler.setFormatter(RedactingFormatter(
-            '%(asctime)s %(levelname)s %(name)s: %(message)s',
-        ))
-        logging.getLogger().addHandler(_error_file_handler)
+        if not _has_error_handler:
+            from agent.redact import RedactingFormatter
+            _error_log_dir = Path.home() / ".hermes" / "logs"
+            _error_log_dir.mkdir(parents=True, exist_ok=True)
+            _error_log_path = _error_log_dir / "errors.log"
+            _error_file_handler = RotatingFileHandler(
+                _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+            )
+            _error_file_handler.setLevel(logging.WARNING)
+            _error_file_handler.setFormatter(RedactingFormatter(
+                '%(asctime)s %(levelname)s %(name)s: %(message)s',
+            ))
+            _root.addHandler(_error_file_handler)
 
         if self.verbose_logging:
             logging.basicConfig(

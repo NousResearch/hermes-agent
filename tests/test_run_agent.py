@@ -1363,3 +1363,41 @@ class TestSafeWriter:
         # Still just one layer
         wrapped.write("test")
         assert inner.getvalue() == "test"
+
+
+# ---------------------------------------------------------------------------
+# RotatingFileHandler leak — Bug F
+# ---------------------------------------------------------------------------
+
+
+class TestRotatingFileHandlerLeak:
+    """Each AIAgent() adds a RotatingFileHandler to the root logger.
+    Creating multiple agents (e.g. delegate children) leaks handlers."""
+
+    def test_multiple_agents_do_not_duplicate_file_handlers(self):
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        root = logging.getLogger()
+        # Count existing RotatingFileHandlers before creating agents
+        before = sum(1 for h in root.handlers if isinstance(h, RotatingFileHandler))
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            for _ in range(3):
+                AIAgent(
+                    api_key="test-key-1234567890",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+
+        after = sum(1 for h in root.handlers if isinstance(h, RotatingFileHandler))
+        added = after - before
+        assert added <= 1, (
+            f"Creating 3 agents added {added} RotatingFileHandlers "
+            f"(expected at most 1)"
+        )

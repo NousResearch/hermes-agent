@@ -42,6 +42,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    API = "api"
 
 
 @dataclass
@@ -192,6 +193,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # API uses enabled flag only (auth handled by API_KEY env var at request time)
+            elif platform == Platform.API:
                 connected.append(platform)
         return connected
     
@@ -510,6 +514,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
+
+    # REST/WebSocket API
+    api_enabled = os.getenv("API_ENABLED", "").lower() in ("true", "1", "yes")
+    if api_enabled:
+        if Platform.API not in config.platforms:
+            config.platforms[Platform.API] = PlatformConfig()
+        config.platforms[Platform.API].enabled = True
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

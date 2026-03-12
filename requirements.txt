@@ -38,3 +38,7 @@ croniter
 python-telegram-bot>=20.0
 discord.py>=2.0
 aiohttp>=3.9.0
+
+# Optional: For REST/WebSocket API (gateway)
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0

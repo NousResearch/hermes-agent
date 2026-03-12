@@ -544,6 +544,31 @@ _PLATFORMS = [
              "help": "Only emails from these addresses will be processed."},
         ],
     },
+    {
+        "key": "tlon",
+        "label": "Tlon (Urbit)",
+        "emoji": "⛵",
+        "token_var": "TLON_SHIP_URL",
+        "setup_instructions": [
+            "1. You need a running Urbit ship with Tlon installed",
+            "2. Get your ship's URL (e.g., https://sampel-palnet.tlon.network)",
+            "3. Get your ship's +code from the Dojo: +code",
+            "4. Your ship name is the @p (e.g., ~sampel-palnet)",
+        ],
+        "vars": [
+            {"name": "TLON_SHIP_URL", "prompt": "Ship URL", "password": False,
+             "help": "The URL of your Urbit ship (e.g., https://sampel-palnet.tlon.network)."},
+            {"name": "TLON_SHIP_NAME", "prompt": "Ship name (@p)", "password": False,
+             "help": "Your ship's @p identifier (e.g., ~sampel-palnet)."},
+            {"name": "TLON_SHIP_CODE", "prompt": "Ship +code", "password": True,
+             "help": "The +code for authentication (run +code in your ship's Dojo)."},
+            {"name": "TLON_CHANNELS", "prompt": "Channels to monitor (comma-separated, optional)", "password": False,
+             "help": "Channel nests to watch (e.g., chat/~host/channel-name). Leave empty for DMs only."},
+            {"name": "TLON_ALLOWED_USERS", "prompt": "Allowed ships (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Only these ships can interact with the bot (e.g., ~malmur-halmex,~zod)."},
+        ],
+    },
 ]
 
 

@@ -36,7 +36,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. QQ targets use 'qq:group:GROUP_OPENID' or 'qq:user:USER_OPENID'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'qq:group:abcdef1234'"
             },
             "message": {
                 "type": "string",
@@ -116,6 +116,7 @@ def _handle_send(args):
     platform_map = {
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,
+        "qq": Platform.QQ,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
@@ -170,6 +171,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "qq" and re.fullmatch(r"(group|user):[^:\s]+", target_ref):
+        return target_ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     return None, None, False
@@ -182,6 +185,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None)
         return await _send_telegram(pconfig.token, chat_id, message, thread_id=thread_id)
     elif platform == Platform.DISCORD:
         return await _send_discord(pconfig.token, chat_id, message)
+    elif platform == Platform.QQ:
+        return await _send_qq(pconfig, chat_id, message)
     elif platform == Platform.SLACK:
         return await _send_slack(pconfig.token, chat_id, message)
     elif platform == Platform.SIGNAL:
@@ -229,6 +234,51 @@ async def _send_discord(token, chat_id, message):
         return {"success": True, "platform": "discord", "chat_id": chat_id, "message_ids": message_ids}
     except Exception as e:
         return {"error": f"Discord send failed: {e}"}
+
+
+async def _send_qq(pconfig, chat_id, message):
+    """Send via QQ bot REST API using AppID/AppSecret."""
+    app_id = str(getattr(pconfig, "token", "") or "").strip()
+    secret = str(getattr(pconfig, "api_key", "") or "").strip()
+    sandbox = bool(getattr(pconfig, "extra", {}).get("sandbox"))
+
+    if not app_id or not secret:
+        return {"error": "QQ bot not configured (QQ_BOT_APP_ID and QQ_BOT_SECRET required)"}
+
+    if ":" in chat_id:
+        target_type, target_id = chat_id.split(":", 1)
+    else:
+        target_type, target_id = "user", chat_id
+    if target_type not in ("group", "user") or not target_id:
+        return {"error": "QQ target must be 'group:GROUP_OPENID' or 'user:USER_OPENID'"}
+
+    api_base = "https://sandbox.api.sgroup.qq.com" if sandbox else "https://api.sgroup.qq.com"
+    token_url = "https://bots.qq.com/app/getAppAccessToken"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            token_resp = await client.post(token_url, json={"appId": app_id, "clientSecret": secret})
+            token_resp.raise_for_status()
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return {"error": f"QQ token request failed: {token_data}"}
+
+            headers = {
+                "Authorization": f"QQBot {access_token}",
+                "X-Union-Appid": app_id,
+            }
+            payload = {"msg_type": 0, "content": message}
+            if target_type == "group":
+                url = f"{api_base}/v2/groups/{target_id}/messages"
+            else:
+                url = f"{api_base}/v2/users/{target_id}/messages"
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return {"success": True, "platform": "qq", "chat_id": chat_id, "message_id": data.get("id")}
+    except Exception as e:
+        return {"error": f"QQ send failed: {e}"}
 
 
 async def _send_slack(token, chat_id, message):

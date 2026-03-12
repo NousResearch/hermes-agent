@@ -673,6 +673,13 @@ class GatewayRunner:
                 logger.warning("Discord: discord.py not installed")
                 return None
             return DiscordAdapter(config)
+
+        elif platform == Platform.QQ:
+            from gateway.platforms.qq import QQAdapter, check_qq_requirements
+            if not check_qq_requirements():
+                logger.warning("QQ: qq-botpy not installed. Run: pip install qq-botpy")
+                return None
+            return QQAdapter(config)
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
@@ -735,6 +742,7 @@ class GatewayRunner:
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.QQ: "QQ_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
@@ -743,6 +751,7 @@ class GatewayRunner:
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.QQ: "QQ_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
@@ -2037,6 +2046,7 @@ class GatewayRunner:
                 Platform.LOCAL: "hermes-cli",
                 Platform.TELEGRAM: "hermes-telegram",
                 Platform.DISCORD: "hermes-discord",
+                Platform.QQ: "hermes-qq",
                 Platform.WHATSAPP: "hermes-whatsapp",
                 Platform.SLACK: "hermes-slack",
                 Platform.SIGNAL: "hermes-signal",
@@ -2058,6 +2068,7 @@ class GatewayRunner:
                 Platform.LOCAL: "cli",
                 Platform.TELEGRAM: "telegram",
                 Platform.DISCORD: "discord",
+                Platform.QQ: "qq",
                 Platform.WHATSAPP: "whatsapp",
                 Platform.SLACK: "slack",
                 Platform.SIGNAL: "signal",
@@ -2855,6 +2866,7 @@ class GatewayRunner:
             Platform.LOCAL: "hermes-cli",
             Platform.TELEGRAM: "hermes-telegram",
             Platform.DISCORD: "hermes-discord",
+            Platform.QQ: "hermes-qq",
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
             Platform.SIGNAL: "hermes-signal",
@@ -2879,6 +2891,7 @@ class GatewayRunner:
             Platform.LOCAL: "cli",
             Platform.TELEGRAM: "telegram",
             Platform.DISCORD: "discord",
+            Platform.QQ: "qq",
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
             Platform.SIGNAL: "signal",

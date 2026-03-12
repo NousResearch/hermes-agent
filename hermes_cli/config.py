@@ -474,6 +474,27 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "QQ_BOT_APP_ID": {
+        "description": "QQ bot AppID for gateway mode",
+        "prompt": "QQ bot AppID",
+        "url": "https://q.qq.com/",
+        "password": False,
+        "category": "messaging",
+    },
+    "QQ_BOT_SECRET": {
+        "description": "QQ bot AppSecret for gateway mode",
+        "prompt": "QQ bot AppSecret",
+        "url": "https://q.qq.com/",
+        "password": True,
+        "category": "messaging",
+    },
+    "QQ_ALLOWED_USERS": {
+        "description": "Comma-separated QQ user openids allowed to use the bot",
+        "prompt": "Allowed QQ user openids (comma-separated)",
+        "url": "https://q.qq.com/",
+        "password": False,
+        "category": "messaging",
+    },
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "

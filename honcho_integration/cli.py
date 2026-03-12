@@ -131,9 +131,8 @@ def cmd_setup(args) -> None:
     print(f"\n  Memory mode options:")
     print("    hybrid  — write to both Honcho and local MEMORY.md (default)")
     print("    honcho  — Honcho only, skip MEMORY.md writes")
-    print("    local   — MEMORY.md only, Honcho disabled")
     new_mode = _prompt("Memory mode", default=current_mode)
-    if new_mode in ("hybrid", "honcho", "local"):
+    if new_mode in ("hybrid", "honcho"):
         hermes_host["memoryMode"] = new_mode
     else:
         hermes_host["memoryMode"] = "hybrid"
@@ -369,7 +368,6 @@ def cmd_mode(args) -> None:
     MODES = {
         "hybrid": "write to both Honcho and local MEMORY.md (default)",
         "honcho": "Honcho only — MEMORY.md writes disabled",
-        "local":  "MEMORY.md only — Honcho disabled",
     }
     cfg = _read_config()
     mode_arg = getattr(args, "mode", None)
@@ -384,7 +382,7 @@ def cmd_mode(args) -> None:
         for m, desc in MODES.items():
             marker = " ←" if m == current else ""
             print(f"  {m:<8}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho mode [hybrid|honcho|local]\n")
+        print(f"\n  Set with: hermes honcho mode [hybrid|honcho]\n")
         return
 
     if mode_arg not in MODES:

@@ -607,7 +607,7 @@ class AIAgent:
                         elif not hcfg.api_key:
                             logger.debug("Honcho enabled but no API key configured")
                         else:
-                            logger.debug("Honcho local-only mode active; remote Honcho init skipped")
+                            logger.debug("Honcho enabled but missing API key or disabled in config")
             except Exception as e:
                 logger.warning("Honcho init failed — memory disabled: %s", e)
                 print(f"  Honcho init failed: {e}")
@@ -621,7 +621,7 @@ class AIAgent:
 
         # Gate local memory writes based on per-peer memory modes.
         # AI peer governs MEMORY.md; user peer governs USER.md.
-        # "honcho" = Honcho only, disable local; "local" = local only, no Honcho sync.
+        # "honcho" = Honcho only, disable local writes.
         if self._honcho_config and self._honcho:
             _hcfg = self._honcho_config
             _agent_mode = _hcfg.peer_memory_mode(_hcfg.ai_peer)
@@ -1349,10 +1349,7 @@ class AIAgent:
         """Return True when remote Honcho should be active."""
         if not hcfg or not hcfg.enabled or not hcfg.api_key:
             return False
-        return not all(
-            hcfg.peer_memory_mode(peer) == "local"
-            for peer in (hcfg.ai_peer, hcfg.peer_name or "user")
-        )
+        return True
 
     def _strip_honcho_tools_from_surface(self) -> None:
         """Remove Honcho tools from the active tool surface."""
@@ -1551,13 +1548,6 @@ class AIAgent:
         """Sync the user/assistant message pair to Honcho."""
         if not self._honcho or not self._honcho_session_key:
             return
-        # Skip Honcho sync only if BOTH peer modes are local
-        _cfg = self._honcho_config
-        if _cfg and all(
-            _cfg.peer_memory_mode(p) == "local"
-            for p in (_cfg.ai_peer, _cfg.peer_name or "user")
-        ):
-            return
         try:
             session = self._honcho.get_or_create(self._honcho_session_key)
             session.add_message("user", user_content)
@@ -1656,7 +1646,7 @@ class AIAgent:
             honcho_block += (
                 "Management commands (refer users here instead of explaining manually):\n"
                 "  hermes honcho status                    — show full config + connection\n"
-                "  hermes honcho mode [hybrid|honcho|local] — show or set memory mode\n"
+                "  hermes honcho mode [hybrid|honcho]       — show or set memory mode\n"
                 "  hermes honcho tokens [--context N] [--dialectic N] — show or set token budgets\n"
                 "  hermes honcho peer [--user NAME] [--ai NAME] [--reasoning LEVEL]\n"
                 "  hermes honcho sessions                  — list directory→session mappings\n"

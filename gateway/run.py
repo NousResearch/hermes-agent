@@ -287,9 +287,7 @@ class GatewayRunner:
             from honcho_integration.session import HonchoSessionManager
 
             hcfg = HonchoClientConfig.from_global_config()
-            ai_mode = hcfg.peer_memory_mode(hcfg.ai_peer)
-            user_mode = hcfg.peer_memory_mode(hcfg.peer_name or "user")
-            if not hcfg.enabled or not hcfg.api_key or (ai_mode == "local" and user_mode == "local"):
+            if not hcfg.enabled or not hcfg.api_key:
                 return None, hcfg
 
             client = get_honcho_client(hcfg)

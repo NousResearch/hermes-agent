@@ -37,27 +37,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from openai import AsyncOpenAI
-from agent.auxiliary_client import get_vision_auxiliary_client
+from agent.auxiliary_client import get_async_vision_auxiliary_client
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
-# Resolve vision auxiliary client at module level; build an async wrapper.
-_aux_sync_client, DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
-_aux_async_client: AsyncOpenAI | None = None
-if _aux_sync_client is not None:
-    _async_kwargs = {
-        "api_key": _aux_sync_client.api_key,
-        "base_url": str(_aux_sync_client.base_url),
-    }
-    if "openrouter" in str(_aux_sync_client.base_url).lower():
-        _async_kwargs["default_headers"] = {
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-            "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-        }
-    _aux_async_client = AsyncOpenAI(**_async_kwargs)
+# Resolve vision auxiliary client at module level.
+# Uses get_async_vision_auxiliary_client() which properly handles Codex
+# routing (Responses API adapter) instead of raw AsyncOpenAI construction.
+_aux_async_client, DEFAULT_VISION_MODEL = get_async_vision_auxiliary_client()
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
@@ -359,10 +347,28 @@ async def vision_analyze_tool(
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
+        # Detect vision capability errors — give the model a clear message
+        # so it can inform the user instead of a cryptic API error.
+        err_str = str(e).lower()
+        if any(hint in err_str for hint in (
+            "does not support", "not support image", "invalid_request",
+            "content_policy", "image_url", "multimodal",
+            "unrecognized request argument", "image input",
+        )):
+            analysis = (
+                f"{model} does not support vision or our request was not "
+                f"accepted by the server. Error: {e}"
+            )
+        else:
+            analysis = (
+                "There was a problem with the request and the image could not "
+                f"be analyzed. Error: {e}"
+            )
+        
         # Prepare error response
         result = {
             "success": False,
-            "analysis": "There was a problem with the request and the image could not be analyzed."
+            "analysis": analysis,
         }
         
         debug_call_data["error"] = error_msg

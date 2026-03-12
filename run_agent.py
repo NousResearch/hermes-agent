@@ -1447,19 +1447,6 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compat helper for tests / older callsites
-# ---------------------------------------------------------------------------
-def build_system_prompt(agent: "AIAgent", system_message: str | None = None) -> str:
-    """
-    Backwards-compatible wrapper for AIAgent._build_system_prompt.
-
-    Some tests patch `run_agent.build_system_prompt` directly; this thin
-    helper keeps that surface area while delegating to the instance method.
-    """
-    return agent._build_system_prompt(system_message=system_message)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -1508,6 +1495,19 @@ def build_system_prompt(agent: "AIAgent", system_message: str | None = None) -> 
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compat helper for tests / older callsites
+# ---------------------------------------------------------------------------
+def build_system_prompt(agent: "AIAgent", system_message: str | None = None) -> str:
+    """
+    Backwards-compatible wrapper for AIAgent._build_system_prompt.
+
+    Some tests patch `run_agent.build_system_prompt` directly; this thin
+    helper keeps that surface area while delegating to the instance method.
+    """
+    return agent._build_system_prompt(system_message=system_message)
     
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.

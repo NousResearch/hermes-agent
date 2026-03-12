@@ -11,6 +11,7 @@ Modular wizard with independently-runnable sections:
 Config files are stored in ~/.hermes/ for easy access.
 """
 
+import importlib.util
 import logging
 import os
 import sys
@@ -2020,6 +2021,106 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# OpenClaw Migration
+# =============================================================================
+
+
+_OPENCLAW_SCRIPT = (
+    PROJECT_ROOT
+    / "optional-skills"
+    / "migration"
+    / "openclaw-migration"
+    / "scripts"
+    / "openclaw_to_hermes.py"
+)
+
+
+def _offer_openclaw_migration(hermes_home: Path) -> bool:
+    """Detect ~/.openclaw and offer to migrate during first-time setup.
+
+    Returns True if migration ran successfully, False otherwise.
+    """
+    openclaw_dir = Path.home() / ".openclaw"
+    if not openclaw_dir.is_dir():
+        return False
+
+    if not _OPENCLAW_SCRIPT.exists():
+        return False
+
+    print()
+    print_header("OpenClaw Installation Detected")
+    print_info(f"Found OpenClaw data at {openclaw_dir}")
+    print_info("Hermes can import your settings, memories, skills, and API keys.")
+    print()
+
+    if not prompt_yes_no("Would you like to import from OpenClaw?", default=True):
+        print_info(
+            "Skipping migration. You can run it later via the openclaw-migration skill."
+        )
+        return False
+
+    # Ensure config.yaml exists before migration tries to read it
+    config_path = get_config_path()
+    if not config_path.exists():
+        save_config(load_config())
+
+    # Dynamically load the migration script
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "openclaw_to_hermes", _OPENCLAW_SCRIPT
+        )
+        if spec is None or spec.loader is None:
+            print_warning("Could not load migration script.")
+            return False
+
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # Run migration with the "full" preset, execute mode, no overwrite
+        selected = mod.resolve_selected_options(None, None, preset="full")
+        migrator = mod.Migrator(
+            source_root=openclaw_dir.resolve(),
+            target_root=hermes_home.resolve(),
+            execute=True,
+            workspace_target=None,
+            overwrite=False,
+            migrate_secrets=True,
+            output_dir=None,
+            selected_options=selected,
+            preset_name="full",
+        )
+        report = migrator.migrate()
+    except Exception as e:
+        print_warning(f"Migration failed: {e}")
+        logger.debug("OpenClaw migration error", exc_info=True)
+        return False
+
+    # Print summary
+    summary = report.get("summary", {})
+    migrated = summary.get("migrated", 0)
+    skipped = summary.get("skipped", 0)
+    conflicts = summary.get("conflict", 0)
+    errors = summary.get("error", 0)
+
+    print()
+    if migrated:
+        print_success(f"Imported {migrated} item(s) from OpenClaw.")
+    if conflicts:
+        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes.")
+    if skipped:
+        print_info(f"Skipped {skipped} item(s) (not found or unchanged).")
+    if errors:
+        print_warning(f"{errors} item(s) had errors — check the migration report.")
+
+    output_dir = report.get("output_dir")
+    if output_dir:
+        print_info(f"Full report saved to: {output_dir}")
+
+    print_success("Migration complete! Continuing with setup...")
+    return True
+
+
+# =============================================================================
 # Main Wizard Orchestrator
 # =============================================================================
 
@@ -2184,6 +2285,11 @@ def run_setup_wizard(args):
         except (KeyboardInterrupt, EOFError):
             print()
             return
+
+        # Offer OpenClaw migration before configuration begins
+        if _offer_openclaw_migration(hermes_home):
+            # Reload config in case migration wrote to it
+            config = load_config()
 
     # ── Full Setup — run all sections ──
     print_header("Configuration Location")

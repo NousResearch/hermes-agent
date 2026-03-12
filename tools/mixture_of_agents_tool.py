@@ -149,11 +149,11 @@ async def _run_reference_model_safe(
             error_str = str(e)
             # Log more detailed error information for debugging
             if "invalid" in error_str.lower():
-                logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_str)
+                logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_str, exc_info=True)
             elif "rate" in error_str.lower() or "limit" in error_str.lower():
-                logger.warning("%s rate limit error (attempt %s): %s", model, attempt + 1, error_str)
+                logger.warning("%s rate limit error (attempt %s): %s", model, attempt + 1, error_str, exc_info=True)
             else:
-                logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str)
+                logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str, exc_info=True)
                 
             if attempt < max_retries - 1:
                 # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
@@ -162,7 +162,7 @@ async def _run_reference_model_safe(
                 await asyncio.sleep(sleep_time)
             else:
                 error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
-                logger.error("%s", error_msg)
+                logger.error("%s", error_msg, exc_info=True)
                 return model, error_msg, False
 
 
@@ -183,34 +183,42 @@ async def _run_aggregator_model(
         
     Returns:
         str: Synthesized final response
+        
+    Raises:
+        Exception: If the aggregator model API call fails
     """
     logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
     
-    # Build parameters for the API call
-    api_params = {
-        "model": AGGREGATOR_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "extra_body": {
-            "reasoning": {
-                "enabled": True,
-                "effort": "xhigh"
+    try:
+        # Build parameters for the API call
+        api_params = {
+            "model": AGGREGATOR_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "extra_body": {
+                "reasoning": {
+                    "enabled": True,
+                    "effort": "xhigh"
+                }
             }
         }
-    }
-    
-    # GPT models (especially gpt-4o-mini) don't support custom temperature values
-    # Only include temperature for non-GPT models
-    if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
-        api_params["temperature"] = temperature
-    
-    response = await _get_openrouter_client().chat.completions.create(**api_params)
-    
-    content = response.choices[0].message.content.strip()
-    logger.info("Aggregation complete (%s characters)", len(content))
-    return content
+        
+        # GPT models (especially gpt-4o-mini) don't support custom temperature values
+        # Only include temperature for non-GPT models
+        if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
+            api_params["temperature"] = temperature
+        
+        response = await _get_openrouter_client().chat.completions.create(**api_params)
+        
+        content = response.choices[0].message.content.strip()
+        logger.info("Aggregation complete (%s characters)", len(content))
+        return content
+    except Exception as e:
+        error_msg = f"Aggregator model {AGGREGATOR_MODEL} failed: {str(e)}"
+        logger.error("%s", error_msg, exc_info=True)
+        raise
 
 
 async def mixture_of_agents_tool(
@@ -364,7 +372,7 @@ async def mixture_of_agents_tool(
         
     except Exception as e:
         error_msg = f"Error in MoA processing: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         
         # Calculate processing time even for errors
         end_time = datetime.datetime.now()

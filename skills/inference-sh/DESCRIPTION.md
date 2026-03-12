@@ -2,6 +2,8 @@
 
 Run 150+ AI applications in the cloud via the [inference.sh](https://inference.sh) platform.
 
+**One API key for everything** - Access all AI services with a single account. No need to manage separate API keys for FLUX, Veo, Claude, Tavily, Twitter, etc. You can also bring your own keys if you prefer.
+
 ## Available Skills
 
 - **cli**: The inference.sh CLI (`infsh`) for running AI apps

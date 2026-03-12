@@ -14,6 +14,8 @@ metadata:
 
 Run 150+ AI apps in the cloud with a simple CLI. No GPU required.
 
+**One API key for everything** - Manage all AI services (FLUX, Veo, Claude, Tavily, X/Twitter, and more) with a single inference.sh account. No need to sign up for dozens of different providers. You can also bring your own API keys if you prefer.
+
 ## Tools
 
 This skill is backed by the `infsh` and `infsh_install` tools:
@@ -56,6 +58,15 @@ infsh app run bytedance/seedance-1-5-pro --input '{"prompt": "dancing figure", "
 ## Image Generation
 
 ```bash
+# Gemini 2.5 Flash Image (Google) - fast, high quality
+infsh app run google/gemini-2-5-flash-image --input '{"prompt": "futuristic city", "num_images": 1}' --json
+
+# Gemini 3 Pro Image Preview (Google) - latest model
+infsh app run google/gemini-3-pro-image-preview --input '{"prompt": "photorealistic landscape"}' --json
+
+# Gemini 3.1 Flash Image Preview (Google)
+infsh app run google/gemini-3-1-flash-image-preview --input '{"prompt": "artistic portrait"}' --json
+
 # FLUX Dev with LoRA support
 infsh app run falai/flux-dev-lora --input '{"prompt": "sunset over mountains", "num_images": 1}' --json
 
@@ -65,14 +76,14 @@ infsh app run falai/flux-2-klein-lora --input '{"prompt": "portrait photo"}' --j
 # Reve - stylized generation and editing
 infsh app run falai/reve --input '{"prompt": "cyberpunk city"}' --json
 
-# Seedream 3.0 - cinematic quality
-infsh app run bytedance/seedream-3-0-t2i --input '{"prompt": "fantasy landscape"}' --json
+# Seedream 5 Lite - high-quality 2K-3K (ByteDance)
+infsh app run bytedance/seedream-5-lite --input '{"prompt": "nature scene"}' --json
 
 # Seedream 4.5 - 2K-4K images
 infsh app run bytedance/seedream-4-5 --input '{"prompt": "detailed illustration"}' --json
 
-# Seedream 5 Lite - high-quality 2K-3K
-infsh app run bytedance/seedream-5-lite --input '{"prompt": "nature scene"}' --json
+# Seedream 3.0 - cinematic quality
+infsh app run bytedance/seedream-3-0-t2i --input '{"prompt": "fantasy landscape"}' --json
 
 # Grok Imagine - xAI image generation
 infsh app run xai/grok-imagine-image --input '{"prompt": "abstract art"}' --json
@@ -80,10 +91,7 @@ infsh app run xai/grok-imagine-image --input '{"prompt": "abstract art"}' --json
 # Grok Imagine Pro - higher quality
 infsh app run xai/grok-imagine-image-pro --input '{"prompt": "photorealistic portrait"}' --json
 
-# Gemini Image generation
-infsh app run google/gemini-2-5-flash-image --input '{"prompt": "futuristic city"}' --json
-
-# Qwen Image 2 Pro
+# Qwen Image 2 Pro (Alibaba)
 infsh app run alibaba/qwen-image-2-pro --input '{"prompt": "anime character"}' --json
 ```
 
@@ -339,7 +347,7 @@ infsh task get <task-id> --save result.json
 
 | Category | Apps |
 |----------|------|
-| **Image** | falai/flux-dev-lora, falai/flux-2-klein-lora, falai/reve, bytedance/seedream-*, xai/grok-imagine-*, alibaba/qwen-image-*, google/gemini-*-image |
+| **Image** | google/nano-banana, google/nano-banana-pro, google/nano-banana-2, falai/flux-dev-lora, bytedance/seedream-5-lite, falai/reve, xai/grok-imagine-image |
 | **Video** | google/veo-*, xai/grok-imagine-video, bytedance/seedance-*, falai/wan-2-5*, infsh/ltx-video, infsh/magi-1 |
 | **Avatar** | bytedance/omnihuman-*, falai/fabric-1-0, falai/pixverse-lipsync |
 | **Upscale** | falai/topaz-image-upscaler, falai/topaz-video-upscaler, infsh/real-esrgan, infsh/thera |

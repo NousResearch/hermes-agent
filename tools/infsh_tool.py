@@ -16,11 +16,11 @@ Usage:
     # Install the CLI
     result = infsh_install()
 
-    # Run an app
-    result = infsh_tool("app run falai/flux-schnell --input '{\"prompt\": \"a cat\"}' --json")
-
-    # List apps
+    # Search for apps first (always do this!)
     result = infsh_tool("app list --search flux")
+
+    # Run an app
+    result = infsh_tool("app run falai/flux-dev-lora --input '{\"prompt\": \"a cat\"}' --json")
 """
 
 import json
@@ -218,21 +218,27 @@ def infsh_tool(
 
 from tools.registry import registry
 
-INFSH_TOOL_DESCRIPTION = """Run AI apps via inference.sh CLI. Access 150+ apps: image generation (FLUX, Reve, Seedream), video (Veo, Wan, Seedance), LLMs (Claude, Gemini, Kimi), search (Tavily, Exa), 3D, Twitter automation, and more.
+INFSH_TOOL_DESCRIPTION = """Run AI apps via inference.sh CLI. Access 150+ apps for image generation, video, LLMs, search, 3D, and more.
 
-Common commands:
-- app list: List all available apps
-- app list --search <query>: Search for apps
-- app run <app-id> --input '<json>': Run an app
-- app run <app-id> --input '<json>' --json: Run with JSON output
-- app get <app-id>: Get app details and schema
-- app sample <app-id>: Generate sample input
+One API key for everything - manage all AI services (FLUX, Veo, Claude, Tavily, etc.) with a single inference.sh account. You can also bring your own API keys.
 
-Examples:
-- app run falai/flux-schnell --input '{"prompt": "a sunset"}' --json
-- app run google/veo-3-1-fast --input '{"prompt": "drone shot"}' --json
-- app run tavily/search --input '{"query": "AI news"}' --json
-- app list --search video"""
+IMPORTANT: Always use 'app list --search <query>' first to find the exact app ID before running. App names change frequently.
+
+Commands:
+- app list --search <query>: Find apps (ALWAYS DO THIS FIRST)
+- app run <app-id> --input '<json>' --json: Run an app
+- app get <app-id>: Get app schema before running
+
+Verified app examples (use --search to confirm current names):
+- Image: google/nano-banana, google/nano-banana-pro, google/nano-banana-2, falai/flux-dev-lora, bytedance/seedream-5-lite, falai/reve, xai/grok-imagine-image
+- Video: google/veo-3-1-fast, bytedance/seedance-1-5-pro, falai/wan-2-5
+- Upscale: falai/topaz-image-upscaler
+- Search: tavily/search-assistant, exa/search
+- LLM: openrouter/claude-sonnet-45
+
+Workflow: ALWAYS search first, then run:
+1. app list --search image
+2. app run falai/flux-dev-lora --input '{"prompt": "a sunset"}' --json"""
 
 INFSH_SCHEMA = {
     "name": "infsh",
@@ -242,7 +248,7 @@ INFSH_SCHEMA = {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The infsh command to run (without 'infsh' prefix). Examples: 'app list', 'app run falai/flux-schnell --input \"{\\\"prompt\\\": \\\"cat\\\"}\" --json'"
+                "description": "The infsh command (without 'infsh' prefix). ALWAYS use 'app list --search <query>' first to find correct app IDs, then 'app run <id> --input <json> --json'"
             },
             "timeout": {
                 "type": "integer",

@@ -449,6 +449,21 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
+_ANTHROPIC_VISION_MODEL = "claude-sonnet-4-20250514"
+
+
+def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
+    """Try Anthropic credentials for auxiliary tasks (vision-capable)."""
+    from agent.anthropic_adapter import resolve_anthropic_token
+    token = resolve_anthropic_token()
+    if not token:
+        return None, None
+    # Return a simple wrapper that indicates Anthropic is available.
+    # The actual client is created by resolve_provider_client("anthropic").
+    logger.debug("Auxiliary client: Anthropic (%s)", _ANTHROPIC_VISION_MODEL)
+    return resolve_provider_client("anthropic", model=_ANTHROPIC_VISION_MODEL)
+
+
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     codex_token = _read_codex_access_token()
     if not codex_token:
@@ -753,8 +768,8 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     # back to the user's custom endpoint.  Many local models (Qwen-VL,
     # LLaVA, Pixtral, etc.) support vision — skipping them entirely
     # caused silent failures for local-only users.
-    for try_fn in (_try_openrouter, _try_nous, _try_codex,
-                   _try_custom_endpoint):
+    for try_fn in (_try_openrouter, _try_nous, _try_anthropic,
+                   _try_codex, _try_custom_endpoint):
         client, model = try_fn()
         if client is not None:
             return client, model

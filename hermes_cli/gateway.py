@@ -188,6 +188,51 @@ StandardError=journal
 WantedBy=default.target
 """
 
+def _ensure_linger_enabled() -> None:
+    """Enable systemd linger for the current user if not already active.
+
+    Linger keeps user services alive after SSH logout.  Without it, the
+    gateway appears "active (running)" in systemctl but stops receiving
+    messages as soon as the terminal is closed.
+
+    Strategy:
+    1. Check whether linger is already enabled (fast path — no sudo needed).
+    2. If not, try ``loginctl enable-linger <user>`` — succeeds when the
+       process has CAP_SYS_ADMIN or the user has sudo-less loginctl access.
+    3. If that fails (no privileges), print a clear, actionable warning so
+       the user knows exactly what to run.
+    """
+    import getpass
+    username = getpass.getuser()
+
+    # Fast path: check linger state via the filesystem (no subprocess needed)
+    linger_file = Path(f"/var/lib/systemd/linger/{username}")
+    if linger_file.exists():
+        print("✓ Linger already enabled — gateway will persist after logout")
+        return
+
+    # Attempt to enable linger automatically
+    print("Enabling linger so the gateway survives SSH logout...")
+    result = subprocess.run(
+        ["loginctl", "enable-linger", username],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("✓ Linger enabled — gateway will persist after logout")
+    else:
+        # No privileges — print a clear, copy-pasteable warning
+        print()
+        print("⚠️  Linger not enabled — gateway will STOP when you close this terminal.")
+        print()
+        print("   On headless servers (VPS, cloud instances) you must run:")
+        print(f"     sudo loginctl enable-linger {username}")
+        print()
+        print("   Then restart the gateway:")
+        print("     systemctl --user restart hermes-gateway.service")
+        print()
+
+
 def systemd_install(force: bool = False):
     unit_path = get_systemd_unit_path()
     
@@ -211,8 +256,10 @@ def systemd_install(force: bool = False):
     print(f"  hermes gateway status             # Check status")
     print(f"  journalctl --user -u {SERVICE_NAME} -f  # View logs")
     print()
-    print("To enable lingering (keeps running after logout):")
-    print("  sudo loginctl enable-linger $USER")
+    # Auto-detect and enable linger for headless operation.
+    # Without linger, user services stop when the SSH session ends — even if
+    # systemctl shows "active (running)".  See: loginctl(1), systemd-logind(8).
+    _ensure_linger_enabled()
 
 def systemd_uninstall():
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)

@@ -64,14 +64,13 @@ class TestGatewayHonchoLifecycle:
         assert second_cfg is hcfg
         mock_mgr_cls.assert_called_once()
 
-    def test_gateway_skips_honcho_manager_in_local_mode(self):
+    def test_gateway_skips_honcho_manager_when_disabled(self):
         runner = _make_runner()
         hcfg = SimpleNamespace(
-            enabled=True,
+            enabled=False,
             api_key="honcho-key",
             ai_peer="hermes",
             peer_name="alice",
-            peer_memory_mode=lambda peer: "local",
         )
 
         with (

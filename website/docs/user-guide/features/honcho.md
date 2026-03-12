@@ -22,7 +22,7 @@ Hermes has two memory systems that can work together or be configured separately
 | Content | Manually curated by the agent | Automatically learned from conversations |
 | Write surface | `memory` tool (add/replace/remove) | `honcho_conclude` tool (persist facts) |
 
-Set `memoryMode` to `honcho` to use Honcho exclusively, or `local` to disable Honcho and use only local files. See [Memory Modes](#memory-modes) for per-peer configuration.
+Set `memoryMode` to `honcho` to use Honcho exclusively. See [Memory Modes](#memory-modes) for per-peer configuration.
 
 
 ## Setup
@@ -104,7 +104,7 @@ Settings are scoped to `hosts.hermes` and fall back to root-level globals when t
 | `environment` | `"production"` | Honcho environment |
 | `enabled` | *(auto)* | Auto-enables when API key is present |
 | `saveMessages` | `true` | Whether to sync messages to Honcho |
-| `memoryMode` | `"hybrid"` | Memory mode: `hybrid`, `honcho`, or `local` |
+| `memoryMode` | `"hybrid"` | Memory mode: `hybrid` or `honcho` |
 | `writeFrequency` | `"async"` | When to write: `async`, `turn`, `session`, or integer N |
 | `recallMode` | `"hybrid"` | Retrieval strategy: `hybrid`, `context`, or `tools` |
 | `sessionStrategy` | `"per-session"` | How sessions are scoped |
@@ -122,7 +122,6 @@ All host-level fields fall back to the equivalent root-level key if not set unde
 |------|--------|
 | `hybrid` | Write to both Honcho and local files (default) |
 | `honcho` | Honcho only — skip local file writes |
-| `local` | Local files only — skip all Honcho activity |
 
 Memory mode can be set globally or per-peer (user, agent1, agent2, etc):
 
@@ -130,13 +129,12 @@ Memory mode can be set globally or per-peer (user, agent1, agent2, etc):
 {
   "memoryMode": {
     "default": "hybrid",
-    "hermes": "honcho",
-    "user": "local"
+    "hermes": "honcho"
   }
 }
 ```
 
-When both active peers resolve to `local`, Hermes skips all remote Honcho activity entirely — no client initialization, no session creation, no prefetch.
+To disable Honcho entirely, set `enabled: false` or remove the API key.
 
 ### Recall Modes
 
@@ -300,7 +298,7 @@ hermes honcho peer --user NAME             # Set user peer name
 hermes honcho peer --ai NAME               # Set AI peer name
 hermes honcho peer --reasoning LEVEL       # Set dialectic reasoning level
 hermes honcho mode                         # Show current memory mode
-hermes honcho mode [hybrid|honcho|local]   # Set memory mode
+hermes honcho mode [hybrid|honcho]         # Set memory mode
 hermes honcho tokens                       # Show token budget settings
 hermes honcho tokens --context N           # Set context token cap
 hermes honcho tokens --dialectic N         # Set dialectic char cap

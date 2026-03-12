@@ -1210,11 +1210,10 @@ class TestSystemPromptStability:
 
 
 class TestHonchoActivation:
-    def test_local_mode_skips_honcho_init(self):
+    def test_disabled_config_skips_honcho_init(self):
         hcfg = HonchoClientConfig(
-            enabled=True,
+            enabled=False,
             api_key="honcho-key",
-            memory_mode="local",
             peer_name="user",
             ai_peer="hermes",
         )
@@ -1327,9 +1326,8 @@ class TestHonchoActivation:
 
     def test_inactive_honcho_strips_stale_honcho_tools(self):
         hcfg = HonchoClientConfig(
-            enabled=True,
+            enabled=False,
             api_key="honcho-key",
-            memory_mode="local",
             peer_name="user",
             ai_peer="hermes",
         )

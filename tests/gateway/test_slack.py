@@ -530,3 +530,277 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestFormatMessage — Markdown → mrkdwn conversion
+# ---------------------------------------------------------------------------
+
+
+class TestFormatMessage:
+    """Test markdown to Slack mrkdwn conversion."""
+
+    def test_bold_conversion(self, adapter):
+        assert adapter.format_message("**hello**") == "*hello*"
+
+    def test_italic_asterisk_conversion(self, adapter):
+        assert adapter.format_message("*hello*") == "_hello_"
+
+    def test_italic_underscore_preserved(self, adapter):
+        assert adapter.format_message("_hello_") == "_hello_"
+
+    def test_header_to_bold(self, adapter):
+        assert adapter.format_message("## Section Title") == "*Section Title*"
+
+    def test_header_with_bold_content(self, adapter):
+        # **bold** inside a header should not double-wrap
+        assert adapter.format_message("## **Title**") == "*Title*"
+
+    def test_link_conversion(self, adapter):
+        result = adapter.format_message("[click here](https://example.com)")
+        assert result == "<https://example.com|click here>"
+
+    def test_strikethrough(self, adapter):
+        assert adapter.format_message("~~deleted~~") == "~deleted~"
+
+    def test_code_block_preserved(self, adapter):
+        code = "```python\nx = **not bold**\n```"
+        assert adapter.format_message(code) == code
+
+    def test_inline_code_preserved(self, adapter):
+        text = "Use `**raw**` syntax"
+        assert adapter.format_message(text) == "Use `**raw**` syntax"
+
+    def test_mixed_content(self, adapter):
+        text = "**Bold** and *italic* with `code`"
+        result = adapter.format_message(text)
+        assert "*Bold*" in result
+        assert "_italic_" in result
+        assert "`code`" in result
+
+    def test_empty_string(self, adapter):
+        assert adapter.format_message("") == ""
+
+    def test_none_passthrough(self, adapter):
+        assert adapter.format_message(None) is None
+
+
+# ---------------------------------------------------------------------------
+# TestReactions
+# ---------------------------------------------------------------------------
+
+
+class TestReactions:
+    """Test emoji reaction methods."""
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_calls_api(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock()
+        result = await adapter._add_reaction("C123", "ts1", "eyes")
+        assert result is True
+        adapter._app.client.reactions_add.assert_called_once_with(
+            channel="C123", timestamp="ts1", name="eyes"
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_handles_error(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock(side_effect=Exception("already_reacted"))
+        result = await adapter._add_reaction("C123", "ts1", "eyes")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_remove_reaction_calls_api(self, adapter):
+        adapter._app.client.reactions_remove = AsyncMock()
+        result = await adapter._remove_reaction("C123", "ts1", "eyes")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_reactions_in_message_flow(self, adapter):
+        """Reactions should be added on receipt and swapped on completion."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should have added 👀, then removed 👀, then added ✅
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert len(add_calls) == 2
+        assert add_calls[0].kwargs["name"] == "eyes"
+        assert add_calls[1].kwargs["name"] == "white_check_mark"
+        assert len(remove_calls) == 1
+        assert remove_calls[0].kwargs["name"] == "eyes"
+
+
+# ---------------------------------------------------------------------------
+# TestUserNameResolution
+# ---------------------------------------------------------------------------
+
+
+class TestUserNameResolution:
+    """Test user identity resolution."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_display_name(self, adapter):
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler", "real_name": "Tyler B"}}
+        })
+        name = await adapter._resolve_user_name("U123")
+        assert name == "Tyler"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_real_name(self, adapter):
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "", "real_name": "Tyler B"}}
+        })
+        name = await adapter._resolve_user_name("U123")
+        assert name == "Tyler B"
+
+    @pytest.mark.asyncio
+    async def test_caches_result(self, adapter):
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        await adapter._resolve_user_name("U123")
+        await adapter._resolve_user_name("U123")
+        # Only one API call despite two lookups
+        assert adapter._app.client.users_info.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_handles_api_error(self, adapter):
+        adapter._app.client.users_info = AsyncMock(side_effect=Exception("rate limited"))
+        name = await adapter._resolve_user_name("U123")
+        assert name == "U123"  # Falls back to user_id
+
+    @pytest.mark.asyncio
+    async def test_user_name_in_message_source(self, adapter):
+        """Message source should include resolved user name."""
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Check the source in the MessageEvent passed to handle_message
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.source.user_name == "Tyler"
+
+
+# ---------------------------------------------------------------------------
+# TestSlashCommands — expanded command set
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommands:
+    """Test slash command routing."""
+
+    @pytest.mark.asyncio
+    async def test_compact_maps_to_compress(self, adapter):
+        command = {"text": "compact", "user_id": "U1", "channel_id": "C1"}
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/compress"
+
+    @pytest.mark.asyncio
+    async def test_resume_command(self, adapter):
+        command = {"text": "resume my session", "user_id": "U1", "channel_id": "C1"}
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/resume my session"
+
+    @pytest.mark.asyncio
+    async def test_background_command(self, adapter):
+        command = {"text": "background run tests", "user_id": "U1", "channel_id": "C1"}
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/background run tests"
+
+    @pytest.mark.asyncio
+    async def test_usage_command(self, adapter):
+        command = {"text": "usage", "user_id": "U1", "channel_id": "C1"}
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/usage"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command(self, adapter):
+        command = {"text": "reasoning", "user_id": "U1", "channel_id": "C1"}
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/reasoning"
+
+
+# ---------------------------------------------------------------------------
+# TestMessageSplitting
+# ---------------------------------------------------------------------------
+
+
+class TestMessageSplitting:
+    """Test that long messages are split before sending."""
+
+    @pytest.mark.asyncio
+    async def test_long_message_split_into_chunks(self, adapter):
+        """Messages over MAX_MESSAGE_LENGTH should be split."""
+        long_text = "x" * 5000
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "ts1"}
+        )
+        await adapter.send("C123", long_text)
+        # Should have been called multiple times
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_short_message_single_send(self, adapter):
+        """Short messages should be sent in one call."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "ts1"}
+        )
+        await adapter.send("C123", "hello world")
+        assert adapter._app.client.chat_postMessage.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TestReplyBroadcast
+# ---------------------------------------------------------------------------
+
+
+class TestReplyBroadcast:
+    """Test reply_broadcast config option."""
+
+    @pytest.mark.asyncio
+    async def test_broadcast_disabled_by_default(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "ts1"}
+        )
+        await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "reply_broadcast" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_broadcast_enabled_via_config(self, adapter):
+        adapter.config.extra["reply_broadcast"] = True
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "ts1"}
+        )
+        await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs.get("reply_broadcast") is True

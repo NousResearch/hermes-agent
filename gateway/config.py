@@ -29,6 +29,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    TLON = "tlon"
 
 
 @dataclass
@@ -456,6 +457,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.EMAIL,
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
+    # Tlon (Urbit)
+    tlon_url = os.getenv("TLON_SHIP_URL")
+    tlon_name = os.getenv("TLON_SHIP_NAME")
+    tlon_code = os.getenv("TLON_SHIP_CODE")
+    if all([tlon_url, tlon_name, tlon_code]):
+        if Platform.TLON not in config.platforms:
+            config.platforms[Platform.TLON] = PlatformConfig()
+        config.platforms[Platform.TLON].enabled = True
+        config.platforms[Platform.TLON].extra.update({
+            "ship_url": tlon_url,
+            "ship_name": tlon_name,
+        })
+        tlon_home = os.getenv("TLON_HOME_CHANNEL")
+        if tlon_home:
+            config.platforms[Platform.TLON].home_channel = HomeChannel(
+                platform=Platform.TLON,
+                chat_id=tlon_home,
+                name=os.getenv("TLON_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

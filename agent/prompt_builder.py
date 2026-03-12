@@ -139,6 +139,14 @@ PLATFORM_HINTS = {
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
+    "tlon": (
+        "You are on Tlon, a decentralized messaging platform built on Urbit. "
+        "Users are identified by ship names (patps) like ~sampel-palnet. "
+        "You can use basic markdown formatting. When mentioning users, use their "
+        "full ship name with the ~ prefix. You can send images by including "
+        "image URLs in markdown format ![alt](url). In group channels, users "
+        "mention you with your ship name to get your attention."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."

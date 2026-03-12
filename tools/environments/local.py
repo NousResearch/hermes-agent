@@ -151,6 +151,25 @@ class LocalEnvironment(BaseEnvironment):
     - Uses interactive login shell so full user env is available
     """
 
+    # Environment variables that should NOT be inherited by subprocesses.
+    # These are Hermes-internal provider settings that could break external CLIs
+    # (e.g., Codex CLI also reads OPENAI_BASE_URL and would be misrouted).
+    _BLOCKED_ENV_VARS = frozenset({
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",  # legacy alias
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_BASE_URL",
+        "TOGETHER_API_KEY",
+        "TOGETHER_BASE_URL",
+        "GROQ_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "HERMES_API_KEY",  # internal
+    })
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
 
@@ -192,7 +211,10 @@ class LocalEnvironment(BaseEnvironment):
             # Ensure PATH always includes standard dirs — systemd services
             # and some terminal multiplexers inherit a minimal PATH.
             _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            run_env = dict(os.environ | self.env)
+            # Build subprocess environment: start with os.environ, remove blocked
+            # provider vars that could break external CLIs, then merge self.env.
+            run_env = {k: v for k, v in os.environ.items() if k not in self._BLOCKED_ENV_VARS}
+            run_env.update(self.env)
             existing_path = run_env.get("PATH", "")
             if "/usr/bin" not in existing_path.split(":"):
                 run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH

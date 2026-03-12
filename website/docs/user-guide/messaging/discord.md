@@ -210,7 +210,7 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 
 Hermes Agent supports Discord voice messages:
 
-- **Incoming voice messages** are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY` to be set in your environment).
+- **Incoming voice messages** are automatically transcribed using the shared STT workflow and whichever provider you configure in `stt.provider` (`openai` or `whispercpp`).
 - **Text-to-speech**: When TTS is enabled, the bot can send spoken responses as MP3 file attachments.
 
 ## Troubleshooting

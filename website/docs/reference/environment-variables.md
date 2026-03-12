@@ -25,7 +25,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
-| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
+| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for OpenAI STT and OpenAI TTS (separate from custom endpoint) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`) |
 
 ## Provider Auth (OAuth)
@@ -53,6 +53,20 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+
+## Speech-to-Text
+
+These variables are optional overrides for the `stt` section in `~/.hermes/config.yaml`.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_STT_ENABLED` | Enable or disable speech-to-text preprocessing (`true`/`false`) |
+| `HERMES_STT_PROVIDER` | STT provider override: `openai` or `whispercpp` |
+| `HERMES_STT_MODEL` | OpenAI transcription model when `provider=openai` |
+| `HERMES_STT_WHISPERCPP_BINARY_PATH` | Path to the local `whisper.cpp` executable |
+| `HERMES_STT_WHISPERCPP_MODEL_PATH` | Path to the local `whisper.cpp` model file |
+| `HERMES_STT_WHISPERCPP_LANGUAGE` | Language override for `whisper.cpp` (`auto` by default) |
+| `HERMES_STT_WHISPERCPP_FFMPEG_PATH` | Path to the `ffmpeg` binary used to normalize input audio |
 
 ## Terminal Backend
 

@@ -115,3 +115,9 @@ class TestConfigYamlRouting:
         set_config_value("terminal.docker_image", "python:3.12")
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
+
+    def test_stt_whispercpp_paths_go_to_config(self, _isolated_hermes_home):
+        set_config_value("stt.whispercpp.binary_path", "/opt/whisper.cpp/whisper-cli")
+        config = _read_config(_isolated_hermes_home)
+        assert "/opt/whisper.cpp/whisper-cli" in config
+        assert "WHISPERCPP" not in _read_env(_isolated_hermes_home)

@@ -136,7 +136,14 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
+        "provider": "openai",
         "model": "whisper-1",
+        "whispercpp": {
+            "binary_path": "",
+            "model_path": "",
+            "language": "auto",
+            "ffmpeg_path": "ffmpeg",
+        },
     },
     
     "human_delay": {
@@ -1012,6 +1019,26 @@ def show_config():
                 if mdl:
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
+
+    # Speech-to-text
+    print()
+    print(color("◆ Speech-to-Text", Colors.CYAN, Colors.BOLD))
+    stt = config.get('stt', {})
+    stt_enabled = stt.get('enabled', True)
+    print(f"  Enabled:      {'yes' if stt_enabled else 'no'}")
+    if stt_enabled:
+        provider = stt.get('provider', DEFAULT_CONFIG['stt']['provider'])
+        print(f"  Provider:     {provider}")
+        stt_model = stt.get('model', '')
+        if stt_model:
+            print(f"  Model:        {stt_model}")
+        whispercpp = stt.get('whispercpp', {})
+        if provider in ('whispercpp', 'whisper.cpp', 'local'):
+            binary_path = whispercpp.get('binary_path', '') or '(auto-detect from PATH)'
+            model_path = whispercpp.get('model_path', '') or '(not set)'
+            print(f"  Binary:       {binary_path}")
+            print(f"  Model path:   {model_path}")
+            print(f"  Language:     {whispercpp.get('language', 'auto')}")
     
     # Messaging
     print()

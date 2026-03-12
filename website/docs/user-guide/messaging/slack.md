@@ -221,7 +221,7 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 
 Hermes supports voice on Slack:
 
-- **Incoming:** Voice/audio messages are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY`)
+- **Incoming:** Voice/audio messages are automatically transcribed using the shared STT workflow and whichever provider you configure in `stt.provider` (`openai` or `whispercpp`).
 - **Outgoing:** TTS responses are sent as audio file attachments
 
 ---

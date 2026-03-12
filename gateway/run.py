@@ -2250,8 +2250,8 @@ class GatewayRunner:
         audio_paths: List[str],
     ) -> str:
         """
-        Auto-transcribe user voice/audio messages using OpenAI Whisper API
-        and prepend the transcript to the message text.
+        Auto-transcribe user voice/audio messages and prepend a lightweight
+        note to the message text before it reaches the agent.
 
         Args:
             user_text:   The user's original caption / message text.
@@ -2269,29 +2269,24 @@ class GatewayRunner:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
-                else:
-                    error = result.get("error", "unknown error")
-                    if "OPENAI_API_KEY" in error or "VOICE_TOOLS_OPENAI_KEY" in error:
+                    transcript = str(result.get("transcript", "")).strip()
+                    if transcript:
                         enriched_parts.append(
-                            "[The user sent a voice message but I can't listen "
-                            "to it right now~ VOICE_TOOLS_OPENAI_KEY isn't set up yet "
-                            "(';w;') Let them know!]"
+                            "// Transcript of the user's audio message:\n"
+                            f"{transcript}"
                         )
                     else:
                         enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
+                            "// The user sent an audio message that couldn't get transcribed"
                         )
+                else:
+                    enriched_parts.append(
+                        "// The user sent an audio message that couldn't get transcribed"
+                    )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
+                    "// The user sent an audio message that couldn't get transcribed"
                 )
 
         if enriched_parts:

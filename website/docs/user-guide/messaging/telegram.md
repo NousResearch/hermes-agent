@@ -131,7 +131,7 @@ Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM c
 
 ### Incoming Voice (Speech-to-Text)
 
-Voice messages you send on Telegram are automatically transcribed using OpenAI's Whisper API and injected as text into the conversation. This requires `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`.
+Voice messages you send on Telegram are automatically transcribed before they reach the agent. Hermes uses the configured STT provider from `~/.hermes/config.yaml`. If `stt.provider` is `whispercpp`, configure `stt.whispercpp.binary_path` and `stt.whispercpp.model_path`; if `stt.provider` is `openai`, set `VOICE_TOOLS_OPENAI_KEY`.
 
 ### Outgoing Voice (Text-to-Speech)
 
@@ -173,7 +173,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
 | Bot not responding at all | Verify `TELEGRAM_BOT_TOKEN` is correct. Check `hermes gateway` logs for errors. |
 | Bot responds with "unauthorized" | Your user ID is not in `TELEGRAM_ALLOWED_USERS`. Double-check with @userinfobot. |
 | Bot ignores group messages | Privacy mode is likely on. Disable it (Step 3) or make the bot a group admin. **Remember to remove and re-add the bot after changing privacy.** |
-| Voice messages not transcribed | Check that `VOICE_TOOLS_OPENAI_KEY` is set and valid in `~/.hermes/.env`. |
+| Voice messages not transcribed | Check `stt.whispercpp.binary_path`, `stt.whispercpp.model_path`, and `ffmpeg` availability. If using OpenAI STT instead, verify `VOICE_TOOLS_OPENAI_KEY`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
 

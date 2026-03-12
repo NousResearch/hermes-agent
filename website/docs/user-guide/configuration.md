@@ -627,10 +627,21 @@ display:
 
 ```yaml
 stt:
-  provider: "openai"           # STT provider
+  enabled: true
+  provider: "openai"           # openai | whispercpp
+  model: "whisper-1"           # Used when provider=openai
+  whispercpp:
+    binary_path: ""            # Used when provider=whispercpp
+    model_path: ""             # Used when provider=whispercpp
+    language: "auto"
+    ffmpeg_path: "ffmpeg"
 ```
 
-Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+Incoming messaging audio is transcribed as a workflow preprocessing step before the message reaches the agent.
+
+- `openai` uses `VOICE_TOOLS_OPENAI_KEY`.
+- `whispercpp` runs locally when you set `stt.provider: "whispercpp"` and configure `stt.whispercpp.binary_path` plus `stt.whispercpp.model_path`.
+- You can keep these settings in `~/.hermes/config.yaml` or override them with the `HERMES_STT_*` environment variables.
 
 ## Human Delay
 

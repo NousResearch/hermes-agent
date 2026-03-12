@@ -579,10 +579,16 @@ toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Requires OPENAI_API_KEY in .env (uses OpenAI Whisper API directly).
+# Provider is configurable. Use whisper.cpp only when you explicitly select it.
 stt:
   enabled: true
-  model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  provider: "openai"      # openai | whispercpp
+  model: "whisper-1"      # Used when provider=openai
+  whispercpp:
+    binary_path: ""       # Set when provider=whispercpp, e.g. /home/me/whisper.cpp/build/bin/whisper-cli
+    model_path: ""        # Set when provider=whispercpp to a ggml/gguf model file
+    language: "auto"      # "auto" for detection, or a language code like "en"
+    ffmpeg_path: "ffmpeg" # ffmpeg binary used to normalize input audio
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

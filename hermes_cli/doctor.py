@@ -53,6 +53,46 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _get_stt_runtime_status():
+    """Inspect the effective speech-to-text configuration and prerequisites."""
+    try:
+        from tools.transcription_tools import (
+            DEFAULT_STT_PROVIDER,
+            WHISPERCPP_PROVIDER,
+            resolve_ffmpeg_binary,
+            resolve_stt_config,
+            resolve_whispercpp_binary,
+        )
+
+        stt_config = resolve_stt_config()
+        provider = str(stt_config.get("provider", DEFAULT_STT_PROVIDER) or DEFAULT_STT_PROVIDER).strip().lower()
+        whispercpp_cfg = stt_config.get("whispercpp", {})
+
+        binary_path = resolve_whispercpp_binary(stt_config) if provider == WHISPERCPP_PROVIDER else ""
+        ffmpeg_path = resolve_ffmpeg_binary(stt_config) if provider == WHISPERCPP_PROVIDER else ""
+        model_path_raw = str(whispercpp_cfg.get("model_path", "") or "").strip()
+        model_path = Path(os.path.expanduser(model_path_raw)) if model_path_raw else None
+
+        return {
+            "enabled": bool(stt_config.get("enabled", True)),
+            "provider": provider,
+            "binary_path": binary_path,
+            "binary_found": bool(binary_path),
+            "binary_configured": str(whispercpp_cfg.get("binary_path", "") or "").strip(),
+            "model_path": str(model_path) if model_path else "",
+            "model_found": bool(model_path and model_path.is_file()),
+            "ffmpeg_path": ffmpeg_path,
+            "ffmpeg_found": bool(ffmpeg_path),
+            "ffmpeg_configured": str(whispercpp_cfg.get("ffmpeg_path", "ffmpeg") or "ffmpeg").strip(),
+        }
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "provider": "unknown",
+            "error": str(exc),
+        }
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -436,6 +476,48 @@ def run_doctor(args):
                     check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
             except Exception:
                 pass
+
+    # =========================================================================
+    # Check: Speech-to-Text
+    # =========================================================================
+    print()
+    print(color("◆ Speech-to-Text", Colors.CYAN, Colors.BOLD))
+
+    stt_status = _get_stt_runtime_status()
+    if stt_status.get("error"):
+        check_warn("Could not inspect STT configuration", f"({stt_status['error']})")
+    elif not stt_status.get("enabled", True):
+        check_warn("Speech-to-text disabled")
+    elif stt_status.get("provider") == "whispercpp":
+        binary_label = stt_status.get("binary_path") or stt_status.get("binary_configured") or "(not configured)"
+        if stt_status.get("binary_found"):
+            check_ok("whisper.cpp binary", f"({binary_label})")
+        else:
+            check_fail("whisper.cpp binary", f"({binary_label})")
+            issues.append("Configure stt.whispercpp.binary_path or install whisper.cpp in PATH")
+
+        model_label = stt_status.get("model_path") or "(not configured)"
+        if stt_status.get("model_found"):
+            check_ok("whisper.cpp model", f"({model_label})")
+        else:
+            check_fail("whisper.cpp model", f"({model_label})")
+            issues.append("Configure stt.whispercpp.model_path to a local whisper.cpp model file")
+
+        ffmpeg_label = stt_status.get("ffmpeg_path") or stt_status.get("ffmpeg_configured") or "(not configured)"
+        if stt_status.get("ffmpeg_found"):
+            check_ok("ffmpeg", f"({ffmpeg_label})")
+        else:
+            check_fail("ffmpeg", f"({ffmpeg_label})")
+            issues.append("Install ffmpeg or configure stt.whispercpp.ffmpeg_path")
+    elif stt_status.get("provider") == "openai":
+        if os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+            check_ok("OpenAI STT key", "(VOICE_TOOLS_OPENAI_KEY configured)")
+        else:
+            check_fail("OpenAI STT key", "(VOICE_TOOLS_OPENAI_KEY missing)")
+            issues.append("Set VOICE_TOOLS_OPENAI_KEY or switch stt.provider to whispercpp")
+    else:
+        check_warn("Unknown STT provider", f"({stt_status.get('provider', 'unknown')})")
+        issues.append(f"Set stt.provider to whispercpp or openai (current: {stt_status.get('provider', 'unknown')})")
 
     # =========================================================================
     # Check: API connectivity

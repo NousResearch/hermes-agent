@@ -44,6 +44,8 @@ class TestLoadConfigDefaults:
             assert config["max_turns"] == DEFAULT_CONFIG["max_turns"]
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert config["stt"]["provider"] == "openai"
+            assert config["stt"]["whispercpp"]["language"] == "auto"
 
 
 class TestSaveAndLoadRoundtrip:
@@ -66,3 +68,12 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+    def test_stt_nested_defaults_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config({"stt": {"provider": "whispercpp"}})
+
+            reloaded = load_config()
+            assert reloaded["stt"]["provider"] == "whispercpp"
+            assert reloaded["stt"]["whispercpp"]["language"] == "auto"
+            assert reloaded["stt"]["whispercpp"]["ffmpeg_path"] == "ffmpeg"

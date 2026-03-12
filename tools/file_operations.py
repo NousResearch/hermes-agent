@@ -383,13 +383,17 @@ class ShellFileOperations(FileOperations):
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.
-        
+
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
+
+        Security: after expansion, validate that paths starting with ~
+        resolve within the user's home directory to prevent traversal
+        attacks (e.g. ~/../../etc/passwd).
         """
         if not path:
             return path
-        
+
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment
@@ -399,7 +403,17 @@ class ShellFileOperations(FileOperations):
                 if path == '~':
                     return home
                 elif path.startswith('~/'):
-                    return home + path[1:]  # Replace ~ with home
+                    expanded = home + path[1:]  # Replace ~ with home
+                    # Validate: resolved path must stay within home directory
+                    # Use normpath (not realpath) since the target may not exist
+                    # yet and we're operating on a potentially remote filesystem.
+                    resolved = os.path.normpath(expanded)
+                    if not (resolved == home or resolved.startswith(home + os.sep)):
+                        raise ValueError(
+                            f"Path traversal blocked: '{path}' resolves outside "
+                            f"home directory"
+                        )
+                    return expanded
                 # ~username format - extract and validate username before
                 # letting shell expand it (prevent shell injection via
                 # paths like "~; rm -rf /").
@@ -410,7 +424,7 @@ class ShellFileOperations(FileOperations):
                     expand_result = self._exec(f"echo {path}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         return expand_result.stdout.strip()
-        
+
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:

@@ -70,6 +70,7 @@ Thread safety:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import math
@@ -78,6 +79,7 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -943,6 +945,76 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
+# ---------------------------------------------------------------------------
+# URI validation for MCP read_resource — blocks SSRF vectors
+# ---------------------------------------------------------------------------
+
+# Schemes that are always safe for MCP resource reads
+_MCP_ALLOWED_SCHEMES = frozenset({"https", "http"})
+
+# Internal/cloud-metadata IP ranges to block
+_MCP_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),        # loopback
+    ipaddress.ip_network("10.0.0.0/8"),          # RFC 1918
+    ipaddress.ip_network("172.16.0.0/12"),       # RFC 1918
+    ipaddress.ip_network("192.168.0.0/16"),      # RFC 1918
+    ipaddress.ip_network("169.254.0.0/16"),      # link-local / cloud metadata
+    ipaddress.ip_network("::1/128"),             # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),            # IPv6 ULA
+    ipaddress.ip_network("fe80::/10"),           # IPv6 link-local
+]
+
+
+def _validate_mcp_uri(uri: str) -> Optional[str]:
+    """Validate a URI for MCP read_resource. Returns error string or None if OK.
+
+    Blocks:
+    - file://, gopher://, ftp://, and other dangerous schemes
+    - Requests to loopback, private, and link-local (cloud metadata) IPs
+    - Hostnames that look like they resolve to internal IPs (localhost, etc.)
+
+    Allows:
+    - http:// and https:// to non-internal hosts
+    - MCP-native URIs with custom schemes (e.g. github://repo/file) since
+      these are interpreted by the MCP server, not fetched by the client
+
+    Note: DNS rebinding is not addressed here — a follow-up could add async
+    DNS resolution for HTTP URIs.
+    """
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return f"Invalid URI: {uri}"
+
+    scheme = (parsed.scheme or "").lower()
+
+    # Block known dangerous schemes that fetch from the local system
+    if scheme in ("file", "gopher", "ftp", "ftps", "dict", "ldap", "ldaps"):
+        return f"Blocked scheme '{scheme}://' in MCP resource URI"
+
+    # For http/https, validate the host is not internal
+    if scheme in _MCP_ALLOWED_SCHEMES:
+        host = (parsed.hostname or "").lower()
+
+        # Block obvious internal hostnames
+        if host in ("localhost", "metadata.google.internal", "metadata"):
+            return f"Blocked internal host '{host}' in MCP resource URI"
+
+        # Try to parse as IP and check against blocked networks
+        try:
+            addr = ipaddress.ip_address(host)
+            for network in _MCP_BLOCKED_NETWORKS:
+                if addr in network:
+                    return f"Blocked internal IP '{host}' in MCP resource URI"
+        except ValueError:
+            pass  # Not an IP literal — hostname is fine
+
+    # Custom/MCP-native schemes (github://, slack://, etc.) are passed through
+    # since they're interpreted by the MCP server, not fetched by the client.
+
+    return None
+
+
 def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
@@ -957,6 +1029,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         uri = args.get("uri")
         if not uri:
             return json.dumps({"error": "Missing required parameter 'uri'"})
+
+        # Validate URI to prevent SSRF
+        uri_error = _validate_mcp_uri(uri)
+        if uri_error:
+            return json.dumps({"error": uri_error})
 
         async def _call():
             result = await server.session.read_resource(uri)

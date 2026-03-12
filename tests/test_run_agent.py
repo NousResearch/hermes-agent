@@ -490,12 +490,48 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 900.0
 
+    def test_timeout_custom_provider_with_env(self, agent, monkeypatch):
+        import os
+
+        monkeypatch.setenv("OPENAI_LLM_TIMEOUT", "120.0")
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["timeout"] == 120.0
+
+    def test_timeout_custom_provider_without_env(self, agent):
+        import os
+
+        os.environ.pop("OPENAI_LLM_TIMEOUT", None)
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["timeout"] == 900.0
+
+    def test_timeout_openrouter_ignores_env(self, agent, monkeypatch):
+        import os
+
+        monkeypatch.setenv("OPENAI_LLM_TIMEOUT", "120.0")
+        agent.provider = "openrouter"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["timeout"] == 900.0
+
+    def test_timeout_invalid_env_value(self, agent, monkeypatch):
+        import os
+
+        monkeypatch.setenv("OPENAI_LLM_TIMEOUT", "invalid")
+        agent.provider = "custom"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["timeout"] == 900.0
+
     def test_provider_preferences_injected(self, agent):
         agent.providers_allowed = ["Anthropic"]
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
+        assert "provider" in kwargs.get("extra_body", {})
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
-
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
         messages = [{"role": "user", "content": "hi"}]

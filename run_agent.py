@@ -2390,11 +2390,19 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        # Determine timeout based on provider and environment variable
+        timeout = 900.0
+        if self.provider == "custom" and os.getenv("OPENAI_LLM_TIMEOUT"):
+            try:
+                timeout = float(os.getenv("OPENAI_LLM_TIMEOUT"))
+            except ValueError:
+                pass  # Keep default if invalid
+
         api_kwargs = {
             "model": self.model,
             "messages": api_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": 900.0,
+            "timeout": timeout,
         }
 
         if self.max_tokens is not None:

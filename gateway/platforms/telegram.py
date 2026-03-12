@@ -101,15 +101,17 @@ class TelegramAdapter(BasePlatformAdapter):
     - Sending responses with Telegram markdown
     - Forum topics (thread_id support)
     - Media messages
+    - Reply threading modes (off/first/all)
     """
     
-    # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._delivery_progress: Dict[str, bool] = {}
     
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
@@ -206,6 +208,29 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)
     
+    def _should_thread_reply(self, chat_id: str, reply_to: Optional[str], chunk_index: int) -> bool:
+        """
+        Determine if this message chunk should thread to the original message.
+        
+        Args:
+            chat_id: The chat ID
+            reply_to: The original message ID to reply to
+            chunk_index: Index of this chunk (0 = first chunk)
+        
+        Returns:
+            True if this chunk should be threaded to the original message
+        """
+        if not reply_to:
+            return False
+        
+        mode = self._reply_to_mode
+        if mode == "off":
+            return False
+        elif mode == "all":
+            return True
+        else:  # "first" (default)
+            return chunk_index == 0
+
     async def send(
         self,
         chat_id: str,
@@ -218,7 +243,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         
         try:
-            # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             
@@ -226,31 +250,30 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             
             for i, chunk in enumerate(chunks):
-                # Try Markdown first, fall back to plain text if it fails
+                should_thread = self._should_thread_reply(chat_id, reply_to, i)
+                reply_to_id = int(reply_to) if should_thread else None
+                
                 try:
                     msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=chunk,
                         parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                        reply_to_message_id=reply_to_id,
                         message_thread_id=int(thread_id) if thread_id else None,
                     )
                 except Exception as md_error:
-                    # Markdown parsing failed, try plain text
                     if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                         logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                        # Strip MDV2 escape backslashes so the user doesn't
-                        # see raw backslashes littered through the message.
                         plain_chunk = _strip_mdv2(chunk)
                         msg = await self._bot.send_message(
                             chat_id=int(chat_id),
                             text=plain_chunk,
-                            parse_mode=None,  # Plain text
-                            reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                            parse_mode=None,
+                            reply_to_message_id=reply_to_id,
                             message_thread_id=int(thread_id) if thread_id else None,
                         )
                     else:
-                        raise  # Re-raise if not a parse error
+                        raise
                 message_ids.append(str(msg.message_id))
             
             return SendResult(

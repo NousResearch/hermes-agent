@@ -517,6 +517,38 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
+    # ── API Server ──
+    "API_SERVER_ENABLED": {
+        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI to connect.",
+        "prompt": "Enable API server (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "API_SERVER_KEY": {
+        "description": "Bearer token for API server authentication. If not set, all requests are allowed (local-only use).",
+        "prompt": "API server auth key (leave empty for no auth)",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "API_SERVER_PORT": {
+        "description": "Port for the API server (default: 8642).",
+        "prompt": "API server port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_HOST": {
+        "description": "Bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access (set API_SERVER_KEY!).",
+        "prompt": "API server bind address",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+
     # ── Agent settings ──
     "MESSAGING_CWD": {
         "description": "Working directory for terminal commands via messaging",

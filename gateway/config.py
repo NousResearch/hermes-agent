@@ -29,6 +29,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    API_SERVER = "api_server"
 
 
 @dataclass
@@ -98,6 +99,12 @@ class PlatformConfig:
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
     
+    # Reply threading mode (Telegram/Slack)
+    # - "off": Never thread replies to original message
+    # - "first": Only first chunk threads to user's message (default)
+    # - "all": All chunks in multi-part replies thread to user's message
+    reply_to_mode: str = "first"
+    
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
     
@@ -105,6 +112,7 @@ class PlatformConfig:
         result = {
             "enabled": self.enabled,
             "extra": self.extra,
+            "reply_to_mode": self.reply_to_mode,
         }
         if self.token:
             result["token"] = self.token
@@ -125,6 +133,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
+            reply_to_mode=data.get("reply_to_mode", "first"),
             extra=data.get("extra", {}),
         )
 
@@ -170,6 +179,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # API Server uses enabled flag only (no token needed)
+            elif platform == Platform.API_SERVER:
                 connected.append(platform)
         return connected
     
@@ -358,6 +370,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
+    # Reply threading mode for Telegram (off/first/all)
+    telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
+    if telegram_reply_mode in ("off", "first", "all"):
+        config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
+    
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
@@ -457,6 +474,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
+
+    # API Server
+    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
+    api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_port = os.getenv("API_SERVER_PORT")
+    api_server_host = os.getenv("API_SERVER_HOST")
+    if api_server_enabled or api_server_key:
+        if Platform.API_SERVER not in config.platforms:
+            config.platforms[Platform.API_SERVER] = PlatformConfig()
+        config.platforms[Platform.API_SERVER].enabled = True
+        if api_server_key:
+            config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+        if api_server_port:
+            try:
+                config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
+            except ValueError:
+                pass
+        if api_server_host:
+            config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

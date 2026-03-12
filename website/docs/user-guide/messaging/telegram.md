@@ -161,6 +161,26 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - When privacy mode is off (or bot is admin), the bot sees all messages and can participate naturally
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
 
+## Reply Threading Mode
+
+When a response is longer than 4096 characters, Telegram splits it into multiple message chunks. By default, only the first chunk is sent as a reply to your message (showing the "replied to" bubble). You can change this behavior:
+
+| Mode | Behavior |
+|------|----------|
+| `first` (default) | First chunk replies to your message, rest are standalone |
+| `all` | Every chunk replies to your message |
+| `off` | No chunks reply — all sent as standalone messages |
+
+### Configure via environment variable
+
+```bash
+TELEGRAM_REPLY_TO_MODE=off    # or "first" or "all"
+```
+
+### Configure via gateway config
+
+In your gateway configuration, set `reply_to_mode` on the Telegram platform config.
+
 ## Recent Bot API Features (2024–2025)
 
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.

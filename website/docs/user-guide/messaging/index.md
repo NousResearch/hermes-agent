@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or any OpenAI-compatible frontend — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or any OpenAI-compatible frontend (Open WebUI, LobeChat, etc.). The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email. The 
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌───────┐│
-│  │ Telegram │ │ Discord  │ │ WhatsApp │ │ Slack  │ │ Signal │ │ Email ││
-│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │Adapter │ │Adapter │ │Adapter││
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └───┬────┘ └──┬────┘│
-│       │             │            │            │          │         │     │
-│       └─────────────┼────────────┼────────────┼──────────┼─────────┘     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌───────┐ ┌──────────┐│
+│  │ Telegram │ │ Discord  │ │ WhatsApp │ │ Slack  │ │ Signal │ │ Email │ │API Server││
+│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │Adapter │ │Adapter │ │Adapter│ │ (OpenAI) ││
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └───┬────┘ └──┬────┘ └────┬─────┘│
+│       │             │            │            │          │         │           │      │
+│       └─────────────┼────────────┼────────────┼──────────┼─────────┼───────────┘      │
 │                           │                                     │
 │                  ┌────────▼────────┐                            │
 │                  │  Session Store  │                            │
@@ -204,6 +204,7 @@ Each platform has its own toolset:
 | Slack | `hermes-slack` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
+| API Server | `hermes-api_server` | Full tools including terminal |
 
 ## Next Steps
 
@@ -213,3 +214,5 @@ Each platform has its own toolset:
 - [WhatsApp Setup](whatsapp.md)
 - [Signal Setup](signal.md)
 - [Email Setup](email.md)
+- [Open WebUI Setup](open-webui.md)
+- [API Server](../features/api-server.md)

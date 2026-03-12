@@ -221,6 +221,7 @@ class AIAgent:
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
+        stream_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -274,6 +275,9 @@ class AIAgent:
                 polluting trajectories with user-specific persona or project instructions.
             honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
+            stream_callback (callable): Optional callback(text_delta: str) invoked for each
+                text token during streaming LLM generation. Pass None (end signal) when done.
+                When set, the agent uses stream=True for API calls. Disabled by default.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -309,6 +313,7 @@ class AIAgent:
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
+        self.stream_callback = stream_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -2076,8 +2081,20 @@ class AIAgent:
         for attempt in range(max_stream_retries + 1):
             try:
                 with self.client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
+                    for event in stream:
+                        if self.stream_callback and hasattr(event, 'type'):
+                            if getattr(event, 'type', '') == 'response.output_text.delta':
+                                delta_text = getattr(event, 'delta', '')
+                                if delta_text:
+                                    try:
+                                        self.stream_callback(delta_text)
+                                    except Exception:
+                                        pass
+                    if self.stream_callback:
+                        try:
+                            self.stream_callback(None)
+                        except Exception:
+                            pass
                     return stream.get_final_response()
             except RuntimeError as exc:
                 err_text = str(exc)
@@ -2215,6 +2232,87 @@ class AIAgent:
 
         return True
 
+    def _run_streaming_chat_completion(self, api_kwargs: dict):
+        """Stream a chat completion, emitting text tokens via stream_callback.
+
+        Returns a SimpleNamespace response object compatible with the non-streaming
+        code path. Falls back to non-streaming on any error.
+        """
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs["stream"] = True
+        # Request usage in the final chunk
+        stream_kwargs["stream_options"] = {"include_usage": True}
+
+        accumulated_content = []
+        accumulated_tool_calls = {}
+        final_usage = None
+
+        try:
+            stream = self.client.chat.completions.create(**stream_kwargs)
+
+            for chunk in stream:
+                if not chunk.choices:
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        final_usage = chunk.usage
+                    continue
+
+                delta = chunk.choices[0].delta
+
+                if hasattr(delta, 'content') and delta.content:
+                    accumulated_content.append(delta.content)
+                    if self.stream_callback:
+                        try:
+                            self.stream_callback(delta.content)
+                        except Exception:
+                            pass
+
+                if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
+                        if hasattr(tc_delta, 'function') and tc_delta.function:
+                            if getattr(tc_delta.function, 'name', None):
+                                accumulated_tool_calls[idx]["name"] = tc_delta.function.name
+                            if getattr(tc_delta.function, 'arguments', None):
+                                accumulated_tool_calls[idx]["arguments"] += tc_delta.function.arguments
+
+            if self.stream_callback:
+                try:
+                    self.stream_callback(None)  # End signal
+                except Exception:
+                    pass
+
+            tool_calls = []
+            for idx in sorted(accumulated_tool_calls):
+                tc = accumulated_tool_calls[idx]
+                if tc["name"]:
+                    tool_calls.append(SimpleNamespace(
+                        id=tc["id"], type="function",
+                        function=SimpleNamespace(name=tc["name"], arguments=tc["arguments"]),
+                    ))
+
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="".join(accumulated_content) or "",
+                        tool_calls=tool_calls or None,
+                        role="assistant",
+                    ),
+                    finish_reason="tool_calls" if tool_calls else "stop",
+                )],
+                usage=final_usage,
+                model=self.model,
+            )
+        except Exception as e:
+            if self.stream_callback:
+                try:
+                    self.stream_callback(None)
+                except Exception:
+                    pass
+            logger.debug("Streaming chat completion failed, falling back: %s", e)
+            return self.client.chat.completions.create(**api_kwargs)
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2230,6 +2328,8 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
+                elif self.stream_callback is not None:
+                    result["response"] = self._run_streaming_chat_completion(api_kwargs)
                 else:
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
             except Exception as e:

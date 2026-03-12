@@ -220,6 +220,22 @@ compression:
   # summary_provider: "auto"
 
 # =============================================================================
+# Streaming (live token-by-token response display)
+# =============================================================================
+# When enabled, LLM responses stream token-by-token instead of appearing
+# all at once. Supported on Telegram, Discord, Slack (via message editing)
+# and the API server (via SSE). Disabled by default.
+#
+# streaming:
+#   enabled: false          # Master switch (default: off)
+#   # Per-platform overrides:
+#   # telegram: true
+#   # discord: true
+#   # api_server: true
+#   # edit_interval: 1.5    # Seconds between message edits (default: 1.5)
+#   # min_tokens: 20        # Tokens before first display (default: 20)
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,

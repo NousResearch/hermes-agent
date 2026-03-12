@@ -384,7 +384,7 @@ def text_to_speech_tool(
     except ValueError as e:
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
-        logger.error("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
     except FileNotFoundError as e:
         # Missing dependencies or files

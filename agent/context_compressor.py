@@ -127,20 +127,38 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             except Exception as e:
                 logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
 
-        # 2. Fallback: try the user's main model endpoint
-        fallback_client, fallback_model = self._get_fallback_client()
-        if fallback_client is not None:
+        # 2. Fallback: re-try via the centralized provider router.
+        #    This covers all configured providers (Codex OAuth, API-key
+        #    providers, etc.) without ad-hoc env var lookups.
+        from agent.auxiliary_client import resolve_provider_client
+        fallback_providers = ["custom", "openrouter", "nous", "codex"]
+        for fb_provider in fallback_providers:
             try:
-                logger.info("Retrying context summary with main model (%s)", fallback_model)
-                summary = self._call_summary_model(fallback_client, fallback_model, prompt)
-                self.client = fallback_client
-                self.summary_model = fallback_model
+                fb_client, fb_model = resolve_provider_client(
+                    fb_provider, model=self.model)
+                if fb_client is None:
+                    continue
+                # Don't retry the same client that just failed
+                if (self.client is not None
+                        and hasattr(fb_client, "base_url")
+                        and hasattr(self.client, "base_url")
+                        and str(fb_client.base_url) == str(self.client.base_url)):
+                    continue
+                logger.info("Retrying context summary with fallback provider "
+                            "%s (%s)", fb_provider, fb_model)
+                summary = self._call_summary_model(fb_client, fb_model, prompt)
+                # Promote successful fallback for future compressions
+                self.client = fb_client
+                self.summary_model = fb_model
                 return summary
             except Exception as fallback_err:
-                logging.warning(f"Main model summary also failed: {fallback_err}")
+                logging.warning("Fallback provider %s failed: %s",
+                                fb_provider, fallback_err)
 
-        # 3. All models failed — return None so the caller drops turns without a summary
-        logging.warning("Context compression: no model available for summary. Middle turns will be dropped without summary.")
+        # 3. All providers failed — return None so the caller drops turns
+        #    without a summary.
+        logging.warning("Context compression: no provider available for "
+                        "summary. Middle turns will be dropped without summary.")
         return None
 
     def _call_summary_model(self, client, model: str, prompt: str) -> str:
@@ -169,35 +187,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if not summary.startswith("[CONTEXT SUMMARY]:"):
             summary = "[CONTEXT SUMMARY]: " + summary
         return summary
-
-    def _get_fallback_client(self):
-        """Try to build a fallback client from the main model's endpoint config.
-
-        When the primary auxiliary client fails (e.g. stale OpenRouter key), this
-        creates a client using the user's active custom endpoint (OPENAI_BASE_URL)
-        so compression can still produce a real summary instead of a static string.
-
-        Returns (client, model) or (None, None).
-        """
-        custom_base = os.getenv("OPENAI_BASE_URL")
-        custom_key = os.getenv("OPENAI_API_KEY")
-        if not custom_base or not custom_key:
-            return None, None
-
-        # Don't fallback to the same provider that just failed
-        from hermes_constants import OPENROUTER_BASE_URL
-        if custom_base.rstrip("/") == OPENROUTER_BASE_URL.rstrip("/"):
-            return None, None
-
-        model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or self.model
-        try:
-            from openai import OpenAI as _OpenAI
-            client = _OpenAI(api_key=custom_key, base_url=custom_base)
-            logger.debug("Built fallback auxiliary client: %s via %s", model, custom_base)
-            return client, model
-        except Exception as exc:
-            logger.debug("Could not build fallback auxiliary client: %s", exc)
-            return None, None
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers

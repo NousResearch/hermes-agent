@@ -1,39 +1,30 @@
 """Shared OpenRouter API client for Hermes tools.
 
 Provides a single lazy-initialized AsyncOpenAI client that all tool modules
-can share, eliminating the duplicated _get_openrouter_client() / 
-_get_summarizer_client() pattern previously copy-pasted across web_tools,
-vision_tools, mixture_of_agents_tool, and session_search_tool.
+can share.  Routes through the centralized provider router in
+agent/auxiliary_client.py so auth, headers, and API format are handled
+consistently.
 """
 
 import os
 
-from openai import AsyncOpenAI
-from hermes_constants import OPENROUTER_BASE_URL
-
-_client: AsyncOpenAI | None = None
+_client = None
 
 
-def get_async_client() -> AsyncOpenAI:
-    """Return a shared AsyncOpenAI client pointed at OpenRouter.
+def get_async_client():
+    """Return a shared async OpenAI-compatible client for OpenRouter.
 
     The client is created lazily on first call and reused thereafter.
+    Uses the centralized provider router for auth and client construction.
     Raises ValueError if OPENROUTER_API_KEY is not set.
     """
     global _client
     if _client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("openrouter", async_mode=True)
+        if client is None:
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        _client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_BASE_URL,
-            default_headers={
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-            },
-        )
+        _client = client
     return _client
 
 

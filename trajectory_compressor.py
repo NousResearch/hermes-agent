@@ -344,38 +344,61 @@ class TrajectoryCompressor:
             raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}")
     
     def _init_summarizer(self):
-        """Initialize OpenRouter client for summarization (sync and async)."""
-        api_key = os.getenv(self.config.api_key_env)
-        if not api_key:
-            raise RuntimeError(f"Missing API key. Set {self.config.api_key_env} environment variable.")
-        
-        from openai import OpenAI, AsyncOpenAI
-        
-        # OpenRouter app attribution headers (only for OpenRouter endpoints)
-        extra = {}
-        if "openrouter" in self.config.base_url.lower():
-            extra["default_headers"] = {
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-            }
-        
-        # Sync client (for backwards compatibility)
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=self.config.base_url,
-            **extra,
-        )
-        
-        # Async client for parallel processing
-        self.async_client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=self.config.base_url,
-            **extra,
-        )
-        
-        print(f"✅ Initialized OpenRouter client: {self.config.summarization_model}")
+        """Initialize LLM client for summarization (sync and async).
+
+        Routes through the centralized provider router for known providers
+        (OpenRouter, Nous, Codex, etc.) so auth and headers are handled
+        consistently.  Falls back to raw construction for custom endpoints.
+        """
+        from agent.auxiliary_client import resolve_provider_client
+
+        provider = self._detect_provider()
+        if provider:
+            # Use centralized router — handles auth, headers, Codex adapter
+            self.client, _ = resolve_provider_client(
+                provider, model=self.config.summarization_model)
+            self.async_client, _ = resolve_provider_client(
+                provider, model=self.config.summarization_model,
+                async_mode=True)
+            if self.client is None:
+                raise RuntimeError(
+                    f"Provider '{provider}' is not configured. "
+                    f"Check your API key or run: hermes setup")
+        else:
+            # Custom endpoint — use config's raw base_url + api_key_env
+            api_key = os.getenv(self.config.api_key_env)
+            if not api_key:
+                raise RuntimeError(
+                    f"Missing API key. Set {self.config.api_key_env} "
+                    f"environment variable.")
+            from openai import OpenAI, AsyncOpenAI
+            self.client = OpenAI(
+                api_key=api_key, base_url=self.config.base_url)
+            self.async_client = AsyncOpenAI(
+                api_key=api_key, base_url=self.config.base_url)
+
+        print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
         print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
+
+    def _detect_provider(self) -> str:
+        """Detect the provider name from the configured base_url."""
+        url = self.config.base_url.lower()
+        if "openrouter" in url:
+            return "openrouter"
+        if "nousresearch.com" in url:
+            return "nous"
+        if "chatgpt.com/backend-api/codex" in url:
+            return "codex"
+        if "api.z.ai" in url:
+            return "zai"
+        if "moonshot.ai" in url or "api.kimi.com" in url:
+            return "kimi-coding"
+        if "minimaxi.com" in url:
+            return "minimax-cn"
+        if "minimax.io" in url:
+            return "minimax"
+        # Unknown base_url — not a known provider
+        return ""
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using the configured tokenizer."""

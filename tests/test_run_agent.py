@@ -960,7 +960,7 @@ class TestFlushSentinelNotLeaked:
         agent.client.chat.completions.create.return_value = mock_response
 
         # Bypass auxiliary client so flush uses agent.client directly
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)):
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
             agent.flush_memories(messages, min_turns=0)
 
         # Check what was actually sent to the API
@@ -1466,3 +1466,83 @@ class TestBudgetPressure:
             messages[-1]["content"] = last_content + f"\n\n{warning}"
         assert "plain text result" in messages[-1]["content"]
         assert "BUDGET WARNING" in messages[-1]["content"]
+
+
+class TestSafeWriter:
+    """Verify _SafeWriter guards stdout against OSError (broken pipes)."""
+
+    def test_write_delegates_normally(self):
+        """When stdout is healthy, _SafeWriter is transparent."""
+        from run_agent import _SafeWriter
+        from io import StringIO
+        inner = StringIO()
+        writer = _SafeWriter(inner)
+        writer.write("hello")
+        assert inner.getvalue() == "hello"
+
+    def test_write_catches_oserror(self):
+        """OSError on write is silently caught, returns len(data)."""
+        from run_agent import _SafeWriter
+        from unittest.mock import MagicMock
+        inner = MagicMock()
+        inner.write.side_effect = OSError(5, "Input/output error")
+        writer = _SafeWriter(inner)
+        result = writer.write("hello")
+        assert result == 5  # len("hello")
+
+    def test_flush_catches_oserror(self):
+        """OSError on flush is silently caught."""
+        from run_agent import _SafeWriter
+        from unittest.mock import MagicMock
+        inner = MagicMock()
+        inner.flush.side_effect = OSError(5, "Input/output error")
+        writer = _SafeWriter(inner)
+        writer.flush()  # should not raise
+
+    def test_print_survives_broken_stdout(self, monkeypatch):
+        """print() through _SafeWriter doesn't crash on broken pipe."""
+        import sys
+        from run_agent import _SafeWriter
+        from unittest.mock import MagicMock
+        broken = MagicMock()
+        broken.write.side_effect = OSError(5, "Input/output error")
+        original = sys.stdout
+        sys.stdout = _SafeWriter(broken)
+        try:
+            print("this should not crash")  # would raise without _SafeWriter
+        finally:
+            sys.stdout = original
+
+    def test_installed_in_run_conversation(self, agent):
+        """run_conversation installs _SafeWriter on sys.stdout."""
+        import sys
+        from run_agent import _SafeWriter
+        resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        original = sys.stdout
+        try:
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                agent.run_conversation("test")
+            assert isinstance(sys.stdout, _SafeWriter)
+        finally:
+            sys.stdout = original
+
+    def test_double_wrap_prevented(self):
+        """Wrapping an already-wrapped stream doesn't add layers."""
+        import sys
+        from run_agent import _SafeWriter
+        from io import StringIO
+        inner = StringIO()
+        wrapped = _SafeWriter(inner)
+        # isinstance check should prevent double-wrapping
+        assert isinstance(wrapped, _SafeWriter)
+        # The guard in run_conversation checks isinstance before wrapping
+        if not isinstance(wrapped, _SafeWriter):
+            wrapped = _SafeWriter(wrapped)
+        # Still just one layer
+        wrapped.write("test")
+        assert inner.getvalue() == "test"

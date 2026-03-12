@@ -416,7 +416,7 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    VERSION, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
     get_available_skills as _get_available_skills,
     build_welcome_banner,
 )
@@ -993,7 +993,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Wrap in a panel with the title
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {_title_c}]{_agent_name} {VERSION}[/]",
+        title=f"[bold {_title_c}]{_agent_name} v{VERSION} ({RELEASE_DATE})[/]",
         border_style=_border_c,
         padding=(0, 2),
     )
@@ -1099,6 +1099,7 @@ class HermesCLI:
         compact: bool = False,
         resume: str = None,
         checkpoints: bool = False,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1113,6 +1114,7 @@ class HermesCLI:
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
+            pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
         self.console = Console()
@@ -1129,12 +1131,17 @@ class HermesCLI:
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
-        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
-        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Model comes from: CLI arg or config.yaml (single source of truth).
+        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
+        # authoritative.  This avoids conflicts in multi-agent setups where
+        # env vars would stomp each other.
+        _model_config = CLI_CONFIG.get("model", {})
+        _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
+        self.model = model or _config_model or "anthropic/claude-opus-4.6"
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
+        self._model_is_default = not model
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -1189,6 +1196,7 @@ class HermesCLI:
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        self.pass_session_id = pass_session_id
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1506,6 +1514,7 @@ class HermesCLI:
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                pass_session_id=self.pass_session_id,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -2260,6 +2269,72 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
+    def _show_model_and_providers(self):
+        """Unified /model and /provider display.
+
+        Shows current model + provider, then lists all authenticated
+        providers with their available models so users can switch easily.
+        """
+        from hermes_cli.models import (
+            curated_models_for_provider, list_available_providers,
+            normalize_provider, _PROVIDER_LABELS,
+        )
+        from hermes_cli.auth import resolve_provider as _resolve_provider
+
+        # Resolve current provider
+        raw_provider = normalize_provider(self.provider)
+        if raw_provider == "auto":
+            try:
+                current = _resolve_provider(
+                    self.requested_provider,
+                    explicit_api_key=self._explicit_api_key,
+                    explicit_base_url=self._explicit_base_url,
+                )
+            except Exception:
+                current = "openrouter"
+        else:
+            current = raw_provider
+        current_label = _PROVIDER_LABELS.get(current, current)
+
+        print(f"\n  Current: {self.model} via {current_label}")
+        print()
+
+        # Show all authenticated providers with their models
+        providers = list_available_providers()
+        authed = [p for p in providers if p["authenticated"]]
+        unauthed = [p for p in providers if not p["authenticated"]]
+
+        if authed:
+            print("  Authenticated providers & models:")
+            for p in authed:
+                is_active = p["id"] == current
+                marker = " ← active" if is_active else ""
+                print(f"    [{p['id']}]{marker}")
+                curated = curated_models_for_provider(p["id"])
+                if curated:
+                    for mid, desc in curated:
+                        current_marker = " ← current" if (is_active and mid == self.model) else ""
+                        print(f"      {mid}{current_marker}")
+                else:
+                    print(f"      (use /model {p['id']}:<model-name>)")
+                print()
+
+        if unauthed:
+            names = ", ".join(p["label"] for p in unauthed)
+            print(f"  Not configured: {names}")
+            print(f"  Run: hermes setup")
+            print()
+
+        print("  Switch model:    /model <model-name>")
+        print("  Switch provider: /model <provider>:<model-name>")
+        if authed and len(authed) > 1:
+            # Show a concrete example with a non-active provider
+            other = next((p for p in authed if p["id"] != current), authed[0])
+            other_models = curated_models_for_provider(other["id"])
+            if other_models:
+                example_model = other_models[0][0]
+                print(f"  Example: /model {other['id']}:{example_model}")
+
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
         parts = cmd.split(maxsplit=1)
@@ -2746,7 +2821,11 @@ class HermesCLI:
                         base_url_for_probe = runtime.get("base_url", "")
                     except Exception as e:
                         provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                        if target_provider == "custom":
+                            print(f"(>_<) Custom endpoint not configured. Set OPENAI_BASE_URL and OPENAI_API_KEY,")
+                            print(f"      or run: hermes setup → Custom OpenAI-compatible endpoint")
+                        else:
+                            print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
                         print(f"(^_^) Current model unchanged: {self.model}")
                         return True
 
@@ -2793,65 +2872,9 @@ class HermesCLI:
                             print(f"  Reason: {message}")
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
             else:
-                from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
-                from hermes_cli.auth import resolve_provider as _resolve_provider
-                # Resolve "auto" to the actual provider using credential detection
-                raw_provider = normalize_provider(self.provider)
-                if raw_provider == "auto":
-                    try:
-                        display_provider = _resolve_provider(
-                            self.requested_provider,
-                            explicit_api_key=self._explicit_api_key,
-                            explicit_base_url=self._explicit_base_url,
-                        )
-                    except Exception:
-                        display_provider = "openrouter"
-                else:
-                    display_provider = raw_provider
-                provider_label = _PROVIDER_LABELS.get(display_provider, display_provider)
-                print(f"\n  Current model:    {self.model}")
-                print(f"  Current provider: {provider_label}")
-                print()
-                curated = curated_models_for_provider(display_provider)
-                if curated:
-                    print(f"  Available models ({provider_label}):")
-                    for mid, desc in curated:
-                        marker = " ←" if mid == self.model else ""
-                        label = f"  {desc}" if desc else ""
-                        print(f"    {mid}{label}{marker}")
-                    print()
-                print("  Usage: /model <model-name>")
-                print("         /model provider:model-name  (to switch provider)")
-                print("  Example: /model openrouter:anthropic/claude-sonnet-4.5")
-                print("  See /provider for available providers")
+                self._show_model_and_providers()
         elif cmd_lower == "/provider":
-            from hermes_cli.models import list_available_providers, normalize_provider, _PROVIDER_LABELS
-            from hermes_cli.auth import resolve_provider as _resolve_provider
-            # Resolve current provider
-            raw_provider = normalize_provider(self.provider)
-            if raw_provider == "auto":
-                try:
-                    current = _resolve_provider(
-                        self.requested_provider,
-                        explicit_api_key=self._explicit_api_key,
-                        explicit_base_url=self._explicit_base_url,
-                    )
-                except Exception:
-                    current = "openrouter"
-            else:
-                current = raw_provider
-            current_label = _PROVIDER_LABELS.get(current, current)
-            print(f"\n  Current provider: {current_label} ({current})\n")
-            providers = list_available_providers()
-            print("  Available providers:")
-            for p in providers:
-                marker = " ← active" if p["id"] == current else ""
-                auth = "✓" if p["authenticated"] else "✗"
-                aliases = f"  (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
-                print(f"    [{auth}] {p['id']:<14} {p['label']}{aliases}{marker}")
-            print()
-            print("  Switch: /model provider:model-name")
-            print("  Setup:  hermes setup")
+            self._show_model_and_providers()
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
@@ -3123,8 +3146,8 @@ class HermesCLI:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on" if self.show_reasoning else "off"
-            _cprint(f"  {_GOLD}Reasoning effort: {level}{_RST}")
+            display_state = "on ✓" if self.show_reasoning else "off"
+            _cprint(f"  {_GOLD}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
             _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
             return
@@ -3136,14 +3159,16 @@ class HermesCLI:
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._on_reasoning
-            _cprint(f"  {_GOLD}Reasoning display: ON{_RST}")
-            _cprint(f"  {_DIM}Model thinking will be shown during and after each response.{_RST}")
+            save_config_value("display.show_reasoning", True)
+            _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
+            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = None
-            _cprint(f"  {_GOLD}Reasoning display: OFF{_RST}")
+            save_config_value("display.show_reasoning", False)
+            _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
 
         # Effort level change
@@ -3158,9 +3183,9 @@ class HermesCLI:
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -3611,6 +3636,19 @@ class HermesCLI:
                                 continue
                             print(f"\n⚡ New message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
+                            # Debug: log to file (stdout may be devnull from redirect_stdout)
+                            try:
+                                import pathlib as _pl
+                                _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                                with open(_dbg, "a") as _f:
+                                    import time as _t
+                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                                             f"children={len(self.agent._active_children)}, "
+                                             f"parent._interrupt={self.agent._interrupt_requested}\n")
+                                    for _ci, _ch in enumerate(self.agent._active_children):
+                                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                            except Exception:
+                                pass
                             break
                     except queue.Empty:
                         pass  # Queue empty or timeout, continue waiting
@@ -3840,7 +3878,17 @@ class HermesCLI:
                 selected = state["selected"]
                 choices = state["choices"]
                 if 0 <= selected < len(choices):
-                    state["response_queue"].put(choices[selected])
+                    chosen = choices[selected]
+                    if chosen == "view":
+                        # Toggle full command display without closing the prompt
+                        state["show_full"] = True
+                        # Remove the "view" option since it's been used
+                        state["choices"] = [c for c in choices if c != "view"]
+                        if state["selected"] >= len(state["choices"]):
+                            state["selected"] = len(state["choices"]) - 1
+                        event.app.invalidate()
+                        return
+                    state["response_queue"].put(chosen)
                 self._approval_state = None
                 event.app.invalidate()
                 return
@@ -3883,6 +3931,16 @@ class HermesCLI:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    # Debug: log to file when message enters interrupt queue
+                    try:
+                        import pathlib as _pl
+                        _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                        with open(_dbg, "a") as _f:
+                            import time as _t
+                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                     f"agent_running={self._agent_running}\n")
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -4388,13 +4446,18 @@ class HermesCLI:
             description = state["description"]
             choices = state["choices"]
             selected = state.get("selected", 0)
+            show_full = state.get("show_full", False)
 
-            cmd_display = command[:70] + '...' if len(command) > 70 else command
+            if show_full or len(command) <= 70:
+                cmd_display = command
+            else:
+                cmd_display = command[:70] + '...'
             choice_labels = {
                 "once": "Allow once",
                 "session": "Allow for this session",
                 "always": "Add to permanent allowlist",
                 "deny": "Deny",
+                "view": "Show full command",
             }
             preview_lines = _wrap_panel_text(description, 60)
             preview_lines.extend(_wrap_panel_text(cmd_display, 60))
@@ -4566,7 +4629,7 @@ class HermesCLI:
                     
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit
@@ -4680,6 +4743,7 @@ def main(
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,
+    pass_session_id: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4785,6 +4849,7 @@ def main(
         compact=compact,
         resume=resume,
         checkpoints=checkpoints,
+        pass_session_id=pass_session_id,
     )
 
     # Inject worktree context into agent's system prompt

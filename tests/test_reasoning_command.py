@@ -343,6 +343,90 @@ class TestExtractReasoningFormats(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Inline <think> block extraction fallback
+# ---------------------------------------------------------------------------
+
+class TestInlineThinkBlockExtraction(unittest.TestCase):
+    """Test _build_assistant_message extracts inline <think> blocks as reasoning
+    when no structured API-level reasoning fields are present."""
+
+    def _build_msg(self, content, reasoning=None, reasoning_content=None, reasoning_details=None, tool_calls=None):
+        """Create a mock API response message."""
+        msg = SimpleNamespace(content=content, tool_calls=tool_calls)
+        if reasoning is not None:
+            msg.reasoning = reasoning
+        if reasoning_content is not None:
+            msg.reasoning_content = reasoning_content
+        if reasoning_details is not None:
+            msg.reasoning_details = reasoning_details
+        return msg
+
+    def _make_agent(self):
+        """Create a minimal agent with _build_assistant_message."""
+        from run_agent import AIAgent
+        agent = MagicMock(spec=AIAgent)
+        agent._build_assistant_message = AIAgent._build_assistant_message.__get__(agent)
+        agent._extract_reasoning = AIAgent._extract_reasoning.__get__(agent)
+        agent.verbose_logging = False
+        agent.reasoning_callback = None
+        return agent
+
+    def test_single_think_block_extracted(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("<think>Let me calculate 2+2=4.</think>The answer is 4.")
+        result = agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(result["reasoning"], "Let me calculate 2+2=4.")
+
+    def test_multiple_think_blocks_extracted(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("<think>First thought.</think>Some text<think>Second thought.</think>More text")
+        result = agent._build_assistant_message(api_msg, "stop")
+        self.assertIn("First thought.", result["reasoning"])
+        self.assertIn("Second thought.", result["reasoning"])
+
+    def test_no_think_blocks_no_reasoning(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("Just a plain response.")
+        result = agent._build_assistant_message(api_msg, "stop")
+        # No structured reasoning AND no inline think blocks → None
+        self.assertIsNone(result["reasoning"])
+
+    def test_structured_reasoning_takes_priority(self):
+        """When structured API reasoning exists, inline think blocks should NOT override."""
+        agent = self._make_agent()
+        api_msg = self._build_msg(
+            "<think>Inline thought.</think>Response text.",
+            reasoning="Structured reasoning from API.",
+        )
+        result = agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(result["reasoning"], "Structured reasoning from API.")
+
+    def test_empty_think_block_ignored(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("<think></think>Hello!")
+        result = agent._build_assistant_message(api_msg, "stop")
+        # Empty think block should not produce reasoning
+        self.assertIsNone(result["reasoning"])
+
+    def test_multiline_think_block(self):
+        agent = self._make_agent()
+        api_msg = self._build_msg("<think>\nStep 1: Analyze.\nStep 2: Solve.\n</think>Done.")
+        result = agent._build_assistant_message(api_msg, "stop")
+        self.assertIn("Step 1: Analyze.", result["reasoning"])
+        self.assertIn("Step 2: Solve.", result["reasoning"])
+
+    def test_callback_fires_for_inline_think(self):
+        """Reasoning callback should fire when reasoning is extracted from inline think blocks."""
+        agent = self._make_agent()
+        captured = []
+        agent.reasoning_callback = lambda t: captured.append(t)
+        api_msg = self._build_msg("<think>Deep analysis here.</think>Answer.")
+        agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(len(captured), 1)
+        self.assertIn("Deep analysis", captured[0])
+
+
+# ---------------------------------------------------------------------------
 # Config defaults
 # ---------------------------------------------------------------------------
 

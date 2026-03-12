@@ -108,6 +108,51 @@ HONCHO_TOOL_NAMES = {
 }
 
 
+class _SafeWriter:
+    """Transparent stdout wrapper that catches OSError from broken pipes.
+
+    When hermes-agent runs as a systemd service, Docker container, or headless
+    daemon, the stdout pipe can become unavailable (idle timeout, buffer
+    exhaustion, socket reset). Any print() call then raises
+    ``OSError: [Errno 5] Input/output error``, which can crash
+    run_conversation() — especially via double-fault when the except handler
+    also tries to print.
+
+    This wrapper delegates all writes to the underlying stream and silently
+    catches OSError.  It is installed once at the start of run_conversation()
+    and is transparent when stdout is healthy (zero overhead on the happy path).
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner):
+        object.__setattr__(self, "_inner", inner)
+
+    def write(self, data):
+        try:
+            return self._inner.write(data)
+        except OSError:
+            return len(data) if isinstance(data, str) else 0
+
+    def flush(self):
+        try:
+            self._inner.flush()
+        except OSError:
+            pass
+
+    def fileno(self):
+        return self._inner.fileno()
+
+    def isatty(self):
+        try:
+            return self._inner.isatty()
+        except OSError:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class IterationBudget:
     """Thread-safe shared iteration counter for parent and child agents.
 
@@ -199,6 +244,7 @@ class AIAgent:
         fallback_model: Dict[str, Any] = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the AI Agent.
@@ -255,6 +301,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self.skip_context_files = skip_context_files
+        self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -386,36 +433,50 @@ class AIAgent:
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
-        # Initialize OpenAI client - defaults to OpenRouter
-        client_kwargs = {}
-        
-        # Default to OpenRouter if no base_url provided
-        if base_url:
-            client_kwargs["base_url"] = base_url
+        # Initialize OpenAI client via centralized provider router.
+        # The router handles auth resolution, base URL, headers, and
+        # Codex wrapping for all known providers.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex Responses API streaming.
+        if api_key and base_url:
+            # Explicit credentials from CLI/gateway — construct directly.
+            # The runtime provider resolver already handled auth for us.
+            client_kwargs = {"api_key": api_key, "base_url": base_url}
+            effective_base = base_url
+            if "openrouter" in effective_base.lower():
+                client_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "X-OpenRouter-Title": "Hermes Agent",
+                    "X-OpenRouter-Categories": "productivity,cli-agent",
+                }
+            elif "api.kimi.com" in effective_base.lower():
+                client_kwargs["default_headers"] = {
+                    "User-Agent": "KimiCLI/1.3",
+                }
         else:
-            client_kwargs["base_url"] = OPENROUTER_BASE_URL
-        
-        # Handle API key - OpenRouter is the primary provider
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        else:
-            # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
-            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
-        
-        # OpenRouter app attribution — shows hermes-agent in rankings/analytics
-        effective_base = client_kwargs.get("base_url", "")
-        if "openrouter" in effective_base.lower():
-            client_kwargs["default_headers"] = {
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-            }
-        elif "api.kimi.com" in effective_base.lower():
-            # Kimi Code API requires a recognized coding-agent User-Agent
-            # (see https://github.com/MoonshotAI/kimi-cli)
-            client_kwargs["default_headers"] = {
-                "User-Agent": "KimiCLI/1.0",
-            }
+            # No explicit creds — use the centralized provider router
+            from agent.auxiliary_client import resolve_provider_client
+            _routed_client, _ = resolve_provider_client(
+                self.provider or "auto", model=self.model, raw_codex=True)
+            if _routed_client is not None:
+                client_kwargs = {
+                    "api_key": _routed_client.api_key,
+                    "base_url": str(_routed_client.base_url),
+                }
+                # Preserve any default_headers the router set
+                if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                    client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+            else:
+                # Final fallback: try raw OpenRouter key
+                client_kwargs = {
+                    "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+                    "base_url": OPENROUTER_BASE_URL,
+                    "default_headers": {
+                        "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                        "X-OpenRouter-Title": "Hermes Agent",
+                        "X-OpenRouter-Categories": "productivity,cli-agent",
+                    },
+                }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
@@ -1692,9 +1753,10 @@ class AIAgent:
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
-        prompt_parts.append(
-            f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        )
+        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        if self.pass_session_id and self.session_id:
+            timestamp_line += f"\nSession ID: {self.session_id}"
+        prompt_parts.append(timestamp_line)
 
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
@@ -2466,75 +2528,6 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    # API-key providers: provider → (base_url, [env_var_names])
-    _FALLBACK_API_KEY_PROVIDERS = {
-        "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
-        "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
-        "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
-        "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
-        "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
-    }
-
-    # OAuth providers: provider → (resolver_import_path, api_mode)
-    # Each resolver returns {"api_key": ..., "base_url": ...}.
-    _FALLBACK_OAUTH_PROVIDERS = {
-        "openai-codex": ("resolve_codex_runtime_credentials", "codex_responses"),
-        "nous": ("resolve_nous_runtime_credentials", "chat_completions"),
-    }
-
-    def _resolve_fallback_credentials(
-        self, fb_provider: str, fb_config: dict
-    ) -> Optional[tuple]:
-        """Resolve credentials for a fallback provider.
-
-        Returns (api_key, base_url, api_mode) on success, or None on failure.
-        Handles three cases:
-          1. OAuth providers (openai-codex, nous) — call credential resolver
-          2. API-key providers (openrouter, zai, etc.) — read env var
-          3. Custom endpoints — use base_url + api_key_env from config
-        """
-        # ── 1. OAuth providers ────────────────────────────────────────
-        if fb_provider in self._FALLBACK_OAUTH_PROVIDERS:
-            resolver_name, api_mode = self._FALLBACK_OAUTH_PROVIDERS[fb_provider]
-            try:
-                import hermes_cli.auth as _auth
-                resolver = getattr(_auth, resolver_name)
-                creds = resolver()
-                return creds["api_key"], creds["base_url"], api_mode
-            except Exception as e:
-                logging.warning(
-                    "Fallback to %s failed (credential resolution): %s",
-                    fb_provider, e,
-                )
-                return None
-
-        # ── 2. API-key providers ──────────────────────────────────────
-        fb_key = (fb_config.get("api_key") or "").strip()
-        if not fb_key:
-            key_env = (fb_config.get("api_key_env") or "").strip()
-            if key_env:
-                fb_key = os.getenv(key_env, "")
-            elif fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
-                for env_var in self._FALLBACK_API_KEY_PROVIDERS[fb_provider][1]:
-                    fb_key = os.getenv(env_var, "")
-                    if fb_key:
-                        break
-        if not fb_key:
-            logging.warning(
-                "Fallback model configured but no API key found for provider '%s'",
-                fb_provider,
-            )
-            return None
-
-        # ── 3. Resolve base URL ───────────────────────────────────────
-        fb_base_url = (fb_config.get("base_url") or "").strip()
-        if not fb_base_url and fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
-            fb_base_url = self._FALLBACK_API_KEY_PROVIDERS[fb_provider][0]
-        if not fb_base_url:
-            fb_base_url = OPENROUTER_BASE_URL
-
-        return fb_key, fb_base_url, "chat_completions"
-
     def _try_activate_fallback(self) -> bool:
         """Switch to the configured fallback model/provider.
 
@@ -2542,6 +2535,10 @@ class AIAgent:
         OpenAI client, model slug, and provider in-place so the retry loop
         can continue with the new backend.  One-shot: returns False if
         already activated or not configured.
+
+        Uses the centralized provider router (resolve_provider_client) for
+        auth resolution and client construction — no duplicated provider→key
+        mappings.
         """
         if self._fallback_activated or not self._fallback_model:
             return False
@@ -2552,25 +2549,31 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return False
 
-        resolved = self._resolve_fallback_credentials(fb_provider, fb)
-        if resolved is None:
-            return False
-        fb_key, fb_base_url, fb_api_mode = resolved
-
-        # Build new client
+        # Use centralized router for client construction.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex providers.
         try:
-            client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
-            if "openrouter" in fb_base_url.lower():
-                client_kwargs["default_headers"] = {
-                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                    "X-OpenRouter-Title": "Hermes Agent",
-                    "X-OpenRouter-Categories": "productivity,cli-agent",
-                }
-            elif "api.kimi.com" in fb_base_url.lower():
-                client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+            from agent.auxiliary_client import resolve_provider_client
+            fb_client, _ = resolve_provider_client(
+                fb_provider, model=fb_model, raw_codex=True)
+            if fb_client is None:
+                logging.warning(
+                    "Fallback to %s failed: provider not configured",
+                    fb_provider)
+                return False
 
-            self.client = OpenAI(**client_kwargs)
-            self._client_kwargs = client_kwargs
+            # Determine api_mode from provider
+            fb_api_mode = "chat_completions"
+            if fb_provider == "openai-codex":
+                fb_api_mode = "codex_responses"
+            fb_base_url = str(fb_client.base_url)
+
+            # Swap client and config in-place
+            self.client = fb_client
+            self._client_kwargs = {
+                "api_key": fb_client.api_key,
+                "base_url": fb_base_url,
+            }
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider
@@ -2667,16 +2670,26 @@ class AIAgent:
 
         extra_body = {}
 
-        if provider_preferences:
-            extra_body["provider"] = provider_preferences
-
         _is_openrouter = "openrouter" in self.base_url.lower()
+
+        # Provider preferences (only, ignore, order, sort) are OpenRouter-
+        # specific.  Only send to OpenRouter-compatible endpoints.
+        # TODO: Nous Portal will add transparent proxy support — re-enable
+        # for _is_nous when their backend is updated.
+        if provider_preferences and _is_openrouter:
+            extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self.base_url.lower()
 
         _is_mistral = "api.mistral.ai" in self.base_url.lower()
         if (_is_openrouter or _is_nous) and not _is_mistral:
             if self.reasoning_config is not None:
-                extra_body["reasoning"] = self.reasoning_config
+                rc = dict(self.reasoning_config)
+                # Nous Portal requires reasoning enabled — don't send
+                # enabled=false to it (would cause 400).
+                if _is_nous and rc.get("enabled") is False:
+                    pass  # omit reasoning entirely for Nous when disabled
+                else:
+                    extra_body["reasoning"] = rc
             else:
                 extra_body["reasoning"] = {
                     "enabled": True,
@@ -2699,6 +2712,16 @@ class AIAgent:
         so both the tool-call path and the final-response path share one builder.
         """
         reasoning_text = self._extract_reasoning(assistant_message)
+
+        # Fallback: extract inline <think> blocks from content when no structured
+        # reasoning fields are present (some models/providers embed thinking
+        # directly in the content rather than returning separate API fields).
+        if not reasoning_text:
+            content = assistant_message.content or ""
+            think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+            if think_blocks:
+                combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
+                reasoning_text = combined or None
 
         if reasoning_text and self.verbose_logging:
             preview = reasoning_text[:100] + "..." if len(reasoning_text) > 100 else reasoning_text
@@ -2788,6 +2811,31 @@ class AIAgent:
 
         return msg
 
+    @staticmethod
+    def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
+        """Strip Codex Responses API fields from tool_calls for strict providers.
+
+        Providers like Mistral strictly validate the Chat Completions schema
+        and reject unknown fields (call_id, response_item_id) with 422.
+        These fields are preserved in the internal message history — this
+        method only modifies the outgoing API copy.
+
+        Creates new tool_call dicts rather than mutating in-place, so the
+        original messages list retains call_id/response_item_id for Codex
+        Responses API compatibility (e.g. if the session falls back to a
+        Codex provider later).
+        """
+        tool_calls = api_msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return api_msg
+        _STRIP_KEYS = {"call_id", "response_item_id"}
+        api_msg["tool_calls"] = [
+            {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
+            if isinstance(tc, dict) else tc
+            for tc in tool_calls
+        ]
+        return api_msg
+
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
 
@@ -2829,6 +2877,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
+            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -2839,6 +2888,8 @@ class AIAgent:
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
+                if _is_strict_api:
+                    self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -2857,19 +2908,22 @@ class AIAgent:
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import get_text_auxiliary_client
-            aux_client, aux_model = get_text_auxiliary_client()
+            from agent.auxiliary_client import call_llm as _call_llm
+            _aux_available = True
+            try:
+                response = _call_llm(
+                    task="flush_memories",
+                    messages=api_messages,
+                    tools=[memory_tool_def],
+                    temperature=0.3,
+                    max_tokens=5120,
+                    timeout=30.0,
+                )
+            except RuntimeError:
+                _aux_available = False
+                response = None
 
-            if aux_client:
-                api_kwargs = {
-                    "model": aux_model,
-                    "messages": api_messages,
-                    "tools": [memory_tool_def],
-                    "temperature": 0.3,
-                    "max_tokens": 5120,
-                }
-                response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
-            elif self.api_mode == "codex_responses":
+            if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
@@ -2877,7 +2931,7 @@ class AIAgent:
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
-            else:
+            elif not _aux_available:
                 api_kwargs = {
                     "model": self.model,
                     "messages": api_messages,
@@ -2889,7 +2943,7 @@ class AIAgent:
 
             # Extract tool calls from the response, handling both API formats
             tool_calls = []
-            if self.api_mode == "codex_responses" and not aux_client:
+            if self.api_mode == "codex_responses" and not _aux_available:
                 assistant_msg, _ = self._normalize_codex_response(response)
                 if assistant_msg and assistant_msg.tool_calls:
                     tool_calls = assistant_msg.tool_calls
@@ -3301,11 +3355,14 @@ class AIAgent:
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason"):
                     api_msg.pop(internal_field, None)
+                if _is_strict_api:
+                    self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
             effective_system = self._cached_system_prompt or ""
@@ -3436,6 +3493,11 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Guard stdout against OSError from broken pipes (systemd/headless/daemon).
+        # Installed once, transparent when stdout is healthy, prevents crash on write.
+        if not isinstance(sys.stdout, _SafeWriter):
+            sys.stdout = _SafeWriter(sys.stdout)
+
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -3686,6 +3748,12 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
+                # Strip Codex Responses API fields (call_id, response_item_id) for
+                # strict providers like Mistral that reject unknown fields with 422.
+                # Uses new dicts so the internal messages list retains the fields
+                # for Codex Responses compatibility.
+                if "api.mistral.ai" in self.base_url.lower():
+                    self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)

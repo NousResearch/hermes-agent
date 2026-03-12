@@ -1099,6 +1099,7 @@ class HermesCLI:
         compact: bool = False,
         resume: str = None,
         checkpoints: bool = False,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1113,6 +1114,7 @@ class HermesCLI:
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
+            pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
         self.console = Console()
@@ -1194,6 +1196,7 @@ class HermesCLI:
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        self.pass_session_id = pass_session_id
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1511,6 +1514,7 @@ class HermesCLI:
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                pass_session_id=self.pass_session_id,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -4654,6 +4658,7 @@ def main(
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,
+    pass_session_id: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4759,6 +4764,7 @@ def main(
         compact=compact,
         resume=resume,
         checkpoints=checkpoints,
+        pass_session_id=pass_session_id,
     )
 
     # Inject worktree context into agent's system prompt

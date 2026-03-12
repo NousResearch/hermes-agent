@@ -233,6 +233,7 @@ class AIAgent:
         fallback_model: Dict[str, Any] = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the AI Agent.
@@ -287,6 +288,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self.skip_context_files = skip_context_files
+        self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1483,9 +1485,10 @@ class AIAgent:
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
-        prompt_parts.append(
-            f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        )
+        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        if self.pass_session_id and self.session_id:
+            timestamp_line += f"\nSession ID: {self.session_id}"
+        prompt_parts.append(timestamp_line)
 
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
@@ -2441,6 +2444,16 @@ class AIAgent:
         so both the tool-call path and the final-response path share one builder.
         """
         reasoning_text = self._extract_reasoning(assistant_message)
+
+        # Fallback: extract inline <think> blocks from content when no structured
+        # reasoning fields are present (some models/providers embed thinking
+        # directly in the content rather than returning separate API fields).
+        if not reasoning_text:
+            content = assistant_message.content or ""
+            think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+            if think_blocks:
+                combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
+                reasoning_text = combined or None
 
         if reasoning_text and self.verbose_logging:
             preview = reasoning_text[:100] + "..." if len(reasoning_text) > 100 else reasoning_text

@@ -51,7 +51,7 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
 
-from hermes_cli import __version__
+from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -495,6 +495,7 @@ def cmd_chat(args):
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
+        "pass_session_id": getattr(args, "pass_session_id", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1484,7 +1485,7 @@ def cmd_config(args):
 
 def cmd_version(args):
     """Show version."""
-    print(f"Hermes Agent v{__version__}")
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
     # Show Python version
@@ -1895,6 +1896,12 @@ For more help on a command:
         default=False,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
+    parser.add_argument(
+        "--pass-session-id",
+        action="store_true",
+        default=False,
+        help="Include the session ID in the agent's system prompt"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -1965,6 +1972,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
+    chat_parser.add_argument(
+        "--pass-session-id",
+        action="store_true",
+        default=False,
+        help="Include the session ID in the agent's system prompt"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

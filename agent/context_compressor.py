@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import get_text_auxiliary_client
+from agent.auxiliary_client import call_llm
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
@@ -53,8 +53,7 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, default_model = get_text_auxiliary_client("compression")
-        self.summary_model = summary_model_override or default_model
+        self.summary_model = summary_model_override or ""
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -120,84 +119,30 @@ TURNS TO SUMMARIZE:
 
 Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
-        # 1. Try the auxiliary model (cheap/fast)
-        if self.client:
-            try:
-                return self._call_summary_model(self.client, self.summary_model, prompt)
-            except Exception as e:
-                logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
-
-        # 2. Fallback: try the user's main model endpoint
-        fallback_client, fallback_model = self._get_fallback_client()
-        if fallback_client is not None:
-            try:
-                logger.info("Retrying context summary with main model (%s)", fallback_model)
-                summary = self._call_summary_model(fallback_client, fallback_model, prompt)
-                self.client = fallback_client
-                self.summary_model = fallback_model
-                return summary
-            except Exception as fallback_err:
-                logging.warning(f"Main model summary also failed: {fallback_err}")
-
-        # 3. All models failed — return None so the caller drops turns without a summary
-        logging.warning("Context compression: no model available for summary. Middle turns will be dropped without summary.")
-        return None
-
-    def _call_summary_model(self, client, model: str, prompt: str) -> str:
-        """Make the actual LLM call to generate a summary. Raises on failure."""
-        kwargs = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "timeout": 30.0,
-        }
-        # Most providers (OpenRouter, local models) use max_tokens.
-        # Direct OpenAI with newer models (gpt-4o, o-series, gpt-5+)
-        # requires max_completion_tokens instead.
+        # Use the centralized LLM router — handles provider resolution,
+        # auth, and fallback internally.
         try:
-            kwargs["max_tokens"] = self.summary_target_tokens * 2
-            response = client.chat.completions.create(**kwargs)
-        except Exception as first_err:
-            if "max_tokens" in str(first_err) or "unsupported_parameter" in str(first_err):
-                kwargs.pop("max_tokens", None)
-                kwargs["max_completion_tokens"] = self.summary_target_tokens * 2
-                response = client.chat.completions.create(**kwargs)
-            else:
-                raise
-
-        summary = response.choices[0].message.content.strip()
-        if not summary.startswith("[CONTEXT SUMMARY]:"):
-            summary = "[CONTEXT SUMMARY]: " + summary
-        return summary
-
-    def _get_fallback_client(self):
-        """Try to build a fallback client from the main model's endpoint config.
-
-        When the primary auxiliary client fails (e.g. stale OpenRouter key), this
-        creates a client using the user's active custom endpoint (OPENAI_BASE_URL)
-        so compression can still produce a real summary instead of a static string.
-
-        Returns (client, model) or (None, None).
-        """
-        custom_base = os.getenv("OPENAI_BASE_URL")
-        custom_key = os.getenv("OPENAI_API_KEY")
-        if not custom_base or not custom_key:
-            return None, None
-
-        # Don't fallback to the same provider that just failed
-        from hermes_constants import OPENROUTER_BASE_URL
-        if custom_base.rstrip("/") == OPENROUTER_BASE_URL.rstrip("/"):
-            return None, None
-
-        model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or self.model
-        try:
-            from openai import OpenAI as _OpenAI
-            client = _OpenAI(api_key=custom_key, base_url=custom_base)
-            logger.debug("Built fallback auxiliary client: %s via %s", model, custom_base)
-            return client, model
-        except Exception as exc:
-            logger.debug("Could not build fallback auxiliary client: %s", exc)
-            return None, None
+            call_kwargs = {
+                "task": "compression",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": self.summary_target_tokens * 2,
+                "timeout": 30.0,
+            }
+            if self.summary_model:
+                call_kwargs["model"] = self.summary_model
+            response = call_llm(**call_kwargs)
+            summary = response.choices[0].message.content.strip()
+            if not summary.startswith("[CONTEXT SUMMARY]:"):
+                summary = "[CONTEXT SUMMARY]: " + summary
+            return summary
+        except RuntimeError:
+            logging.warning("Context compression: no provider available for "
+                            "summary. Middle turns will be dropped without summary.")
+            return None
+        except Exception as e:
+            logging.warning("Failed to generate context summary: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers

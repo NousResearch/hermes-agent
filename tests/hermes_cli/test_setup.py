@@ -103,7 +103,7 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
 
     config = load_config()
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 3)
 
     prompt_values = iter(
         [

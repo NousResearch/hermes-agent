@@ -1129,12 +1129,17 @@ class HermesCLI:
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
-        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
-        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Model comes from: CLI arg or config.yaml (single source of truth).
+        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
+        # authoritative.  This avoids conflicts in multi-agent setups where
+        # env vars would stomp each other.
+        _model_config = CLI_CONFIG.get("model", {})
+        _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
+        self.model = model or _config_model or "anthropic/claude-opus-4.6"
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
+        self._model_is_default = not model
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -2260,6 +2265,72 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
+    def _show_model_and_providers(self):
+        """Unified /model and /provider display.
+
+        Shows current model + provider, then lists all authenticated
+        providers with their available models so users can switch easily.
+        """
+        from hermes_cli.models import (
+            curated_models_for_provider, list_available_providers,
+            normalize_provider, _PROVIDER_LABELS,
+        )
+        from hermes_cli.auth import resolve_provider as _resolve_provider
+
+        # Resolve current provider
+        raw_provider = normalize_provider(self.provider)
+        if raw_provider == "auto":
+            try:
+                current = _resolve_provider(
+                    self.requested_provider,
+                    explicit_api_key=self._explicit_api_key,
+                    explicit_base_url=self._explicit_base_url,
+                )
+            except Exception:
+                current = "openrouter"
+        else:
+            current = raw_provider
+        current_label = _PROVIDER_LABELS.get(current, current)
+
+        print(f"\n  Current: {self.model} via {current_label}")
+        print()
+
+        # Show all authenticated providers with their models
+        providers = list_available_providers()
+        authed = [p for p in providers if p["authenticated"]]
+        unauthed = [p for p in providers if not p["authenticated"]]
+
+        if authed:
+            print("  Authenticated providers & models:")
+            for p in authed:
+                is_active = p["id"] == current
+                marker = " ← active" if is_active else ""
+                print(f"    [{p['id']}]{marker}")
+                curated = curated_models_for_provider(p["id"])
+                if curated:
+                    for mid, desc in curated:
+                        current_marker = " ← current" if (is_active and mid == self.model) else ""
+                        print(f"      {mid}{current_marker}")
+                else:
+                    print(f"      (use /model {p['id']}:<model-name>)")
+                print()
+
+        if unauthed:
+            names = ", ".join(p["label"] for p in unauthed)
+            print(f"  Not configured: {names}")
+            print(f"  Run: hermes setup")
+            print()
+
+        print("  Switch model:    /model <model-name>")
+        print("  Switch provider: /model <provider>:<model-name>")
+        if authed and len(authed) > 1:
+            # Show a concrete example with a non-active provider
+            other = next((p for p in authed if p["id"] != current), authed[0])
+            other_models = curated_models_for_provider(other["id"])
+            if other_models:
+                example_model = other_models[0][0]
+                print(f"  Example: /model {other['id']}:{example_model}")
+
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
         parts = cmd.split(maxsplit=1)
@@ -2724,7 +2795,11 @@ class HermesCLI:
                         base_url_for_probe = runtime.get("base_url", "")
                     except Exception as e:
                         provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                        if target_provider == "custom":
+                            print(f"(>_<) Custom endpoint not configured. Set OPENAI_BASE_URL and OPENAI_API_KEY,")
+                            print(f"      or run: hermes setup → Custom OpenAI-compatible endpoint")
+                        else:
+                            print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
                         print(f"(^_^) Current model unchanged: {self.model}")
                         return True
 
@@ -2771,65 +2846,9 @@ class HermesCLI:
                             print(f"  Reason: {message}")
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
             else:
-                from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
-                from hermes_cli.auth import resolve_provider as _resolve_provider
-                # Resolve "auto" to the actual provider using credential detection
-                raw_provider = normalize_provider(self.provider)
-                if raw_provider == "auto":
-                    try:
-                        display_provider = _resolve_provider(
-                            self.requested_provider,
-                            explicit_api_key=self._explicit_api_key,
-                            explicit_base_url=self._explicit_base_url,
-                        )
-                    except Exception:
-                        display_provider = "openrouter"
-                else:
-                    display_provider = raw_provider
-                provider_label = _PROVIDER_LABELS.get(display_provider, display_provider)
-                print(f"\n  Current model:    {self.model}")
-                print(f"  Current provider: {provider_label}")
-                print()
-                curated = curated_models_for_provider(display_provider)
-                if curated:
-                    print(f"  Available models ({provider_label}):")
-                    for mid, desc in curated:
-                        marker = " ←" if mid == self.model else ""
-                        label = f"  {desc}" if desc else ""
-                        print(f"    {mid}{label}{marker}")
-                    print()
-                print("  Usage: /model <model-name>")
-                print("         /model provider:model-name  (to switch provider)")
-                print("  Example: /model openrouter:anthropic/claude-sonnet-4.5")
-                print("  See /provider for available providers")
+                self._show_model_and_providers()
         elif cmd_lower == "/provider":
-            from hermes_cli.models import list_available_providers, normalize_provider, _PROVIDER_LABELS
-            from hermes_cli.auth import resolve_provider as _resolve_provider
-            # Resolve current provider
-            raw_provider = normalize_provider(self.provider)
-            if raw_provider == "auto":
-                try:
-                    current = _resolve_provider(
-                        self.requested_provider,
-                        explicit_api_key=self._explicit_api_key,
-                        explicit_base_url=self._explicit_base_url,
-                    )
-                except Exception:
-                    current = "openrouter"
-            else:
-                current = raw_provider
-            current_label = _PROVIDER_LABELS.get(current, current)
-            print(f"\n  Current provider: {current_label} ({current})\n")
-            providers = list_available_providers()
-            print("  Available providers:")
-            for p in providers:
-                marker = " ← active" if p["id"] == current else ""
-                auth = "✓" if p["authenticated"] else "✗"
-                aliases = f"  (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
-                print(f"    [{auth}] {p['id']:<14} {p['label']}{aliases}{marker}")
-            print()
-            print("  Switch: /model provider:model-name")
-            print("  Setup:  hermes setup")
+            self._show_model_and_providers()
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

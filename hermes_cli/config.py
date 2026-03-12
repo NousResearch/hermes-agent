@@ -126,14 +126,38 @@ DEFAULT_CONFIG = {
         "summary_provider": "auto",
     },
     
-    # Auxiliary model overrides (advanced).  By default Hermes auto-selects
-    # the provider and model for each side task.  Set these to override.
+    # Auxiliary model config — provider:model for each side task.
+    # Format: provider is the provider name, model is the model slug.
+    # "auto" for provider = auto-detect best available provider.
+    # Empty model = use provider's default auxiliary model.
+    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
+    # the configured provider is unavailable.
     "auxiliary": {
         "vision": {
-            "provider": "auto",    # auto | openrouter | nous | main
+            "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
         },
         "web_extract": {
+            "provider": "auto",
+            "model": "",
+        },
+        "compression": {
+            "provider": "auto",
+            "model": "",
+        },
+        "session_search": {
+            "provider": "auto",
+            "model": "",
+        },
+        "skills_hub": {
+            "provider": "auto",
+            "model": "",
+        },
+        "mcp": {
+            "provider": "auto",
+            "model": "",
+        },
+        "flush_memories": {
             "provider": "auto",
             "model": "",
         },
@@ -224,7 +248,7 @@ DEFAULT_CONFIG = {
     "personalities": {},
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 6,
+    "_config_version": 7,
 }
 
 # =============================================================================
@@ -249,14 +273,6 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_API_KEY": {
-        "description": "Nous Portal API key (direct API key access to Nous inference)",
-        "prompt": "Nous Portal API key",
-        "url": "https://portal.nousresearch.com",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
         "prompt": "Nous Portal base URL (leave empty for default)",

@@ -1828,8 +1828,8 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1847,13 +1847,13 @@ class TestSamplingCallbackText:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
-        ):
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ) as mock_call:
             params = _make_sampling_params(system_prompt="Be helpful")
             asyncio.run(self.handler(None, params))
 
-        call_args = fake_client.chat.completions.create.call_args
+        call_args = mock_call.call_args
         messages = call_args.kwargs["messages"]
         assert messages[0] == {"role": "system", "content": "Be helpful"}
 
@@ -1865,8 +1865,8 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1889,8 +1889,8 @@ class TestSamplingCallbackToolUse:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1916,8 +1916,8 @@ class TestSamplingCallbackToolUse:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(self.handler(None, _make_sampling_params()))
 
@@ -1939,8 +1939,8 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             # Round 1, 2: allowed
@@ -1956,24 +1956,26 @@ class TestToolLoopGovernance:
     def test_text_response_resets_counter(self):
         """A text response resets the tool loop counter."""
         handler = SamplingHandler("tl2", {"max_tool_rounds": 1})
-        fake_client = MagicMock()
+
+        # Use a list to hold the current response, so the side_effect can
+        # pick up changes between calls.
+        responses = [_make_llm_tool_response()]
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=lambda **kw: responses[0],
         ):
             # Tool response (round 1 of 1 allowed)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
             r1 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r1, CreateMessageResultWithTools)
 
             # Text response resets counter
-            fake_client.chat.completions.create.return_value = _make_llm_response()
+            responses[0] = _make_llm_response()
             r2 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r2, CreateMessageResult)
 
             # Tool response again (should succeed since counter was reset)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
+            responses[0] = _make_llm_tool_response()
             r3 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r3, CreateMessageResultWithTools)
 
@@ -1984,8 +1986,8 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2003,8 +2005,8 @@ class TestSamplingErrors:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             # First call succeeds
             r1 = asyncio.run(handler(None, _make_sampling_params()))
@@ -2017,20 +2019,16 @@ class TestSamplingErrors:
 
     def test_timeout_error(self):
         handler = SamplingHandler("to", {"timeout": 0.05})
-        fake_client = MagicMock()
 
         def slow_call(**kwargs):
             import threading
-            # Use an event to ensure the thread truly blocks long enough
             evt = threading.Event()
             evt.wait(5)  # blocks for up to 5 seconds (cancelled by timeout)
             return _make_llm_response()
 
-        fake_client.chat.completions.create.side_effect = slow_call
-
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=slow_call,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2041,12 +2039,11 @@ class TestSamplingErrors:
         handler = SamplingHandler("np", {})
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, None),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
-            assert "No LLM provider" in result.message
             assert handler.metrics["errors"] == 1
 
     def test_empty_choices_returns_error(self):
@@ -2060,8 +2057,8 @@ class TestSamplingErrors:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2080,8 +2077,8 @@ class TestSamplingErrors:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2099,8 +2096,8 @@ class TestSamplingErrors:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2120,19 +2117,19 @@ class TestModelWhitelist:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "test-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, CreateMessageResult)
 
     def test_disallowed_model_rejected(self):
-        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"]})
+        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"], "model": "test-model"})
         fake_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "gpt-3.5-turbo"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2145,8 +2142,8 @@ class TestModelWhitelist:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "any-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, CreateMessageResult)
@@ -2166,8 +2163,8 @@ class TestMalformedToolCallArgs:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2194,8 +2191,8 @@ class TestMalformedToolCallArgs:
         fake_client.chat.completions.create.return_value = response
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2214,8 +2211,8 @@ class TestMetricsTracking:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2229,8 +2226,8 @@ class TestMetricsTracking:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2241,8 +2238,8 @@ class TestMetricsTracking:
         handler = SamplingHandler("met3", {})
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, None),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 

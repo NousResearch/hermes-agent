@@ -66,7 +66,7 @@ class HonchoClientConfig:
     # Toggles
     enabled: bool = False
     save_messages: bool = True
-    # memoryMode: default for all peers. "hybrid" / "honcho" / "local"
+    # memoryMode: default for all peers. "hybrid" / "honcho"
     memory_mode: str = "hybrid"
     # Per-peer overrides — any named Honcho peer. Override memory_mode when set.
     # Config object form: "memoryMode": { "default": "hybrid", "hermes": "honcho" }

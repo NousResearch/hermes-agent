@@ -41,6 +41,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "anthropic/claude-sonnet-4": 200000,
     "anthropic/claude-sonnet-4-20250514": 200000,
     "anthropic/claude-haiku-4.5": 200000,
+    # Bare Anthropic model IDs (for native API provider)
+    "claude-opus-4-20250514": 200000,
+    "claude-sonnet-4-20250514": 200000,
+    "claude-haiku-4-5-20251001": 200000,
     "openai/gpt-4o": 128000,
     "openai/gpt-4-turbo": 128000,
     "openai/gpt-4o-mini": 128000,

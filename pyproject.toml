@@ -13,6 +13,7 @@ license = { text = "MIT" }
 dependencies = [
   # Core
   "openai",
+  "anthropic>=0.39.0",
   "python-dotenv",
   "fire",
   "httpx",

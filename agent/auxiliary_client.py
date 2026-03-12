@@ -51,6 +51,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.5-highspeed",
     "minimax-cn": "MiniMax-M2.5-highspeed",
+    "anthropic": "claude-haiku-4-5-20251001",
 }
 
 # OpenRouter app attribution headers

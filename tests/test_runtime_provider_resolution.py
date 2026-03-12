@@ -158,6 +158,74 @@ def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_named_custom_provider_uses_saved_credentials(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Local",
+                    "base_url": "http://1.2.3.4:1234/v1",
+                    "api_key": "local-provider-key",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="local")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
+    assert resolved["api_key"] == "local-provider-key"
+    assert resolved["requested_provider"] == "local"
+    assert resolved["source"] == "custom_provider:Local"
+
+
+def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Local LLM",
+                    "base_url": "http://localhost:1234/v1",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
+
+    assert resolved["base_url"] == "http://localhost:1234/v1"
+    assert resolved["api_key"] == "env-openai-key"
+    assert resolved["requested_provider"] == "custom:local-llm"
+
+
 def test_resolve_runtime_provider_nous_api(monkeypatch):
     """Nous Portal API key provider resolves via the api_key path."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous-api")

@@ -81,6 +81,7 @@ def test_check_website_access_supports_wildcard_subdomains_only(tmp_path):
     )
 
     assert check_website_access("https://a.tracking.example", config_path=config_path) is not None
+    assert check_website_access("https://www.tracking.example", config_path=config_path) is not None
     assert check_website_access("https://tracking.example", config_path=config_path) is None
 
 
@@ -149,6 +150,35 @@ def test_load_website_blocklist_raises_clean_error_for_malformed_yaml(tmp_path):
     config_path.write_text("security: [oops\n", encoding="utf-8")
 
     with pytest.raises(WebsitePolicyError, match="Invalid config YAML"):
+        load_website_blocklist(config_path)
+
+
+def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypatch):
+    shared = tmp_path / "community-blocklist.txt"
+    shared.write_text("example.org\n", encoding="utf-8")
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "shared_files": [str(shared)],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def failing_read_text(self, *args, **kwargs):
+        raise PermissionError("no permission")
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    with pytest.raises(WebsitePolicyError, match="Failed to read shared blocklist file"):
         load_website_blocklist(config_path)
 
 

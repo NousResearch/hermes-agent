@@ -36,10 +36,7 @@ class WebsitePolicyError(Exception):
 
 
 def _normalize_host(host: str) -> str:
-    host = (host or "").strip().lower().rstrip(".")
-    if host.startswith("www."):
-        host = host[4:]
-    return host
+    return (host or "").strip().lower().rstrip(".")
 
 
 def _normalize_rule(rule: Any) -> Optional[str]:
@@ -60,8 +57,10 @@ def _normalize_rule(rule: Any) -> Optional[str]:
 def _iter_blocklist_file_rules(path: Path) -> List[str]:
     try:
         raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise WebsitePolicyError(f"Shared blocklist file not found: {path}")
+    except FileNotFoundError as exc:
+        raise WebsitePolicyError(f"Shared blocklist file not found: {path}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise WebsitePolicyError(f"Failed to read shared blocklist file {path}: {exc}") from exc
 
     rules: List[str] = []
     for line in raw.splitlines():

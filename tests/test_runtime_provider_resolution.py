@@ -259,6 +259,46 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_custom_endpoint_can_force_codex_responses_from_config(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:9208/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9208/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local-proxy")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_API_MODE", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+    assert resolved["api_key"] == "sk-local-proxy"
+
+
+def test_env_can_override_custom_endpoint_api_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9208/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local-proxy")
+    monkeypatch.setenv("HERMES_API_MODE", "codex_responses")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
 def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     """When the user explicitly requests openrouter, OPENAI_BASE_URL
     (which may point to a custom endpoint) must not override the

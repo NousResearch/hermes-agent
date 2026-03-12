@@ -1057,7 +1057,7 @@ class GatewayRunner:
             # Read model + compression config from config.yaml — same
             # source of truth the agent itself uses.
             _hyg_model = "anthropic/claude-sonnet-4.6"
-            _hyg_threshold_pct = 0.85
+            _hyg_threshold_pct = 0.50
             _hyg_compression_enabled = True
             try:
                 _hyg_cfg_path = _hermes_home / "config.yaml"

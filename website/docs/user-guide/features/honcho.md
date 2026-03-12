@@ -109,7 +109,7 @@ Settings are scoped to `hosts.hermes` and fall back to root-level globals when t
 | `recallMode` | `"hybrid"` | Retrieval strategy: `hybrid`, `context`, or `tools` |
 | `sessionStrategy` | `"per-session"` | How sessions are scoped |
 | `sessionPeerPrefix` | `false` | Prefix session names with peer name |
-| `contextTokens` | *(Honcho default)* | Max tokens for context prefetch |
+| `contextTokens` | *(Honcho default)* | Max tokens for auto-injected context |
 | `dialecticReasoningLevel` | `"low"` | Floor for dialectic reasoning: `minimal` / `low` / `medium` / `high` / `max` |
 | `dialecticMaxChars` | `600` | Char cap on dialectic results injected into system prompt |
 | `linkedHosts` | `[]` | Other host keys whose workspaces to cross-reference |
@@ -142,9 +142,9 @@ Controls how Honcho context reaches the agent:
 
 | Mode | Behavior |
 |------|----------|
-| `hybrid` | Prefetch context into system prompt + expose tools (default) |
-| `context` | Context injection only — no Honcho tools available |
-| `tools` | Tools only — no prefetch into system prompt |
+| `hybrid` | Auto-injected context + Honcho tools available (default) |
+| `context` | Auto-injected context only — Honcho tools hidden |
+| `tools` | Honcho tools only — no auto-injected context |
 
 ### Write Frequency
 
@@ -203,23 +203,23 @@ honcho: {}
 
 ## How It Works
 
-### Async Prefetch Pipeline
+### Async Context Pipeline
 
 Honcho context is fetched asynchronously to avoid blocking the response path:
 
 ```
 Turn N:
   user message
-    → pop prefetch result from cache (from previous turn)
+    → consume cached context (from previous turn's background fetch)
     → inject into system prompt (user representation, AI representation, dialectic)
     → LLM call
     → response
-    → fire prefetch in background threads
-         → prefetch_context()   ─┐
-         → prefetch_dialectic() ─┴→ cache for Turn N+1
+    → fire background fetch for next turn
+         → fetch context    ─┐
+         → fetch dialectic  ─┴→ cache for Turn N+1
 ```
 
-Turn 1 is a cold start (no cache). All subsequent turns consume pre-warmed results with zero HTTP latency on the response path. The system prompt on turn 1 uses only static context to preserve prefix cache hits at the LLM provider.
+Turn 1 is a cold start (no cache). All subsequent turns consume cached results with zero HTTP latency on the response path. The system prompt on turn 1 uses only static context to preserve prefix cache hits at the LLM provider.
 
 ### Dual-Peer Architecture
 

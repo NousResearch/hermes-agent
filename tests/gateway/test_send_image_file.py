@@ -171,7 +171,7 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 class TestDiscordSendImageFile:
     @pytest.fixture
     def adapter(self):
-        config = PlatformConfig(enabled=True, token="fake-token")
+        config = PlatformConfig(enabled=True, token="***")
         a = DiscordAdapter(config)
         a._client = MagicMock()
         return a
@@ -193,6 +193,92 @@ class TestDiscordSendImageFile:
         assert result.success
         assert result.message_id == "99"
         mock_channel.send.assert_awaited_once()
+
+    def test_send_image_file_accepts_metadata_kwarg(self, adapter, tmp_path):
+        """Gateway media pipeline passes metadata=...; Discord adapter should accept it."""
+        img = tmp_path / "screenshot.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 100
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_image_file(
+                chat_id="67890",
+                image_path=str(img),
+                metadata={"thread_id": "123"},
+            )
+        )
+        assert result.success
+        assert result.message_id == "100"
+
+    def test_send_voice_accepts_metadata_kwarg(self, adapter, tmp_path):
+        """Discord TTS attachments should not crash when the gateway passes metadata."""
+        audio = tmp_path / "voice.mp3"
+        audio.write_bytes(b"ID3" + b"\x00" * 50)
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 101
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_voice(
+                chat_id="67890",
+                audio_path=str(audio),
+                metadata={"thread_id": "123"},
+            )
+        )
+        assert result.success
+        assert result.message_id == "101"
+
+    def test_send_document_uploads_file_attachment(self, adapter, tmp_path):
+        """DiscordAdapter.send_document should upload files, not fall back to text."""
+        pdf = tmp_path / "sample.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 102
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_document(
+                chat_id="67890",
+                file_path=str(pdf),
+                metadata={"thread_id": "123"},
+            )
+        )
+        assert result.success
+        assert result.message_id == "102"
+        assert "file" in mock_channel.send.call_args.kwargs
+
+    def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
+        """DiscordAdapter.send_video should upload playable video files."""
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50)
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 103
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_video(
+                chat_id="67890",
+                video_path=str(video),
+                metadata={"thread_id": "123"},
+            )
+        )
+        assert result.success
+        assert result.message_id == "103"
+        assert "file" in mock_channel.send.call_args.kwargs
 
     def test_returns_error_when_file_missing(self, adapter):
         result = asyncio.get_event_loop().run_until_complete(

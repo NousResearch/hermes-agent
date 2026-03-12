@@ -251,6 +251,7 @@ class DiscordAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
         if not self._client:
@@ -289,6 +290,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         if not self._client:
@@ -326,6 +328,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
         if not self._client:
@@ -383,6 +386,83 @@ class DiscordAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_image(chat_id, image_url, caption, reply_to)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a local video file as a Discord attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import io
+
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            if not os.path.exists(video_path):
+                return SendResult(success=False, error=f"Video file not found: {video_path}")
+
+            filename = os.path.basename(video_path)
+
+            with open(video_path, "rb") as f:
+                file = discord.File(io.BytesIO(f.read()), filename=filename)
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                )
+                return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send video, falling back to base adapter: %s", self.name, e, exc_info=True)
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an arbitrary file as a Discord attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import io
+
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            if not os.path.exists(file_path):
+                return SendResult(success=False, error=f"File not found: {file_path}")
+
+            filename = file_name or os.path.basename(file_path)
+
+            with open(file_path, "rb") as f:
+                file = discord.File(io.BytesIO(f.read()), filename=filename)
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                )
+                return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
     
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator."""

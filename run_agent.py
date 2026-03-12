@@ -1535,6 +1535,19 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+
+# ---------------------------------------------------------------------------
+# Backwards-compat helper for tests / older callsites
+# ---------------------------------------------------------------------------
+def build_system_prompt(agent: "AIAgent", system_message: str | None = None) -> str:
+    """
+    Backwards-compatible wrapper for AIAgent._build_system_prompt.
+
+    Some tests patch `run_agent.build_system_prompt` directly; this thin
+    helper keeps that surface area while delegating to the instance method.
+    """
+    return agent._build_system_prompt(system_message=system_message)
+
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
         source_tools = tools if tools is not None else self.tools

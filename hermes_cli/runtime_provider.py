@@ -18,6 +18,10 @@ from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
+def _normalize_custom_provider_name(value: str) -> str:
+    return value.strip().lower().replace(" ", "-")
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
@@ -45,6 +49,69 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
         return env_provider
 
     return "auto"
+
+
+def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+    requested_norm = _normalize_custom_provider_name(requested_provider or "")
+    if not requested_norm or requested_norm == "custom":
+        return None
+
+    config = load_config()
+    custom_providers = config.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        base_url = entry.get("base_url")
+        if not isinstance(name, str) or not isinstance(base_url, str):
+            continue
+        name_norm = _normalize_custom_provider_name(name)
+        menu_key = f"custom:{name_norm}"
+        if requested_norm not in {name_norm, menu_key}:
+            continue
+        return {
+            "name": name.strip(),
+            "base_url": base_url.strip(),
+            "api_key": str(entry.get("api_key", "") or "").strip(),
+        }
+
+    return None
+
+
+def _resolve_named_custom_runtime(
+    *,
+    requested_provider: str,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    custom_provider = _get_named_custom_provider(requested_provider)
+    if not custom_provider:
+        return None
+
+    base_url = (
+        (explicit_base_url or "").strip()
+        or custom_provider.get("base_url", "")
+    ).rstrip("/")
+    if not base_url:
+        return None
+
+    api_key = (
+        (explicit_api_key or "").strip()
+        or custom_provider.get("api_key", "")
+        or os.getenv("OPENAI_API_KEY", "").strip()
+        or os.getenv("OPENROUTER_API_KEY", "").strip()
+    )
+
+    return {
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "base_url": base_url,
+        "api_key": api_key,
+        "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+    }
 
 
 def _resolve_openrouter_runtime(
@@ -121,6 +188,15 @@ def resolve_runtime_provider(
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
+
+    custom_runtime = _resolve_named_custom_runtime(
+        requested_provider=requested_provider,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+    )
+    if custom_runtime:
+        custom_runtime["requested_provider"] = requested_provider
+        return custom_runtime
 
     provider = resolve_provider(
         requested_provider,

@@ -37,8 +37,9 @@ class DeepSeekV3ToolCallParser(ToolCallParser):
     START_TOKEN = "<｜tool▁calls▁begin｜>"
 
     # Regex captures: type, function_name, function_arguments
+    # Use non-greedy .*? to correctly match multiple tool calls
     PATTERN = re.compile(
-        r"<｜tool▁call▁begin｜>(?P<type>.*)<｜tool▁sep｜>(?P<function_name>.*)\n```json\n(?P<function_arguments>.*)\n```<｜tool▁call▁end｜>",
+        r"<｜tool▁call▁begin｜>(?P<type>.*?)<｜tool▁sep｜>(?P<function_name>.*?)\n```json\n(?P<function_arguments>.*?)\n```<｜tool▁call▁end｜>",
         re.DOTALL,
     )
 

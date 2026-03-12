@@ -124,6 +124,104 @@ class TestHermesParser:
         # Either parse it successfully or return None
 
 
+# ─── DeepSeek V3 parser tests ───────────────────────────────────────────
+
+class TestDeepSeekV3Parser:
+    @pytest.fixture
+    def parser(self):
+        return get_parser("deepseek_v3")
+
+    def test_no_tool_call(self, parser):
+        text = "Hello, I can help you with that."
+        content, tool_calls = parser.parse(text)
+        assert content == text
+        assert tool_calls is None
+
+    def test_single_tool_call(self, parser):
+        text = (
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "ls -la"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+
+    def test_multiple_tool_calls(self, parser):
+        """Regression test for issue #989: greedy regex dropped all but last tool call."""
+        text = (
+            'Let me run some commands.\n'
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "ls"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n'
+            '```json\n{"path": "test.py"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 2, f"Expected 2 tool calls, got {len(tool_calls)}"
+        names = {tc.function.name for tc in tool_calls}
+        assert "terminal" in names
+        assert "read_file" in names
+
+    def test_three_tool_calls(self, parser):
+        """Ensure parser handles 3+ tool calls correctly."""
+        text = (
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "echo 1"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "echo 2"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "echo 3"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 3, f"Expected 3 tool calls, got {len(tool_calls)}"
+
+    def test_tool_call_ids_unique(self, parser):
+        """Each tool call should get a unique ID."""
+        text = (
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "ls"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "pwd"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        _, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        ids = [tc.id for tc in tool_calls]
+        assert len(ids) == len(set(ids)), "Tool call IDs must be unique"
+
+    def test_content_before_tool_calls(self, parser):
+        """Text before tool calls should be preserved as content."""
+        text = (
+            'I will help you check that.\n'
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "pwd"}\n```'
+            '<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert content is not None
+        assert "help you" in content
+
+
 # ─── Parse result contract tests (applies to ALL parsers) ───────────────
 
 class TestParseResultContract:

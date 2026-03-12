@@ -187,7 +187,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     # Ensure local user config does not leak a model into the test
-    monkeypatch.setitem(cli.CLI_CONFIG, "model", {})
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "",
+        "base_url": "https://openrouter.ai/api/v1",
+    })
 
     def _runtime_resolve(**kwargs):
         return {

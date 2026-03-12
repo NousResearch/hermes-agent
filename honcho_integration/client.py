@@ -27,6 +27,16 @@ GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
+_RECALL_MODE_ALIASES = {"auto": "hybrid"}
+_VALID_RECALL_MODES = {"hybrid", "context", "tools"}
+
+
+def _normalize_recall_mode(val: str) -> str:
+    """Normalize legacy recall mode values (e.g. 'auto' → 'hybrid')."""
+    val = _RECALL_MODE_ALIASES.get(val, val)
+    return val if val in _VALID_RECALL_MODES else "hybrid"
+
+
 def _resolve_memory_mode(
     global_val: str | dict,
     host_val: str | dict | None,
@@ -222,7 +232,7 @@ class HonchoClientConfig:
                 or raw.get("dialecticMaxChars")
                 or 600
             ),
-            recall_mode=(
+            recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")
                 or raw.get("recallMode")
                 or "hybrid"

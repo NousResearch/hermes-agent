@@ -563,6 +563,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    "HERMES_EPHEMERAL_SYSTEM_PROMPT": {
+        "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
+        "prompt": "Ephemeral system prompt",
+        "url": None,
+        "password": False,
+        "category": "setting",
+
+    },
     "OPENAI_LLM_TIMEOUT": {
         "description": "Timeout in seconds for LLM calls when using custom OpenAI-compatible provider",
         "prompt": "LLM timeout for custom provider",

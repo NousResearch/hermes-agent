@@ -7,17 +7,21 @@ tools can enforce URL policy without pulling in the heavier CLI config stack.
 
 from __future__ import annotations
 
+import fnmatch
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-import fnmatch
-import os
 
 import yaml
 
 
-_DEFAULT_HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-_DEFAULT_CONFIG_PATH = _DEFAULT_HERMES_HOME / "config.yaml"
+def _get_hermes_home() -> Path:
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def _get_default_config_path() -> Path:
+    return _get_hermes_home() / "config.yaml"
 
 
 class WebsitePolicyError(Exception):
@@ -63,11 +67,17 @@ def _iter_blocklist_file_rules(path: Path) -> List[str]:
     return rules
 
 
-def _load_policy_config(config_path: Path = _DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    config_path = config_path or _get_default_config_path()
     if not config_path.exists():
         return {}
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except yaml.YAMLError as exc:
+        raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
+    except OSError as exc:
+        raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
     security = config.get("security", {})
     if not isinstance(security, dict):
         return {}
@@ -77,7 +87,8 @@ def _load_policy_config(config_path: Path = _DEFAULT_CONFIG_PATH) -> Dict[str, A
     return website_blocklist
 
 
-def load_website_blocklist(config_path: Path = _DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    config_path = config_path or _get_default_config_path()
     policy = _load_policy_config(config_path)
     if not policy:
         return {"enabled": False, "rules": []}
@@ -97,7 +108,7 @@ def load_website_blocklist(config_path: Path = _DEFAULT_CONFIG_PATH) -> Dict[str
             continue
         path = Path(shared_file).expanduser()
         if not path.is_absolute():
-            path = (_DEFAULT_HERMES_HOME / path).resolve()
+            path = (_get_hermes_home() / path).resolve()
         for normalized in _iter_blocklist_file_rules(path):
             key = (str(path), normalized)
             if key in seen:
@@ -116,7 +127,7 @@ def _match_host_against_rule(host: str, pattern: str) -> bool:
     return host == pattern or host.endswith(f".{pattern}")
 
 
-def check_website_access(url: str, config_path: Path = _DEFAULT_CONFIG_PATH) -> Optional[Dict[str, str]]:
+def check_website_access(url: str, config_path: Optional[Path] = None) -> Optional[Dict[str, str]]:
     parsed = urlparse(url)
     host = _normalize_host(parsed.hostname or parsed.netloc)
     if not host:

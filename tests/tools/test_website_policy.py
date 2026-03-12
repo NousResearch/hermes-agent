@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.website_policy import check_website_access, load_website_blocklist
+from tools.website_policy import WebsitePolicyError, check_website_access, load_website_blocklist
 
 
 def test_load_website_blocklist_merges_config_and_shared_file(tmp_path):
@@ -93,6 +93,40 @@ def test_default_config_exposes_website_blocklist_shape():
     assert website_blocklist["shared_files"] == []
 
 
+def test_load_website_blocklist_raises_clean_error_for_malformed_yaml(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("security: [oops\n", encoding="utf-8")
+
+    with pytest.raises(WebsitePolicyError, match="Invalid config YAML"):
+        load_website_blocklist(config_path)
+
+
+def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": ["dynamic.example"],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    blocked = check_website_access("https://dynamic.example/path")
+
+    assert blocked is not None
+    assert blocked["rule"] == "dynamic.example"
+
+
 def test_browser_navigate_returns_policy_block(monkeypatch):
     from tools import browser_tool
 
@@ -116,6 +150,33 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
 
     assert result["success"] is False
     assert result["blocked_by_policy"]["rule"] == "blocked.test"
+
+
+def test_browser_navigate_returns_clean_policy_error_for_missing_shared_file(monkeypatch, tmp_path):
+    from tools import browser_tool
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "shared_files": ["missing-blocklist.txt"],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(browser_tool, "check_website_access", lambda url: check_website_access(url, config_path=config_path))
+
+    result = json.loads(browser_tool.browser_navigate("https://allowed.test"))
+
+    assert result["success"] is False
+    assert "Website policy error" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -143,3 +204,19 @@ async def test_web_extract_short_circuits_blocked_url(monkeypatch):
 
     assert result["results"][0]["url"] == "https://blocked.test"
     assert "Blocked by website policy" in result["results"][0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_web_extract_returns_clean_policy_error_for_malformed_config(monkeypatch, tmp_path):
+    from tools import web_tools
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("security: [oops\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_tools, "check_website_access", lambda url: check_website_access(url, config_path=config_path))
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+    result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+
+    assert result["results"][0]["url"] == "https://allowed.test"
+    assert "Website policy error" in result["results"][0]["error"]

@@ -432,7 +432,7 @@ class AIAgent:
             effective_base = base_url
             if "openrouter" in effective_base.lower():
                 client_kwargs["default_headers"] = {
-                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                     "X-OpenRouter-Title": "Hermes Agent",
                     "X-OpenRouter-Categories": "productivity,cli-agent",
                 }
@@ -459,7 +459,7 @@ class AIAgent:
                     "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                     "base_url": OPENROUTER_BASE_URL,
                     "default_headers": {
-                        "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     },

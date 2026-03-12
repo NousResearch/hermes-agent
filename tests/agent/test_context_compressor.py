@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor
@@ -320,3 +321,51 @@ class TestCompressWithClient:
         for msg in result:
             if msg.get("role") == "tool" and msg.get("tool_call_id"):
                 assert msg["tool_call_id"] in called_ids
+
+
+class TestResponsesCompatibility:
+    def test_summary_uses_responses_when_chat_path_raises_stream_kwarg_error(self):
+        chat_client = MagicMock()
+        chat_client.chat.completions.create.side_effect = TypeError(
+            "Responses.stream() got an unexpected keyword argument 'stream'"
+        )
+
+        responses_output = [
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="responses summary text")],
+            )
+        ]
+        chat_client.responses.create.return_value = SimpleNamespace(output=responses_output)
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(chat_client, "test-model")):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        summary = c._call_summary_model(chat_client, "test-model", "summarize this")
+        assert summary.startswith("[CONTEXT SUMMARY]:")
+        assert "responses summary text" in summary
+        assert chat_client.responses.create.call_count == 1
+
+    def test_generate_summary_falls_back_to_main_client_when_auxiliary_fails(self):
+        bad_aux_client = MagicMock()
+        bad_aux_client.chat.completions.create.side_effect = TypeError(
+            "Responses.stream() got an unexpected keyword argument 'stream'"
+        )
+        bad_aux_client.responses.create.side_effect = RuntimeError("aux failed")
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_response.choices = [MagicMock()]
+        fallback_response.choices[0].message.content = "[CONTEXT SUMMARY]: fallback worked"
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(bad_aux_client, "aux-model")):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        c._get_fallback_client = MagicMock(return_value=(fallback_client, "main-model"))
+
+        summary = c._generate_summary([{"role": "user", "content": "hello"}])
+        assert summary == "[CONTEXT SUMMARY]: fallback worked"
+        assert fallback_client.chat.completions.create.call_count == 1

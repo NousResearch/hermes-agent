@@ -144,13 +144,23 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         return None
 
     def _call_summary_model(self, client, model: str, prompt: str) -> str:
-        """Make the actual LLM call to generate a summary. Raises on failure."""
+        """Make the actual LLM call to generate a summary. Raises on failure.
+
+        Prefer chat.completions for normal providers, but transparently fall back
+        to Responses API when the client/backend only supports Responses
+        semantics (notably Codex-like endpoints).
+        """
         kwargs = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "timeout": 30.0,
         }
+
+        # If this client has no chat.completions surface, go straight to Responses.
+        if not hasattr(client, "chat") and hasattr(client, "responses"):
+            return self._call_summary_model_responses(client, model, prompt)
+
         # Most providers (OpenRouter, local models) use max_tokens.
         # Direct OpenAI with newer models (gpt-4o, o-series, gpt-5+)
         # requires max_completion_tokens instead.
@@ -158,10 +168,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             kwargs["max_tokens"] = self.summary_target_tokens * 2
             response = client.chat.completions.create(**kwargs)
         except Exception as first_err:
-            if "max_tokens" in str(first_err) or "unsupported_parameter" in str(first_err):
+            first_err_text = str(first_err)
+            if "max_tokens" in first_err_text or "unsupported_parameter" in first_err_text:
                 kwargs.pop("max_tokens", None)
                 kwargs["max_completion_tokens"] = self.summary_target_tokens * 2
                 response = client.chat.completions.create(**kwargs)
+            elif "Responses.stream() got an unexpected keyword argument 'stream'" in first_err_text:
+                # Some Responses-backed clients expose chat.completions but reject
+                # stream kwarg plumbing internally. Retry via Responses directly.
+                return self._call_summary_model_responses(client, model, prompt)
             else:
                 raise
 
@@ -170,16 +185,43 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             summary = "[CONTEXT SUMMARY]: " + summary
         return summary
 
+    def _call_summary_model_responses(self, client, model: str, prompt: str) -> str:
+        """Generate a summary using the Responses API client surface."""
+        response = client.responses.create(
+            model=model,
+            instructions="You are a helpful assistant.",
+            input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            store=False,
+            timeout=30.0,
+        )
+
+        text_parts = []
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "type", None) != "message":
+                continue
+            for part in getattr(item, "content", []) or []:
+                if getattr(part, "type", None) in ("output_text", "text"):
+                    text_parts.append(getattr(part, "text", ""))
+
+        summary = "".join(text_parts).strip()
+        if not summary:
+            summary = (getattr(response, "output_text", "") or "").strip()
+        if not summary:
+            raise RuntimeError("Responses summary generation returned empty output")
+        if not summary.startswith("[CONTEXT SUMMARY]:"):
+            summary = "[CONTEXT SUMMARY]: " + summary
+        return summary
+
     def _get_fallback_client(self):
         """Try to build a fallback client from the main model's endpoint config.
 
         When the primary auxiliary client fails (e.g. stale OpenRouter key), this
-        creates a client using the user's active custom endpoint (OPENAI_BASE_URL)
-        so compression can still produce a real summary instead of a static string.
+        creates a client using the user's active endpoint so compression can still
+        produce a real summary.
 
         Returns (client, model) or (None, None).
         """
-        custom_base = os.getenv("OPENAI_BASE_URL")
+        custom_base = os.getenv("OPENAI_BASE_URL") or self.base_url
         custom_key = os.getenv("OPENAI_API_KEY")
         if not custom_base or not custom_key:
             return None, None

@@ -512,10 +512,6 @@ def get_mod_welcome_message() -> str:
     return "Welcome to Ares Agent! Type your message or /help for commands."
 
 
-def get_mod_system_prompt(skin_name: str | None = None) -> str:
-    return str(_mod_attr("SYSTEM_PROMPT", "", skin_name=skin_name)).strip()
-
-
 def mod_has_animated_hero(skin_name: str | None = None) -> bool:
     return bool(_mod_attr("ANIMATED_HERO", False, skin_name=skin_name))
 

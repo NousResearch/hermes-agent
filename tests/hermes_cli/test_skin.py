@@ -14,7 +14,6 @@ from hermes_cli.skin import (
     get_caduceus_frame,
     get_mod_brand_name,
     get_mod_hero_animation_interval,
-    get_mod_system_prompt,
     is_ares_skin,
     is_hermes_skin,
     is_mod_skin,
@@ -131,52 +130,38 @@ class TestTelemetryHelpers:
             set_active_skin_globals("posideon")
             lore = HermesLoreState(sessions=5, clever_replies=2, published_skills=["undertow"])
             brand = get_mod_brand_name()
-            system_prompt = get_mod_system_prompt()
             title = get_banner_title(lore)
             telemetry = build_relay_telemetry(lore, phase=2, width=40, active=True)
             hero = get_caduceus_frame(lore, width=24, height=16)
             assert brand == "Posideon Agent"
-            assert "You are Posideon Agent" in system_prompt
             assert "Posideon Agent" in title
             assert "tidewatch active" in telemetry
             assert hero
 
         set_active_skin_globals("hermes")
 
-    def test_ares_payload_exposes_skin_system_prompt(self):
-        with patch.dict("os.environ", {"HERMES_CLI_SKIN": "ares"}):
-            set_active_skin_globals("ares")
-            system_prompt = get_mod_system_prompt()
-            assert "You are Ares Agent" in system_prompt
-
-        set_active_skin_globals("hermes")
-
-    def test_sisyphus_payload_exposes_animated_hero_and_system_prompt(self):
+    def test_sisyphus_payload_exposes_animated_hero(self):
         with patch.dict("os.environ", {"HERMES_CLI_SKIN": "sisyphus"}):
             set_active_skin_globals("sisyphus")
             lore = HermesLoreState(sessions=2, clever_replies=1, published_skills=["stone"])
-            system_prompt = get_mod_system_prompt()
             hero = get_caduceus_frame(lore, phase=1, width=28, height=14)
             interval = get_mod_hero_animation_interval("sisyphus")
 
-            assert "You are Sisyphus Agent" in system_prompt
             assert hero
             assert interval >= 0.12
 
         set_active_skin_globals("hermes")
 
-    def test_charizard_payload_exposes_skin_system_prompt_and_hero(self):
+    def test_charizard_payload_exposes_branding_and_hero(self):
         with patch.dict("os.environ", {"HERMES_CLI_SKIN": "charizard"}):
             set_active_skin_globals("charizard")
             lore = HermesLoreState(sessions=3, clever_replies=1, published_skills=["ember"])
             brand = get_mod_brand_name()
-            system_prompt = get_mod_system_prompt()
             title = get_banner_title(lore)
             telemetry = build_relay_telemetry(lore, phase=1, width=40, active=True)
             hero = get_caduceus_frame(lore, width=28, height=16)
 
             assert brand == "Charizard Agent"
-            assert "You are Charizard Agent" in system_prompt
             assert "Charizard Agent" in title
             assert "tail flame active" in telemetry
             assert hero
@@ -316,16 +301,6 @@ class TestCliSkinSwitching:
         fake_stdout.write.assert_not_called()
         fake_real_stdout.write.assert_called()
         fake_real_stdout.flush.assert_called()
-
-    def test_compose_system_prompt_layers_skin_persona_and_user_prompt(self):
-        cli = HermesCLI.__new__(HermesCLI)
-        cli.skin = "ares"
-        cli.user_system_prompt = "Answer like a terse staff officer."
-
-        composed = cli._compose_system_prompt()
-
-        assert "You are Ares Agent" in composed
-        assert "Answer like a terse staff officer." in composed
 
     def test_freeze_managed_banner_is_permanent_for_session(self):
         cli = HermesCLI.__new__(HermesCLI)

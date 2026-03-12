@@ -399,7 +399,6 @@ from hermes_cli.skin import (
     get_mod_prompt_frames,
     get_mod_rituals,
     get_mod_skin_status_label,
-    get_mod_system_prompt,
     get_mod_unit_designation,
     get_mod_version_title,
     get_mod_welcome_message,
@@ -926,11 +925,10 @@ class HermesCLI:
                 self.console.print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
         # Ephemeral system prompt: env var takes precedence, then config
-        self.user_system_prompt = (
+        self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
-        self.system_prompt = self._compose_system_prompt()
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
@@ -1372,7 +1370,6 @@ class HermesCLI:
         self._pending_banner_redraw_animated = False
         _sync_runtime_skin_theme(normalized)
         self._sync_skin_env()
-        self._refresh_effective_system_prompt()
         self.agent = None
         if self._app is not None:
             self._app.style = self._build_prompt_style()
@@ -1389,20 +1386,6 @@ class HermesCLI:
         self._managed_banner_frozen = True
         if self._app is not None:
             self._app.invalidate()
-
-    def _compose_system_prompt(self) -> str:
-        """Combine the active skin persona with any user-selected prompt."""
-        parts = []
-        skin_prompt = get_mod_system_prompt(self.skin) if is_mod_skin(self.skin) else ""
-        if skin_prompt:
-            parts.append(skin_prompt.strip())
-        if getattr(self, "user_system_prompt", ""):
-            parts.append(self.user_system_prompt.strip())
-        return "\n\n".join(part for part in parts if part)
-
-    def _refresh_effective_system_prompt(self):
-        """Refresh the prompt passed into the agent for the current skin."""
-        self.system_prompt = self._compose_system_prompt()
 
     def _reload_skin_ui(self):
         """Redraw the terminal UI after a skin change like a fresh launcher boot."""
@@ -1866,16 +1849,14 @@ class HermesCLI:
             new_prompt = parts[1].strip()
             
             if new_prompt.lower() == "clear":
-                self.user_system_prompt = ""
-                self._refresh_effective_system_prompt()
+                self.system_prompt = ""
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b System prompt cleared (saved to config)")
                 else:
                     print("(^_^) System prompt cleared (session only)")
             else:
-                self.user_system_prompt = new_prompt
-                self._refresh_effective_system_prompt()
+                self.system_prompt = new_prompt
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", new_prompt):
                     print(f"(^_^)b System prompt set (saved to config)")
@@ -1889,9 +1870,9 @@ class HermesCLI:
             print("|" + " " * 15 + "(^_^) System Prompt" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
-            if self.user_system_prompt:
+            if self.system_prompt:
                 # Word wrap the prompt for display
-                words = self.user_system_prompt.split()
+                words = self.system_prompt.split()
                 lines = []
                 current_line = ""
                 for word in words:
@@ -1905,10 +1886,7 @@ class HermesCLI:
                 for line in lines:
                     print(f"  {line}")
             else:
-                if is_mod_skin(self.skin):
-                    print(f"  (no custom prompt set - using {self.skin} skin persona)")
-                else:
-                    print("  (no custom prompt set - using default)")
+                print("  (no custom prompt set - using default)")
             print()
             print("  Usage:")
             print("    /prompt <text>  - Set a custom system prompt")
@@ -1925,14 +1903,13 @@ class HermesCLI:
             personality_name = parts[1].strip().lower()
             
             if personality_name in self.personalities:
-                self.user_system_prompt = self.personalities[personality_name]
-                self._refresh_effective_system_prompt()
+                self.system_prompt = self.personalities[personality_name]
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.user_system_prompt):
+                if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.user_system_prompt[:60]}{'...' if len(self.user_system_prompt) > 60 else ''}\"")
+                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: {', '.join(self.personalities.keys())}")

@@ -3897,6 +3897,7 @@ class HermesCLI:
 
     def _show_voice_status(self):
         """Show current voice mode status."""
+        from hermes_cli.config import load_config
         from tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()

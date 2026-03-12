@@ -1523,8 +1523,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection
-    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    # Model selection — try live /models endpoint first, fall back to defaults
+    from hermes_cli.models import fetch_api_models
+    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+    live_models = fetch_api_models(api_key_for_probe, effective_base)
+
+    if live_models:
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(f"  ⚠ Could not auto-detect models from API — showing defaults.")
+            print(f"    Use \"Enter custom model name\" if you don't see your model.")
+        # else: no defaults either, will fall through to raw input
+
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:

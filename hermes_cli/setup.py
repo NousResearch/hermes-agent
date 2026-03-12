@@ -52,6 +52,68 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
     config["model"] = model_cfg
 
 
+# Default model lists per provider — used as fallback when the live
+# /models endpoint can't be reached.
+_DEFAULT_PROVIDER_MODELS = {
+    "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "minimax": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax-cn": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+}
+
+
+def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
+    """Model selection for API-key providers with live /models detection.
+
+    Tries the provider's /models endpoint first.  Falls back to a
+    hardcoded default list with a warning if the endpoint is unreachable.
+    Always offers a 'Custom model' escape hatch.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import get_env_value
+    from hermes_cli.models import fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    # Resolve API key and base URL for the probe
+    api_key = ""
+    for ev in pconfig.api_key_env_vars:
+        api_key = get_env_value(ev) or os.getenv(ev, "")
+        if api_key:
+            break
+    base_url_env = pconfig.base_url_env_var or ""
+    base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+
+    # Try live /models endpoint
+    live_models = fetch_api_models(api_key, base_url)
+
+    if live_models:
+        provider_models = live_models
+        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
+    else:
+        provider_models = _DEFAULT_PROVIDER_MODELS.get(provider_id, [])
+        if provider_models:
+            print_warning(
+                f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
+                f"    Use \"Custom model\" if the model you expect isn't listed."
+            )
+
+    model_choices = list(provider_models)
+    model_choices.append("Custom model")
+    model_choices.append(f"Keep current ({current_model})")
+
+    keep_idx = len(model_choices) - 1
+    model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+    if model_idx < len(provider_models):
+        _set_default_model(config, provider_models[model_idx])
+    elif model_idx == len(provider_models):
+        custom = prompt_fn("Enter model name")
+        if custom:
+            _set_default_model(config, custom)
+    # else: keep current
+
+
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
     disk_model = load_config().get("model")
     if isinstance(disk_model, dict):
@@ -1107,58 +1169,11 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider == "zai":
-            # Always offer all models — Pro/Max plans support GLM-5 even
-            # on coding endpoints.  If the user's plan doesn't support a
-            # model, the API will return an error at runtime (not our job
-            # to gatekeep).
-            zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            model_choices = list(zai_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(zai_models):
-                _set_default_model(config, zai_models[model_idx])
-            elif model_idx == len(zai_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider == "kimi-coding":
-            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
-            model_choices = list(kimi_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(kimi_models):
-                _set_default_model(config, kimi_models[model_idx])
-            elif model_idx == len(kimi_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider in ("minimax", "minimax-cn"):
-            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
-            model_choices = list(minimax_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(minimax_models):
-                _set_default_model(config, minimax_models[model_idx])
-            elif model_idx == len(minimax_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
+        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+            _setup_provider_model_selection(
+                config, selected_provider, current_model,
+                prompt_choice, prompt,
+            )
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

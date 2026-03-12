@@ -177,10 +177,22 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 
 def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]]:
-    """Return ``(model_id, description)`` tuples for a provider's curated list."""
+    """Return ``(model_id, description)`` tuples for a provider's model list.
+
+    Tries to fetch the live model list from the provider's API first,
+    falling back to the static ``_PROVIDER_MODELS`` catalog if the API
+    is unreachable.
+    """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return list(OPENROUTER_MODELS)
+
+    # Try live API first (Codex, Nous, etc. all support /models)
+    live = provider_model_ids(normalized)
+    if live:
+        return [(m, "") for m in live]
+
+    # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
 
@@ -197,7 +209,11 @@ def normalize_provider(provider: Optional[str]) -> str:
 
 
 def provider_model_ids(provider: Optional[str]) -> list[str]:
-    """Return the best known model catalog for a provider."""
+    """Return the best known model catalog for a provider.
+
+    Tries live API endpoints for providers that support them (Codex, Nous),
+    falling back to static lists.
+    """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return model_ids()
@@ -205,6 +221,17 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         from hermes_cli.codex_models import get_codex_model_ids
 
         return get_codex_model_ids()
+    if normalized == "nous":
+        # Try live Nous Portal /models endpoint
+        try:
+            from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
+            creds = resolve_nous_runtime_credentials()
+            if creds:
+                live = fetch_nous_models(creds.get("api_key", ""), creds.get("base_url", ""))
+                if live:
+                    return live
+        except Exception:
+            pass
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 

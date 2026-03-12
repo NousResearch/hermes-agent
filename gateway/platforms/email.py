@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import smtplib
+import ssl
 import uuid
 from datetime import datetime
 from email.header import decode_header
@@ -212,7 +213,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap.login(self._address, self._password)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
-            status, data = imap.search(None, "ALL")
+            status, data = imap.uid("search", None, "ALL")
             if status == "OK" and data[0]:
                 for uid in data[0].split():
                     self._seen_uids.add(uid)
@@ -225,7 +226,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
-            smtp.starttls()
+            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -277,7 +278,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap.login(self._address, self._password)
             imap.select("INBOX")
 
-            status, data = imap.search(None, "UNSEEN")
+            status, data = imap.uid("search", None, "UNSEEN")
             if status != "OK" or not data[0]:
                 imap.logout()
                 return results
@@ -287,7 +288,7 @@ class EmailAdapter(BasePlatformAdapter):
                     continue
                 self._seen_uids.add(uid)
 
-                status, msg_data = imap.fetch(uid, "(RFC822)")
+                status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                 if status != "OK":
                     continue
 
@@ -427,7 +428,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
-        smtp.starttls()
+        smtp.starttls(context=ssl.create_default_context())
         smtp.login(self._address, self._password)
         smtp.send_message(msg)
         smtp.quit()
@@ -515,7 +516,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg.attach(part)
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
-        smtp.starttls()
+        smtp.starttls(context=ssl.create_default_context())
         smtp.login(self._address, self._password)
         smtp.send_message(msg)
         smtp.quit()

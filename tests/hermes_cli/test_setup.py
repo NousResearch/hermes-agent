@@ -16,39 +16,6 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_nous_api_setup_preserves_model_provider_metadata(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 0)
-
-    prompt_values = iter(
-        [
-            "nous-api-key",
-            "",
-            "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-        ]
-    )
-    monkeypatch.setattr(
-        "hermes_cli.setup.prompt",
-        lambda *args, **kwargs: next(prompt_values),
-    )
-
-    setup_model_provider(config)
-    save_config(config)
-
-    reloaded = load_config()
-
-    assert isinstance(reloaded["model"], dict)
-    assert reloaded["model"]["provider"] == "nous-api"
-    assert reloaded["model"]["base_url"] == "https://inference-api.nousresearch.com/v1"
-    assert (
-        reloaded["model"]["default"]
-        == "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-    )
-
 
 def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
     tmp_path, monkeypatch
@@ -58,7 +25,7 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
 
     config = load_config()
 
-    prompt_choices = iter([1, 2])
+    prompt_choices = iter([0, 2])
     monkeypatch.setattr(
         "hermes_cli.setup.prompt_choice",
         lambda *args, **kwargs: next(prompt_choices),

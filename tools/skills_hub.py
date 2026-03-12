@@ -572,14 +572,23 @@ class ClawHubSource(SkillSource):
             logger.warning("ClawHub fetch failed for %s: could not resolve latest version", slug)
             return None
 
-        version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
-        if not isinstance(version_data, dict):
-            return None
+        # Primary method: download the skill as a ZIP bundle from /download
+        files = self._download_zip(slug, latest_version)
 
-        files = self._extract_files(version_data)
+        # Fallback: try the version metadata endpoint for inline/raw content
+        if "SKILL.md" not in files:
+            version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
+            if isinstance(version_data, dict):
+                # Files may be nested under version_data["version"]["files"]
+                files = self._extract_files(version_data) or files
+                if "SKILL.md" not in files:
+                    nested = version_data.get("version", {})
+                    if isinstance(nested, dict):
+                        files = self._extract_files(nested) or files
+
         if "SKILL.md" not in files:
             logger.warning(
-                "ClawHub fetch for %s resolved version %s but no inline/raw file content was available",
+                "ClawHub fetch for %s resolved version %s but could not retrieve file content",
                 slug,
                 latest_version,
             )
@@ -672,6 +681,65 @@ class ClawHubSource(SkillSource):
                 if content is not None:
                     files[fname] = content
 
+        return files
+
+    def _download_zip(self, slug: str, version: str) -> Dict[str, str]:
+        """Download skill as a ZIP bundle from the /download endpoint and extract text files."""
+        import io
+        import zipfile
+
+        files: Dict[str, str] = {}
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = httpx.get(
+                    f"{self.BASE_URL}/download",
+                    params={"slug": slug, "version": version},
+                    timeout=30,
+                    follow_redirects=True,
+                )
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("retry-after", "5"))
+                    retry_after = min(retry_after, 15)  # Cap wait time
+                    logger.debug(
+                        "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                        slug, retry_after, attempt + 1, max_retries,
+                    )
+                    time.sleep(retry_after)
+                    continue
+                if resp.status_code != 200:
+                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                    return files
+
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        # Sanitize path — strip leading slashes and ..
+                        name = info.filename.lstrip("/")
+                        if ".." in name or name.startswith("/"):
+                            continue
+                        # Only extract text-sized files (skip large binaries)
+                        if info.file_size > 500_000:
+                            logger.debug("Skipping large file in ZIP: %s (%d bytes)", name, info.file_size)
+                            continue
+                        try:
+                            raw = zf.read(info.filename)
+                            files[name] = raw.decode("utf-8")
+                        except (UnicodeDecodeError, KeyError):
+                            logger.debug("Skipping non-text file in ZIP: %s", name)
+                            continue
+
+                return files
+
+            except zipfile.BadZipFile:
+                logger.warning("ClawHub returned invalid ZIP for %s v%s", slug, version)
+                return files
+            except httpx.HTTPError as exc:
+                logger.debug("ClawHub ZIP download failed for %s v%s: %s", slug, version, exc)
+                return files
+
+        logger.debug("ClawHub ZIP download exhausted retries for %s v%s", slug, version)
         return files
 
     def _fetch_text(self, url: str) -> Optional[str]:

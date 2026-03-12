@@ -165,7 +165,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             else:
                 raise
 
-        summary = response.choices[0].message.content.strip()
+        summary = (response.choices[0].message.content or "").strip()
         if not summary.startswith("[CONTEXT SUMMARY]:"):
             summary = "[CONTEXT SUMMARY]: " + summary
         return summary

@@ -151,7 +151,8 @@ def cmd_setup(args) -> None:
         hermes_host["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
 
     # Recall mode
-    current_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
+    _raw_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
+    current_recall = "hybrid" if _raw_recall not in ("hybrid", "context", "tools") else _raw_recall
     print(f"\n  Recall mode options:")
     print("    hybrid  — auto-injected context + Honcho tools available (default)")
     print("    context — auto-injected context only, Honcho tools hidden")

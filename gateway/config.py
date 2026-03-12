@@ -152,6 +152,9 @@ class GatewayConfig:
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
     
+    # STT (Speech-to-Text) settings
+    stt_enabled: bool = True  # Enable/disable voice message transcription
+    
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -211,6 +214,7 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
         }
     
     @classmethod
@@ -251,6 +255,7 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=data.get("stt_enabled", True),
         )
 
 

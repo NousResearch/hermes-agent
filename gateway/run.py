@@ -2260,6 +2260,13 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
+        # Check if STT is enabled in config
+        if not getattr(self.config, 'stt_enabled', True):
+            logger.debug("STT disabled in config, skipping transcription")
+            if audio_paths:
+                return "[The user sent voice message(s) but transcription is disabled]\n\n" + user_text if user_text else "[The user sent voice message(s) but transcription is disabled]"
+            return user_text
+        
         from tools.transcription_tools import transcribe_audio
         import asyncio
 

@@ -88,7 +88,7 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_no_hermes_binary(self, tmp_path):
-        """Returns error when hermes is not on PATH."""
+        """Returns error when hermes is not on PATH and hermes_cli is not importable."""
         runner = _make_runner()
         event = _make_event()
 
@@ -102,10 +102,77 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", tmp_path), \
              patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", return_value=None):
+             patch("shutil.which", return_value=None), \
+             patch("importlib.util.find_spec", return_value=None):
             result = await runner._handle_update_command(event)
 
-        assert "not found on PATH" in result
+        assert "Could not locate" in result
+        assert "hermes update" in result
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_sys_executable(self, tmp_path):
+        """Falls back to sys.executable -m hermes_cli.main when hermes not on PATH."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        fake_spec = MagicMock()
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", return_value=None), \
+             patch("importlib.util.find_spec", return_value=fake_spec), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Starting Hermes update" in result
+        call_args = mock_popen.call_args[0][0]
+        # The update_cmd uses sys.executable -m hermes_cli.main
+        joined = " ".join(call_args) if isinstance(call_args, list) else call_args
+        assert "hermes_cli.main" in joined or "bash" in call_args[0]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_prefers_which(self, tmp_path):
+        """_resolve_hermes_bin returns argv parts from shutil.which when available."""
+        from gateway.run import _resolve_hermes_bin
+
+        with patch("shutil.which", return_value="/custom/path/hermes"):
+            result = _resolve_hermes_bin()
+
+        assert result == ["/custom/path/hermes"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_fallback(self):
+        """_resolve_hermes_bin falls back to sys.executable argv when which fails."""
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        fake_spec = MagicMock()
+        with patch("shutil.which", return_value=None), \
+             patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _resolve_hermes_bin()
+
+        assert result == [sys.executable, "-m", "hermes_cli.main"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_returns_none_when_both_fail(self):
+        """_resolve_hermes_bin returns None when both strategies fail."""
+        from gateway.run import _resolve_hermes_bin
+
+        with patch("shutil.which", return_value=None), \
+             patch("importlib.util.find_spec", return_value=None):
+            result = _resolve_hermes_bin()
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_writes_pending_marker(self, tmp_path):

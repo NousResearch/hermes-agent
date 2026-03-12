@@ -35,7 +35,7 @@ def _make_agent(fallback_model=None):
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
-            api_key="test-key-primary",
+            api_key="test-key",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -43,6 +43,14 @@ def _make_agent(fallback_model=None):
         )
         agent.client = MagicMock()
         return agent
+
+
+def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="test-key"):
+    """Helper to create a mock client for resolve_provider_client."""
+    mock_client = MagicMock()
+    mock_client.api_key = api_key
+    mock_client.base_url = base_url
+    return mock_client
 
 
 # =============================================================================
@@ -71,9 +79,13 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
-        with (
-            patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-fallback-key"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="sk-or-fallback-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             result = agent._try_activate_fallback()
             assert result is True
@@ -81,36 +93,37 @@ class TestTryActivateFallback:
             assert agent.model == "anthropic/claude-sonnet-4"
             assert agent.provider == "openrouter"
             assert agent.api_mode == "chat_completions"
-            mock_openai.assert_called_once()
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "sk-or-fallback-key"
-            assert "openrouter" in call_kwargs["base_url"].lower()
-            # OpenRouter should get attribution headers
-            assert "default_headers" in call_kwargs
+            assert agent.client is mock_client
 
     def test_activates_zai_fallback(self):
         agent = _make_agent(
             fallback_model={"provider": "zai", "model": "glm-5"},
         )
-        with (
-            patch.dict("os.environ", {"ZAI_API_KEY": "sk-zai-key"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="sk-zai-key",
+            base_url="https://open.z.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "glm-5"),
         ):
             result = agent._try_activate_fallback()
             assert result is True
             assert agent.model == "glm-5"
             assert agent.provider == "zai"
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "sk-zai-key"
-            assert "z.ai" in call_kwargs["base_url"].lower()
+            assert agent.client is mock_client
 
     def test_activates_kimi_fallback(self):
         agent = _make_agent(
             fallback_model={"provider": "kimi-coding", "model": "kimi-k2.5"},
         )
-        with (
-            patch.dict("os.environ", {"KIMI_API_KEY": "sk-kimi-key"}),
-            patch("run_agent.OpenAI"),
+        mock_client = _mock_resolve(
+            api_key="sk-kimi-key",
+            base_url="https://api.moonshot.ai/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "kimi-k2.5"),
         ):
             assert agent._try_activate_fallback() is True
             assert agent.model == "kimi-k2.5"
@@ -120,23 +133,30 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
         )
-        with (
-            patch.dict("os.environ", {"MINIMAX_API_KEY": "sk-mm-key"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="sk-mm-key",
+            base_url="https://api.minimax.io/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "MiniMax-M2.5"),
         ):
             assert agent._try_activate_fallback() is True
             assert agent.model == "MiniMax-M2.5"
             assert agent.provider == "minimax"
-            call_kwargs = mock_openai.call_args[1]
-            assert "minimax.io" in call_kwargs["base_url"]
+            assert agent.client is mock_client
 
     def test_only_fires_once(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
-        with (
-            patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}),
-            patch("run_agent.OpenAI"),
+        mock_client = _mock_resolve(
+            api_key="sk-or-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             assert agent._try_activate_fallback() is True
             # Second attempt should return False
@@ -147,9 +167,10 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
         )
-        # Ensure MINIMAX_API_KEY is not in the environment
-        env = {k: v for k, v in os.environ.items() if k != "MINIMAX_API_KEY"}
-        with patch.dict("os.environ", env, clear=True):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ):
             assert agent._try_activate_fallback() is False
             assert agent._fallback_activated is False
 
@@ -163,22 +184,29 @@ class TestTryActivateFallback:
                 "api_key_env": "MY_CUSTOM_KEY",
             },
         )
-        with (
-            patch.dict("os.environ", {"MY_CUSTOM_KEY": "custom-secret"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="custom-secret",
+            base_url="http://localhost:8080/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "my-model"),
         ):
             assert agent._try_activate_fallback() is True
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["base_url"] == "http://localhost:8080/v1"
-            assert call_kwargs["api_key"] == "custom-secret"
+            assert agent.client is mock_client
+            assert agent.model == "my-model"
 
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
-        with (
-            patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}),
-            patch("run_agent.OpenAI"),
+        mock_client = _mock_resolve(
+            api_key="sk-or-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             agent._try_activate_fallback()
             assert agent._use_prompt_caching is True
@@ -187,9 +215,13 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "google/gemini-2.5-flash"},
         )
-        with (
-            patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}),
-            patch("run_agent.OpenAI"),
+        mock_client = _mock_resolve(
+            api_key="sk-or-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "google/gemini-2.5-flash"),
         ):
             agent._try_activate_fallback()
             assert agent._use_prompt_caching is False
@@ -198,9 +230,13 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "zai", "model": "glm-5"},
         )
-        with (
-            patch.dict("os.environ", {"ZAI_API_KEY": "sk-zai-key"}),
-            patch("run_agent.OpenAI"),
+        mock_client = _mock_resolve(
+            api_key="sk-zai-key",
+            base_url="https://open.z.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "glm-5"),
         ):
             agent._try_activate_fallback()
             assert agent._use_prompt_caching is False
@@ -210,35 +246,36 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "zai", "model": "glm-5"},
         )
-        with (
-            patch.dict("os.environ", {"Z_AI_API_KEY": "sk-alt-key"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="sk-alt-key",
+            base_url="https://open.z.ai/api/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "glm-5"),
         ):
             assert agent._try_activate_fallback() is True
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "sk-alt-key"
+            assert agent.client is mock_client
 
     def test_activates_codex_fallback(self):
         """OpenAI Codex fallback should use OAuth credentials and codex_responses mode."""
         agent = _make_agent(
             fallback_model={"provider": "openai-codex", "model": "gpt-5.3-codex"},
         )
-        mock_creds = {
-            "api_key": "codex-oauth-token",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-        }
-        with (
-            patch("hermes_cli.auth.resolve_codex_runtime_credentials", return_value=mock_creds),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="codex-oauth-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.3-codex"),
         ):
             result = agent._try_activate_fallback()
             assert result is True
             assert agent.model == "gpt-5.3-codex"
             assert agent.provider == "openai-codex"
             assert agent.api_mode == "codex_responses"
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "codex-oauth-token"
-            assert "chatgpt.com" in call_kwargs["base_url"]
+            assert agent.client is mock_client
 
     def test_codex_fallback_fails_gracefully_without_credentials(self):
         """Codex fallback should return False if no OAuth credentials available."""
@@ -246,8 +283,8 @@ class TestTryActivateFallback:
             fallback_model={"provider": "openai-codex", "model": "gpt-5.3-codex"},
         )
         with patch(
-            "hermes_cli.auth.resolve_codex_runtime_credentials",
-            side_effect=Exception("No Codex credentials"),
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
         ):
             assert agent._try_activate_fallback() is False
             assert agent._fallback_activated is False
@@ -257,22 +294,20 @@ class TestTryActivateFallback:
         agent = _make_agent(
             fallback_model={"provider": "nous", "model": "nous-hermes-3"},
         )
-        mock_creds = {
-            "api_key": "nous-agent-key-abc",
-            "base_url": "https://inference-api.nousresearch.com/v1",
-        }
-        with (
-            patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value=mock_creds),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = _mock_resolve(
+            api_key="nous-agent-key-abc",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "nous-hermes-3"),
         ):
             result = agent._try_activate_fallback()
             assert result is True
             assert agent.model == "nous-hermes-3"
             assert agent.provider == "nous"
             assert agent.api_mode == "chat_completions"
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "nous-agent-key-abc"
-            assert "nousresearch.com" in call_kwargs["base_url"]
+            assert agent.client is mock_client
 
     def test_nous_fallback_fails_gracefully_without_login(self):
         """Nous fallback should return False if not logged in."""
@@ -280,8 +315,8 @@ class TestTryActivateFallback:
             fallback_model={"provider": "nous", "model": "nous-hermes-3"},
         )
         with patch(
-            "hermes_cli.auth.resolve_nous_runtime_credentials",
-            side_effect=Exception("Not logged in to Nous Portal"),
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
         ):
             assert agent._try_activate_fallback() is False
             assert agent._fallback_activated is False
@@ -315,7 +350,7 @@ class TestFallbackInit:
 # =============================================================================
 
 class TestProviderCredentials:
-    """Verify that each supported provider resolves its API key correctly."""
+    """Verify that each supported provider resolves via the centralized router."""
 
     @pytest.mark.parametrize("provider,env_var,base_url_fragment", [
         ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
@@ -328,12 +363,15 @@ class TestProviderCredentials:
         agent = _make_agent(
             fallback_model={"provider": provider, "model": "test-model"},
         )
-        with (
-            patch.dict("os.environ", {env_var: "test-key-123"}),
-            patch("run_agent.OpenAI") as mock_openai,
+        mock_client = MagicMock()
+        mock_client.api_key = "test-api-key"
+        mock_client.base_url = f"https://{base_url_fragment}/v1"
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "test-model"),
         ):
             result = agent._try_activate_fallback()
             assert result is True, f"Failed to activate fallback for {provider}"
-            call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "test-key-123"
-            assert base_url_fragment in call_kwargs["base_url"].lower()
+            assert agent.client is mock_client
+            assert agent.model == "test-model"
+            assert agent.provider == provider

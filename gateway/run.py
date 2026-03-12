@@ -228,6 +228,7 @@ class GatewayRunner:
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
+        self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -420,6 +421,20 @@ class GatewayRunner:
             return {"enabled": True, "effort": effort}
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return None
+
+    @staticmethod
+    def _load_show_reasoning() -> bool:
+        """Load show_reasoning toggle from config.yaml display section."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return bool(cfg.get("display", {}).get("show_reasoning", False))
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -846,7 +861,7 @@ class GatewayRunner:
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
-                          "background"}
+                          "background", "reasoning"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -911,6 +926,9 @@ class GatewayRunner:
 
         if command == "background":
             return await self._handle_background_command(event)
+
+        if command == "reasoning":
+            return await self._handle_reasoning_command(event)
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -1352,7 +1370,20 @@ class GatewayRunner:
             
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
-            
+
+            # Prepend reasoning/thinking if display is enabled
+            if getattr(self, "_show_reasoning", False) and response:
+                last_reasoning = agent_result.get("last_reasoning")
+                if last_reasoning:
+                    # Collapse long reasoning to keep messages readable
+                    lines = last_reasoning.strip().splitlines()
+                    if len(lines) > 15:
+                        display_reasoning = "\n".join(lines[:15])
+                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                    else:
+                        display_reasoning = last_reasoning.strip()
+                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -1543,6 +1574,7 @@ class GatewayRunner:
             "`/resume [name]` — Resume a previously-named session",
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
+            "`/reasoning [level|show|hide]` — Set reasoning effort or toggle display",
             "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/background <prompt>` — Run a prompt in a separate background session",
             "`/reload-mcp` — Reload MCP servers from config",
@@ -2169,6 +2201,88 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+
+    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
+        """Handle /reasoning command — manage reasoning effort and display toggle.
+
+        Usage:
+            /reasoning              Show current effort level and display state
+            /reasoning <level>      Set reasoning effort (none, low, medium, high, xhigh)
+            /reasoning show|on      Show model reasoning in responses
+            /reasoning hide|off     Hide model reasoning from responses
+        """
+        import yaml
+
+        args = event.get_command_args().strip().lower()
+        config_path = _hermes_home / "config.yaml"
+
+        def _save_config_key(key_path: str, value):
+            """Save a dot-separated key to config.yaml."""
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                keys = key_path.split(".")
+                current = user_config
+                for k in keys[:-1]:
+                    if k not in current or not isinstance(current[k], dict):
+                        current[k] = {}
+                    current = current[k]
+                current[keys[-1]] = value
+                with open(config_path, "w", encoding="utf-8") as f:
+                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                return True
+            except Exception as e:
+                logger.error("Failed to save config key %s: %s", key_path, e)
+                return False
+
+        if not args:
+            # Show current state
+            rc = self._reasoning_config
+            if rc is None:
+                level = "medium (default)"
+            elif rc.get("enabled") is False:
+                level = "none (disabled)"
+            else:
+                level = rc.get("effort", "medium")
+            display_state = "on ✓" if self._show_reasoning else "off"
+            return (
+                "🧠 **Reasoning Settings**\n\n"
+                f"**Effort:** `{level}`\n"
+                f"**Display:** {display_state}\n\n"
+                "_Usage:_ `/reasoning <none|low|medium|high|xhigh|show|hide>`"
+            )
+
+        # Display toggle
+        if args in ("show", "on"):
+            self._show_reasoning = True
+            _save_config_key("display.show_reasoning", True)
+            return "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response."
+
+        if args in ("hide", "off"):
+            self._show_reasoning = False
+            _save_config_key("display.show_reasoning", False)
+            return "🧠 ✓ Reasoning display: **OFF**"
+
+        # Effort level change
+        effort = args.strip()
+        if effort == "none":
+            parsed = {"enabled": False}
+        elif effort in ("xhigh", "high", "medium", "low", "minimal"):
+            parsed = {"enabled": True, "effort": effort}
+        else:
+            return (
+                f"⚠️ Unknown argument: `{effort}`\n\n"
+                "**Valid levels:** none, low, minimal, medium, high, xhigh\n"
+                "**Display:** show, hide"
+            )
+
+        self._reasoning_config = parsed
+        if _save_config_key("agent.reasoning_effort", effort):
+            return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
+        else:
+            return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
@@ -3273,6 +3387,7 @@ class GatewayRunner:
             
             return {
                 "final_response": final_response,
+                "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "tools": tools_holder[0] or [],

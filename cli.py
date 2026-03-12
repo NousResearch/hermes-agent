@@ -3120,8 +3120,8 @@ class HermesCLI:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on" if self.show_reasoning else "off"
-            _cprint(f"  {_GOLD}Reasoning effort: {level}{_RST}")
+            display_state = "on ✓" if self.show_reasoning else "off"
+            _cprint(f"  {_GOLD}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
             _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
             return
@@ -3133,14 +3133,16 @@ class HermesCLI:
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._on_reasoning
-            _cprint(f"  {_GOLD}Reasoning display: ON{_RST}")
-            _cprint(f"  {_DIM}Model thinking will be shown during and after each response.{_RST}")
+            save_config_value("display.show_reasoning", True)
+            _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
+            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = None
-            _cprint(f"  {_GOLD}Reasoning display: OFF{_RST}")
+            save_config_value("display.show_reasoning", False)
+            _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
 
         # Effort level change
@@ -3155,9 +3157,9 @@ class HermesCLI:
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -4544,7 +4546,7 @@ class HermesCLI:
                     
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit

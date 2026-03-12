@@ -75,14 +75,50 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
+def _get_safe_write_root() -> Optional[str]:
+    """
+    Return the optional safety root for writes.
+
+    When HERMES_WRITE_SAFE_ROOT is set, all write/patch operations are
+    constrained to that directory tree. Any attempt to write outside this
+    root is denied, even if the target path is not on the static deny list.
+
+    This is opt-in hardening for users who want to sandbox the agent's file
+    writes to a specific workspace directory (e.g., a project checkout).
+    """
+    root = os.getenv("HERMES_WRITE_SAFE_ROOT") or ""
+    if not root:
+        return None
+    try:
+        return os.path.realpath(os.path.expanduser(root))
+    except Exception:
+        return None
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(path))
+
+    # 1) Static deny list: high‑value credential and system files/directories
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
+
+    # 2) Optional safety root: sandbox writes to a configured subtree.
+    #
+    # When HERMES_WRITE_SAFE_ROOT is set, any write outside that directory
+    # tree is denied. This is especially useful for messaging/gateway
+    # deployments where you want to ensure the agent only touches a checkout
+    # directory and never the rest of the filesystem.
+    safe_root = _get_safe_write_root()
+    if safe_root:
+        # Allow writes to the root itself and any descendants; everything
+        # else is rejected.
+        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
+            return True
+
     return False
 
 

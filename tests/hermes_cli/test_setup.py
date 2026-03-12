@@ -128,3 +128,44 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["base_url"] == "https://custom.example/v1"
     assert reloaded["model"]["default"] == "custom/model"
+
+
+class TestGeminiHuggingFaceProviders:
+    """Tests for Gemini and HuggingFace provider registry entries."""
+
+    def test_gemini_in_provider_registry(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        assert "gemini" in PROVIDER_REGISTRY
+        p = PROVIDER_REGISTRY["gemini"]
+        assert p.auth_type == "api_key"
+        assert "googleapis.com" in p.inference_base_url
+        assert "GEMINI_API_KEY" in p.api_key_env_vars
+
+    def test_huggingface_in_provider_registry(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        assert "huggingface" in PROVIDER_REGISTRY
+        p = PROVIDER_REGISTRY["huggingface"]
+        assert p.auth_type == "api_key"
+        assert "huggingface.co" in p.inference_base_url
+        assert "HUGGINGFACE_API_KEY" in p.api_key_env_vars
+        assert "HF_TOKEN" in p.api_key_env_vars
+
+    def test_gemini_in_provider_choices(self):
+        """Gemini appears in the setup wizard provider list."""
+        import hermes_cli.setup as setup_mod
+        import inspect
+        src = inspect.getsource(setup_mod.setup_model_provider)
+        assert "Google Gemini" in src
+
+    def test_huggingface_in_provider_choices(self):
+        """HuggingFace appears in the setup wizard provider list."""
+        import hermes_cli.setup as setup_mod
+        import inspect
+        src = inspect.getsource(setup_mod.setup_model_provider)
+        assert "Hugging Face" in src
+
+    def test_gemini_google_api_key_fallback(self):
+        """GOOGLE_API_KEY is accepted as fallback for Gemini."""
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        p = PROVIDER_REGISTRY["gemini"]
+        assert "GOOGLE_API_KEY" in p.api_key_env_vars

@@ -627,6 +627,8 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "Google Gemini (free tier available)",
+        "Hugging Face Inference API (free tier available)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1041,7 +1043,67 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 9:  # Google Gemini
+        selected_provider = "gemini"
+        print()
+        print_header("Google Gemini API Key")
+        pconfig = PROVIDER_REGISTRY["gemini"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your free API key at: https://aistudio.google.com/apikey")
+        print_info("Free tier available — no credit card required.")
+        print()
+        existing_key = get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                new_key = prompt("  Gemini API key", password=True)
+                if new_key:
+                    save_env_value("GEMINI_API_KEY", new_key)
+                    print_success("Gemini API key updated")
+        else:
+            api_key = prompt("  Gemini API key", password=True)
+            if api_key:
+                save_env_value("GEMINI_API_KEY", api_key)
+                print_success("Gemini API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("gemini", pconfig.inference_base_url)
+        _set_model_provider(config, "gemini", pconfig.inference_base_url)
+
+    elif provider_idx == 10:  # Hugging Face
+        selected_provider = "huggingface"
+        print()
+        print_header("Hugging Face Inference API Key")
+        pconfig = PROVIDER_REGISTRY["huggingface"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API token at: https://huggingface.co/settings/tokens")
+        print_info("Free tier available for many models.")
+        print()
+        existing_key = get_env_value("HUGGINGFACE_API_KEY") or get_env_value("HF_TOKEN")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                new_key = prompt("  Hugging Face API token", password=True)
+                if new_key:
+                    save_env_value("HUGGINGFACE_API_KEY", new_key)
+                    print_success("Hugging Face API token updated")
+        else:
+            api_key = prompt("  Hugging Face API token", password=True)
+            if api_key:
+                save_env_value("HUGGINGFACE_API_KEY", api_key)
+                print_success("Hugging Face API token saved")
+            else:
+                print_warning("Skipped - agent won't work without an API token")
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("huggingface", pconfig.inference_base_url)
+        _set_model_provider(config, "huggingface", pconfig.inference_base_url)
+
+    # else: provider_idx == 11 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
@@ -1055,6 +1117,8 @@ def setup_model_provider(config: dict):
         "kimi-coding",
         "minimax",
         "minimax-cn",
+        "gemini",
+        "huggingface",
     ) and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")

@@ -148,6 +148,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "gemini": ProviderConfig(
+        id="gemini",
+        name="Google Gemini",
+        auth_type="api_key",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        base_url_env_var="GEMINI_BASE_URL",
+    ),
+    "huggingface": ProviderConfig(
+        id="huggingface",
+        name="Hugging Face Inference API",
+        auth_type="api_key",
+        inference_base_url="https://api-inference.huggingface.co/v1",
+        api_key_env_vars=("HUGGINGFACE_API_KEY", "HF_TOKEN"),
+        base_url_env_var="HUGGINGFACE_BASE_URL",
+    ),
 }
 
 

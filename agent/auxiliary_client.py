@@ -17,7 +17,10 @@ Resolution order for text tasks (auto mode):
 Resolution order for vision/multimodal tasks (auto mode):
   1. OpenRouter
   2. Nous Portal
-  3. None  (steps 3-5 are skipped — they may not support multimodal)
+  3. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
+  4. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  5. None  (API-key providers like z.ai/Kimi/MiniMax are skipped —
+     they may not support multimodal)
 
 Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
 CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task:

@@ -184,58 +184,6 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
-def _convert_vision_content(content: Any) -> Any:
-    """Convert OpenAI multimodal content blocks to Anthropic format.
-
-    OpenAI format:  [{"type": "image_url", "image_url": {"url": "data:...;base64,..."}}]
-    Anthropic format: [{"type": "image", "source": {"type": "base64", ...}}]
-    """
-    if not isinstance(content, list):
-        return content
-
-    result = []
-    for block in content:
-        if not isinstance(block, dict):
-            result.append(block)
-            continue
-
-        if block.get("type") == "image_url":
-            image_url = block.get("image_url", {})
-            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
-
-            if url.startswith("data:"):
-                # data:image/png;base64,iVBOR...
-                try:
-                    header, b64_data = url.split(",", 1)
-                    media_type = header.split(":")[1].split(";")[0]
-                    result.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64_data,
-                        },
-                    })
-                except (ValueError, IndexError):
-                    logger.warning("Could not parse data URL for image, skipping")
-            else:
-                # Regular URL — Anthropic supports url source type
-                result.append({
-                    "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": url,
-                    },
-                })
-        elif block.get("type") == "text":
-            result.append({"type": "text", "text": block.get("text", "")})
-        else:
-            # Pass through unknown block types
-            result.append(block)
-
-    return result
-
-
 def convert_messages_to_anthropic(
     messages: List[Dict],
 ) -> Tuple[Optional[Any], List[Dict]]:
@@ -304,9 +252,8 @@ def convert_messages_to_anthropic(
                 result.append({"role": "user", "content": [tool_result]})
             continue
 
-        # Regular user message — convert vision content if multimodal
-        converted = _convert_vision_content(content) if isinstance(content, list) else content
-        result.append({"role": "user", "content": converted})
+        # Regular user message
+        result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()

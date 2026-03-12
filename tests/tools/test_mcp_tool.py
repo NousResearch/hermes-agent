@@ -243,6 +243,30 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_closes_coroutine_when_loop_dispatch_raises(self, recwarn):
+        import gc
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(return_value=_make_call_result("ok", is_error=False))
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("loop down")):
+                result = json.loads(handler({"name": "world"}))
+            assert "error" in result
+            assert "loop down" in result["error"]
+
+            gc.collect()
+            assert not any(
+                "was never awaited" in str(w.message)
+                for w in recwarn
+            )
+        finally:
+            _servers.pop("test_srv", None)
+
 
 # ---------------------------------------------------------------------------
 # Tool registration (discovery + register)

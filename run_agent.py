@@ -36,7 +36,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback
@@ -545,7 +545,81 @@ class AIAgent:
         # Reads ~/.honcho/config.json as the single source of truth.
         self._honcho = None  # HonchoSessionManager | None
         self._honcho_session_key = honcho_session_key
+        self._honcho_fail_open = True
+        self._honcho_retry_attempts = 2  # Retries after the initial attempt
+        self._honcho_tool_events_enabled = True
+        self._honcho_tool_events_max_result_chars = 240
+        self._honcho_max_pending_sync = 200
+        self._honcho_max_pending_tool_events = 400
+        self._honcho_flush_batch_size = 25
+        self._pending_honcho_sync: list[dict[str, str]] = []
+        self._pending_honcho_tool_events: list[str] = []
+        self._turn_honcho_context = ""
+        self._turn_honcho_context_baked = False
+        self._honcho_last_prefetch_chars = 0
+        self._honcho_last_error = ""
+        self._honcho_telemetry = {
+            "prefetch_attempts": 0,
+            "prefetch_success": 0,
+            "prefetch_failures": 0,
+            "sync_attempts": 0,
+            "sync_success": 0,
+            "sync_failures": 0,
+            "tool_event_attempts": 0,
+            "tool_event_success": 0,
+            "tool_event_failures": 0,
+            "queued_sync": 0,
+            "queued_tool_events": 0,
+            "replayed_sync": 0,
+            "replayed_tool_events": 0,
+            "dropped_sync": 0,
+            "dropped_tool_events": 0,
+            "flush_cycles": 0,
+        }
+
+        # Local tool-execution event substrate (independent of Honcho).
+        # Keeps a bounded rolling window for debugging/evaluation hooks.
+        self._tool_execution_events: list[dict[str, Any]] = []
+        self._max_tool_execution_events = 500
+        self._agent_events: list[dict[str, Any]] = []
+        self._max_agent_events = 1000
+        self._delegation_budget = {
+            "max_child_count": 3,
+            "max_summary_chars": 12000,
+            "max_iterations": 50,
+        }
+
+        self._self_correction_policy = {
+            "mode": str(os.getenv("HERMES_SELF_CORRECTION_MODE", "shadow")).strip().lower(),
+            "confidence_threshold": float(os.getenv("HERMES_SELF_CORRECTION_CONFIDENCE", "0.72")),
+            "max_live_retries_per_call": max(0, int(os.getenv("HERMES_SELF_CORRECTION_MAX_RETRIES", "2"))),
+            "session_retry_budget": max(0, int(os.getenv("HERMES_SELF_CORRECTION_SESSION_BUDGET", "20"))),
+        }
+        if self._self_correction_policy["mode"] not in {"off", "shadow", "live"}:
+            self._self_correction_policy["mode"] = "shadow"
+        self._self_correction_retries_remaining = int(self._self_correction_policy["session_retry_budget"])
+
         if not skip_memory:
+            try:
+                from hermes_cli.config import load_config as _load_honcho_config
+                _honcho_cfg = _load_honcho_config().get("honcho", {})
+                self._honcho_fail_open = bool(_honcho_cfg.get("fail_open", True))
+                self._honcho_retry_attempts = max(0, int(_honcho_cfg.get("retry_attempts", 2)))
+                _tool_events_cfg = _honcho_cfg.get("tool_events", {}) or {}
+                self._honcho_tool_events_enabled = bool(_tool_events_cfg.get("enabled", True))
+                self._honcho_tool_events_max_result_chars = max(
+                    80,
+                    int(_tool_events_cfg.get("max_result_chars", 240)),
+                )
+                self._honcho_max_pending_sync = max(1, int(_honcho_cfg.get("max_pending_sync", 200)))
+                self._honcho_max_pending_tool_events = max(
+                    1,
+                    int(_honcho_cfg.get("max_pending_tool_events", 400)),
+                )
+                self._honcho_flush_batch_size = max(1, int(_honcho_cfg.get("flush_batch_size", 25)))
+            except Exception:
+                pass
+
             try:
                 from honcho_integration.client import HonchoClientConfig, get_honcho_client
                 hcfg = HonchoClientConfig.from_global_config()
@@ -569,8 +643,8 @@ class AIAgent:
                     from tools.honcho_tools import set_session_context
                     set_session_context(self._honcho, self._honcho_session_key)
                     logger.info(
-                        "Honcho active (session: %s, user: %s, workspace: %s)",
-                        self._honcho_session_key, hcfg.peer_name, hcfg.workspace_id,
+                        "Honcho active (session: %s, user: %s, workspace: %s, fail_open=%s)",
+                        self._honcho_session_key, hcfg.peer_name, hcfg.workspace_id, self._honcho_fail_open,
                     )
                 else:
                     if not hcfg.enabled:
@@ -1317,6 +1391,499 @@ class AIAgent:
 
     # ── Honcho integration helpers ──
 
+    def _honcho_call_with_retry(self, operation, action_name: str):
+        """Run a Honcho operation with bounded retries and fail-open semantics."""
+        attempts = self._honcho_retry_attempts + 1
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return operation()
+            except Exception as e:
+                last_error = e
+                if attempt < attempts:
+                    wait_s = min(0.25 * attempt, 1.0)
+                    logger.debug(
+                        "Honcho %s attempt %d/%d failed: %s (retrying in %.2fs)",
+                        action_name,
+                        attempt,
+                        attempts,
+                        e,
+                        wait_s,
+                    )
+                    time.sleep(wait_s)
+                else:
+                    logger.debug("Honcho %s failed after %d attempts: %s", action_name, attempts, e)
+        if self._honcho_fail_open:
+            return None
+        raise RuntimeError(f"Honcho {action_name} failed: {last_error}")
+
+    def _honcho_preview(self, value: Any, max_chars: int = 200) -> str:
+        """Return a compact single-line preview for Honcho event payloads."""
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
+                rendered = str(value)
+        else:
+            rendered = str(value)
+
+        rendered = " ".join(rendered.split())
+        if len(rendered) > max_chars:
+            return rendered[: max_chars - 3] + "..."
+        return rendered
+
+    @staticmethod
+    def _parse_canonical_tool_envelope(function_name: str, function_result: str) -> dict[str, Any] | None:
+        """Parse canonical tool envelopes produced by tools.registry.dispatch.
+
+        Returns ``None`` for non-canonical payloads to preserve backward
+        compatibility with legacy tool outputs.
+        """
+        if not isinstance(function_result, str) or not function_result.strip():
+            return None
+
+        try:
+            parsed = json.loads(function_result)
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        required_keys = {"success", "error", "error_type", "retryable", "data", "metrics"}
+        if not required_keys.issubset(parsed.keys()):
+            return None
+
+        metrics = parsed.get("metrics")
+        if not isinstance(metrics, dict):
+            return None
+        if metrics.get("tool_name") != function_name:
+            return None
+        if not isinstance(metrics.get("duration_ms"), (int, float)):
+            return None
+
+        return parsed
+
+    def _maybe_apply_live_retry(
+        self,
+        *,
+        function_name: str,
+        function_args: dict[str, Any],
+        effective_task_id: str,
+        tool_call_id: str,
+        function_result: str,
+        tool_duration: float,
+        envelope: dict[str, Any] | None,
+        is_error_result: bool,
+        error_summary: str,
+    ) -> tuple[str, float, dict[str, Any] | None, bool, str]:
+        """Apply bounded live retries for low/medium risk tool failures."""
+        if not is_error_result:
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        mode = str(self._self_correction_policy.get("mode", "shadow")).lower()
+        if mode != "live" or self._interrupt_requested:
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        try:
+            from agent.self_correction import classify_failure, get_retry_policy
+        except Exception:
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        risk_class = self._classify_tool_risk(function_name)
+        retryable_hint = bool(envelope.get("retryable")) if envelope else False
+        error_type = envelope.get("error_type") if envelope else None
+        assessment = classify_failure(
+            tool_name=function_name,
+            error_type=error_type,
+            error_summary=error_summary,
+            retryable_hint=retryable_hint,
+        )
+
+        if risk_class == "high":
+            self._record_agent_event(
+                family="self_correction",
+                event_type="live_retry_skipped",
+                task_id=tool_call_id,
+                success=False,
+                latency_ms=int(max(0.0, tool_duration) * 1000),
+                risk_class=risk_class,
+                payload={
+                    "tool_name": function_name,
+                    "failure_class": assessment.failure_class,
+                    "reason": "high_risk",
+                },
+            )
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        confidence_threshold = float(self._self_correction_policy.get("confidence_threshold", 0.72))
+        if float(assessment.confidence) < confidence_threshold:
+            self._record_agent_event(
+                family="self_correction",
+                event_type="live_retry_skipped",
+                task_id=tool_call_id,
+                success=False,
+                latency_ms=int(max(0.0, tool_duration) * 1000),
+                risk_class=risk_class,
+                payload={
+                    "tool_name": function_name,
+                    "failure_class": assessment.failure_class,
+                    "reason": "confidence_below_threshold",
+                    "confidence": assessment.confidence,
+                    "confidence_threshold": confidence_threshold,
+                },
+            )
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        retry_policy = get_retry_policy(tool_name=function_name, failure=assessment)
+        max_live_retries = int(self._self_correction_policy.get("max_live_retries_per_call", 2))
+        retries_to_attempt = min(
+            max(0, retry_policy.max_retries),
+            max(0, max_live_retries),
+            max(0, int(self._self_correction_retries_remaining)),
+        )
+
+        if retries_to_attempt <= 0:
+            self._record_agent_event(
+                family="self_correction",
+                event_type="live_retry_skipped",
+                task_id=tool_call_id,
+                success=False,
+                latency_ms=int(max(0.0, tool_duration) * 1000),
+                risk_class=risk_class,
+                payload={
+                    "tool_name": function_name,
+                    "failure_class": assessment.failure_class,
+                    "reason": "retry_budget_or_policy_exhausted",
+                    "policy_reason": retry_policy.reason,
+                    "retries_remaining": int(self._self_correction_retries_remaining),
+                },
+            )
+            return function_result, tool_duration, envelope, is_error_result, error_summary
+
+        current_result = function_result
+        current_duration = tool_duration
+        current_envelope = envelope
+        current_is_error = is_error_result
+        current_error_summary = error_summary
+
+        for retry_idx in range(retries_to_attempt):
+            if self._interrupt_requested:
+                break
+
+            wait_s = 0.0
+            if retry_idx < len(retry_policy.backoff_seconds):
+                wait_s = max(0.0, float(retry_policy.backoff_seconds[retry_idx]))
+            if wait_s > 0:
+                time.sleep(wait_s)
+
+            attempt_start = time.time()
+            try:
+                retry_result = handle_function_call(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                )
+            except Exception as retry_error:
+                retry_result = f"Error executing tool '{function_name}': {retry_error}"
+                logger.error("live retry handle_function_call raised for %s: %s", function_name, retry_error, exc_info=True)
+
+            attempt_duration = max(0.0, time.time() - attempt_start)
+            attempt_envelope = self._parse_canonical_tool_envelope(function_name, retry_result)
+            if attempt_envelope:
+                try:
+                    attempt_duration = max(0.0, float(attempt_envelope["metrics"].get("duration_ms", 0)) / 1000.0)
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    pass
+                attempt_is_error = attempt_envelope.get("success") is False
+                attempt_error_summary = str(attempt_envelope.get("error") or "")
+            else:
+                attempt_is_error, attempt_error_summary = _detect_tool_failure(function_name, retry_result)
+
+            self._self_correction_retries_remaining = max(0, int(self._self_correction_retries_remaining) - 1)
+            self._record_agent_event(
+                family="self_correction",
+                event_type="live_retry_attempt",
+                task_id=tool_call_id,
+                success=not attempt_is_error,
+                latency_ms=int(max(0.0, attempt_duration) * 1000),
+                risk_class=risk_class,
+                payload={
+                    "tool_name": function_name,
+                    "attempt": retry_idx + 1,
+                    "max_attempts": retries_to_attempt,
+                    "failure_class": assessment.failure_class,
+                    "policy_reason": retry_policy.reason,
+                    "retries_remaining": int(self._self_correction_retries_remaining),
+                },
+            )
+
+            current_result = retry_result
+            current_duration = attempt_duration
+            current_envelope = attempt_envelope
+            current_is_error = attempt_is_error
+            current_error_summary = attempt_error_summary
+
+            if not attempt_is_error:
+                break
+
+            next_retryable = bool(attempt_envelope.get("retryable")) if attempt_envelope else False
+            next_error_type = attempt_envelope.get("error_type") if attempt_envelope else None
+            assessment = classify_failure(
+                tool_name=function_name,
+                error_type=next_error_type,
+                error_summary=attempt_error_summary,
+                retryable_hint=next_retryable,
+            )
+            if not assessment.retryable:
+                break
+
+        return current_result, current_duration, current_envelope, current_is_error, current_error_summary
+
+    def _record_tool_execution_event(
+        self,
+        *,
+        function_name: str,
+        tool_call_id: str,
+        function_args: dict[str, Any],
+        function_result: str,
+        tool_duration: float,
+        envelope: dict[str, Any] | None,
+        is_error_result: bool,
+        error_summary: str,
+    ) -> None:
+        """Append a bounded local execution-event record for tooling/evals."""
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "tool": function_name,
+            "tool_call_id": tool_call_id,
+            "duration_ms": int(max(0.0, tool_duration) * 1000),
+            "ok": not is_error_result,
+            "error_summary": self._honcho_preview(error_summary, max_chars=240) if is_error_result else "",
+            "args_preview": self._honcho_preview(function_args, max_chars=240),
+            "result_preview": self._honcho_preview(function_result, max_chars=240),
+            "envelope": bool(envelope),
+        }
+
+        if envelope:
+            event["retryable"] = bool(envelope.get("retryable", False))
+            event["error_type"] = envelope.get("error_type")
+
+        self._tool_execution_events.append(event)
+        cap = max(1, int(self._max_tool_execution_events or 500))
+        if len(self._tool_execution_events) > cap:
+            del self._tool_execution_events[: len(self._tool_execution_events) - cap]
+
+        if self._session_db and hasattr(self._session_db, "append_tool_execution_event"):
+            try:
+                self._session_db.append_tool_execution_event(
+                    session_id=self.session_id,
+                    tool_name=function_name,
+                    tool_call_id=tool_call_id,
+                    duration_ms=event["duration_ms"],
+                    success=event["ok"],
+                    args_preview=event.get("args_preview"),
+                    result_preview=event.get("result_preview"),
+                    envelope=event.get("envelope", False),
+                    retryable=event.get("retryable", False),
+                    error_type=event.get("error_type"),
+                    error_summary=event.get("error_summary"),
+                )
+            except Exception as db_err:
+                logger.debug("Session DB append_tool_execution_event failed: %s", db_err)
+
+        self._record_agent_event(
+            family="tool_execution",
+            event_type="tool_call",
+            task_id=tool_call_id,
+            success=event.get("ok"),
+            latency_ms=event.get("duration_ms"),
+            risk_class=self._classify_tool_risk(function_name),
+            payload={
+                "tool_name": function_name,
+                "retryable": bool(event.get("retryable", False)),
+                "error_type": event.get("error_type"),
+            },
+        )
+
+        if not event.get("ok"):
+            try:
+                from agent.self_correction import build_shadow_critique_event
+
+                critique_payload = build_shadow_critique_event(
+                    tool_name=function_name,
+                    error_type=event.get("error_type"),
+                    error_summary=event.get("error_summary"),
+                    retryable_hint=bool(event.get("retryable", False)),
+                )
+                self._record_agent_event(
+                    family="self_correction",
+                    event_type="shadow_critique",
+                    task_id=tool_call_id,
+                    success=False,
+                    latency_ms=event.get("duration_ms"),
+                    risk_class=self._classify_tool_risk(function_name),
+                    payload=critique_payload,
+                )
+            except Exception as critique_err:
+                logger.debug("Shadow critique generation failed: %s", critique_err)
+
+    @staticmethod
+    def _classify_tool_risk(function_name: str) -> str:
+        """Classify tool side-effect risk for audit event tagging."""
+        try:
+            from tools.safety_taxonomy import classify_tool_action
+
+            return classify_tool_action(function_name).risk_class
+        except Exception:
+            return "low"
+
+    def _record_agent_event(
+        self,
+        *,
+        family: str,
+        event_type: str,
+        task_id: str | None = None,
+        success: bool | None = None,
+        latency_ms: int | None = None,
+        risk_class: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a bounded in-memory + sqlite agent event record."""
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "family": family,
+            "event_type": event_type,
+            "task_id": task_id,
+            "success": success,
+            "latency_ms": latency_ms,
+            "risk_class": risk_class,
+            "payload": payload or {},
+        }
+        self._agent_events.append(event)
+        cap = max(1, int(self._max_agent_events or 1000))
+        if len(self._agent_events) > cap:
+            del self._agent_events[: len(self._agent_events) - cap]
+
+        if self._session_db and hasattr(self._session_db, "append_agent_event"):
+            try:
+                self._session_db.append_agent_event(
+                    session_id=self.session_id,
+                    family=family,
+                    event_type=event_type,
+                    task_id=task_id,
+                    success=success,
+                    latency_ms=latency_ms,
+                    risk_class=risk_class,
+                    payload=payload,
+                )
+            except Exception as db_err:
+                logger.debug("Session DB append_agent_event failed: %s", db_err)
+
+    def get_recent_agent_events(
+        self,
+        limit: int = 50,
+        *,
+        family: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Return newest-first in-memory agent events with optional filters."""
+        size = max(1, int(limit or 50))
+        events = list(reversed(self._agent_events))
+        if family:
+            events = [e for e in events if (e.get("family") or "") == family]
+        if event_type:
+            events = [e for e in events if (e.get("event_type") or "") == event_type]
+        return events[:size]
+
+    def get_recent_tool_execution_events(
+        self,
+        limit: int = 50,
+        *,
+        tool_name: Optional[str] = None,
+        ok: Optional[bool] = None,
+        retryable: Optional[bool] = None,
+    ) -> list[dict[str, Any]]:
+        """Return newest-first local tool execution events with optional filters."""
+        size = max(1, int(limit or 50))
+        events = list(reversed(self._tool_execution_events))
+
+        if tool_name:
+            events = [e for e in events if (e.get("tool") or "") == tool_name]
+        if ok is not None:
+            events = [e for e in events if bool(e.get("ok")) == bool(ok)]
+        if retryable is not None:
+            events = [e for e in events if bool(e.get("retryable", False)) == bool(retryable)]
+
+        return events[:size]
+
+    def _honcho_enqueue_with_cap(
+        self,
+        queue: list[Any],
+        item: Any,
+        *,
+        max_size: int,
+        dropped_metric_key: str,
+        queue_name: str,
+    ) -> None:
+        """Append to a bounded queue, dropping oldest entries when full."""
+        if max_size <= 0:
+            return
+        dropped = max(0, len(queue) - max_size + 1)
+        if dropped:
+            del queue[:dropped]
+            self._honcho_telemetry[dropped_metric_key] += dropped
+            logger.warning(
+                "Honcho %s queue full; dropped %d oldest item(s) to stay within cap=%d",
+                queue_name,
+                dropped,
+                max_size,
+            )
+        queue.append(item)
+
+    def _honcho_flush_pending_sync(self) -> None:
+        """Best-effort replay of failed sync payloads from earlier turns."""
+        if not self._honcho or not self._honcho_session_key or not self._pending_honcho_sync:
+            return
+
+        self._honcho_telemetry["flush_cycles"] += 1
+        limit = max(1, self._honcho_flush_batch_size)
+        replay_slice = self._pending_honcho_sync[:limit]
+        still_pending = []
+        for payload in replay_slice:
+            synced = self._honcho_sync(payload["user"], payload["assistant"], queue_on_failure=False)
+            if not synced:
+                still_pending.append(payload)
+
+        replayed = len(replay_slice) - len(still_pending)
+        if replayed:
+            self._honcho_telemetry["replayed_sync"] += replayed
+            logger.info("Replayed %d queued Honcho sync payload(s)", replayed)
+        self._pending_honcho_sync = still_pending + self._pending_honcho_sync[limit:]
+
+    def _honcho_flush_pending_tool_events(self) -> None:
+        """Best-effort replay of queued Honcho tool events from earlier turns."""
+        if not self._honcho or not self._honcho_session_key or not self._pending_honcho_tool_events:
+            return
+
+        self._honcho_telemetry["flush_cycles"] += 1
+        limit = max(1, self._honcho_flush_batch_size)
+        replay_slice = self._pending_honcho_tool_events[:limit]
+        still_pending = []
+        for event_message in replay_slice:
+            synced = self._honcho_sync_tool_event(event_message, queue_on_failure=False)
+            if not synced:
+                still_pending.append(event_message)
+
+        replayed = len(replay_slice) - len(still_pending)
+        if replayed:
+            self._honcho_telemetry["replayed_tool_events"] += replayed
+            logger.info("Replayed %d queued Honcho tool event(s)", replayed)
+        self._pending_honcho_tool_events = still_pending + self._pending_honcho_tool_events[limit:]
+
     def _honcho_prefetch(self, user_message: str) -> str:
         """Fetch user context from Honcho for system prompt injection.
 
@@ -1324,9 +1891,15 @@ class AIAgent:
         """
         if not self._honcho or not self._honcho_session_key:
             return ""
+
+        def _fetch():
+            return self._honcho.get_prefetch_context(self._honcho_session_key, user_message)
+
+        self._honcho_telemetry["prefetch_attempts"] += 1
         try:
-            ctx = self._honcho.get_prefetch_context(self._honcho_session_key, user_message)
+            ctx = self._honcho_call_with_retry(_fetch, "prefetch")
             if not ctx:
+                self._honcho_telemetry["prefetch_failures"] += 1
                 return ""
             parts = []
             rep = ctx.get("representation", "")
@@ -1336,9 +1909,15 @@ class AIAgent:
             if card:
                 parts.append(card)
             if not parts:
+                self._honcho_telemetry["prefetch_failures"] += 1
                 return ""
-            return "# Honcho User Context\n" + "\n\n".join(parts)
+            rendered = "# Honcho User Context\n" + "\n\n".join(parts)
+            self._honcho_last_prefetch_chars = len(rendered)
+            self._honcho_telemetry["prefetch_success"] += 1
+            return rendered
         except Exception as e:
+            self._honcho_last_error = f"prefetch: {e}"
+            self._honcho_telemetry["prefetch_failures"] += 1
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
 
@@ -1363,17 +1942,178 @@ class AIAgent:
             logger.debug("Honcho user observation failed: %s", e)
             return json.dumps({"success": False, "error": f"Honcho save failed: {e}"})
 
-    def _honcho_sync(self, user_content: str, assistant_content: str) -> None:
-        """Sync the user/assistant message pair to Honcho."""
+    def _honcho_sync(
+        self,
+        user_content: str,
+        assistant_content: str,
+        queue_on_failure: bool = True,
+    ) -> bool:
+        """Sync the user/assistant message pair to Honcho.
+
+        Returns True when synced, False when deferred/failure.
+        """
         if not self._honcho or not self._honcho_session_key:
-            return
-        try:
+            return False
+
+        def _sync_once():
             session = self._honcho.get_or_create(self._honcho_session_key)
             session.add_message("user", user_content)
             session.add_message("assistant", assistant_content)
             self._honcho.save(session)
+            return True
+
+        self._honcho_telemetry["sync_attempts"] += 1
+        try:
+            synced = bool(self._honcho_call_with_retry(_sync_once, "sync"))
+            if synced:
+                self._honcho_telemetry["sync_success"] += 1
+                return True
         except Exception as e:
-            logger.debug("Honcho sync failed (non-fatal): %s", e)
+            self._honcho_last_error = f"sync: {e}"
+            logger.debug("Honcho sync failed in strict mode: %s", e)
+            if not self._honcho_fail_open:
+                raise
+
+        self._honcho_telemetry["sync_failures"] += 1
+        if queue_on_failure and user_content and assistant_content:
+            self._honcho_enqueue_with_cap(
+                self._pending_honcho_sync,
+                {"user": user_content, "assistant": assistant_content},
+                max_size=self._honcho_max_pending_sync,
+                dropped_metric_key="dropped_sync",
+                queue_name="sync",
+            )
+            self._honcho_telemetry["queued_sync"] += 1
+            logger.debug("Queued Honcho sync payload for retry (%d pending)", len(self._pending_honcho_sync))
+        return False
+
+    def _honcho_build_tool_event(
+        self,
+        function_name: str,
+        function_args: dict[str, Any],
+        function_result: str,
+        tool_duration: float,
+        is_error_result: bool,
+        error_summary: str = "",
+    ) -> str:
+        """Encode a compact structured tool event for Honcho ingestion."""
+        event = {
+            "event": "tool_call",
+            "tool": function_name,
+            "ok": not is_error_result,
+            "duration_ms": int(max(0.0, tool_duration) * 1000),
+            "args_preview": self._honcho_preview(function_args, max_chars=180),
+        }
+        if is_error_result:
+            event["error_preview"] = self._honcho_preview(error_summary or function_result, max_chars=220)
+        else:
+            event["result_preview"] = self._honcho_preview(
+                function_result,
+                max_chars=self._honcho_tool_events_max_result_chars,
+            )
+        return "[tool_event] " + json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    def _honcho_sync_tool_event(self, event_message: str, queue_on_failure: bool = True) -> bool:
+        """Sync a structured tool event to Honcho as assistant-side behavior context."""
+        if (
+            not self._honcho
+            or not self._honcho_session_key
+            or not self._honcho_tool_events_enabled
+            or not event_message
+        ):
+            return False
+
+        def _sync_once():
+            session = self._honcho.get_or_create(self._honcho_session_key)
+            session.add_message("assistant", event_message)
+            self._honcho.save(session)
+            return True
+
+        self._honcho_telemetry["tool_event_attempts"] += 1
+        try:
+            synced = bool(self._honcho_call_with_retry(_sync_once, "tool_event"))
+            if synced:
+                self._honcho_telemetry["tool_event_success"] += 1
+                return True
+        except Exception as e:
+            self._honcho_last_error = f"tool_event: {e}"
+            logger.debug("Honcho tool-event sync failed in strict mode: %s", e)
+            if not self._honcho_fail_open:
+                raise
+
+        self._honcho_telemetry["tool_event_failures"] += 1
+        if queue_on_failure:
+            self._honcho_enqueue_with_cap(
+                self._pending_honcho_tool_events,
+                event_message,
+                max_size=self._honcho_max_pending_tool_events,
+                dropped_metric_key="dropped_tool_events",
+                queue_name="tool_event",
+            )
+            self._honcho_telemetry["queued_tool_events"] += 1
+            logger.debug(
+                "Queued Honcho tool event for retry (%d pending)",
+                len(self._pending_honcho_tool_events),
+            )
+        return False
+
+    def flush_honcho_queues(self) -> dict[str, Any]:
+        """Force one best-effort flush cycle for pending Honcho queues."""
+        before_sync = len(self._pending_honcho_sync)
+        before_tool = len(self._pending_honcho_tool_events)
+        try:
+            self._honcho_flush_pending_sync()
+            self._honcho_flush_pending_tool_events()
+        except Exception as e:
+            self._honcho_last_error = f"flush: {e}"
+            logger.debug("Honcho manual queue flush failed (non-fatal): %s", e)
+        status = self.get_honcho_status()
+        status["flushed_sync"] = max(0, before_sync - status.get("pending_sync", 0))
+        status["flushed_tool_events"] = max(0, before_tool - status.get("pending_tool_events", 0))
+        return status
+
+    def get_honcho_status(self) -> dict[str, Any]:
+        """Return Honcho runtime/health snapshot for observability surfaces."""
+        return {
+            "enabled": bool(self._honcho),
+            "session_key": self._honcho_session_key,
+            "fail_open": self._honcho_fail_open,
+            "retry_attempts": self._honcho_retry_attempts,
+            "tool_events_enabled": self._honcho_tool_events_enabled,
+            "max_pending_sync": self._honcho_max_pending_sync,
+            "max_pending_tool_events": self._honcho_max_pending_tool_events,
+            "flush_batch_size": self._honcho_flush_batch_size,
+            "pending_sync": len(self._pending_honcho_sync),
+            "pending_tool_events": len(self._pending_honcho_tool_events),
+            "last_prefetch_chars": self._honcho_last_prefetch_chars,
+            "last_error": self._honcho_last_error,
+            "telemetry": dict(self._honcho_telemetry),
+        }
+
+    def set_honcho_runtime_mode(
+        self,
+        *,
+        fail_open: bool | None = None,
+        retry_attempts: int | None = None,
+        tool_events_enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """Adjust Honcho runtime behavior without restarting the agent."""
+        if fail_open is not None:
+            self._honcho_fail_open = bool(fail_open)
+        if retry_attempts is not None:
+            self._honcho_retry_attempts = max(0, int(retry_attempts))
+        if tool_events_enabled is not None:
+            self._honcho_tool_events_enabled = bool(tool_events_enabled)
+        return self.get_honcho_status()
+
+    def _compose_effective_system_prompt(self, active_system_prompt: str | None) -> str:
+        """Compose per-call system prompt with ephemeral and turn-scoped Honcho context."""
+        effective_system = active_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+        if self._turn_honcho_context and not self._turn_honcho_context_baked:
+            effective_system = (effective_system + "\n\n" + self._turn_honcho_context).strip()
+        return effective_system
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -2660,6 +3400,20 @@ class AIAgent:
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
+        self._record_agent_event(
+            family="context_compression",
+            event_type="compression",
+            task_id=self.session_id,
+            success=True,
+            risk_class="low",
+            payload={
+                "messages_before": len(messages),
+                "messages_after": len(compressed),
+                "reason": "threshold_exceeded",
+                "summary_model": getattr(self.context_compressor, "summary_model_override", None),
+            },
+        )
+
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
@@ -2795,6 +3549,28 @@ class AIAgent:
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
+
+                try:
+                    _memory_result = json.loads(function_result) if isinstance(function_result, str) else {}
+                except Exception:
+                    _memory_result = {}
+                _write_gate = _memory_result.get("write_gate") if isinstance(_memory_result, dict) else None
+                self._record_agent_event(
+                    family="memory",
+                    event_type="write_gate",
+                    task_id=tool_call.id,
+                    success=_memory_result.get("success") if isinstance(_memory_result, dict) else None,
+                    latency_ms=int(max(0.0, time.time() - tool_start_time) * 1000),
+                    risk_class="medium",
+                    payload={
+                        "target": target,
+                        "action": function_args.get("action"),
+                        "write_decision": (_memory_result.get("write_decision") if isinstance(_memory_result, dict) else None)
+                        or (_write_gate.get("decision") if isinstance(_write_gate, dict) else None),
+                        "confidence": _write_gate.get("confidence") if isinstance(_write_gate, dict) else None,
+                        "reconciliation_action": _memory_result.get("reconciliation_action") if isinstance(_memory_result, dict) else None,
+                    },
+                )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -2811,36 +3587,88 @@ class AIAgent:
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
-                if tasks_arg and isinstance(tasks_arg, list):
-                    spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
-                else:
-                    goal_preview = (function_args.get("goal") or "")[:30]
-                    spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
-                spinner = None
-                if self.quiet_mode:
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
-                    spinner.start()
-                self._delegate_spinner = spinner
-                _delegate_result = None
-                try:
-                    function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
+                requested_children = len(tasks_arg) if isinstance(tasks_arg, list) else 1
+                max_children = int(self._delegation_budget.get("max_child_count", 3))
+                if requested_children > max_children:
+                    function_result = json.dumps({
+                        "success": False,
+                        "error": f"Delegation budget exceeded: requested {requested_children} child tasks (max {max_children}).",
+                        "error_type": "DelegationBudgetExceeded",
+                        "retryable": False,
+                        "data": {
+                            "requested_children": requested_children,
+                            "max_child_count": max_children,
+                        },
+                        "metrics": {"tool_name": "delegate_task", "duration_ms": 0},
+                    })
+                    self._record_agent_event(
+                        family="delegation",
+                        event_type="budget_check",
+                        task_id=tool_call.id,
+                        success=False,
+                        latency_ms=0,
+                        risk_class="medium",
+                        payload={
+                            "requested_children": requested_children,
+                            "max_child_count": max_children,
+                            "reason": "child_count_exceeded",
+                        },
                     )
-                    _delegate_result = function_result
-                finally:
-                    self._delegate_spinner = None
                     tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self.quiet_mode:
-                        print(f"  {cute_msg}")
+                    if self.quiet_mode:
+                        print(f"  {_get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=function_result)}")
+                    envelope = self._parse_canonical_tool_envelope(function_name, function_result)
+                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                    _is_error_result = True
+                    _tool_error_summary = "Delegation budget exceeded"
+                    # Continue to standard post-processing path below.
+                else:
+                    if tasks_arg and isinstance(tasks_arg, list):
+                        spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                    else:
+                        goal_preview = (function_args.get("goal") or "")[:30]
+                        spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                    spinner = None
+                    if self.quiet_mode:
+                        face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                        spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
+                        spinner.start()
+                    self._delegate_spinner = spinner
+                    _delegate_result = None
+                    try:
+                        function_result = _delegate_task(
+                            goal=function_args.get("goal"),
+                            context=function_args.get("context"),
+                            toolsets=function_args.get("toolsets"),
+                            tasks=tasks_arg,
+                            max_iterations=min(
+                                int(function_args.get("max_iterations") or self._delegation_budget.get("max_iterations", 50)),
+                                int(self._delegation_budget.get("max_iterations", 50)),
+                            ),
+                            parent_agent=self,
+                        )
+                        _delegate_result = function_result
+                        self._record_agent_event(
+                            family="delegation",
+                            event_type="budget_check",
+                            task_id=tool_call.id,
+                            success=True,
+                            latency_ms=int(max(0.0, time.time() - tool_start_time) * 1000),
+                            risk_class="medium",
+                            payload={
+                                "requested_children": requested_children,
+                                "max_child_count": max_children,
+                                "reason": "within_budget",
+                            },
+                        )
+                    finally:
+                        self._delegate_spinner = None
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self.quiet_mode:
+                            print(f"  {cute_msg}")
             elif self.quiet_mode:
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                 tool_emoji_map = {
@@ -2890,13 +3718,70 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
+            envelope = self._parse_canonical_tool_envelope(function_name, function_result)
+            if envelope:
+                try:
+                    tool_duration = max(0.0, float(envelope["metrics"].get("duration_ms", 0)) / 1000.0)
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    pass
+
             result_preview = function_result[:200] if len(function_result) > 200 else function_result
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
-            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            if envelope:
+                _is_error_result = envelope.get("success") is False
+                _tool_error_summary = str(envelope.get("error") or "")
+            else:
+                _is_error_result, _tool_error_summary = _detect_tool_failure(function_name, function_result)
+
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+
+            (
+                function_result,
+                tool_duration,
+                envelope,
+                _is_error_result,
+                _tool_error_summary,
+            ) = self._maybe_apply_live_retry(
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call.id,
+                function_result=function_result,
+                tool_duration=tool_duration,
+                envelope=envelope,
+                is_error_result=_is_error_result,
+                error_summary=_tool_error_summary,
+            )
+
+            result_preview = function_result[:200] if len(function_result) > 200 else function_result
+
+            self._record_tool_execution_event(
+                function_name=function_name,
+                tool_call_id=tool_call.id,
+                function_args=function_args,
+                function_result=function_result,
+                tool_duration=tool_duration,
+                envelope=envelope,
+                is_error_result=_is_error_result,
+                error_summary=_tool_error_summary,
+            )
+
+            if self._honcho and self._honcho_tool_events_enabled:
+                try:
+                    event_message = self._honcho_build_tool_event(
+                        function_name=function_name,
+                        function_args=function_args,
+                        function_result=function_result,
+                        tool_duration=tool_duration,
+                        is_error_result=_is_error_result,
+                        error_summary=_tool_error_summary,
+                    )
+                    self._honcho_sync_tool_event(event_message)
+                except Exception as event_err:
+                    logger.debug("Honcho tool-event capture failed (non-fatal): %s", event_err)
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -2965,9 +3850,7 @@ class AIAgent:
                     api_msg.pop(internal_field, None)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = self._compose_effective_system_prompt(self._cached_system_prompt)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -3153,16 +4036,20 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho prefetch: retrieve user context for system prompt injection.
-        # Only on the FIRST turn of a session (empty history).  On subsequent
-        # turns the model already has all prior context in its conversation
-        # history, and the Honcho context is baked into the stored system
-        # prompt — re-fetching it would change the system message and break
-        # Anthropic prompt caching.
-        self._honcho_context = ""
-        if self._honcho and self._honcho_session_key and not conversation_history:
+        # Honcho-first preflight: always try to flush queued writes and prefetch
+        # fresh user context each turn. Context is baked only when building a new
+        # session prompt; otherwise it's injected ephemerally for this turn.
+        self._turn_honcho_context = ""
+        self._turn_honcho_context_baked = False
+        if self._honcho and self._honcho_session_key:
             try:
-                self._honcho_context = self._honcho_prefetch(user_message)
+                self._honcho_flush_pending_sync()
+                self._honcho_flush_pending_tool_events()
+            except Exception as e:
+                logger.debug("Honcho queued flush failed (non-fatal): %s", e)
+
+            try:
+                self._turn_honcho_context = self._honcho_prefetch(original_user_message)
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
@@ -3202,12 +4089,13 @@ class AIAgent:
             else:
                 # First turn of a new session — build from scratch.
                 self._cached_system_prompt = self._build_system_prompt(system_message)
-                # Bake Honcho context into the prompt so it's stable for
-                # the entire session (not re-fetched per turn).
-                if self._honcho_context:
+                # Bake this turn's Honcho context into the initial prompt snapshot.
+                # Later turns still prefetch context and inject it ephemerally.
+                if self._turn_honcho_context:
                     self._cached_system_prompt = (
-                        self._cached_system_prompt + "\n\n" + self._honcho_context
+                        self._cached_system_prompt + "\n\n" + self._turn_honcho_context
                     ).strip()
+                    self._turn_honcho_context_baked = True
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:
                     try:
@@ -3340,16 +4228,11 @@ class AIAgent:
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
 
-            # Build the final system message: cached prompt + ephemeral system prompt.
-            # The ephemeral part is appended here (not baked into the cached prompt)
-            # so it stays out of the session DB and logs.
-            # Note: Honcho context is baked into _cached_system_prompt on the first
-            # turn and stored in the session DB, so it does NOT need to be injected
-            # here.  This keeps the system message identical across all turns in a
-            # session, maximizing Anthropic prompt cache hits.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            # Build final system message from:
+            # 1) cached session system prompt snapshot,
+            # 2) optional ephemeral system prompt,
+            # 3) turn-scoped Honcho context (when not already baked this turn).
+            effective_system = self._compose_effective_system_prompt(active_system_prompt)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -4303,7 +5186,8 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Model generated only think blocks with no actual response after 3 retries"
+                                "error": "Model generated only think blocks with no actual response after 3 retries",
+                                "honcho": self.get_honcho_status(),
                             }
                     
                     # Reset retry counter on successful content
@@ -4438,6 +5322,7 @@ class AIAgent:
             "completed": completed,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
+            "honcho": self.get_honcho_status(),
         }
         
         # Include interrupt message if one triggered the interrupt

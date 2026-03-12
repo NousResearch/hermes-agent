@@ -151,6 +151,70 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _score_write_candidate(target: str, content: str) -> Dict[str, Any]:
+        """Score whether a candidate write is durable/actionable enough to persist."""
+        text = (content or "").strip()
+        lowered = text.lower()
+        reasons: List[str] = []
+
+        trivial_exact = {
+            "ok", "okay", "thanks", "thank you", "noted", "cool", "sounds good",
+            "test", "tmp", "temporary", "todo", "later",
+        }
+        if lowered in trivial_exact:
+            return {
+                "decision": "reject",
+                "confidence": 0.95,
+                "reasons": ["candidate appears trivial/ephemeral"],
+                "target": target,
+            }
+
+        score = 0.2
+        if len(text) >= 16:
+            score += 0.2
+            reasons.append("sufficient detail length")
+        if re.search(r"\b(prefer|always|never|workflow|habit|style|timezone|tool|project|environment|role|name:|uses|wants)\b", lowered):
+            score += 0.3
+            reasons.append("contains durable preference/context signal")
+        if re.search(r"[:;]|\b(v\d+|python\s*\d|darwin|linux|macos|windows)\b", lowered):
+            score += 0.2
+            reasons.append("contains operationally actionable detail")
+        if len(text.split()) >= 2:
+            score += 0.15
+
+        decision = "accept" if score >= 0.45 else "defer"
+        confidence = min(0.99, max(0.05, score))
+        if decision == "defer" and not reasons:
+            reasons.append("low-signal entry; consider consolidating instead of appending")
+
+        return {
+            "decision": decision,
+            "confidence": round(confidence, 2),
+            "reasons": reasons,
+            "target": target,
+        }
+
+    def _find_potential_contradictions(self, target: str, content: str) -> List[str]:
+        """Return previews of likely contradictory entries for reconciliation flow."""
+        entries = self._entries_for(target)
+        lowered = content.lower()
+        conflicts: List[str] = []
+
+        polarity_pairs = ((" always ", " never "), ("enabled", "disabled"), ("prefers", "avoids"))
+        padded = f" {lowered} "
+        for entry in entries:
+            entry_lower = entry.lower()
+            for positive, negative in polarity_pairs:
+                if positive in padded and negative.strip() in entry_lower:
+                    conflicts.append(entry)
+                    break
+                if negative in padded and positive.strip() in entry_lower:
+                    conflicts.append(entry)
+                    break
+
+        return conflicts[:5]
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -162,12 +226,24 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
+        write_gate = self._score_write_candidate(target, content)
+        if write_gate.get("decision") == "reject":
+            return {
+                "success": False,
+                "error": "Write rejected by memory governance gate.",
+                "write_gate": write_gate,
+            }
+
         entries = self._entries_for(target)
         limit = self._char_limit(target)
+        potential_conflicts = self._find_potential_contradictions(target, content)
 
         # Reject exact duplicates
         if content in entries:
-            return self._success_response(target, "Entry already exists (no duplicate added).")
+            resp = self._success_response(target, "Entry already exists (no duplicate added).")
+            resp["write_gate"] = write_gate
+            resp["write_decision"] = "dedupe_noop"
+            return resp
 
         # Calculate what the new total would be
         new_entries = entries + [content]
@@ -184,13 +260,22 @@ class MemoryStore:
                 ),
                 "current_entries": entries,
                 "usage": f"{current:,}/{limit:,}",
+                "write_gate": write_gate,
             }
 
         entries.append(content)
         self._set_entries(target, entries)
         self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        resp = self._success_response(target, "Entry added.")
+        resp["write_gate"] = write_gate
+        resp["write_decision"] = write_gate.get("decision", "accept")
+        if potential_conflicts:
+            resp["reconciliation_action"] = "review_conflicts"
+            resp["potential_conflicts"] = [
+                c[:120] + ("..." if len(c) > 120 else "") for c in potential_conflicts
+            ]
+        return resp
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -277,6 +362,21 @@ class MemoryStore:
         self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
+
+    def consolidate(self, target: str) -> Dict[str, Any]:
+        """Prune exact duplicates/empty entries and persist compacted memory."""
+        entries = [e.strip() for e in self._entries_for(target) if (e or "").strip()]
+        before = len(entries)
+        deduped = list(dict.fromkeys(entries))
+        removed = max(0, before - len(deduped))
+
+        self._set_entries(target, deduped)
+        self.save_to_disk(target)
+
+        resp = self._success_response(target, "Memory consolidated.")
+        resp["removed_entries"] = removed
+        resp["reconciliation_action"] = "dedupe_prune"
+        return resp
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -417,8 +517,11 @@ def memory_tool(
             return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
         result = store.remove(target, old_text)
 
+    elif action == "consolidate":
+        result = store.consolidate(target)
+
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove, consolidate"}, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -459,7 +562,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "consolidate"],
                 "description": "The action to perform."
             },
             "target": {

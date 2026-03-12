@@ -116,6 +116,11 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_write_gate_rejects_trivial_entry(self, store):
+        result = store.add("memory", "ok")
+        assert result["success"] is False
+        assert result["write_gate"]["decision"] == "reject"
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
@@ -240,3 +245,9 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_consolidate_action(self, store):
+        store.add("memory", "python project")
+        result = json.loads(memory_tool(action="consolidate", target="memory", store=store))
+        assert result["success"] is True
+        assert result["reconciliation_action"] == "dedupe_prune"

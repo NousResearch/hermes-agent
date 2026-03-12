@@ -3,6 +3,7 @@
 import json
 import pytest
 
+import model_tools
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
@@ -18,25 +19,47 @@ from model_tools import (
 # =========================================================================
 
 class TestHandleFunctionCall:
-    def test_agent_loop_tool_returns_error(self):
+    def test_agent_loop_tool_returns_canonical_error_envelope(self):
         for tool_name in _AGENT_LOOP_TOOLS:
             result = json.loads(handle_function_call(tool_name, {}))
-            assert "error" in result
+            assert result["success"] is False
             assert "agent loop" in result["error"].lower()
+            assert result["error_type"] == "AgentLoopDispatchError"
+            assert result["retryable"] is False
+            assert result["data"] is None
+            assert result["metrics"]["tool_name"] == tool_name
 
     def test_unknown_tool_returns_error(self):
         result = json.loads(handle_function_call("totally_fake_tool_xyz", {}))
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
-    def test_exception_returns_json_error(self):
+    def test_exception_returns_canonical_json_error_envelope(self):
         # Even if something goes wrong, should return valid JSON
         result = handle_function_call("web_search", None)  # None args may cause issues
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
+        assert parsed["success"] is False
         assert "error" in parsed
         assert len(parsed["error"]) > 0
+        assert parsed["retryable"] is False
+        assert parsed["metrics"]["tool_name"] == "web_search"
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+
+    def test_execute_code_without_enabled_tools_uses_registry_tool_list(self, monkeypatch):
+        captured = {}
+
+        def _fake_dispatch(name, args, **kwargs):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return json.dumps({"success": True, "data": {"ok": True}})
+
+        monkeypatch.setattr(model_tools.registry, "dispatch", _fake_dispatch)
+
+        result = json.loads(handle_function_call("execute_code", {"code": "print('hi')"}))
+        assert result["success"] is True
+        assert captured["name"] == "execute_code"
+        assert captured["kwargs"]["enabled_tools"] == model_tools.registry.get_all_tool_names()
 
 
 # =========================================================================

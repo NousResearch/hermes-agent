@@ -130,7 +130,7 @@ class TestAppMentionHandler:
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("asyncio.create_task"):
-            asyncio.get_event_loop().run_until_complete(adapter.connect())
+            asyncio.run(adapter.connect())
 
         assert "message" in registered_events
         assert "app_mention" in registered_events

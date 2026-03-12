@@ -23,7 +23,13 @@ class TestRegisterAndDispatch:
             handler=_dummy_handler,
         )
         result = json.loads(reg.dispatch("alpha", {}))
-        assert result == {"ok": True}
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["error_type"] is None
+        assert result["retryable"] is False
+        assert result["data"] == {"ok": True}
+        assert result["metrics"]["tool_name"] == "alpha"
+        assert isinstance(result["metrics"]["duration_ms"], int)
 
     def test_dispatch_passes_args(self):
         reg = ToolRegistry()
@@ -33,7 +39,50 @@ class TestRegisterAndDispatch:
 
         reg.register(name="echo", toolset="core", schema=_make_schema("echo"), handler=echo_handler)
         result = json.loads(reg.dispatch("echo", {"msg": "hi"}))
-        assert result == {"msg": "hi"}
+        assert result["success"] is True
+        assert result["data"] == {"msg": "hi"}
+
+
+class TestAsyncDispatch:
+    def test_async_handler_result_is_normalized(self):
+        reg = ToolRegistry()
+
+        async def async_handler(args, **kw):
+            return json.dumps({"value": args.get("x", 0)})
+
+        reg.register(
+            name="async_echo",
+            toolset="core",
+            schema=_make_schema("async_echo"),
+            handler=async_handler,
+            is_async=True,
+        )
+        result = json.loads(reg.dispatch("async_echo", {"x": 7}))
+
+        assert result["success"] is True
+        assert result["data"] == {"value": 7}
+        assert result["metrics"]["tool_name"] == "async_echo"
+        assert isinstance(result["metrics"]["duration_ms"], int)
+
+    def test_async_handler_exception_returns_error_envelope(self):
+        reg = ToolRegistry()
+
+        async def failing_async_handler(args, **kw):
+            raise ValueError("async boom")
+
+        reg.register(
+            name="async_fail",
+            toolset="core",
+            schema=_make_schema("async_fail"),
+            handler=failing_async_handler,
+            is_async=True,
+        )
+        result = json.loads(reg.dispatch("async_fail", {}))
+
+        assert result["success"] is False
+        assert result["error_type"] == "ValueError"
+        assert "async boom" in result["error"]
+        assert result["metrics"]["tool_name"] == "async_fail"
 
 
 class TestGetDefinitions:
@@ -73,8 +122,10 @@ class TestUnknownToolDispatch:
     def test_returns_error_json(self):
         reg = ToolRegistry()
         result = json.loads(reg.dispatch("nonexistent", {}))
-        assert "error" in result
+        assert result["success"] is False
         assert "Unknown tool" in result["error"]
+        assert result["error_type"] == "UnknownToolError"
+        assert result["metrics"]["tool_name"] == "nonexistent"
 
 
 class TestToolsetAvailability:
@@ -117,8 +168,83 @@ class TestToolsetAvailability:
 
         reg.register(name="bad", toolset="s", schema=_make_schema(), handler=bad_handler)
         result = json.loads(reg.dispatch("bad", {}))
-        assert "error" in result
+        assert result["success"] is False
         assert "RuntimeError" in result["error"]
+        assert result["error_type"] == "RuntimeError"
+        assert result["metrics"]["tool_name"] == "bad"
+        assert isinstance(result["metrics"]["duration_ms"], int)
+
+    def test_malformed_envelope_is_sanitized(self):
+        reg = ToolRegistry()
+
+        def malformed_handler(args, **kw):
+            return json.dumps({
+                "success": "false",
+                "error": {"message": "bad"},
+                "error_type": 404,
+                "retryable": "yes",
+                "metrics": "bad metrics",
+                "path": "/tmp/result.txt",
+            })
+
+        reg.register(name="sanitize", toolset="s", schema=_make_schema(), handler=malformed_handler)
+        result = json.loads(reg.dispatch("sanitize", {}))
+
+        assert result == {
+            "success": False,
+            "error": '{"message": "bad"}',
+            "error_type": "404",
+            "retryable": True,
+            "data": {"path": "/tmp/result.txt"},
+            "metrics": {
+                "tool_name": "sanitize",
+                "duration_ms": result["metrics"]["duration_ms"],
+            },
+        }
+        assert isinstance(result["metrics"]["duration_ms"], int)
+
+    def test_single_error_key_payload_is_wrapped_as_plain_data(self):
+        reg = ToolRegistry()
+
+        def error_payload_handler(args, **kw):
+            return json.dumps({"error": "plain data"})
+
+        reg.register(name="error_payload", toolset="s", schema=_make_schema(), handler=error_payload_handler)
+        result = json.loads(reg.dispatch("error_payload", {}))
+
+        assert result["success"] is True
+        assert result["error"] is None
+        assert result["error_type"] is None
+        assert result["retryable"] is False
+        assert result["data"] == {"error": "plain data"}
+        assert result["metrics"]["tool_name"] == "error_payload"
+
+    def test_scalar_data_envelope_preserves_extras(self):
+        reg = ToolRegistry()
+
+        def scalar_data_handler(args, **kw):
+            return json.dumps({
+                "success": True,
+                "data": "saved",
+                "path": "/tmp/result.txt",
+                "bytes": 42,
+            })
+
+        reg.register(name="scalar_data", toolset="s", schema=_make_schema(), handler=scalar_data_handler)
+        result = json.loads(reg.dispatch("scalar_data", {}))
+
+        assert result["success"] is True
+        assert result["data"] == {
+            "value": "saved",
+            "path": "/tmp/result.txt",
+            "bytes": 42,
+        }
+
+    def test_unknown_bool_strings_use_default(self):
+        reg = ToolRegistry()
+
+        assert reg._coerce_bool("maybe", default=False) is False
+        assert reg._coerce_bool("maybe", default=True) is True
 
 
 class TestCheckFnExceptionHandling:

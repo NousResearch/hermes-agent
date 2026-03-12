@@ -26,7 +26,7 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import registry
+from tools.registry import registry, make_tool_result
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -122,9 +122,8 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
-# Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
-_last_resolved_tool_names: List[str] = []
+# NOTE: keep tool selection session-scoped via explicit ``enabled_tools`` arguments.
+# Do not cache resolved tool names in process-global mutable state.
 
 
 # =============================================================================
@@ -244,9 +243,6 @@ def get_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
-
     return filtered_tools
 
 
@@ -276,22 +272,30 @@ def handle_function_call(
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
         user_task: The user's original task (for browser_snapshot context).
-        enabled_tools: Tool names enabled for this session.  When provided,
+        enabled_tools: Tool names enabled for this session. When provided,
                        execute_code uses this list to determine which sandbox
-                       tools to generate.  Falls back to the process-global
-                       ``_last_resolved_tool_names`` for backward compat.
+                       tools to generate. If omitted, it falls back to the
+                       full registry tool list (no process-global cache).
 
     Returns:
         Function result as a JSON string.
     """
     try:
         if function_name in _AGENT_LOOP_TOOLS:
-            return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+            return make_tool_result(
+                success=False,
+                error=f"{function_name} must be handled by the agent loop",
+                error_type="AgentLoopDispatchError",
+                retryable=False,
+                data=None,
+                metrics={"tool_name": function_name, "duration_ms": 0},
+            )
 
         if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            # Prefer caller-provided enabled_tools. If omitted, default to the
+            # full registry set instead of the process-global cache to avoid
+            # cross-agent/state leakage.
+            sandbox_enabled = enabled_tools if enabled_tools is not None else registry.get_all_tool_names()
             return registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
@@ -307,7 +311,14 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.error(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return make_tool_result(
+            success=False,
+            error=error_msg,
+            error_type=type(e).__name__,
+            retryable=False,
+            data=None,
+            metrics={"tool_name": function_name, "duration_ms": 0},
+        )
 
 
 # =============================================================================

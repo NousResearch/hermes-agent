@@ -170,9 +170,23 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
     
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
-    # This section is only needed for hermes-specific overrides; everything else
-    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
-    "honcho": {},
+    # This section is only needed for hermes-specific runtime behavior overrides.
+    "honcho": {
+        # Fail-open default: keep responding if Honcho is unavailable; queue/retry sync.
+        "fail_open": True,
+        # Additional retries for Honcho prefetch/sync operations (initial try + retries).
+        "retry_attempts": 2,
+        # Optional toolchain behavior telemetry synced into Honcho as assistant events.
+        "tool_events": {
+            "enabled": True,
+            "max_result_chars": 240,
+        },
+        # Backlog guardrails for fail-open queueing during Honcho outages.
+        "max_pending_sync": 200,
+        "max_pending_tool_events": 400,
+        # Max queued records to replay per turn/flush cycle.
+        "flush_batch_size": 25,
+    },
 
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.

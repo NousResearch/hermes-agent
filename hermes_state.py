@@ -25,7 +25,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,10 +64,42 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tool_execution_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    tool_name TEXT NOT NULL,
+    tool_call_id TEXT,
+    duration_ms INTEGER,
+    success INTEGER NOT NULL,
+    args_preview TEXT,
+    result_preview TEXT,
+    envelope INTEGER,
+    retryable INTEGER,
+    error_type TEXT,
+    error_summary TEXT,
+    timestamp REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    family TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    task_id TEXT,
+    success INTEGER,
+    latency_ms INTEGER,
+    risk_class TEXT,
+    payload_json TEXT,
+    timestamp REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_tool_events_session ON tool_execution_events(session_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session ON agent_events(session_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_events_family ON agent_events(family, timestamp DESC);
 """
 
 FTS_SQL = """
@@ -152,6 +184,65 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Index already exists
                 cursor.execute("UPDATE schema_version SET version = 4")
+            if current_version < 5:
+                # v5: durable tool execution event table + session index
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS tool_execution_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT NOT NULL REFERENCES sessions(id),
+                            tool_name TEXT NOT NULL,
+                            tool_call_id TEXT,
+                            duration_ms INTEGER,
+                            success INTEGER NOT NULL,
+                            args_preview TEXT,
+                            result_preview TEXT,
+                            envelope INTEGER,
+                            retryable INTEGER,
+                            error_type TEXT,
+                            error_summary TEXT,
+                            timestamp REAL NOT NULL
+                        )"""
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_tool_events_session "
+                        "ON tool_execution_events(session_id, timestamp DESC)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 5")
+                current_version = 5
+            if current_version < 6:
+                # v6: generic cross-phase agent event log
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS agent_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT NOT NULL REFERENCES sessions(id),
+                            family TEXT NOT NULL,
+                            event_type TEXT NOT NULL,
+                            task_id TEXT,
+                            success INTEGER,
+                            latency_ms INTEGER,
+                            risk_class TEXT,
+                            payload_json TEXT,
+                            timestamp REAL NOT NULL
+                        )"""
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                for idx_sql in (
+                    "CREATE INDEX IF NOT EXISTS idx_agent_events_session ON agent_events(session_id, timestamp DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_agent_events_family ON agent_events(family, timestamp DESC)",
+                ):
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 6")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -510,6 +601,174 @@ class SessionDB:
 
         self._conn.commit()
         return msg_id
+
+    def append_tool_execution_event(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_call_id: str = None,
+        duration_ms: int = None,
+        success: bool = True,
+        args_preview: str = None,
+        result_preview: str = None,
+        envelope: bool = False,
+        retryable: bool = False,
+        error_type: str = None,
+        error_summary: str = None,
+    ) -> int:
+        """Append a normalized tool execution event for a session."""
+        cursor = self._conn.execute(
+            """INSERT INTO tool_execution_events (
+                session_id, tool_name, tool_call_id, duration_ms, success,
+                args_preview, result_preview, envelope, retryable, error_type,
+                error_summary, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                tool_name,
+                tool_call_id,
+                duration_ms,
+                1 if success else 0,
+                args_preview,
+                result_preview,
+                1 if envelope else 0,
+                1 if retryable else 0,
+                error_type,
+                error_summary,
+                time.time(),
+            ),
+        )
+        event_id = cursor.lastrowid
+        self._conn.commit()
+        return event_id
+
+    def get_recent_tool_execution_events(
+        self,
+        session_id: str,
+        limit: int = 20,
+        *,
+        tool_name: Optional[str] = None,
+        success: Optional[bool] = None,
+        retryable: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return newest-first tool execution events for a specific session.
+
+        Optional filters are combined with AND semantics.
+        """
+        size = max(1, int(limit or 20))
+
+        where_clauses = ["session_id = ?"]
+        params: list[Any] = [session_id]
+
+        if tool_name:
+            where_clauses.append("tool_name = ?")
+            params.append(str(tool_name))
+        if success is not None:
+            where_clauses.append("success = ?")
+            params.append(1 if success else 0)
+        if retryable is not None:
+            where_clauses.append("retryable = ?")
+            params.append(1 if retryable else 0)
+
+        where_sql = " AND ".join(where_clauses)
+        params.append(size)
+
+        cursor = self._conn.execute(
+            f"""SELECT * FROM tool_execution_events
+               WHERE {where_sql}
+               ORDER BY timestamp DESC, id DESC
+               LIMIT ?""",
+            tuple(params),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def append_agent_event(
+        self,
+        session_id: str,
+        family: str,
+        event_type: str,
+        *,
+        task_id: str = None,
+        success: Optional[bool] = None,
+        latency_ms: int = None,
+        risk_class: str = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Append a cross-phase agent event record.
+
+        ``payload`` is persisted as JSON for forward-compatible schema evolution.
+        """
+        payload_json = None
+        if payload is not None:
+            payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+
+        cursor = self._conn.execute(
+            """INSERT INTO agent_events (
+                session_id, family, event_type, task_id, success, latency_ms,
+                risk_class, payload_json, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                str(family),
+                str(event_type),
+                task_id,
+                None if success is None else (1 if success else 0),
+                None if latency_ms is None else int(latency_ms),
+                risk_class,
+                payload_json,
+                time.time(),
+            ),
+        )
+        event_id = cursor.lastrowid
+        self._conn.commit()
+        return event_id
+
+    def get_recent_agent_events(
+        self,
+        session_id: str,
+        limit: int = 50,
+        *,
+        family: Optional[str] = None,
+        event_type: Optional[str] = None,
+        success: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return newest-first cross-phase agent events for a session."""
+        size = max(1, int(limit or 50))
+        where_clauses = ["session_id = ?"]
+        params: list[Any] = [session_id]
+
+        if family:
+            where_clauses.append("family = ?")
+            params.append(str(family))
+        if event_type:
+            where_clauses.append("event_type = ?")
+            params.append(str(event_type))
+        if success is not None:
+            where_clauses.append("success = ?")
+            params.append(1 if success else 0)
+
+        params.append(size)
+        cursor = self._conn.execute(
+            f"""SELECT * FROM agent_events
+               WHERE {' AND '.join(where_clauses)}
+               ORDER BY timestamp DESC, id DESC
+               LIMIT ?""",
+            tuple(params),
+        )
+
+        rows: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            raw_payload = item.get("payload_json")
+            if raw_payload:
+                try:
+                    item["payload"] = json.loads(raw_payload)
+                except (json.JSONDecodeError, TypeError):
+                    item["payload"] = raw_payload
+            else:
+                item["payload"] = None
+            rows.append(item)
+        return rows
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""

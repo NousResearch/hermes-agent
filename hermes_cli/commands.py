@@ -29,6 +29,8 @@ COMMANDS = {
     "/undo": "Remove the last user/assistant exchange",
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
+    "/honcho": "Show or change Honcho runtime mode (status/strict/fail-open/retries)",
+    "/tool-events": "Inspect recent tool execution events for this session",
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",

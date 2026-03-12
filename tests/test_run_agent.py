@@ -648,6 +648,234 @@ class TestExecuteToolCalls:
         assert len(messages[0]["content"]) < 150_000
         assert "Truncated" in messages[0]["content"]
 
+    def test_canonical_envelope_metrics_feed_local_execution_event(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"agents"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        canonical_result = json.dumps({
+            "success": True,
+            "error": None,
+            "error_type": None,
+            "retryable": False,
+            "data": {"hits": 3},
+            "metrics": {"tool_name": "web_search", "duration_ms": 321},
+        })
+
+        with patch("run_agent.handle_function_call", return_value=canonical_result):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        event = agent.get_recent_tool_execution_events(limit=1)[0]
+        assert event["tool"] == "web_search"
+        assert event["tool_call_id"] == "c1"
+        assert event["envelope"] is True
+        assert event["duration_ms"] == 321
+        assert event["ok"] is True
+
+    def test_canonical_envelope_failure_sets_error_summary(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        canonical_result = json.dumps({
+            "success": False,
+            "error": "upstream timeout",
+            "error_type": "TimeoutError",
+            "retryable": True,
+            "data": None,
+            "metrics": {"tool_name": "web_search", "duration_ms": 55},
+        })
+
+        with patch("run_agent.handle_function_call", return_value=canonical_result):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        event = agent.get_recent_tool_execution_events(limit=1)[0]
+        assert event["ok"] is False
+        assert event["error_summary"] == "upstream timeout"
+        assert event["retryable"] is True
+        assert event["error_type"] == "TimeoutError"
+
+        critiques = agent.get_recent_agent_events(limit=5, family="self_correction")
+        assert len(critiques) >= 1
+        assert critiques[0]["event_type"] == "shadow_critique"
+        assert critiques[0]["payload"]["failure_class"] == "provider_failure"
+
+    def test_tool_execution_event_persisted_to_session_db_when_available(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"abc"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+
+        canonical_result = json.dumps({
+            "success": True,
+            "error": None,
+            "error_type": None,
+            "retryable": False,
+            "data": {"hits": 1},
+            "metrics": {"tool_name": "web_search", "duration_ms": 87},
+        })
+
+        with patch("run_agent.handle_function_call", return_value=canonical_result):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_db.append_tool_execution_event.assert_called_once()
+        kwargs = mock_db.append_tool_execution_event.call_args.kwargs
+        assert kwargs["session_id"] == agent.session_id
+        assert kwargs["tool_name"] == "web_search"
+        assert kwargs["tool_call_id"] == "c1"
+        assert kwargs["duration_ms"] == 87
+        assert kwargs["success"] is True
+
+    def test_get_recent_tool_execution_events_supports_filters(self, agent):
+        agent._tool_execution_events = [
+            {
+                "ts": "2026-03-12T00:00:00Z",
+                "tool": "web_search",
+                "tool_call_id": "c1",
+                "duration_ms": 11,
+                "ok": True,
+                "retryable": False,
+            },
+            {
+                "ts": "2026-03-12T00:00:01Z",
+                "tool": "browser_click",
+                "tool_call_id": "c2",
+                "duration_ms": 22,
+                "ok": False,
+                "retryable": True,
+            },
+        ]
+
+        errors = agent.get_recent_tool_execution_events(limit=10, ok=False)
+        assert len(errors) == 1
+        assert errors[0]["tool"] == "browser_click"
+
+        retryable = agent.get_recent_tool_execution_events(limit=10, retryable=True)
+        assert len(retryable) == 1
+        assert retryable[0]["tool_call_id"] == "c2"
+
+        web = agent.get_recent_tool_execution_events(limit=10, tool_name="web_search")
+        assert len(web) == 1
+        assert web[0]["ok"] is True
+
+    def test_tool_execution_also_records_agent_event(self, agent):
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c-risk")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        canonical_result = json.dumps({
+            "success": True,
+            "error": None,
+            "error_type": None,
+            "retryable": False,
+            "data": {"output": "/tmp"},
+            "metrics": {"tool_name": "terminal", "duration_ms": 33},
+        })
+
+        with patch("run_agent.handle_function_call", return_value=canonical_result):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        events = agent.get_recent_agent_events(limit=5, family="tool_execution")
+        assert len(events) >= 1
+        assert events[0]["event_type"] == "tool_call"
+        assert events[0]["risk_class"] == "high"
+        assert events[0]["payload"]["tool_name"] == "terminal"
+
+    def test_record_agent_event_persists_to_session_db(self, agent):
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+
+        agent._record_agent_event(
+            family="memory",
+            event_type="write_gate",
+            task_id="t1",
+            success=True,
+            latency_ms=9,
+            risk_class="medium",
+            payload={"decision": "accept"},
+        )
+
+        mock_db.append_agent_event.assert_called_once()
+        kwargs = mock_db.append_agent_event.call_args.kwargs
+        assert kwargs["family"] == "memory"
+        assert kwargs["event_type"] == "write_gate"
+        assert kwargs["payload"]["decision"] == "accept"
+
+    def test_delegate_budget_blocks_excess_child_count(self, agent):
+        tc = _mock_tool_call(
+            name="delegate_task",
+            arguments=json.dumps({"tasks": [{"goal": "a"}, {"goal": "b"}, {"goal": "c"}, {"goal": "d"}]}),
+            call_id="c-delegate",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("tools.delegate_tool.delegate_task") as delegate_mock:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        delegate_mock.assert_not_called()
+        assert len(messages) == 1
+        payload = json.loads(messages[0]["content"])
+        assert payload["success"] is False
+        assert payload["error_type"] == "DelegationBudgetExceeded"
+
+    def test_live_retry_retries_low_risk_provider_failure(self, agent):
+        agent._self_correction_policy["mode"] = "live"
+
+        first = json.dumps({
+            "success": False,
+            "error": "upstream timeout",
+            "error_type": "TimeoutError",
+            "retryable": True,
+            "data": None,
+            "metrics": {"tool_name": "web_search", "duration_ms": 40},
+        })
+        second = json.dumps({
+            "success": True,
+            "error": None,
+            "error_type": None,
+            "retryable": False,
+            "data": {"hits": 2},
+            "metrics": {"tool_name": "web_search", "duration_ms": 28},
+        })
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"retry me"}', call_id="c-retry")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", side_effect=[first, second]) as handler:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert handler.call_count == 2
+        payload = json.loads(messages[0]["content"])
+        assert payload["success"] is True
+
+        retries = agent.get_recent_agent_events(limit=5, family="self_correction")
+        assert any(e["event_type"] == "live_retry_attempt" for e in retries)
+
+    def test_live_retry_does_not_retry_high_risk_tools(self, agent):
+        agent._self_correction_policy["mode"] = "live"
+
+        failed_terminal = json.dumps({
+            "success": False,
+            "error": "connection timeout",
+            "error_type": "TimeoutError",
+            "retryable": True,
+            "data": None,
+            "metrics": {"tool_name": "terminal", "duration_ms": 45},
+        })
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c-risk-retry")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value=failed_terminal) as handler:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert handler.call_count == 1
+        critiques = agent.get_recent_agent_events(limit=8, family="self_correction")
+        assert any(
+            e["event_type"] == "live_retry_skipped" and e["payload"].get("reason") == "high_risk"
+            for e in critiques
+        )
+
 
 class TestHandleMaxIterations:
     def test_returns_summary(self, agent):
@@ -1177,34 +1405,208 @@ class TestSystemPromptStability:
         assert "Hermes Agent" in agent._cached_system_prompt
 
     def test_honcho_context_baked_into_prompt_on_first_turn(self, agent):
-        """Honcho context should be baked into _cached_system_prompt on
-        the first turn, not injected separately per API call."""
-        agent._honcho_context = "User prefers Python over JavaScript."
+        """Honcho context should be baked into _cached_system_prompt on first-turn prompt build."""
+        agent._turn_honcho_context = "User prefers Python over JavaScript."
+        agent._turn_honcho_context_baked = False
         agent._cached_system_prompt = None
 
         # Simulate first turn: build fresh and bake in Honcho
         agent._cached_system_prompt = agent._build_system_prompt()
-        if agent._honcho_context:
+        if agent._turn_honcho_context:
             agent._cached_system_prompt = (
-                agent._cached_system_prompt + "\n\n" + agent._honcho_context
+                agent._cached_system_prompt + "\n\n" + agent._turn_honcho_context
             ).strip()
+            agent._turn_honcho_context_baked = True
 
         assert "User prefers Python over JavaScript" in agent._cached_system_prompt
+        assert agent._turn_honcho_context_baked is True
 
-    def test_honcho_prefetch_skipped_on_continuing_session(self):
-        """Honcho prefetch should not be called when conversation_history
-        is non-empty (continuing session)."""
-        conversation_history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
+    def test_compose_effective_system_injects_turn_honcho_context_when_not_baked(self, agent):
+        agent.ephemeral_system_prompt = "Ephemeral guidance"
+        agent._turn_honcho_context = "Fresh Honcho context"
+        agent._turn_honcho_context_baked = False
+
+        effective = agent._compose_effective_system_prompt("Base system")
+
+        assert "Base system" in effective
+        assert "Ephemeral guidance" in effective
+        assert "Fresh Honcho context" in effective
+
+    def test_compose_effective_system_skips_turn_honcho_context_when_baked(self, agent):
+        agent._turn_honcho_context = "Fresh Honcho context"
+        agent._turn_honcho_context_baked = True
+
+        effective = agent._compose_effective_system_prompt("Base system")
+
+        assert effective == "Base system"
+
+    def test_honcho_sync_queues_when_fail_open_and_sync_fails(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_fail_open = True
+        agent._honcho_retry_attempts = 0
+        agent._pending_honcho_sync = []
+
+        def _always_fail():
+            raise RuntimeError("boom")
+
+        agent._honcho.get_or_create.side_effect = _always_fail
+
+        synced = agent._honcho_sync("u", "a")
+
+        assert synced is False
+        assert len(agent._pending_honcho_sync) == 1
+        assert agent._pending_honcho_sync[0] == {"user": "u", "assistant": "a"}
+
+    def test_honcho_flush_pending_sync_replays_and_clears_queue(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._pending_honcho_sync = [{"user": "u1", "assistant": "a1"}]
+
+        with patch.object(agent, "_honcho_sync", return_value=True) as sync_mock:
+            agent._honcho_flush_pending_sync()
+
+        sync_mock.assert_called_once_with("u1", "a1", queue_on_failure=False)
+        assert agent._pending_honcho_sync == []
+
+    def test_honcho_sync_tool_event_queues_when_fail_open(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_fail_open = True
+        agent._honcho_retry_attempts = 0
+        agent._honcho_tool_events_enabled = True
+        agent._pending_honcho_tool_events = []
+
+        agent._honcho.get_or_create.side_effect = RuntimeError("boom")
+
+        synced = agent._honcho_sync_tool_event("[tool_event] {}")
+
+        assert synced is False
+        assert len(agent._pending_honcho_tool_events) == 1
+
+    def test_honcho_flush_pending_tool_events_replays_and_clears_queue(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._pending_honcho_tool_events = ["[tool_event] {}"]
+
+        with patch.object(agent, "_honcho_sync_tool_event", return_value=True) as sync_mock:
+            agent._honcho_flush_pending_tool_events()
+
+        sync_mock.assert_called_once_with("[tool_event] {}", queue_on_failure=False)
+        assert agent._pending_honcho_tool_events == []
+
+    def test_honcho_sync_queue_respects_cap_and_drops_oldest(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_fail_open = True
+        agent._honcho_retry_attempts = 0
+        agent._honcho_max_pending_sync = 2
+        agent._pending_honcho_sync = []
+        agent._honcho.get_or_create.side_effect = RuntimeError("boom")
+
+        agent._honcho_sync("u1", "a1")
+        agent._honcho_sync("u2", "a2")
+        agent._honcho_sync("u3", "a3")
+
+        assert agent._pending_honcho_sync == [
+            {"user": "u2", "assistant": "a2"},
+            {"user": "u3", "assistant": "a3"},
+        ]
+        assert agent._honcho_telemetry["dropped_sync"] == 1
+
+    def test_honcho_tool_event_queue_respects_cap_and_drops_oldest(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_fail_open = True
+        agent._honcho_retry_attempts = 0
+        agent._honcho_tool_events_enabled = True
+        agent._honcho_max_pending_tool_events = 2
+        agent._pending_honcho_tool_events = []
+        agent._honcho.get_or_create.side_effect = RuntimeError("boom")
+
+        agent._honcho_sync_tool_event("e1")
+        agent._honcho_sync_tool_event("e2")
+        agent._honcho_sync_tool_event("e3")
+
+        assert agent._pending_honcho_tool_events == ["e2", "e3"]
+        assert agent._honcho_telemetry["dropped_tool_events"] == 1
+
+    def test_honcho_flush_respects_batch_size(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_flush_batch_size = 1
+        agent._pending_honcho_sync = [
+            {"user": "u1", "assistant": "a1"},
+            {"user": "u2", "assistant": "a2"},
         ]
 
-        # The guard: `not conversation_history` is False when history exists
-        should_prefetch = not conversation_history
-        assert should_prefetch is False
+        with patch.object(agent, "_honcho_sync", return_value=True) as sync_mock:
+            agent._honcho_flush_pending_sync()
 
-    def test_honcho_prefetch_runs_on_first_turn(self):
-        """Honcho prefetch should run when conversation_history is empty."""
-        conversation_history = []
-        should_prefetch = not conversation_history
-        assert should_prefetch is True
+        sync_mock.assert_called_once_with("u1", "a1", queue_on_failure=False)
+        assert agent._pending_honcho_sync == [{"user": "u2", "assistant": "a2"}]
+
+    def test_honcho_status_snapshot_includes_runtime_fields(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "telegram:123"
+        agent._honcho_fail_open = False
+        agent._honcho_retry_attempts = 5
+        agent._honcho_tool_events_enabled = True
+        agent._honcho_max_pending_sync = 8
+        agent._honcho_max_pending_tool_events = 9
+        agent._honcho_flush_batch_size = 3
+        agent._pending_honcho_sync = [{"user": "u", "assistant": "a"}]
+        agent._pending_honcho_tool_events = ["[tool_event] {}"]
+        agent._honcho_last_prefetch_chars = 77
+        agent._honcho_last_error = "sync: boom"
+
+        status = agent.get_honcho_status()
+
+        assert status["enabled"] is True
+        assert status["session_key"] == "telegram:123"
+        assert status["fail_open"] is False
+        assert status["retry_attempts"] == 5
+        assert status["tool_events_enabled"] is True
+        assert status["max_pending_sync"] == 8
+        assert status["max_pending_tool_events"] == 9
+        assert status["flush_batch_size"] == 3
+        assert status["pending_sync"] == 1
+        assert status["pending_tool_events"] == 1
+        assert status["last_prefetch_chars"] == 77
+        assert status["last_error"] == "sync: boom"
+
+    def test_flush_honcho_queues_reports_replayed_counts(self, agent):
+        agent._pending_honcho_sync = [{"user": "u1", "assistant": "a1"}]
+        agent._pending_honcho_tool_events = ["e1", "e2"]
+
+        def _flush_sync():
+            agent._pending_honcho_sync = []
+
+        def _flush_tool_events():
+            agent._pending_honcho_tool_events = ["e2"]
+
+        with patch.object(agent, "_honcho_flush_pending_sync", side_effect=_flush_sync), patch.object(
+            agent,
+            "_honcho_flush_pending_tool_events",
+            side_effect=_flush_tool_events,
+        ):
+            status = agent.flush_honcho_queues()
+
+        assert status["flushed_sync"] == 1
+        assert status["flushed_tool_events"] == 1
+        assert status["pending_sync"] == 0
+        assert status["pending_tool_events"] == 1
+
+    def test_set_honcho_runtime_mode_updates_settings(self, agent):
+        status = agent.set_honcho_runtime_mode(
+            fail_open=False,
+            retry_attempts=4,
+            tool_events_enabled=False,
+        )
+
+        assert agent._honcho_fail_open is False
+        assert agent._honcho_retry_attempts == 4
+        assert agent._honcho_tool_events_enabled is False
+        assert status["fail_open"] is False
+        assert status["retry_attempts"] == 4
+        assert status["tool_events_enabled"] is False

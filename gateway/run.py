@@ -806,7 +806,8 @@ class GatewayRunner:
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider", "rollback"}
+                          "update", "title", "resume", "provider", "rollback",
+                          "tool-events", "tool_events"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -868,6 +869,9 @@ class GatewayRunner:
 
         if command == "rollback":
             return await self._handle_rollback_command(event)
+
+        if command in ("tool-events", "tool_events"):
+            return await self._handle_tool_events_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1419,6 +1423,197 @@ class GatewayRunner:
         else:
             return "No active task to stop."
     
+    async def _handle_tool_events_command(self, event: MessageEvent) -> str:
+        """Handle /tool-events with optional filters, stats, and JSON output."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+
+        args = event.get_command_args().strip()
+        tokens = args.split() if args else []
+
+        limit = 10
+        tool_name = None
+        errors_only = False
+        retryable_only = False
+        bucket_by = "tool"  # tool | window
+        window_size = 5
+        json_requested = False
+        stats_requested = False
+        output_mode = "text"  # text | json | stats | stats_json
+
+        for token in tokens:
+            lower = token.lower()
+            if lower.isdigit():
+                limit = max(1, min(50, int(lower)))
+            elif lower in {"errors", "error", "errors-only", "failed", "failures"}:
+                errors_only = True
+            elif lower in {"retryable", "retry"}:
+                retryable_only = True
+            elif lower in {"json", "--json", "export"}:
+                json_requested = True
+            elif lower in {"stats", "summary"}:
+                stats_requested = True
+            elif lower.startswith("tool="):
+                tool_name = token.split("=", 1)[1].strip()
+            elif lower.startswith("tool:"):
+                tool_name = token.split(":", 1)[1].strip()
+            elif lower.startswith("bucket=") or lower.startswith("group="):
+                bucket_value = token.split("=", 1)[1].strip().lower()
+                if bucket_value in {"tool", "tools", "by_tool"}:
+                    bucket_by = "tool"
+                elif bucket_value in {"window", "windows", "chunk", "chunks"}:
+                    bucket_by = "window"
+                else:
+                    return "Usage: `/tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json]`"
+            elif lower.startswith("window="):
+                try:
+                    window_size = max(1, min(50, int(token.split("=", 1)[1].strip())))
+                except ValueError:
+                    return "Usage: `/tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json]`"
+            else:
+                return "Usage: `/tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json]`"
+
+        if stats_requested:
+            output_mode = "stats_json" if json_requested else "stats"
+        elif json_requested:
+            output_mode = "json"
+
+        if tool_name == "":
+            tool_name = None
+
+        if not self._session_db:
+            return "Tool event inspection is unavailable: session database disabled."
+
+        success_filter = False if errors_only else None
+        retryable_filter = True if retryable_only else None
+
+        try:
+            events = self._session_db.get_recent_tool_execution_events(
+                session_entry.session_id,
+                limit=limit,
+                tool_name=tool_name,
+                success=success_filter,
+                retryable=retryable_filter,
+            )
+        except Exception as e:
+            logger.debug("Failed to load tool events for %s: %s", session_entry.session_id, e)
+            return "Failed to load tool events for this session."
+
+        if not events:
+            return "No matching tool execution events recorded yet for this session."
+
+        normalized_events = []
+        for item in events:
+            normalized_events.append(
+                {
+                    "ts": item.get("timestamp"),
+                    "tool": item.get("tool_name", "unknown"),
+                    "tool_call_id": item.get("tool_call_id") or "-",
+                    "duration_ms": item.get("duration_ms"),
+                    "ok": bool(item.get("success")),
+                    "envelope": bool(item.get("envelope")),
+                    "retryable": bool(item.get("retryable")),
+                    "error_type": item.get("error_type"),
+                    "error_summary": item.get("error_summary") or "",
+                    "args_preview": item.get("args_preview"),
+                    "result_preview": item.get("result_preview"),
+                }
+            )
+
+        if output_mode in {"stats", "stats_json"}:
+            def _nearest_rank_percentile(values: list[int], percentile: float) -> int:
+                if not values:
+                    return 0
+                rank = max(1, int(round((percentile / 100.0) * len(values))))
+                rank = min(len(values), rank)
+                return values[rank - 1]
+
+            def _stats_row(bucket_label: str, bucket_events: List[Dict[str, Any]]) -> Dict[str, Any]:
+                total = len(bucket_events)
+                failures = sum(1 for event in bucket_events if not event.get("ok"))
+                error_rate = (failures / total) * 100.0 if total else 0.0
+                durations = sorted(
+                    int(event["duration_ms"])
+                    for event in bucket_events
+                    if isinstance(event.get("duration_ms"), int)
+                )
+                p50 = _nearest_rank_percentile(durations, 50) if durations else None
+                p95 = _nearest_rank_percentile(durations, 95) if durations else None
+                return {
+                    "bucket": bucket_label,
+                    "count": total,
+                    "errors": failures,
+                    "error_rate_pct": round(error_rate, 1),
+                    "p50_ms": p50,
+                    "p95_ms": p95,
+                }
+
+            stats_rows: List[Dict[str, Any]] = []
+            if bucket_by == "window":
+                for start in range(0, len(normalized_events), max(1, window_size)):
+                    chunk = normalized_events[start : start + max(1, window_size)]
+                    bucket_label = f"latest_{start + 1}_{start + len(chunk)}"
+                    stats_rows.append(_stats_row(bucket_label, chunk))
+            else:
+                grouped: Dict[str, List[Dict[str, Any]]] = {}
+                for item in normalized_events:
+                    grouped.setdefault(item.get("tool", "unknown"), []).append(item)
+                for tool, events_for_tool in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+                    stats_rows.append(_stats_row(tool, events_for_tool))
+
+            if output_mode == "stats_json":
+                import json
+
+                stats_payload = {
+                    "mode": "stats",
+                    "bucket_by": bucket_by,
+                    "window_size": window_size if bucket_by == "window" else None,
+                    "total_events": len(normalized_events),
+                    "buckets": stats_rows,
+                }
+                return json.dumps(stats_payload, indent=2, ensure_ascii=False)
+
+            lines = [f"🧮 Tool Event Stats (latest {len(normalized_events)})", ""]
+            for row in stats_rows:
+                p50 = f"{row['p50_ms']}ms" if isinstance(row.get("p50_ms"), int) else "-"
+                p95 = f"{row['p95_ms']}ms" if isinstance(row.get("p95_ms"), int) else "-"
+                lines.append(
+                    f"• bucket={row['bucket']}: count={row['count']} "
+                    f"errors={row['errors']} ({row['error_rate_pct']:.1f}%) p50={p50} p95={p95}"
+                )
+            return "\n".join(lines)
+
+        if output_mode == "json":
+            import json
+
+            return json.dumps(normalized_events, indent=2, ensure_ascii=False)
+
+        lines = [f"🧰 Recent Tool Events (latest {len(normalized_events)})", ""]
+        for item in normalized_events:
+            status = "✅" if item.get("ok") else "❌"
+            tool = item.get("tool", "unknown")
+            duration = item.get("duration_ms")
+            duration_str = f"{duration}ms" if isinstance(duration, int) else "-"
+            call_id = item.get("tool_call_id") or "-"
+            summary = item.get("error_summary") or ""
+            suffix = f" — {summary}" if summary else ""
+            lines.append(f"{status} {tool} ({duration_str}) id={call_id}{suffix}")
+
+        latest_failure = next((item for item in normalized_events if not item.get("ok")), None)
+        if latest_failure:
+            tool_value = latest_failure.get("tool") or "unknown"
+            args_value = latest_failure.get("args_preview") or "{}"
+            lines.extend(
+                [
+                    "",
+                    "🧩 Last failure replay hint:",
+                    f"/tool-events errors retryable tool={tool_value}",
+                    f"args={args_value}",
+                ]
+            )
+
+        return "\n".join(lines)
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         lines = [
@@ -1439,6 +1634,7 @@ class GatewayRunner:
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
             "`/rollback [number]` — List or restore filesystem checkpoints",
+            "`/tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json]` — Show recent tool execution events", 
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",

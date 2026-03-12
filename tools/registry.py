@@ -16,9 +16,35 @@ Import chain (circular-import safe):
 
 import json
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+_TOOL_RESULT_KEYS = ("success", "error", "error_type", "retryable", "data", "metrics")
+_TOOL_RESULT_KEY_SET = set(_TOOL_RESULT_KEYS)
+_TOOL_RESULT_SIGNAL_KEYS = {"success", "error", "error_type", "retryable"}
+
+
+def make_tool_result(
+    *,
+    success: bool,
+    error: Optional[str] = None,
+    error_type: Optional[str] = None,
+    retryable: bool = False,
+    data: Any = None,
+    metrics: Optional[dict] = None,
+) -> str:
+    """Return the canonical JSON tool result envelope."""
+    envelope = {
+        "success": bool(success),
+        "error": error if error is None else str(error),
+        "error_type": error_type if error_type is None else str(error_type),
+        "retryable": bool(retryable),
+        "data": data,
+        "metrics": metrics if isinstance(metrics, dict) else {},
+    }
+    return json.dumps(envelope, ensure_ascii=False, default=str)
 
 
 class ToolEntry:
@@ -109,24 +135,184 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _maybe_parse_json(value: Any) -> Any:
+        """Best-effort JSON decode for handler outputs."""
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return value
+        return value
+
+    @staticmethod
+    def _stringify_field(value: Any) -> Optional[str]:
+        """Normalize error-like fields into strings or None."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return str(value)
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        """Normalize bool-like values without relying on raw truthiness alone."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "y", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "n", "off", ""}:
+                return False
+            return default
+        return bool(value)
+
+    @staticmethod
+    def _sanitize_metrics(metrics: Any, tool_name: str, duration_ms: int) -> dict:
+        """Force metrics into a dict and stamp canonical dispatch metadata."""
+        normalized = {}
+        if isinstance(metrics, dict):
+            normalized = {str(key): value for key, value in metrics.items()}
+        normalized["tool_name"] = tool_name
+        normalized["duration_ms"] = max(0, int(duration_ms))
+        return normalized
+
+    @staticmethod
+    def _looks_like_envelope(payload: Any) -> bool:
+        """Detect existing success/error-style tool payloads."""
+        if not isinstance(payload, dict):
+            return False
+        signal_count = len(_TOOL_RESULT_SIGNAL_KEYS.intersection(payload))
+        return "success" in payload or signal_count >= 2
+
+    @staticmethod
+    def _merge_data_with_extras(data: Any, extras: dict) -> Any:
+        """Preserve extra payload keys alongside canonical ``data``."""
+        if not extras:
+            return data
+        if isinstance(data, dict):
+            merged = dict(data)
+            for key, value in extras.items():
+                merged.setdefault(key, value)
+            return merged
+
+        wrapped = {"value": data}
+        for key, value in extras.items():
+            if key not in wrapped:
+                wrapped[key] = value
+                continue
+            suffix = 2
+            conflict_key = f"extra_{key}"
+            while conflict_key in wrapped:
+                conflict_key = f"extra_{key}_{suffix}"
+                suffix += 1
+            wrapped[conflict_key] = value
+        return wrapped
+
+    def validate_tool_result_envelope(self, payload: Any, *, tool_name: str, duration_ms: int) -> dict:
+        """Sanitize arbitrary handler output into the canonical tool envelope."""
+        parsed = self._maybe_parse_json(payload)
+        metrics = self._sanitize_metrics(None, tool_name, duration_ms)
+
+        if not self._looks_like_envelope(parsed):
+            return {
+                "success": True,
+                "error": None,
+                "error_type": None,
+                "retryable": False,
+                "data": parsed,
+                "metrics": metrics,
+            }
+
+        extras = {key: value for key, value in parsed.items() if key not in _TOOL_RESULT_KEY_SET}
+        error = self._stringify_field(parsed.get("error"))
+        error_type = self._stringify_field(parsed.get("error_type"))
+
+        raw_success = parsed.get("success")
+        success_default = error is None
+        if raw_success is None:
+            success = success_default
+        else:
+            success = self._coerce_bool(raw_success, default=success_default)
+
+        data = parsed.get("data")
+        if "data" not in parsed and extras:
+            data = extras
+        elif "data" in parsed and extras:
+            data = self._merge_data_with_extras(data, extras)
+
+        retryable = self._coerce_bool(parsed.get("retryable"), default=False)
+        metrics = self._sanitize_metrics(parsed.get("metrics"), tool_name, duration_ms)
+
+        if success:
+            error = None
+            error_type = None
+            retryable = False
+        else:
+            error = error or "Tool reported failure."
+
+        return {
+            "success": success,
+            "error": error,
+            "error_type": error_type,
+            "retryable": retryable,
+            "data": data,
+            "metrics": metrics,
+        }
+
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
-        * All exceptions are caught and returned as ``{"error": "..."}``
-          for consistent error format.
+        * All outputs are normalized into the canonical tool result envelope.
+        * All exceptions are caught and returned as a JSON string for
+          backward-compatible callers.
         """
         entry = self._tools.get(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return make_tool_result(
+                success=False,
+                error=f"Unknown tool: {name}",
+                error_type="UnknownToolError",
+                retryable=False,
+                data=None,
+                metrics=self._sanitize_metrics(None, name, 0),
+            )
+
+        started_at = time.perf_counter()
         try:
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+
+                raw_result = _run_async(entry.handler(args, **kwargs))
+            else:
+                raw_result = entry.handler(args, **kwargs)
+
+            duration_ms = round((time.perf_counter() - started_at) * 1000)
+            normalized = self.validate_tool_result_envelope(
+                raw_result,
+                tool_name=name,
+                duration_ms=duration_ms,
+            )
+            return make_tool_result(**normalized)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            duration_ms = round((time.perf_counter() - started_at) * 1000)
+            return make_tool_result(
+                success=False,
+                error=f"Tool execution failed: {type(e).__name__}: {e}",
+                error_type=type(e).__name__,
+                retryable=False,
+                data=None,
+                metrics=self._sanitize_metrics(None, name, duration_ms),
+            )
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

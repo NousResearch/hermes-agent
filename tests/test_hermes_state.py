@@ -4,7 +4,7 @@ import time
 import pytest
 from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_state import SCHEMA_VERSION, SessionDB
 
 
 @pytest.fixture()
@@ -167,6 +167,159 @@ class TestMessageStorage:
 # =========================================================================
 # FTS5 search
 # =========================================================================
+
+class TestToolExecutionEvents:
+    def test_append_and_get_recent_tool_execution_events(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        db.append_tool_execution_event(
+            session_id="s1",
+            tool_name="web_search",
+            tool_call_id="call_1",
+            duration_ms=123,
+            success=True,
+            args_preview='{"query":"agents"}',
+            result_preview='{"hits":3}',
+            envelope=True,
+            retryable=False,
+            error_type=None,
+            error_summary="",
+        )
+        db.append_tool_execution_event(
+            session_id="s1",
+            tool_name="browser_click",
+            tool_call_id="call_2",
+            duration_ms=45,
+            success=False,
+            args_preview='{"ref":"@e2"}',
+            result_preview='{"error":"not found"}',
+            envelope=True,
+            retryable=True,
+            error_type="ToolExecutionError",
+            error_summary="not found",
+        )
+
+        events = db.get_recent_tool_execution_events("s1", limit=10)
+        assert len(events) == 2
+
+        newest = events[0]
+        assert newest["tool_name"] == "browser_click"
+        assert newest["tool_call_id"] == "call_2"
+        assert newest["success"] == 0
+        assert newest["retryable"] == 1
+        assert newest["error_type"] == "ToolExecutionError"
+
+        older = events[1]
+        assert older["tool_name"] == "web_search"
+        assert older["duration_ms"] == 123
+
+    def test_get_recent_tool_execution_events_is_scoped_to_session(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+
+        db.append_tool_execution_event(
+            session_id="s1",
+            tool_name="web_search",
+            tool_call_id="c1",
+            duration_ms=10,
+            success=True,
+        )
+        db.append_tool_execution_event(
+            session_id="s2",
+            tool_name="browser_click",
+            tool_call_id="c2",
+            duration_ms=20,
+            success=False,
+        )
+
+        s1_events = db.get_recent_tool_execution_events("s1")
+        assert len(s1_events) == 1
+        assert s1_events[0]["tool_name"] == "web_search"
+
+    def test_get_recent_tool_execution_events_supports_filters(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        db.append_tool_execution_event(
+            session_id="s1",
+            tool_name="web_search",
+            tool_call_id="ok_1",
+            duration_ms=12,
+            success=True,
+            retryable=False,
+        )
+        db.append_tool_execution_event(
+            session_id="s1",
+            tool_name="browser_click",
+            tool_call_id="err_1",
+            duration_ms=34,
+            success=False,
+            retryable=True,
+            error_summary="missing ref",
+        )
+
+        errors = db.get_recent_tool_execution_events("s1", success=False)
+        assert len(errors) == 1
+        assert errors[0]["tool_name"] == "browser_click"
+
+        retryable = db.get_recent_tool_execution_events("s1", retryable=True)
+        assert len(retryable) == 1
+        assert retryable[0]["tool_call_id"] == "err_1"
+
+        browser_only = db.get_recent_tool_execution_events("s1", tool_name="browser_click")
+        assert len(browser_only) == 1
+        assert browser_only[0]["success"] == 0
+
+
+class TestAgentEvents:
+    def test_append_and_get_recent_agent_events(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        db.append_agent_event(
+            session_id="s1",
+            family="memory",
+            event_type="write_gate",
+            task_id="t1",
+            success=True,
+            latency_ms=12,
+            risk_class="low",
+            payload={"decision": "accept", "confidence": 0.91},
+        )
+        db.append_agent_event(
+            session_id="s1",
+            family="delegation",
+            event_type="budget_check",
+            task_id="t2",
+            success=False,
+            latency_ms=2,
+            risk_class="medium",
+            payload={"reason": "child_count_exceeded"},
+        )
+
+        events = db.get_recent_agent_events("s1", limit=10)
+        assert len(events) == 2
+        assert events[0]["family"] == "delegation"
+        assert events[0]["success"] == 0
+        assert events[0]["payload"]["reason"] == "child_count_exceeded"
+        assert events[1]["family"] == "memory"
+        assert events[1]["payload"]["decision"] == "accept"
+
+    def test_agent_event_filters(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_agent_event("s1", "memory", "write_gate", success=True, payload={"decision": "accept"})
+        db.append_agent_event("s1", "memory", "write_gate", success=False, payload={"decision": "reject"})
+        db.append_agent_event("s1", "safety", "approval", success=True, payload={"result": "granted"})
+
+        memory_events = db.get_recent_agent_events("s1", family="memory")
+        assert len(memory_events) == 2
+
+        rejected = db.get_recent_agent_events("s1", family="memory", success=False)
+        assert len(rejected) == 1
+        assert rejected[0]["payload"]["decision"] == "reject"
+
+        approval = db.get_recent_agent_events("s1", event_type="approval")
+        assert len(approval) == 1
+        assert approval[0]["family"] == "safety"
+
 
 class TestFTS5Search:
     def test_search_finds_content(self, db):
@@ -625,7 +778,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 4
+        assert version == SCHEMA_VERSION
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -681,12 +834,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v4
+        # Open with SessionDB — should migrate to latest schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 4
+        assert cursor.fetchone()[0] == SCHEMA_VERSION
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

@@ -1,0 +1,25 @@
+{
+  "suite": "smoke",
+  "version": "v1",
+  "holdout_task_ids": ["agentic-1"],
+  "tasks": [
+    {
+      "task_id": "coding-1",
+      "lane": "coding",
+      "prompt": "Return the word FIXED",
+      "expected": "FIXED"
+    },
+    {
+      "task_id": "terminal-1",
+      "lane": "terminal",
+      "prompt": "Return READY and include shell-safe guidance",
+      "expected": "READY"
+    },
+    {
+      "task_id": "agentic-1",
+      "lane": "agentic",
+      "prompt": "Summarize a two-step plan and include PLAN",
+      "expected": "PLAN"
+    }
+  ]
+}

@@ -638,8 +638,16 @@ delegation:
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
 #
-# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
-# honcho: {}
+# Hermes-specific runtime overrides (optional — most config comes from ~/.honcho/config.json):
+# honcho:
+#   fail_open: true        # Keep replying if Honcho is down; queue sync for retry
+#   retry_attempts: 2      # Additional retries per Honcho prefetch/sync call
+#   tool_events:
+#     enabled: true        # Sync compact structured tool events into Honcho
+#     max_result_chars: 240  # Clip per-event result preview to control token overhead
+#   max_pending_sync: 200         # Bound queued user/assistant turn sync backlog
+#   max_pending_tool_events: 400  # Bound queued tool-event backlog
+#   flush_batch_size: 25          # Replay at most this many queued items per cycle
 
 # =============================================================================
 # Display

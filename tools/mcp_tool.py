@@ -797,6 +797,21 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     return future.result(timeout=timeout)
 
 
+def _run_on_mcp_loop_safe(coro, timeout: float = 30):
+    """Run coro on MCP loop and always close the coroutine object.
+
+    This avoids unawaited-coroutine warnings when tests monkeypatch
+    ``_run_on_mcp_loop`` and do not drive the coroutine.
+    """
+    try:
+        return _run_on_mcp_loop(coro, timeout=timeout)
+    finally:
+        try:
+            coro.close()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -881,8 +896,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(block.text)
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop_safe(coro, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -924,8 +940,9 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 resources.append(entry)
             return json.dumps({"resources": resources})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop_safe(coro, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
@@ -966,8 +983,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
                     parts.append(f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop_safe(coro, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
@@ -1013,8 +1031,9 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                 prompts.append(entry)
             return json.dumps({"prompts": prompts})
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop_safe(coro, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
@@ -1066,8 +1085,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 resp["description"] = result.description
             return json.dumps(resp)
 
+        coro = _call()
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop_safe(coro, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,

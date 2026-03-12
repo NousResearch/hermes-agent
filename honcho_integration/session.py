@@ -127,8 +127,11 @@ class HonchoSessionManager:
 
         # Configure peer observation settings
         from honcho.session import SessionPeerConfig
-        user_config = SessionPeerConfig(observe_me=True, observe_others=True)
-        ai_config = SessionPeerConfig(observe_me=False, observe_others=True)
+        # Docs-aligned defaults for a stateful assistant profile:
+        # - user peer observes itself only
+        # - assistant peer observes both user and itself
+        user_config = SessionPeerConfig(observe_me=True, observe_others=False)
+        ai_config = SessionPeerConfig(observe_me=True, observe_others=True)
 
         session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
 

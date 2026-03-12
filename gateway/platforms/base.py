@@ -620,16 +620,26 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
     
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
-        
+
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
         """
         try:
             while True:
-                await self.send_typing(chat_id)
+                try:
+                    # Newer adapters accept metadata (e.g., Telegram thread_id),
+                    # older ones don't. Try metadata first, then fall back.
+                    await self.send_typing(chat_id, metadata=metadata)  # type: ignore[misc]
+                except TypeError:
+                    await self.send_typing(chat_id)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes

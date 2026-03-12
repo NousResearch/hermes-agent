@@ -2036,8 +2036,328 @@ class HermesCLI:
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Config File: {config_path} {config_status}")
+        if self.agent and hasattr(self.agent, "get_honcho_status"):
+            hstatus = self.agent.get_honcho_status()
+            print()
+            print("  -- Honcho Runtime --")
+            print(f"  Enabled:      {hstatus.get('enabled')}")
+            print(f"  Session Key:  {hstatus.get('session_key') or '-'}")
+            print(f"  Mode:         {'fail-open' if hstatus.get('fail_open') else 'strict'}")
+            print(f"  Retries:      {hstatus.get('retry_attempts')}")
+            print(f"  Tool Events:  {hstatus.get('tool_events_enabled')}")
+            print(f"  Queue:        sync={hstatus.get('pending_sync', 0)}/{hstatus.get('max_pending_sync', '-')}, tool_events={hstatus.get('pending_tool_events', 0)}/{hstatus.get('max_pending_tool_events', '-')} (batch={hstatus.get('flush_batch_size', '-')})")
         print()
-    
+
+    def _handle_honcho_command(self, cmd: str) -> None:
+        """Handle /honcho status and runtime controls."""
+        if not self.agent or not hasattr(self.agent, "get_honcho_status"):
+            print("  Honcho runtime is unavailable (agent not initialized yet).")
+            print("  Send one message first, then run /honcho.")
+            return
+
+        parts = cmd.strip().split()
+        subcmd = parts[1].lower() if len(parts) > 1 else "status"
+
+        if subcmd in {"status", "show"}:
+            status = self.agent.get_honcho_status()
+            mode = "fail-open" if status.get("fail_open") else "strict"
+            telemetry = status.get("telemetry") or {}
+            print("\n  -- Honcho Runtime --")
+            print(f"  Enabled:      {status.get('enabled')}")
+            print(f"  Session Key:  {status.get('session_key') or '-'}")
+            print(f"  Mode:         {mode}")
+            print(f"  Retries:      {status.get('retry_attempts')}")
+            print(f"  Tool Events:  {status.get('tool_events_enabled')}")
+            print(f"  Queue:        sync={status.get('pending_sync', 0)}/{status.get('max_pending_sync', '-')}, tool_events={status.get('pending_tool_events', 0)}/{status.get('max_pending_tool_events', '-')} (batch={status.get('flush_batch_size', '-')})")
+            print(f"  Dropped:      sync={telemetry.get('dropped_sync', 0)}, tool_events={telemetry.get('dropped_tool_events', 0)}")
+            print(f"  Last Error:   {status.get('last_error') or '-'}")
+            print()
+            return
+
+        if subcmd in {"flush", "drain"}:
+            if not hasattr(self.agent, "flush_honcho_queues"):
+                print("  This agent runtime does not support manual Honcho flush yet.")
+                return
+            status = self.agent.flush_honcho_queues()
+            print(
+                "  Honcho flush complete: "
+                f"replayed sync={status.get('flushed_sync', 0)}, "
+                f"tool_events={status.get('flushed_tool_events', 0)}; "
+                f"pending sync={status.get('pending_sync', 0)}, "
+                f"tool_events={status.get('pending_tool_events', 0)}"
+            )
+            return
+
+        if subcmd in {"strict", "fail-open", "fail_open"}:
+            fail_open = subcmd != "strict"
+            status = self.agent.set_honcho_runtime_mode(fail_open=fail_open)
+            save_config_value("honcho.fail_open", fail_open)
+            mode = "fail-open" if status.get("fail_open") else "strict"
+            print(f"  Honcho mode set to {mode} (saved).")
+            return
+
+        if subcmd in {"retries", "retry"}:
+            if len(parts) < 3:
+                print("  Usage: /honcho retries <count>")
+                return
+            try:
+                retry_attempts = max(0, int(parts[2]))
+            except ValueError:
+                print("  Retry count must be an integer >= 0.")
+                return
+            status = self.agent.set_honcho_runtime_mode(retry_attempts=retry_attempts)
+            save_config_value("honcho.retry_attempts", retry_attempts)
+            print(f"  Honcho retries set to {status.get('retry_attempts')} (saved).")
+            return
+
+        if subcmd in {"tool-events", "tool_events"}:
+            if len(parts) < 3:
+                print("  Usage: /honcho tool-events <on|off>")
+                return
+            enabled = parts[2].lower() in {"on", "true", "1", "yes", "enable", "enabled"}
+            status = self.agent.set_honcho_runtime_mode(tool_events_enabled=enabled)
+            save_config_value("honcho.tool_events.enabled", enabled)
+            state = "enabled" if status.get("tool_events_enabled") else "disabled"
+            print(f"  Honcho tool events {state} (saved).")
+            return
+
+        print("  Usage:")
+        print("    /honcho                  # Show runtime status")
+        print("    /honcho strict           # Disable fail-open (strict mode)")
+        print("    /honcho fail-open        # Enable fail-open mode")
+        print("    /honcho retries <count>  # Set retry attempts")
+        print("    /honcho tool-events on|off")
+        print("    /honcho flush            # Replay one batch of queued writes now")
+
+    def _handle_tool_events_command(self, cmd: str) -> None:
+        """Handle /tool-events with optional filters, stats, and JSON export."""
+        parts = cmd.strip().split()
+        tokens = parts[1:]
+
+        limit = 10
+        tool_name = None
+        errors_only = False
+        retryable_only = False
+        bucket_by = "tool"  # tool | window
+        window_size = 5
+        json_requested = False
+        export_requested = False
+        stats_requested = False
+        output_mode = "text"  # text | json | export | stats | stats_json
+
+        for token in tokens:
+            lower = token.lower()
+            if lower.isdigit():
+                limit = max(1, min(200, int(lower)))
+            elif lower in {"errors", "error", "errors-only", "failed", "failures"}:
+                errors_only = True
+            elif lower in {"retryable", "retry"}:
+                retryable_only = True
+            elif lower in {"json", "--json"}:
+                json_requested = True
+            elif lower == "export":
+                export_requested = True
+            elif lower in {"stats", "summary"}:
+                stats_requested = True
+            elif lower.startswith("tool="):
+                tool_name = token.split("=", 1)[1].strip()
+            elif lower.startswith("tool:"):
+                tool_name = token.split(":", 1)[1].strip()
+            elif lower.startswith("bucket=") or lower.startswith("group="):
+                bucket_value = token.split("=", 1)[1].strip().lower()
+                if bucket_value in {"tool", "tools", "by_tool"}:
+                    bucket_by = "tool"
+                elif bucket_value in {"window", "windows", "chunk", "chunks"}:
+                    bucket_by = "window"
+                else:
+                    print("  Usage: /tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json|export]")
+                    return
+            elif lower.startswith("window="):
+                try:
+                    window_size = max(1, min(200, int(token.split("=", 1)[1].strip())))
+                except ValueError:
+                    print("  Usage: /tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json|export]")
+                    return
+            else:
+                print("  Usage: /tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json|export]")
+                return
+
+        if stats_requested and export_requested:
+            print("  Usage: /tool-events [limit] [errors] [retryable] [tool=<name>] [stats] [bucket=tool|window] [window=<n>] [json|export]")
+            return
+
+        if stats_requested:
+            output_mode = "stats_json" if json_requested else "stats"
+        elif export_requested:
+            output_mode = "export"
+        elif json_requested:
+            output_mode = "json"
+
+        if tool_name == "":
+            tool_name = None
+
+        events = []
+        requested_ok = False if errors_only else None
+        requested_retryable = True if retryable_only else None
+
+        if self.agent and hasattr(self.agent, "get_recent_tool_execution_events"):
+            try:
+                events = self.agent.get_recent_tool_execution_events(
+                    limit=limit,
+                    tool_name=tool_name,
+                    ok=requested_ok,
+                    retryable=requested_retryable,
+                )
+            except TypeError:
+                # Backward compatibility if an older agent object is injected.
+                events = self.agent.get_recent_tool_execution_events(limit=limit)
+            except Exception as err:
+                print(f"  Failed to load live tool events: {err}")
+
+        if not events and getattr(self, "_session_db", None):
+            try:
+                events = self._session_db.get_recent_tool_execution_events(
+                    self.session_id,
+                    limit=limit,
+                    tool_name=tool_name,
+                    success=requested_ok,
+                    retryable=requested_retryable,
+                )
+            except TypeError:
+                events = self._session_db.get_recent_tool_execution_events(self.session_id, limit=limit)
+            except Exception as err:
+                print(f"  Failed to load persisted tool events: {err}")
+
+        normalized_events = []
+        for event in events:
+            ok_value = event.get("ok")
+            if ok_value is None:
+                ok_value = bool(event.get("success"))
+
+            ts = event.get("ts")
+            if not ts and event.get("timestamp"):
+                try:
+                    ts = datetime.fromtimestamp(float(event["timestamp"])).strftime("%Y-%m-%dT%H:%M:%SZ")
+                except (TypeError, ValueError, OSError):
+                    ts = "-"
+
+            normalized_events.append(
+                {
+                    "ts": ts or "-",
+                    "tool": event.get("tool") or event.get("tool_name") or "unknown",
+                    "tool_call_id": event.get("tool_call_id") or "-",
+                    "duration_ms": event.get("duration_ms"),
+                    "ok": bool(ok_value),
+                    "envelope": bool(event.get("envelope", False)),
+                    "retryable": bool(event.get("retryable", False)),
+                    "error_type": event.get("error_type"),
+                    "error_summary": event.get("error_summary") or "",
+                    "args_preview": event.get("args_preview"),
+                    "result_preview": event.get("result_preview"),
+                }
+            )
+
+        if not normalized_events:
+            print("  Tool event inspection unavailable or no matching events captured yet.")
+            return
+
+        if output_mode in {"stats", "stats_json"}:
+            def _nearest_rank_percentile(values: list[int], percentile: float) -> int:
+                if not values:
+                    return 0
+                rank = max(1, int(round((percentile / 100.0) * len(values))))
+                rank = min(len(values), rank)
+                return values[rank - 1]
+
+            def _stats_row(bucket_label: str, bucket_events: list[dict[str, Any]]) -> dict[str, Any]:
+                total = len(bucket_events)
+                failures = sum(1 for e in bucket_events if not e.get("ok"))
+                error_rate = (failures / total) * 100.0 if total else 0.0
+                durations = sorted(
+                    int(e["duration_ms"])
+                    for e in bucket_events
+                    if isinstance(e.get("duration_ms"), int)
+                )
+                p50 = _nearest_rank_percentile(durations, 50) if durations else None
+                p95 = _nearest_rank_percentile(durations, 95) if durations else None
+                return {
+                    "bucket": bucket_label,
+                    "count": total,
+                    "errors": failures,
+                    "error_rate_pct": round(error_rate, 1),
+                    "p50_ms": p50,
+                    "p95_ms": p95,
+                }
+
+            stats_rows: list[dict[str, Any]] = []
+            if bucket_by == "window":
+                for start in range(0, len(normalized_events), max(1, window_size)):
+                    chunk = normalized_events[start : start + max(1, window_size)]
+                    bucket_label = f"latest_{start + 1}_{start + len(chunk)}"
+                    stats_rows.append(_stats_row(bucket_label, chunk))
+            else:
+                grouped: dict[str, list[dict[str, Any]]] = {}
+                for event in normalized_events:
+                    grouped.setdefault(event["tool"], []).append(event)
+                for tool, events_for_tool in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+                    stats_rows.append(_stats_row(tool, events_for_tool))
+
+            if output_mode == "stats_json":
+                stats_payload = {
+                    "mode": "stats",
+                    "bucket_by": bucket_by,
+                    "window_size": window_size if bucket_by == "window" else None,
+                    "total_events": len(normalized_events),
+                    "buckets": stats_rows,
+                }
+                print(json.dumps(stats_payload, indent=2, ensure_ascii=False))
+                return
+
+            print(f"\n  -- Tool Event Stats (latest {len(normalized_events)}) --")
+            for row in stats_rows:
+                p50 = f"{row['p50_ms']}ms" if isinstance(row.get("p50_ms"), int) else "-"
+                p95 = f"{row['p95_ms']}ms" if isinstance(row.get("p95_ms"), int) else "-"
+                print(
+                    f"  - bucket={row['bucket']}: count={row['count']} "
+                    f"errors={row['errors']} ({row['error_rate_pct']:.1f}%) "
+                    f"p50={p50} p95={p95}"
+                )
+            return
+
+        if output_mode in {"json", "export"}:
+            payload = json.dumps(normalized_events, indent=2, ensure_ascii=False)
+            if output_mode == "json":
+                print(payload)
+                return
+
+            session_label = getattr(self, "session_id", "session") or "session"
+            safe_session_label = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in session_label)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = Path.cwd() / f"tool-events-{safe_session_label}-{ts}.json"
+            out_path.write_text(payload, encoding="utf-8")
+            print(f"  Exported {len(normalized_events)} tool events to: {out_path}")
+            return
+
+        print(f"\n  -- Tool Execution Events (latest {len(normalized_events)}) --")
+        for idx, event in enumerate(normalized_events, start=1):
+            status = "ok" if event["ok"] else "error"
+            duration = event.get("duration_ms")
+            duration_str = f"{duration}ms" if isinstance(duration, int) else "-"
+            summary = event.get("error_summary") or ""
+            suffix = f" — {summary}" if summary else ""
+            print(
+                f"  {idx:>2}. [{status}] {event['tool']} ({duration_str}) "
+                f"id={event['tool_call_id']} @ {event['ts']}{suffix}"
+            )
+
+        latest_failure = next((event for event in normalized_events if not event.get("ok")), None)
+        if latest_failure:
+            tool_value = latest_failure.get("tool") or "unknown"
+            args_value = latest_failure.get("args_preview") or "{}"
+            print("\n  Last failure replay hint:")
+            print(f"    /tool-events errors retryable tool={tool_value}")
+            print(f"    args={args_value}")
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -2503,6 +2823,10 @@ class HermesCLI:
             self.show_toolsets()
         elif cmd_lower == "/config":
             self.show_config()
+        elif cmd_lower.startswith("/honcho"):
+            self._handle_honcho_command(cmd_original)
+        elif cmd_lower.startswith("/tool-events"):
+            self._handle_tool_events_command(cmd_original)
         elif cmd_lower == "/clear":
             # Flush memories before clearing
             if self.agent and self.conversation_history:

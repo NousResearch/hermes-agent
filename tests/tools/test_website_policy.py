@@ -93,6 +93,57 @@ def test_default_config_exposes_website_blocklist_shape():
     assert website_blocklist["shared_files"] == []
 
 
+def test_load_website_blocklist_uses_enabled_default_when_section_missing(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({"display": {"tool_progress": "all"}}, sort_keys=False), encoding="utf-8")
+
+    policy = load_website_blocklist(config_path)
+
+    assert policy == {"enabled": True, "rules": []}
+
+
+def test_load_website_blocklist_raises_clean_error_for_invalid_domains_type(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": "example.com",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.domains must be a list"):
+        load_website_blocklist(config_path)
+
+
+def test_load_website_blocklist_raises_clean_error_for_invalid_shared_files_type(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "shared_files": "community-blocklist.txt",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.shared_files must be a list"):
+        load_website_blocklist(config_path)
+
+
 def test_load_website_blocklist_raises_clean_error_for_malformed_yaml(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("security: [oops\n", encoding="utf-8")

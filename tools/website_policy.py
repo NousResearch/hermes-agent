@@ -16,6 +16,13 @@ from urllib.parse import urlparse
 import yaml
 
 
+_DEFAULT_WEBSITE_BLOCKLIST = {
+    "enabled": True,
+    "domains": [],
+    "shared_files": [],
+}
+
+
 def _get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
@@ -70,7 +77,7 @@ def _iter_blocklist_file_rules(path: Path) -> List[str]:
 def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     config_path = config_path or _get_default_config_path()
     if not config_path.exists():
-        return {}
+        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
@@ -78,32 +85,49 @@ def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
         raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
     except OSError as exc:
         raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
+    if not isinstance(config, dict):
+        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+
     security = config.get("security", {})
+    if security is None:
+        security = {}
     if not isinstance(security, dict):
-        return {}
+        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+
     website_blocklist = security.get("website_blocklist", {})
+    if website_blocklist is None:
+        website_blocklist = {}
     if not isinstance(website_blocklist, dict):
-        return {}
-    return website_blocklist
+        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+
+    policy = dict(_DEFAULT_WEBSITE_BLOCKLIST)
+    policy.update(website_blocklist)
+    return policy
 
 
 def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]:
     config_path = config_path or _get_default_config_path()
     policy = _load_policy_config(config_path)
-    if not policy:
-        return {"enabled": False, "rules": []}
+
+    raw_domains = policy.get("domains", []) or []
+    if not isinstance(raw_domains, list):
+        raise WebsitePolicyError("security.website_blocklist.domains must be a list")
+
+    raw_shared_files = policy.get("shared_files", []) or []
+    if not isinstance(raw_shared_files, list):
+        raise WebsitePolicyError("security.website_blocklist.shared_files must be a list")
 
     enabled = bool(policy.get("enabled", True))
     rules: List[Dict[str, str]] = []
     seen: set[Tuple[str, str]] = set()
 
-    for raw_rule in policy.get("domains", []) or []:
+    for raw_rule in raw_domains:
         normalized = _normalize_rule(raw_rule)
         if normalized and ("config", normalized) not in seen:
             rules.append({"pattern": normalized, "source": "config"})
             seen.add(("config", normalized))
 
-    for shared_file in policy.get("shared_files", []) or []:
+    for shared_file in raw_shared_files:
         if not isinstance(shared_file, str) or not shared_file.strip():
             continue
         path = Path(shared_file).expanduser()

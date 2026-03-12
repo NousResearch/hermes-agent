@@ -11,6 +11,9 @@ import asyncio
 import logging
 import os
 import re
+import time
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -92,24 +95,41 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+@dataclass
+class _GroupHistoryEntry:
+    """A single message recorded from a group chat."""
+    sender: str
+    body: str
+    timestamp: float
+    message_id: str = ""
+
+
+# Group history limits (mirrors Openclaw defaults)
+_GROUP_HISTORY_LIMIT = 50
+_MAX_HISTORY_KEYS = 1000
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
-    
+
     Handles:
     - Receiving messages from users and groups
     - Sending responses with Telegram markdown
     - Forum topics (thread_id support)
     - Media messages
     """
-    
+
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Per-group message history for context injection
+        # Key: "chat_id" or "chat_id:thread_id"
+        self._group_histories: Dict[str, deque] = {}
     
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
@@ -665,12 +685,128 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return text
     
+    def _history_key(self, message: Message) -> str:
+        """Build a history key from chat_id and optional thread_id."""
+        key = str(message.chat.id)
+        if message.message_thread_id:
+            key += f":{message.message_thread_id}"
+        return key
+
+    def _record_group_message(self, message: Message) -> None:
+        """Record a group message into the history buffer."""
+        chat = message.chat
+        if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return
+
+        key = self._history_key(message)
+
+        # LRU eviction: drop oldest history key if we have too many groups
+        if key not in self._group_histories and len(self._group_histories) >= _MAX_HISTORY_KEYS:
+            oldest_key = next(iter(self._group_histories))
+            del self._group_histories[oldest_key]
+
+        if key not in self._group_histories:
+            self._group_histories[key] = deque(maxlen=_GROUP_HISTORY_LIMIT)
+
+        user = message.from_user
+        sender = user.full_name if user else "Unknown"
+        if user and user.username:
+            sender += f" (@{user.username})"
+
+        body = message.text or message.caption or ""
+        if not body:
+            # Summarise non-text media briefly
+            if message.photo:
+                body = "[photo]"
+            elif message.video:
+                body = "[video]"
+            elif message.voice:
+                body = "[voice message]"
+            elif message.sticker:
+                body = f"[sticker: {message.sticker.emoji or ''}]"
+            elif message.document:
+                body = f"[file: {message.document.file_name or 'document'}]"
+            else:
+                body = "[media]"
+
+        self._group_histories[key].append(_GroupHistoryEntry(
+            sender=sender,
+            body=body,
+            timestamp=message.date.timestamp() if message.date else time.time(),
+            message_id=str(message.message_id),
+        ))
+
+    def _build_group_context(self, message: Message) -> str:
+        """Build a context string from recent group messages, then flush the buffer.
+
+        Returns an empty string for DMs or if there's no history.
+        """
+        chat = message.chat
+        if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return ""
+
+        key = self._history_key(message)
+        history = self._group_histories.get(key)
+        if not history:
+            return ""
+
+        lines = ["[Chat messages since your last reply — for context]"]
+        for entry in history:
+            ts = time.strftime("%H:%M", time.localtime(entry.timestamp))
+            lines.append(f"[{ts}] {entry.sender}: {entry.body}")
+        lines.append("")
+        lines.append("[Current message — respond to this]")
+
+        # Flush history so next response starts fresh
+        history.clear()
+
+        return "\n".join(lines) + "\n"
+
+    def _is_bot_relevant_in_group(self, message: Message) -> bool:
+        """Check if the bot should respond to a group message.
+
+        Returns True if the bot was @mentioned, replied to, or the message
+        is a command. Returns True for all DMs.
+        """
+        chat = message.chat
+        if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return True  # Always respond in DMs/channels
+
+        # Check if message is a reply to the bot
+        if message.reply_to_message and message.reply_to_message.from_user:
+            if self._bot and message.reply_to_message.from_user.id == self._bot.id:
+                return True
+
+        # Check if bot is @mentioned in entities
+        if message.entities and self._bot:
+            bot_username = (self._bot.username or "").lower()
+            for entity in message.entities:
+                if entity.type == "mention" and message.text:
+                    mention = message.text[entity.offset:entity.offset + entity.length].lstrip("@").lower()
+                    if mention == bot_username:
+                        return True
+                elif entity.type == "text_mention" and entity.user:
+                    if entity.user.id == self._bot.id:
+                        return True
+
+        return False
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages."""
         if not update.message or not update.message.text:
             return
-        
+
+        if not self._is_bot_relevant_in_group(update.message):
+            # Not relevant, but record for context
+            self._record_group_message(update.message)
+            return
+
+        # Build group context from buffered messages, then record this one too
+        group_context = self._build_group_context(update.message)
+
         event = self._build_message_event(update.message, MessageType.TEXT)
+        if group_context:
+            event.text = group_context + event.text
         await self.handle_message(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -716,11 +852,17 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = "\n".join(parts)
         await self.handle_message(event)
 
-    async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: C901
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
-        
+
+        if not self._is_bot_relevant_in_group(update.message):
+            self._record_group_message(update.message)
+            return
+
+        group_context = self._build_group_context(update.message)
+
         msg = update.message
         
         # Determine media type
@@ -740,11 +882,15 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.DOCUMENT
         
         event = self._build_message_event(msg, msg_type)
-        
+
         # Add caption as text
         if msg.caption:
             event.text = msg.caption
-        
+
+        # Inject group context (collected from non-mention messages)
+        if group_context:
+            event.text = group_context + (event.text or "")
+
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)

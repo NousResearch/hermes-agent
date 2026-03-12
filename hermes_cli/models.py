@@ -31,6 +31,19 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    "nous": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "gpt-5.4",
+        "gemini-3-flash",
+        "gemini-3.0-pro-preview",
+        "deepseek-v3.2",
+    ],
+    "openai-codex": [
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
+    ],
     "zai": [
         "glm-5",
         "glm-4.7",

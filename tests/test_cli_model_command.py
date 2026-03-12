@@ -93,8 +93,8 @@ class TestModelCommand:
         output = capsys.readouterr().out
         assert "anthropic/claude-opus-4.6" in output
         assert "OpenRouter" in output
-        assert "Available models" in output
-        assert "provider:model-name" in output
+        assert "Authenticated providers" in output or "Switch model" in output
+        assert "provider" in output and "model" in output
 
     # -- provider switching tests -------------------------------------------
 

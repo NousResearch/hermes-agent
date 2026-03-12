@@ -55,6 +55,8 @@ metadata:
   hermes:
     tags: [python, automation]
     category: devops
+    fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
+    requires_toolsets: [terminal]   # Optional — conditional activation (see below)
 ---
 
 # Skill Title
@@ -89,6 +91,30 @@ platforms: [macos, linux]     # macOS and Linux
 ```
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
+
+### Conditional Activation (Fallback Skills)
+
+Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.
+
+```yaml
+metadata:
+  hermes:
+    fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
+    requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
+    fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
+    requires_tools: [terminal]        # Show ONLY when these specific tools are available
+```
+
+| Field | Behavior |
+|-------|----------|
+| `fallback_for_toolsets` | Skill is **hidden** when the listed toolsets are available. Shown when they're missing. |
+| `fallback_for_tools` | Same, but checks individual tools instead of toolsets. |
+| `requires_toolsets` | Skill is **hidden** when the listed toolsets are unavailable. Shown when they're present. |
+| `requires_tools` | Same, but checks individual tools. |
+
+**Example:** The built-in `duckduckgo-search` skill uses `fallback_for_toolsets: [web]`. When you have `FIRECRAWL_API_KEY` set, the web toolset is available and the agent uses `web_search` — the DuckDuckGo skill stays hidden. If the API key is missing, the web toolset is unavailable and the DuckDuckGo skill automatically appears as a fallback.
+
+Skills without any conditional fields behave exactly as before — they're always shown.
 
 ## Skill Directory Structure
 

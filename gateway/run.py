@@ -187,6 +187,30 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_gateway_model() -> str:
+    """Read model from env/config — mirrors the resolution in _run_agent_sync.
+
+    Without this, temporary AIAgent instances (memory flush, /compress) fall
+    back to the hardcoded default ("anthropic/claude-opus-4.6") which fails
+    when the active provider is openai-codex.
+    """
+    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+    try:
+        import yaml as _y
+        _cfg_path = _hermes_home / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _cfg = _y.safe_load(_f) or {}
+            _model_cfg = _cfg.get("model", {})
+            if isinstance(_model_cfg, str):
+                model = _model_cfg
+            elif isinstance(_model_cfg, dict):
+                model = _model_cfg.get("default", model)
+    except Exception:
+        pass
+    return model
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -258,8 +282,14 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 return
 
+            # Resolve model from config — AIAgent's default is OpenRouter-
+            # formatted ("anthropic/claude-opus-4.6") which fails when the
+            # active provider is openai-codex.
+            model = _resolve_gateway_model()
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
+                model=model,
                 max_iterations=8,
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
@@ -1106,6 +1136,7 @@ class GatewayRunner:
                             if len(_hyg_msgs) >= 4:
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
+                                    model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
                                     enabled_toolsets=["memory"],
@@ -1998,21 +2029,8 @@ class GatewayRunner:
                 )
                 return
 
-            # Read model from config (same as _run_agent)
-            model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
-            try:
-                import yaml as _y
-                _cfg_path = _hermes_home / "config.yaml"
-                if _cfg_path.exists():
-                    with open(_cfg_path, encoding="utf-8") as _f:
-                        _cfg = _y.safe_load(_f) or {}
-                    _model_cfg = _cfg.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
-            except Exception:
-                pass
+            # Read model from config via shared helper
+            model = _resolve_gateway_model()
 
             # Determine toolset (same logic as _run_agent)
             default_toolset_map = {
@@ -2169,6 +2187,9 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 return "No provider configured -- cannot compress."
 
+            # Resolve model from config (same reason as memory flush above).
+            model = _resolve_gateway_model()
+
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
                 for m in history
@@ -2179,6 +2200,7 @@ class GatewayRunner:
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
+                model=model,
                 max_iterations=4,
                 quiet_mode=True,
                 enabled_toolsets=["memory"],
@@ -3093,21 +3115,7 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
-
-            try:
-                import yaml as _y
-                _cfg_path = _hermes_home / "config.yaml"
-                if _cfg_path.exists():
-                    with open(_cfg_path, encoding="utf-8") as _f:
-                        _cfg = _y.safe_load(_f) or {}
-                    _model_cfg = _cfg.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
-            except Exception:
-                pass
+            model = _resolve_gateway_model()
 
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()

@@ -17,6 +17,7 @@ import platform
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -230,6 +231,12 @@ DEFAULT_CONFIG = {
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.
     "timezone": "",
+
+    # Discord platform settings (gateway mode)
+    "discord": {
+        "require_mention": True,       # Require @mention to respond in server channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+    },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
@@ -974,8 +981,19 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
     
-    with open(env_path, 'w', **write_kw) as f:
-        f.writelines(lines)
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    try:
+        with os.fdopen(fd, 'w', **write_kw) as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     _secure_file(env_path)
 
     # Restrict .env permissions to owner-only (contains API keys)

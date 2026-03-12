@@ -1327,29 +1327,23 @@ def discover_mcp_tools() -> List[str]:
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
-        transport_desc = cfg.get("url", f'{cfg.get("command", "?")} {" ".join(cfg.get("args", [])[:2])}')
-        try:
-            registered = await _discover_and_register_server(name, cfg)
-            transport_type = "HTTP" if "url" in cfg else "stdio"
-            return registered
-        except Exception as exc:
-            logger.warning(
-                "Failed to connect to MCP server '%s': %s",
-                name, exc,
-            )
-            return []
+        return await _discover_and_register_server(name, cfg)
 
     async def _discover_all():
         nonlocal failed_count
+        server_names = list(new_servers.keys())
         # Connect to all servers in PARALLEL
         results = await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
             return_exceptions=True,
         )
-        for result in results:
+        for name, result in zip(server_names, results):
             if isinstance(result, Exception):
                 failed_count += 1
-                logger.warning("MCP discovery error: %s", result)
+                logger.warning(
+                    "Failed to connect to MCP server '%s': %s",
+                    name, result,
+                )
             elif isinstance(result, list):
                 all_tools.extend(result)
             else:

@@ -1008,41 +1008,61 @@ def setup_model_provider(config: dict):
     elif provider_idx == 8:  # Anthropic
         selected_provider = "anthropic"
         print()
-        print_header("Anthropic API Key or Claude Code Credentials")
+        print_header("Anthropic Authentication")
         from hermes_cli.auth import PROVIDER_REGISTRY
         pconfig = PROVIDER_REGISTRY["anthropic"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info("Accepts API keys (sk-ant-api-*) or setup-tokens (sk-ant-oat-*)")
-        print_info("Get an API key at: https://console.anthropic.com/")
-        print_info("Or run 'claude setup-token' to get a setup-token from Claude Code")
-        print()
 
         # Check for Claude Code credential auto-discovery
         from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
         cc_creds = read_claude_code_credentials()
         if cc_creds and is_claude_code_token_valid(cc_creds):
             print_success("Found valid Claude Code credentials (~/.claude/.credentials.json)")
-            if not prompt_yes_no("Use Claude Code credentials? (You can also enter an API key)", True):
+            if prompt_yes_no("Use these credentials?", True):
+                print_success("Using Claude Code subscription credentials")
+            else:
                 cc_creds = None
 
         existing_key = get_env_value("ANTHROPIC_API_KEY") or get_env_value("ANTHROPIC_TOKEN")
-        if cc_creds and is_claude_code_token_valid(cc_creds):
-            # Use Claude Code creds — no need to prompt for a key
-            print_success("Using Claude Code subscription credentials")
-        elif existing_key:
-            print_info(f"Current: {existing_key[:12]}... (configured)")
-            if prompt_yes_no("Update key?", False):
-                api_key = prompt("Enter Anthropic API key or setup-token", password=True)
-                if api_key:
-                    save_env_value("ANTHROPIC_API_KEY", api_key)
-                    print_success("Anthropic key saved")
-        else:
-            api_key = prompt("Enter Anthropic API key or setup-token", password=True)
-            if api_key:
-                save_env_value("ANTHROPIC_API_KEY", api_key)
-                print_success("Anthropic key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
+
+        if not (cc_creds and is_claude_code_token_valid(cc_creds)):
+            if existing_key:
+                print_info(f"Current credentials: {existing_key[:12]}...")
+                if not prompt_yes_no("Update credentials?", False):
+                    existing_key = None  # skip — keep existing
+
+            if not existing_key and not (cc_creds and is_claude_code_token_valid(cc_creds)):
+                auth_choices = [
+                    "Claude Pro/Max subscription (setup-token)",
+                    "Anthropic API key (pay-per-token)",
+                ]
+                auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
+
+                if auth_idx == 0:
+                    print()
+                    print_info("To get a setup-token from your Claude subscription:")
+                    print_info("  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+                    print_info("  2. Run:                  claude setup-token")
+                    print_info("  3. Open the URL it prints in your browser")
+                    print_info("  4. Log in and click \"Authorize\"")
+                    print_info("  5. Paste the auth code back into Claude Code")
+                    print_info("  6. Copy the resulting sk-ant-oat01-... token")
+                    print()
+                    token = prompt("Paste setup-token here", password=True)
+                    if token:
+                        save_env_value("ANTHROPIC_API_KEY", token)
+                        print_success("Setup-token saved")
+                    else:
+                        print_warning("Skipped — agent won't work without credentials")
+                else:
+                    print()
+                    print_info("Get an API key at: https://console.anthropic.com/settings/keys")
+                    print()
+                    api_key = prompt("API key (sk-ant-api03-...)", password=True)
+                    if api_key:
+                        save_env_value("ANTHROPIC_API_KEY", api_key)
+                        print_success("API key saved")
+                    else:
+                        print_warning("Skipped — agent won't work without credentials")
 
         # Clear custom endpoint vars if switching
         if existing_custom:

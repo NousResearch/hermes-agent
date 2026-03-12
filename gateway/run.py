@@ -988,6 +988,10 @@ class GatewayRunner:
             elif user_text in ("no", "n", "deny", "cancel", "nope"):
                 self._pending_approvals.pop(session_key_preview)
                 return "❌ Command denied."
+            elif user_text in ("full", "show", "view", "show full", "view full"):
+                # Show full command without consuming the approval
+                cmd = self._pending_approvals[session_key_preview]["command"]
+                return f"Full command:\n\n```\n{cmd}\n```\n\nReply yes/no to approve or deny."
             # If it's not clearly an approval/denial, fall through to normal processing
         
         # Get or create session

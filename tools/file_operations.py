@@ -77,7 +77,7 @@ WRITE_DENIED_PREFIXES = [
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(path))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:

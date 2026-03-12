@@ -108,14 +108,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
-    "nous-api": ProviderConfig(
-        id="nous-api",
-        name="Nous Portal (API Key)",
-        auth_type="api_key",
-        inference_base_url="https://inference-api.nousresearch.com/v1",
-        api_key_env_vars=("NOUS_API_KEY",),
-        base_url_env_var="NOUS_BASE_URL",
-    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -521,7 +513,6 @@ def resolve_provider(
 
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
-        "nous_api": "nous-api", "nousapi": "nous-api", "nous-portal-api": "nous-api",
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
@@ -1680,8 +1671,12 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
 
 
 def _save_model_choice(model_id: str) -> None:
-    """Save the selected model to config.yaml and .env."""
-    from hermes_cli.config import save_config, load_config, save_env_value
+    """Save the selected model to config.yaml (single source of truth).
+
+    The model is stored in config.yaml only — NOT in .env.  This avoids
+    conflicts in multi-agent setups where env vars would stomp each other.
+    """
+    from hermes_cli.config import save_config, load_config
 
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
@@ -1690,7 +1685,6 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
-    save_env_value("LLM_MODEL", model_id)
 
 
 def login_command(args) -> None:

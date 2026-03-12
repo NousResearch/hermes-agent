@@ -348,15 +348,15 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         assert store._generate_session_key(source) == build_session_key(source)
 
-    def test_telegram_dm_omits_chat_id(self):
-        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+    def test_telegram_dm_includes_chat_id(self):
+        """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="99",
             chat_type="dm",
         )
         key = build_session_key(source)
-        assert key == "agent:main:telegram:dm"
+        assert key == "agent:main:telegram:dm:99"
 
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""

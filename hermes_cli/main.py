@@ -746,6 +746,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -764,6 +765,7 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
@@ -832,6 +834,8 @@ def cmd_model(args):
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
+    elif selected_provider == "anthropic":
+        _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
     elif selected_provider in ("zai", "minimax", "minimax-cn"):
@@ -1551,6 +1555,88 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
+
+
+def _model_flow_anthropic(config, current_model=""):
+    """Flow for Anthropic provider — API key, setup-token, or Claude Code creds."""
+    import os
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    pconfig = PROVIDER_REGISTRY["anthropic"]
+
+    # Check for existing credentials (env vars or Claude Code)
+    existing_key = (
+        get_env_value("ANTHROPIC_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY", "")
+        or get_env_value("ANTHROPIC_TOKEN")
+        or os.getenv("ANTHROPIC_TOKEN", "")
+    )
+
+    # Check for Claude Code auto-discovery
+    cc_available = False
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        cc_creds = read_claude_code_credentials()
+        if cc_creds and is_claude_code_token_valid(cc_creds):
+            cc_available = True
+    except Exception:
+        pass
+
+    if existing_key:
+        print(f"  Anthropic key: {existing_key[:12]}... ✓")
+    elif cc_available:
+        print("  Claude Code credentials: ✓ (auto-detected from ~/.claude/.credentials.json)")
+    else:
+        print("No Anthropic credentials found.")
+        try:
+            new_key = input("ANTHROPIC_API_KEY (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not new_key:
+            print("Cancelled.")
+            return
+        save_env_value("ANTHROPIC_API_KEY", new_key)
+        print("API key saved.")
+    print()
+
+    # Model selection
+    model_list = _PROVIDER_MODELS.get("anthropic", [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        # Clear custom endpoint if set
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        _save_model_choice(selected)
+
+        # Update config with provider
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "anthropic"
+        model["base_url"] = pconfig.inference_base_url
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
 

@@ -438,7 +438,7 @@ class AIAgent:
                 }
             elif "api.kimi.com" in effective_base.lower():
                 client_kwargs["default_headers"] = {
-                    "User-Agent": "KimiCLI/1.0",
+                    "User-Agent": "KimiCLI/1.3",
                 }
         else:
             # No explicit creds — use the centralized provider router

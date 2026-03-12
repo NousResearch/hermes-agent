@@ -450,23 +450,45 @@ async def set_provider(p: ProviderIn):
 
 # ── Platforms ─────────────────────────────────────────────────
 class PlatformIn(BaseModel):
-    telegram_token:   str  = ""
-    telegram_channel: str  = ""
-    telegram_allowed: str  = ""
-    discord_token:    str  = ""
-    discord_channel:  str  = ""
-    discord_allowed:  str  = ""
-    slack_bot_token:  str  = ""
-    slack_app_token:  str  = ""
-    slack_channel:    str  = ""
-    slack_allowed:    str  = ""
-    whatsapp_enabled: bool = False
-    whatsapp_mode:    str  = "bot"
-    whatsapp_allowed: str  = ""
-    allow_all_users:  bool = False
-    session_mode:     str  = "both"
-    session_idle_min: int  = 1440
-    session_at_hour:  int  = 4
+    telegram_token:          str  = ""
+    telegram_channel:        str  = ""
+    telegram_allowed:        str  = ""
+    discord_token:           str  = ""
+    discord_channel:         str  = ""
+    discord_allowed:         str  = ""
+    discord_require_mention: bool = False
+    discord_free_channels:   str  = ""
+    discord_allow_bots:      bool = False
+    slack_bot_token:         str  = ""
+    slack_app_token:         str  = ""
+    slack_channel:           str  = ""
+    slack_allowed:           str  = ""
+    whatsapp_enabled:        bool = False
+    whatsapp_mode:           str  = "bot"
+    whatsapp_allowed:        str  = ""
+    # Signal (new)
+    signal_url:              str  = ""
+    signal_account:          str  = ""
+    signal_ignore_stories:   bool = True
+    signal_home_channel:     str  = ""
+    signal_allowed:          str  = ""
+    # Email (new)
+    email_address:           str  = ""
+    email_password:          str  = ""
+    email_imap_host:         str  = ""
+    email_imap_port:         int  = 993
+    email_smtp_host:         str  = ""
+    email_smtp_port:         int  = 587
+    email_poll_interval:     int  = 15
+    email_allowed:           str  = ""
+    # Home Assistant (new)
+    hass_token:              str  = ""
+    hass_url:                str  = ""
+    # Gateway-wide
+    allow_all_users:         bool = False
+    session_mode:            str  = "both"
+    session_idle_min:        int  = 1440
+    session_at_hour:         int  = 4
 
 @app.get("/api/platforms")
 async def get_platforms():
@@ -475,46 +497,89 @@ async def get_platforms():
     def m(k): v = env.get(k, ""); return _mask(v) if v else ""
     sr = cfg.get("session_reset", {})
     return {
-        "telegram_token_set":     bool(env.get("TELEGRAM_BOT_TOKEN")),
-        "telegram_token_masked":  m("TELEGRAM_BOT_TOKEN"),
-        "telegram_channel":       env.get("TELEGRAM_HOME_CHANNEL", ""),
-        "telegram_allowed":       env.get("TELEGRAM_ALLOWED_USERS", ""),
-        "discord_token_set":      bool(env.get("DISCORD_BOT_TOKEN")),
-        "discord_token_masked":   m("DISCORD_BOT_TOKEN"),
-        "discord_channel":        env.get("DISCORD_HOME_CHANNEL", ""),
-        "discord_allowed":        env.get("DISCORD_ALLOWED_USERS", ""),
-        "slack_bot_token_set":    bool(env.get("SLACK_BOT_TOKEN")),
-        "slack_bot_token_masked": m("SLACK_BOT_TOKEN"),
-        "slack_app_token_set":    bool(env.get("SLACK_APP_TOKEN")),
-        "slack_app_token_masked": m("SLACK_APP_TOKEN"),
-        "slack_channel":          env.get("SLACK_HOME_CHANNEL", ""),
-        "slack_allowed":          env.get("SLACK_ALLOWED_USERS", ""),
-        "whatsapp_enabled":       _bool_env(env, "WHATSAPP_ENABLED"),
-        "whatsapp_mode":          env.get("WHATSAPP_MODE", "bot"),
-        "whatsapp_allowed":       env.get("WHATSAPP_ALLOWED_USERS", ""),
-        "allow_all_users":        _bool_env(env, "GATEWAY_ALLOW_ALL_USERS"),
-        "session_mode":           sr.get("mode", "both"),
-        "session_idle_min":       sr.get("idle_minutes", 1440),
-        "session_at_hour":        sr.get("at_hour", 4),
+        "telegram_token_set":        bool(env.get("TELEGRAM_BOT_TOKEN")),
+        "telegram_token_masked":     m("TELEGRAM_BOT_TOKEN"),
+        "telegram_channel":          env.get("TELEGRAM_HOME_CHANNEL", ""),
+        "telegram_allowed":          env.get("TELEGRAM_ALLOWED_USERS", ""),
+        "discord_token_set":         bool(env.get("DISCORD_BOT_TOKEN")),
+        "discord_token_masked":      m("DISCORD_BOT_TOKEN"),
+        "discord_channel":           env.get("DISCORD_HOME_CHANNEL", ""),
+        "discord_allowed":           env.get("DISCORD_ALLOWED_USERS", ""),
+        "discord_require_mention":   _bool_env(env, "DISCORD_REQUIRE_MENTION"),
+        "discord_free_channels":     env.get("DISCORD_FREE_RESPONSE_CHANNELS", ""),
+        "discord_allow_bots":        _bool_env(env, "DISCORD_ALLOW_BOTS"),
+        "slack_bot_token_set":       bool(env.get("SLACK_BOT_TOKEN")),
+        "slack_bot_token_masked":    m("SLACK_BOT_TOKEN"),
+        "slack_app_token_set":       bool(env.get("SLACK_APP_TOKEN")),
+        "slack_app_token_masked":    m("SLACK_APP_TOKEN"),
+        "slack_channel":             env.get("SLACK_HOME_CHANNEL", ""),
+        "slack_allowed":             env.get("SLACK_ALLOWED_USERS", ""),
+        "whatsapp_enabled":          _bool_env(env, "WHATSAPP_ENABLED"),
+        "whatsapp_mode":             env.get("WHATSAPP_MODE", "bot"),
+        "whatsapp_allowed":          env.get("WHATSAPP_ALLOWED_USERS", ""),
+        # Signal
+        "signal_url":                env.get("SIGNAL_HTTP_URL", ""),
+        "signal_account":            env.get("SIGNAL_ACCOUNT", ""),
+        "signal_ignore_stories":     _bool_env(env, "SIGNAL_IGNORE_STORIES", True),
+        "signal_home_channel":       env.get("SIGNAL_HOME_CHANNEL", ""),
+        "signal_allowed":            env.get("SIGNAL_GROUP_ALLOWED_USERS", ""),
+        # Email
+        "email_address":             env.get("EMAIL_ADDRESS", ""),
+        "email_imap_host":           env.get("EMAIL_IMAP_HOST", ""),
+        "email_imap_port":           int(env.get("EMAIL_IMAP_PORT", 993)),
+        "email_smtp_host":           env.get("EMAIL_SMTP_HOST", ""),
+        "email_smtp_port":           int(env.get("EMAIL_SMTP_PORT", 587)),
+        "email_poll_interval":       int(env.get("EMAIL_POLL_INTERVAL", 15)),
+        "email_allowed":             env.get("EMAIL_ALLOWED_USERS", ""),
+        # Home Assistant
+        "hass_url":                  env.get("HASS_URL", ""),
+        "hass_token_set":            bool(env.get("HASS_TOKEN")),
+        # Gateway-wide
+        "allow_all_users":           _bool_env(env, "GATEWAY_ALLOW_ALL_USERS"),
+        "session_mode":              sr.get("mode", "both"),
+        "session_idle_min":          sr.get("idle_minutes", 1440),
+        "session_at_hour":           sr.get("at_hour", 4),
     }
 
 @app.post("/api/platforms")
 async def set_platforms(p: PlatformIn):
     updates: dict = {}
-    if p.telegram_token:   updates["TELEGRAM_BOT_TOKEN"]       = p.telegram_token
-    if p.telegram_channel: updates["TELEGRAM_HOME_CHANNEL"]     = p.telegram_channel
-    updates["TELEGRAM_ALLOWED_USERS"] = p.telegram_allowed
-    if p.discord_token:    updates["DISCORD_BOT_TOKEN"]         = p.discord_token
-    if p.discord_channel:  updates["DISCORD_HOME_CHANNEL"]      = p.discord_channel
-    updates["DISCORD_ALLOWED_USERS"] = p.discord_allowed
-    if p.slack_bot_token:  updates["SLACK_BOT_TOKEN"]           = p.slack_bot_token
-    if p.slack_app_token:  updates["SLACK_APP_TOKEN"]           = p.slack_app_token
-    if p.slack_channel:    updates["SLACK_HOME_CHANNEL"]        = p.slack_channel
-    updates["SLACK_ALLOWED_USERS"] = p.slack_allowed
-    updates["WHATSAPP_ENABLED"]      = "true" if p.whatsapp_enabled else "false"
-    updates["WHATSAPP_MODE"]         = p.whatsapp_mode
-    updates["WHATSAPP_ALLOWED_USERS"] = p.whatsapp_allowed
-    updates["GATEWAY_ALLOW_ALL_USERS"] = "true" if p.allow_all_users else "false"
+    if p.telegram_token:         updates["TELEGRAM_BOT_TOKEN"]              = p.telegram_token
+    if p.telegram_channel:       updates["TELEGRAM_HOME_CHANNEL"]           = p.telegram_channel
+    updates["TELEGRAM_ALLOWED_USERS"]          = p.telegram_allowed
+    if p.discord_token:          updates["DISCORD_BOT_TOKEN"]               = p.discord_token
+    if p.discord_channel:        updates["DISCORD_HOME_CHANNEL"]            = p.discord_channel
+    updates["DISCORD_ALLOWED_USERS"]           = p.discord_allowed
+    updates["DISCORD_REQUIRE_MENTION"]         = "true" if p.discord_require_mention else "false"
+    updates["DISCORD_FREE_RESPONSE_CHANNELS"]  = p.discord_free_channels
+    updates["DISCORD_ALLOW_BOTS"]              = "true" if p.discord_allow_bots else "false"
+    if p.slack_bot_token:        updates["SLACK_BOT_TOKEN"]                 = p.slack_bot_token
+    if p.slack_app_token:        updates["SLACK_APP_TOKEN"]                 = p.slack_app_token
+    if p.slack_channel:          updates["SLACK_HOME_CHANNEL"]              = p.slack_channel
+    updates["SLACK_ALLOWED_USERS"]             = p.slack_allowed
+    updates["WHATSAPP_ENABLED"]                = "true" if p.whatsapp_enabled else "false"
+    updates["WHATSAPP_MODE"]                   = p.whatsapp_mode
+    updates["WHATSAPP_ALLOWED_USERS"]          = p.whatsapp_allowed
+    # Signal
+    if p.signal_url:             updates["SIGNAL_HTTP_URL"]                 = p.signal_url
+    if p.signal_account:         updates["SIGNAL_ACCOUNT"]                  = p.signal_account
+    updates["SIGNAL_IGNORE_STORIES"]           = "true" if p.signal_ignore_stories else "false"
+    if p.signal_home_channel:    updates["SIGNAL_HOME_CHANNEL"]             = p.signal_home_channel
+    updates["SIGNAL_GROUP_ALLOWED_USERS"]      = p.signal_allowed
+    # Email
+    if p.email_address:          updates["EMAIL_ADDRESS"]                   = p.email_address
+    if p.email_password:         updates["EMAIL_PASSWORD"]                  = p.email_password
+    if p.email_imap_host:        updates["EMAIL_IMAP_HOST"]                 = p.email_imap_host
+    updates["EMAIL_IMAP_PORT"]                 = str(p.email_imap_port)
+    if p.email_smtp_host:        updates["EMAIL_SMTP_HOST"]                 = p.email_smtp_host
+    updates["EMAIL_SMTP_PORT"]                 = str(p.email_smtp_port)
+    updates["EMAIL_POLL_INTERVAL"]             = str(p.email_poll_interval)
+    updates["EMAIL_ALLOWED_USERS"]             = p.email_allowed
+    # Home Assistant
+    if p.hass_token:             updates["HASS_TOKEN"]                      = p.hass_token
+    if p.hass_url:               updates["HASS_URL"]                        = p.hass_url
+    # Gateway-wide
+    updates["GATEWAY_ALLOW_ALL_USERS"]         = "true" if p.allow_all_users else "false"
     patch_env(**updates)
     cfg = read_config()
     cfg["session_reset"] = {
@@ -528,28 +593,34 @@ async def set_platforms(p: PlatformIn):
 
 # ── Agent behavior ────────────────────────────────────────────
 class AgentIn(BaseModel):
-    personality:            str   = "helpful"
-    reasoning_effort:       str   = "xhigh"
-    verbose:                bool  = False
-    tool_progress:          str   = "all"
-    display_compact:        bool  = False
-    max_turns:              int   = 60
-    human_delay_mode:       str   = "off"
-    human_delay_min_ms:     int   = 800
-    human_delay_max_ms:     int   = 2500
-    memory_enabled:         bool  = True
-    user_profile_enabled:   bool  = True
-    memory_char_limit:      int   = 2200
-    user_char_limit:        int   = 1375
-    nudge_interval:         int   = 10
-    tts_provider:           str   = "edge"
-    tts_edge_voice:         str   = "en-US-AriaNeural"
-    tts_el_voice_id:        str   = "pNInz6obpgDQGcFmaJgB"
-    tts_el_model:           str   = "eleven_multilingual_v2"
-    tts_oai_model:          str   = "gpt-4o-mini-tts"
-    tts_oai_voice:          str   = "alloy"
-    stt_enabled:            bool  = True
-    stt_model:              str   = "whisper-1"
+    personality:                   str   = "helpful"
+    reasoning_effort:              str   = "xhigh"
+    verbose:                       bool  = False
+    tool_progress:                 str   = "all"
+    display_compact:               bool  = False
+    display_skin:                  str   = "default"
+    bell_on_complete:              bool  = False
+    show_reasoning:                bool  = False
+    bg_process_notifications:      str   = "all"
+    max_turns:                     int   = 60
+    worktree:                      bool  = False
+    human_delay_mode:              str   = "off"
+    human_delay_min_ms:            int   = 800
+    human_delay_max_ms:            int   = 2500
+    memory_enabled:                bool  = True
+    user_profile_enabled:          bool  = True
+    memory_char_limit:             int   = 2200
+    user_char_limit:               int   = 1375
+    nudge_interval:                int   = 10
+    skills_nudge_interval:         int   = 15
+    tts_provider:                  str   = "edge"
+    tts_edge_voice:                str   = "en-US-AriaNeural"
+    tts_el_voice_id:               str   = "pNInz6obpgDQGcFmaJgB"
+    tts_el_model:                  str   = "eleven_multilingual_v2"
+    tts_oai_model:                 str   = "gpt-4o-mini-tts"
+    tts_oai_voice:                 str   = "alloy"
+    stt_enabled:                   bool  = True
+    stt_model:                     str   = "whisper-1"
 
 @app.get("/api/agent")
 async def get_agent():
@@ -560,29 +631,36 @@ async def get_agent():
     mem  = cfg.get("memory",      {})
     tts  = cfg.get("tts",         {})
     stt  = cfg.get("stt",         {})
+    sk  = cfg.get("skills", {})
     return {
-        "personality":          d.get("personality",     "helpful"),
-        "reasoning_effort":     a.get("reasoning_effort","xhigh"),
-        "verbose":              a.get("verbose",          False),
-        "tool_progress":        d.get("tool_progress",   "all"),
-        "display_compact":      d.get("compact",          False),
-        "max_turns":            a.get("max_turns",        60),
-        "human_delay_mode":     hd.get("mode",           "off"),
-        "human_delay_min_ms":   hd.get("min_ms",          800),
-        "human_delay_max_ms":   hd.get("max_ms",         2500),
-        "memory_enabled":       mem.get("memory_enabled",       True),
-        "user_profile_enabled": mem.get("user_profile_enabled", True),
-        "memory_char_limit":    mem.get("memory_char_limit",    2200),
-        "user_char_limit":      mem.get("user_char_limit",      1375),
-        "nudge_interval":       mem.get("nudge_interval",       10),
-        "tts_provider":         tts.get("provider",            "edge"),
-        "tts_edge_voice":       tts.get("edge",        {}).get("voice",    "en-US-AriaNeural"),
-        "tts_el_voice_id":      tts.get("elevenlabs",  {}).get("voice_id", "pNInz6obpgDQGcFmaJgB"),
-        "tts_el_model":         tts.get("elevenlabs",  {}).get("model_id", "eleven_multilingual_v2"),
-        "tts_oai_model":        tts.get("openai",      {}).get("model",    "gpt-4o-mini-tts"),
-        "tts_oai_voice":        tts.get("openai",      {}).get("voice",    "alloy"),
-        "stt_enabled":          stt.get("enabled",     True),
-        "stt_model":            stt.get("model",       "whisper-1"),
+        "personality":               d.get("personality",              "helpful"),
+        "reasoning_effort":          a.get("reasoning_effort",         "xhigh"),
+        "verbose":                   a.get("verbose",                   False),
+        "tool_progress":             d.get("tool_progress",            "all"),
+        "display_compact":           d.get("compact",                   False),
+        "display_skin":              d.get("skin",                      "default"),
+        "bell_on_complete":          d.get("bell_on_complete",          False),
+        "show_reasoning":            d.get("show_reasoning",            False),
+        "bg_process_notifications":  d.get("background_process_notifications", "all"),
+        "max_turns":                 a.get("max_turns",                 60),
+        "worktree":                  cfg.get("worktree",                False),
+        "human_delay_mode":          hd.get("mode",                    "off"),
+        "human_delay_min_ms":        hd.get("min_ms",                   800),
+        "human_delay_max_ms":        hd.get("max_ms",                  2500),
+        "memory_enabled":            mem.get("memory_enabled",          True),
+        "user_profile_enabled":      mem.get("user_profile_enabled",    True),
+        "memory_char_limit":         mem.get("memory_char_limit",       2200),
+        "user_char_limit":           mem.get("user_char_limit",         1375),
+        "nudge_interval":            mem.get("nudge_interval",          10),
+        "skills_nudge_interval":     sk.get("creation_nudge_interval",  15),
+        "tts_provider":              tts.get("provider",               "edge"),
+        "tts_edge_voice":            tts.get("edge",       {}).get("voice",    "en-US-AriaNeural"),
+        "tts_el_voice_id":           tts.get("elevenlabs", {}).get("voice_id", "pNInz6obpgDQGcFmaJgB"),
+        "tts_el_model":              tts.get("elevenlabs", {}).get("model_id", "eleven_multilingual_v2"),
+        "tts_oai_model":             tts.get("openai",     {}).get("model",    "gpt-4o-mini-tts"),
+        "tts_oai_voice":             tts.get("openai",     {}).get("voice",    "alloy"),
+        "stt_enabled":               stt.get("enabled",    True),
+        "stt_model":                 stt.get("model",      "whisper-1"),
     }
 
 @app.post("/api/agent")
@@ -594,10 +672,15 @@ async def save_agent(a: AgentIn):
         "reasoning_effort": a.reasoning_effort,
     })
     cfg.setdefault("display", {}).update({
-        "personality":   a.personality,
-        "tool_progress": a.tool_progress,
-        "compact":       a.display_compact,
+        "personality":                     a.personality,
+        "tool_progress":                   a.tool_progress,
+        "compact":                         a.display_compact,
+        "skin":                            a.display_skin,
+        "bell_on_complete":                a.bell_on_complete,
+        "show_reasoning":                  a.show_reasoning,
+        "background_process_notifications": a.bg_process_notifications,
     })
+    cfg["worktree"] = a.worktree
     cfg.setdefault("human_delay", {}).update({
         "mode":   a.human_delay_mode,
         "min_ms": a.human_delay_min_ms,
@@ -610,6 +693,7 @@ async def save_agent(a: AgentIn):
         "user_char_limit":      a.user_char_limit,
         "nudge_interval":       a.nudge_interval,
     })
+    cfg.setdefault("skills", {}).update({"creation_nudge_interval": a.skills_nudge_interval})
     cfg.setdefault("tts", {}).update({
         "provider":    a.tts_provider,
         "edge":        {"voice": a.tts_edge_voice},
@@ -630,6 +714,7 @@ class TerminalIn(BaseModel):
     docker_image:         str  = "nikolaik/python-nodejs:python3.11-nodejs20"
     modal_image:          str  = "nikolaik/python-nodejs:python3.11-nodejs20"
     singularity_image:    str  = "docker://nikolaik/python-nodejs:python3.11-nodejs20"
+    daytona_image:        str  = "nikolaik/python-nodejs:python3.11-nodejs20"
     container_cpu:        int  = 1
     container_memory:     int  = 5120
     container_disk:       int  = 51200
@@ -642,7 +727,8 @@ class TerminalIn(BaseModel):
 
 @app.get("/api/terminal")
 async def get_terminal():
-    t = read_config().get("terminal", {})
+    t   = read_config().get("terminal", {})
+    env = read_env()
     return {
         "backend":              t.get("backend",              "local"),
         "cwd":                  t.get("cwd",                  "."),
@@ -651,6 +737,8 @@ async def get_terminal():
         "docker_image":         t.get("docker_image",         "nikolaik/python-nodejs:python3.11-nodejs20"),
         "modal_image":          t.get("modal_image",          "nikolaik/python-nodejs:python3.11-nodejs20"),
         "singularity_image":    t.get("singularity_image",    "docker://nikolaik/python-nodejs:python3.11-nodejs20"),
+        "daytona_image":        t.get("daytona_image",        "nikolaik/python-nodejs:python3.11-nodejs20"),
+        "daytona_key_set":      bool(env.get("DAYTONA_API_KEY")),
         "container_cpu":        t.get("container_cpu",        1),
         "container_memory":     t.get("container_memory",     5120),
         "container_disk":       t.get("container_disk",       51200),
@@ -678,6 +766,13 @@ async def save_terminal(t: TerminalIn):
             "container_memory":     t.container_memory,
             "container_disk":       t.container_disk,
             "container_persistent": t.container_persistent,
+        })
+    elif t.backend == "daytona":
+        term.update({
+            "daytona_image":        t.daytona_image,
+            "container_cpu":        t.container_cpu,
+            "container_memory":     t.container_memory,
+            "container_disk":       min(t.container_disk, 10240),
         })
     elif t.backend == "modal":
         term["modal_image"] = t.modal_image
@@ -717,6 +812,7 @@ class ToolsIn(BaseModel):
     tinker_key:               str  = ""
     wandb_key:                str  = ""
     rl_api_url:               str  = "http://localhost:8080"
+    daytona_key:              str  = ""
 
 @app.get("/api/tools")
 async def get_tools():
@@ -741,6 +837,7 @@ async def get_tools():
         "tinker_key_set":              isset("TINKER_API_KEY"),
         "wandb_key_set":               isset("WANDB_API_KEY"),
         "rl_api_url":                  env.get("RL_API_URL", "http://localhost:8080"),
+        "daytona_key_set":             isset("DAYTONA_API_KEY"),
     }
 
 @app.post("/api/tools")
@@ -764,22 +861,43 @@ async def save_tools(t: ToolsIn):
     if t.tinker_key:            updates["TINKER_API_KEY"]              = t.tinker_key
     if t.wandb_key:             updates["WANDB_API_KEY"]               = t.wandb_key
     updates["RL_API_URL"] = t.rl_api_url
+    if t.daytona_key:           updates["DAYTONA_API_KEY"]             = t.daytona_key
     patch_env(**updates)
     return {"ok": True}
 
 
 # ── Advanced ──────────────────────────────────────────────────
 class AdvancedIn(BaseModel):
-    compression_enabled:   bool              = True
-    compression_threshold: float             = 0.85
-    compression_model:     str               = "google/gemini-flash-1.5"
-    toolsets:              str               = "all"
-    web_debug:             bool              = False
-    vision_debug:          bool              = False
-    moa_debug:             bool              = False
-    image_debug:           bool              = False
-    oauth_trace:           bool              = False
-    mcp_servers:           Dict[str, Any]    = {}
+    compression_enabled:       bool           = True
+    compression_threshold:     float          = 0.50
+    compression_model:         str            = "google/gemini-flash-1.5"
+    compression_provider:      str            = "auto"
+    toolsets:                  str            = "all"
+    platform_toolsets:         Dict[str, str] = {}
+    # Auxiliary models
+    aux_vision_provider:       str            = "auto"
+    aux_vision_model:          str            = ""
+    aux_web_provider:          str            = "auto"
+    aux_web_model:             str            = ""
+    # Delegation
+    delegation_max_iter:       int            = 50
+    delegation_toolsets:       str            = "terminal,file,web"
+    delegation_model:          str            = ""
+    delegation_provider:       str            = ""
+    # Code execution
+    code_exec_timeout:         int            = 300
+    code_exec_max_calls:       int            = 50
+    # Quick commands
+    quick_commands:            Dict[str, Any] = {}
+    # Debug
+    web_debug:                 bool           = False
+    vision_debug:              bool           = False
+    moa_debug:                 bool           = False
+    image_debug:               bool           = False
+    oauth_trace:               bool           = False
+    dump_requests:             bool           = False
+    # MCP
+    mcp_servers:               Dict[str, Any] = {}
 
 @app.get("/api/advanced")
 async def get_advanced():
@@ -787,37 +905,98 @@ async def get_advanced():
     env  = read_env()
     comp = cfg.get("compression", {})
     ts   = cfg.get("toolsets", ["all"])
+    aux  = cfg.get("auxiliary", {})
+    dlg  = cfg.get("delegation", {})
+    ce   = cfg.get("code_execution", {})
+    pts  = cfg.get("platform_toolsets", {})
+    def _pts_str(k): v = pts.get(k, []); return ",".join(v) if isinstance(v, list) else str(v)
+    dlg_ts = dlg.get("default_toolsets", ["terminal", "file", "web"])
     return {
-        "compression_enabled":   comp.get("enabled",       True),
-        "compression_threshold": comp.get("threshold",     0.85),
-        "compression_model":     comp.get("summary_model", "google/gemini-flash-1.5"),
-        "toolsets":              ",".join(ts) if isinstance(ts, list) else str(ts),
-        "web_debug":             _bool_env(env, "WEB_TOOLS_DEBUG"),
-        "vision_debug":          _bool_env(env, "VISION_TOOLS_DEBUG"),
-        "moa_debug":             _bool_env(env, "MOA_TOOLS_DEBUG"),
-        "image_debug":           _bool_env(env, "IMAGE_TOOLS_DEBUG"),
-        "oauth_trace":           _bool_env(env, "HERMES_OAUTH_TRACE"),
-        "mcp_servers":           cfg.get("mcp_servers", {}),
+        "compression_enabled":     comp.get("enabled",          True),
+        "compression_threshold":   comp.get("threshold",         0.50),
+        "compression_model":       comp.get("summary_model",    "google/gemini-flash-1.5"),
+        "compression_provider":    comp.get("summary_provider", "auto"),
+        "toolsets":                ",".join(ts) if isinstance(ts, list) else str(ts),
+        "platform_toolsets": {
+            "cli":           _pts_str("cli"),
+            "telegram":      _pts_str("telegram"),
+            "discord":       _pts_str("discord"),
+            "whatsapp":      _pts_str("whatsapp"),
+            "slack":         _pts_str("slack"),
+            "signal":        _pts_str("signal"),
+            "homeassistant": _pts_str("homeassistant"),
+        },
+        "aux_vision_provider":     aux.get("vision",      {}).get("provider", "auto"),
+        "aux_vision_model":        aux.get("vision",      {}).get("model",    ""),
+        "aux_web_provider":        aux.get("web_extract", {}).get("provider", "auto"),
+        "aux_web_model":           aux.get("web_extract", {}).get("model",    ""),
+        "delegation_max_iter":     dlg.get("max_iterations",     50),
+        "delegation_toolsets":     ",".join(dlg_ts) if isinstance(dlg_ts, list) else str(dlg_ts),
+        "delegation_model":        dlg.get("model",               ""),
+        "delegation_provider":     dlg.get("provider",            ""),
+        "code_exec_timeout":       ce.get("timeout",              300),
+        "code_exec_max_calls":     ce.get("max_tool_calls",       50),
+        "quick_commands":          cfg.get("quick_commands",       {}),
+        "web_debug":               _bool_env(env, "WEB_TOOLS_DEBUG"),
+        "vision_debug":            _bool_env(env, "VISION_TOOLS_DEBUG"),
+        "moa_debug":               _bool_env(env, "MOA_TOOLS_DEBUG"),
+        "image_debug":             _bool_env(env, "IMAGE_TOOLS_DEBUG"),
+        "oauth_trace":             _bool_env(env, "HERMES_OAUTH_TRACE"),
+        "dump_requests":           _bool_env(env, "HERMES_DUMP_REQUESTS"),
+        "mcp_servers":             cfg.get("mcp_servers", {}),
     }
 
 @app.post("/api/advanced")
 async def save_advanced(a: AdvancedIn):
     cfg = read_config()
     cfg.setdefault("compression", {}).update({
-        "enabled":       a.compression_enabled,
-        "threshold":     a.compression_threshold,
-        "summary_model": a.compression_model,
+        "enabled":          a.compression_enabled,
+        "threshold":        a.compression_threshold,
+        "summary_model":    a.compression_model,
+        "summary_provider": a.compression_provider,
     })
     ts_raw = [x.strip() for x in a.toolsets.split(",") if x.strip()]
-    cfg["toolsets"]    = ts_raw if ts_raw else ["all"]
-    cfg["mcp_servers"] = a.mcp_servers
+    cfg["toolsets"] = ts_raw if ts_raw else ["all"]
+
+    # Platform toolsets
+    def _split(s: str): return [x.strip() for x in s.split(",") if x.strip()]
+    pts: dict = {}
+    for plat in ("cli", "telegram", "discord", "whatsapp", "slack", "signal", "homeassistant"):
+        v = a.platform_toolsets.get(plat, "")
+        if v: pts[plat] = _split(v)
+    if pts: cfg["platform_toolsets"] = pts
+
+    # Auxiliary models
+    cfg["auxiliary"] = {
+        "vision":      {"provider": a.aux_vision_provider, "model": a.aux_vision_model},
+        "web_extract": {"provider": a.aux_web_provider,    "model": a.aux_web_model},
+    }
+
+    # Delegation
+    dlg_ts = [x.strip() for x in a.delegation_toolsets.split(",") if x.strip()]
+    cfg["delegation"] = {
+        "max_iterations":   a.delegation_max_iter,
+        "default_toolsets": dlg_ts if dlg_ts else ["terminal", "file", "web"],
+    }
+    if a.delegation_model:    cfg["delegation"]["model"]    = a.delegation_model
+    if a.delegation_provider: cfg["delegation"]["provider"] = a.delegation_provider
+
+    # Code execution
+    cfg["code_execution"] = {
+        "timeout":        a.code_exec_timeout,
+        "max_tool_calls": a.code_exec_max_calls,
+    }
+
+    cfg["quick_commands"] = a.quick_commands
+    cfg["mcp_servers"]    = a.mcp_servers
     save_config(cfg)
     patch_env(
-        WEB_TOOLS_DEBUG    = "true" if a.web_debug    else "false",
-        VISION_TOOLS_DEBUG = "true" if a.vision_debug else "false",
-        MOA_TOOLS_DEBUG    = "true" if a.moa_debug    else "false",
-        IMAGE_TOOLS_DEBUG  = "true" if a.image_debug  else "false",
-        HERMES_OAUTH_TRACE = "true" if a.oauth_trace  else "false",
+        WEB_TOOLS_DEBUG       = "true" if a.web_debug       else "false",
+        VISION_TOOLS_DEBUG    = "true" if a.vision_debug    else "false",
+        MOA_TOOLS_DEBUG       = "true" if a.moa_debug       else "false",
+        IMAGE_TOOLS_DEBUG     = "true" if a.image_debug     else "false",
+        HERMES_OAUTH_TRACE    = "true" if a.oauth_trace     else "false",
+        HERMES_DUMP_REQUESTS  = "true" if a.dump_requests   else "false",
     )
     return {"ok": True}
 

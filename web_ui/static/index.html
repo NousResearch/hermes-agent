@@ -270,8 +270,12 @@ button.danger{background:var(--red)}
     <div class="tab" data-tab="plat-discord">Discord</div>
     <div class="tab" data-tab="plat-slack">Slack</div>
     <div class="tab" data-tab="plat-whatsapp">WhatsApp</div>
+    <div class="tab" data-tab="plat-signal">Signal</div>
+    <div class="tab" data-tab="plat-email">Email</div>
+    <div class="tab" data-tab="plat-hass">Home Assistant</div>
     <div class="tab" data-tab="plat-session">Session Reset</div>
   </div>
+
   <div class="tabpanel active" id="tab-plat-telegram">
     <div class="card">
       <div class="card-title">Telegram</div>
@@ -283,6 +287,7 @@ button.danger{background:var(--red)}
       <input type="text" id="tg-allowed" placeholder="alice, bob" />
     </div>
   </div>
+
   <div class="tabpanel" id="tab-plat-discord">
     <div class="card">
       <div class="card-title">Discord</div>
@@ -292,8 +297,21 @@ button.danger{background:var(--red)}
       <input type="text" id="dc-channel" placeholder="1234567890" />
       <label>Allowed Users (comma-separated IDs, blank = all)</label>
       <input type="text" id="dc-allowed" placeholder="123456, 654321" />
+      <div class="grid2" style="margin-top:10px">
+        <label class="toggle">
+          <input type="checkbox" id="dc-require-mention" />
+          <span>Require @mention to respond</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="dc-allow-bots" />
+          <span>Allow bot messages</span>
+        </label>
+      </div>
+      <label>Free-response channels (comma-separated IDs — bot responds without @mention)</label>
+      <input type="text" id="dc-free-channels" placeholder="9876543210, 1122334455" />
     </div>
   </div>
+
   <div class="tabpanel" id="tab-plat-slack">
     <div class="card">
       <div class="card-title">Slack</div>
@@ -307,6 +325,7 @@ button.danger{background:var(--red)}
       <input type="text" id="sl-allowed" placeholder="U0123, U0456" />
     </div>
   </div>
+
   <div class="tabpanel" id="tab-plat-whatsapp">
     <div class="card">
       <div class="card-title">WhatsApp</div>
@@ -330,6 +349,79 @@ button.danger{background:var(--red)}
       </label>
     </div>
   </div>
+
+  <div class="tabpanel" id="tab-plat-signal">
+    <div class="card">
+      <div class="card-title">Signal</div>
+      <p class="hint" style="margin-bottom:12px">Requires a running <a href="https://github.com/bbernhard/signal-cli-rest-api" target="_blank">signal-cli-rest-api</a> instance.</p>
+      <label>signal-cli REST API URL</label>
+      <input type="text" id="sig-url" placeholder="http://localhost:8080" />
+      <label>Signal account (phone number)</label>
+      <input type="text" id="sig-account" placeholder="+1234567890" />
+      <label>Home Channel (group ID or phone)</label>
+      <input type="text" id="sig-home-channel" placeholder="group.abc123==" />
+      <label>Allowed group users (comma-separated, blank = all)</label>
+      <input type="text" id="sig-allowed" placeholder="+1234, +5678" />
+      <label class="toggle" style="margin-top:10px">
+        <input type="checkbox" id="sig-ignore-stories" checked />
+        <span>Ignore Signal Stories</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-plat-email">
+    <div class="card">
+      <div class="card-title">Email (IMAP/SMTP)</div>
+      <p class="hint" style="margin-bottom:12px">Polls inbox via IMAP and replies via SMTP.</p>
+      <div class="grid2">
+        <div>
+          <label>Email address</label>
+          <input type="text" id="em-address" placeholder="bot@example.com" />
+        </div>
+        <div>
+          <label>Password (leave blank to keep)</label>
+          <input type="password" id="em-password" placeholder="••••" />
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label>IMAP host</label>
+          <input type="text" id="em-imap-host" placeholder="imap.gmail.com" />
+        </div>
+        <div>
+          <label>IMAP port</label>
+          <input type="number" id="em-imap-port" value="993" min="1" max="65535" />
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label>SMTP host</label>
+          <input type="text" id="em-smtp-host" placeholder="smtp.gmail.com" />
+        </div>
+        <div>
+          <label>SMTP port</label>
+          <input type="number" id="em-smtp-port" value="587" min="1" max="65535" />
+        </div>
+      </div>
+      <label>Poll interval (seconds)</label>
+      <input type="number" id="em-poll" value="15" min="5" />
+      <label>Allowed senders (comma-separated emails, blank = all)</label>
+      <input type="text" id="em-allowed" placeholder="alice@example.com, bob@example.com" />
+    </div>
+  </div>
+
+  <div class="tabpanel" id="tab-plat-hass">
+    <div class="card">
+      <div class="card-title">Home Assistant</div>
+      <p class="hint" style="margin-bottom:12px">Connect to a Home Assistant instance to control smart home devices.</p>
+      <label>Home Assistant URL</label>
+      <input type="text" id="hass-url" placeholder="http://homeassistant.local:8123" />
+      <label>Long-Lived Access Token (leave blank to keep existing)</label>
+      <input type="password" id="hass-token" placeholder="••••" />
+      <p id="hass-token-status" class="hint"></p>
+    </div>
+  </div>
+
   <div class="tabpanel" id="tab-plat-session">
     <div class="card">
       <div class="card-title">Session Reset Policy</div>
@@ -352,6 +444,7 @@ button.danger{background:var(--red)}
       </div>
     </div>
   </div>
+
   <div class="save-btn-row">
     <button onclick="savePlatforms()">Save Platform Config</button>
     <span class="save-msg" id="plat-msg">Saved</span>
@@ -423,6 +516,44 @@ button.danger{background:var(--red)}
         <input type="checkbox" id="ag-compact" />
         <span>Compact display mode</span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" id="ag-worktree" />
+        <span>Git worktree isolation (create isolated worktrees for each session)</span>
+      </label>
+    </div>
+    <div class="card">
+      <div class="card-title">Display</div>
+      <div class="grid2">
+        <div>
+          <label>UI Skin</label>
+          <select id="ag-skin">
+            <option value="default">Default</option>
+            <option value="ares">Ares</option>
+            <option value="mono">Mono</option>
+            <option value="slate">Slate</option>
+            <option value="poseidon">Poseidon</option>
+            <option value="sisyphus">Sisyphus</option>
+            <option value="charizard">Charizard</option>
+          </select>
+        </div>
+        <div>
+          <label>Background process notifications</label>
+          <select id="ag-bgnotif">
+            <option value="all">All</option>
+            <option value="result">Result only</option>
+            <option value="error">Errors only</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="ag-show-reasoning" />
+        <span>Show model reasoning/thinking</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="ag-bell" />
+        <span>Terminal bell on completion</span>
+      </label>
     </div>
   </div>
   <div class="tabpanel" id="tab-ag-pacing">
@@ -468,8 +599,16 @@ button.danger{background:var(--red)}
           <input type="number" id="mem-userlim" value="1375" min="100" />
         </div>
       </div>
-      <label>Nudge interval (messages between memory updates)</label>
-      <input type="number" id="mem-nudge" value="10" min="1" />
+      <div class="grid2">
+        <div>
+          <label>Memory nudge interval (messages between updates)</label>
+          <input type="number" id="mem-nudge" value="10" min="0" />
+        </div>
+        <div>
+          <label>Skills creation nudge interval (0 = off)</label>
+          <input type="number" id="mem-skills-nudge" value="15" min="0" />
+        </div>
+      </div>
     </div>
   </div>
   <div class="tabpanel" id="tab-ag-voice">
@@ -554,6 +693,7 @@ button.danger{background:var(--red)}
       <option value="ssh">SSH remote</option>
       <option value="modal">Modal Labs</option>
       <option value="singularity">Singularity/Apptainer</option>
+      <option value="daytona">Daytona Cloud</option>
     </select>
     <div class="grid2" style="margin-top:0">
       <div>
@@ -623,6 +763,26 @@ button.danger{background:var(--red)}
     <div class="card-title">Singularity / Apptainer</div>
     <label>Image URI</label>
     <input type="text" id="term-sing-img" placeholder="docker://nikolaik/python-nodejs:python3.11-nodejs20" />
+  </div>
+  <div class="card" id="term-daytona-card" style="display:none">
+    <div class="card-title">Daytona Cloud</div>
+    <p class="hint" style="margin-bottom:10px">Requires <code>DAYTONA_API_KEY</code> env var. Max disk: 10 GB. <span id="daytona-key-status"></span></p>
+    <label>Daytona image</label>
+    <input type="text" id="term-daytona-img" placeholder="nikolaik/python-nodejs:python3.11-nodejs20" />
+    <div class="grid3" style="margin-top:0">
+      <div>
+        <label>CPUs</label>
+        <input type="number" id="term-daytona-cpu" value="1" min="1" />
+      </div>
+      <div>
+        <label>Memory (MB)</label>
+        <input type="number" id="term-daytona-mem" value="5120" min="512" />
+      </div>
+      <div>
+        <label>Disk (MB, max 10240)</label>
+        <input type="number" id="term-daytona-disk" value="10240" min="1024" max="10240" />
+      </div>
+    </div>
   </div>
   <div class="card">
     <div class="card-title">Sudo Password (optional)</div>
@@ -754,6 +914,12 @@ button.danger{background:var(--red)}
       <label>URL</label>
       <input type="text" id="rl-url" placeholder="http://localhost:8080" />
     </div>
+    <div class="card">
+      <div class="card-title">Daytona Cloud Terminal</div>
+      <label>DAYTONA_API_KEY (leave blank to keep existing)</label>
+      <input type="password" id="daytona-key" placeholder="dtna-…" />
+      <p id="daytona-key-tools-status" class="hint"></p>
+    </div>
   </div>
   <div class="save-btn-row">
     <button onclick="saveTools()">Save Tool Config</button>
@@ -764,7 +930,8 @@ button.danger{background:var(--red)}
 <!-- ADVANCED -->
 <div class="page" id="page-advanced">
   <h2>Advanced</h2>
-  <p class="subtitle">Context compression, toolsets, MCP servers and debug flags.</p>
+  <p class="subtitle">Context compression, auxiliary models, toolsets, delegation, MCP, and debug flags.</p>
+
   <div class="card">
     <div class="card-title">Context Compression</div>
     <label class="toggle" style="margin-top:0">
@@ -778,16 +945,124 @@ button.danger{background:var(--red)}
       </div>
       <div>
         <label>Compression threshold (0.0–1.0)</label>
-        <input type="number" id="comp-threshold" step="0.05" min="0.1" max="1.0" value="0.85" />
+        <input type="number" id="comp-threshold" step="0.05" min="0.1" max="1.0" value="0.50" />
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label>Summary provider</label>
+        <select id="comp-provider">
+          <option value="auto">Auto</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="nous">Nous</option>
+          <option value="main">Main (same provider)</option>
+        </select>
       </div>
     </div>
   </div>
+
+  <div class="card">
+    <div class="card-title">Auxiliary Models</div>
+    <p class="hint" style="margin-bottom:12px">Override the provider/model used for vision and web-extraction tasks.</p>
+    <div class="grid2">
+      <div>
+        <label>Vision provider</label>
+        <select id="aux-vis-prov">
+          <option value="auto">Auto</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="nous">Nous</option>
+          <option value="main">Main</option>
+        </select>
+      </div>
+      <div>
+        <label>Vision model (blank = provider default)</label>
+        <input type="text" id="aux-vis-model" placeholder="anthropic/claude-opus-4.5" />
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label>Web-extract provider</label>
+        <select id="aux-web-prov">
+          <option value="auto">Auto</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="nous">Nous</option>
+          <option value="main">Main</option>
+        </select>
+      </div>
+      <div>
+        <label>Web-extract model (blank = provider default)</label>
+        <input type="text" id="aux-web-model" placeholder="google/gemini-flash-1.5" />
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-title">Toolsets</div>
-    <label>Active toolsets (comma-separated, "all" to enable everything)</label>
+    <label>Global active toolsets (comma-separated, "all" to enable everything)</label>
     <input type="text" id="adv-toolsets" placeholder="all" />
-    <p class="hint">Examples: all &nbsp;·&nbsp; web &nbsp;·&nbsp; vision &nbsp;·&nbsp; code &nbsp;·&nbsp; github &nbsp;·&nbsp; image &nbsp;·&nbsp; voice &nbsp;·&nbsp; moa</p>
+    <p class="hint">Examples: all &nbsp;·&nbsp; web &nbsp;·&nbsp; vision &nbsp;·&nbsp; terminal &nbsp;·&nbsp; file &nbsp;·&nbsp; image &nbsp;·&nbsp; tts &nbsp;·&nbsp; moa &nbsp;·&nbsp; skills_hub</p>
+    <div style="margin-top:14px">
+      <div class="card-title" style="font-size:12px;margin-bottom:8px">Per-Platform Toolsets (blank = use global)</div>
+      <div class="grid2">
+        <div><label>CLI</label><input type="text" id="pts-cli" placeholder="hermes-cli" /></div>
+        <div><label>Telegram</label><input type="text" id="pts-telegram" placeholder="hermes-telegram" /></div>
+        <div><label>Discord</label><input type="text" id="pts-discord" placeholder="hermes-discord" /></div>
+        <div><label>WhatsApp</label><input type="text" id="pts-whatsapp" placeholder="hermes-whatsapp" /></div>
+        <div><label>Slack</label><input type="text" id="pts-slack" placeholder="hermes-slack" /></div>
+        <div><label>Signal</label><input type="text" id="pts-signal" placeholder="hermes-signal" /></div>
+        <div><label>Home Assistant</label><input type="text" id="pts-hass" placeholder="hermes-homeassistant" /></div>
+      </div>
+    </div>
   </div>
+
+  <div class="card">
+    <div class="card-title">Delegation (Subagents)</div>
+    <p class="hint" style="margin-bottom:12px">Configuration for spawned subagent tasks.</p>
+    <div class="grid2">
+      <div>
+        <label>Max iterations per subagent</label>
+        <input type="number" id="dlg-maxiter" value="50" min="1" />
+      </div>
+      <div>
+        <label>Default toolsets (comma-separated)</label>
+        <input type="text" id="dlg-toolsets" placeholder="terminal,file,web" />
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label>Override model (blank = inherit)</label>
+        <input type="text" id="dlg-model" placeholder="" />
+      </div>
+      <div>
+        <label>Override provider (blank = inherit)</label>
+        <input type="text" id="dlg-provider" placeholder="" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Code Execution</div>
+    <div class="grid2">
+      <div>
+        <label>Max execution timeout (seconds)</label>
+        <input type="number" id="ce-timeout" value="300" min="30" />
+      </div>
+      <div>
+        <label>Max tool calls per execution</label>
+        <input type="number" id="ce-maxcalls" value="50" min="1" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      Quick Commands
+      <button class="sec" onclick="addQuickCmd()">+ Add Command</button>
+    </div>
+    <p class="hint" style="margin-bottom:8px">User-defined slash commands that bypass the agent loop and run shell commands directly.</p>
+    <div id="qcmd-list"></div>
+  </div>
+
   <div class="card">
     <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
       MCP Servers
@@ -796,6 +1071,7 @@ button.danger{background:var(--red)}
     <div id="mcp-list"></div>
     <p class="hint" style="margin-top:8px">Name + command array (JSON). Example: <code style="color:var(--accent2)">["npx","-y","@modelcontextprotocol/server-memory"]</code></p>
   </div>
+
   <div class="card">
     <div class="card-title">Debug Flags</div>
     <div class="grid2">
@@ -819,8 +1095,13 @@ button.danger{background:var(--red)}
         <input type="checkbox" id="dbg-oauth" />
         <span>HERMES_OAUTH_TRACE</span>
       </label>
+      <label class="toggle" style="margin-top:0">
+        <input type="checkbox" id="dbg-dump-req" />
+        <span>HERMES_DUMP_REQUESTS</span>
+      </label>
     </div>
   </div>
+
   <div class="save-btn-row">
     <button onclick="saveAdvanced()">Save Advanced Config</button>
     <span class="save-msg" id="adv-msg">Saved</span>
@@ -1208,44 +1489,85 @@ async function saveProvider() {
 async function loadPlatforms() {
   try {
     const d = await api('GET', '/api/platforms');
-    document.getElementById('tg-channel').value   = d.telegram_channel;
-    document.getElementById('tg-allowed').value   = d.telegram_allowed;
-    document.getElementById('dc-channel').value   = d.discord_channel;
-    document.getElementById('dc-allowed').value   = d.discord_allowed;
-    document.getElementById('sl-channel').value   = d.slack_channel;
-    document.getElementById('sl-allowed').value   = d.slack_allowed;
-    document.getElementById('wa-enabled').checked = d.whatsapp_enabled;
-    document.getElementById('wa-mode').value      = d.whatsapp_mode;
-    document.getElementById('wa-allowed').value   = d.whatsapp_allowed;
-    document.getElementById('allow-all').checked  = d.allow_all_users;
-    document.getElementById('sr-mode').value      = d.session_mode;
-    document.getElementById('sr-idle').value      = d.session_idle_min;
-    document.getElementById('sr-hour').value      = d.session_at_hour;
+    document.getElementById('tg-channel').value         = d.telegram_channel;
+    document.getElementById('tg-allowed').value         = d.telegram_allowed;
+    document.getElementById('dc-channel').value         = d.discord_channel;
+    document.getElementById('dc-allowed').value         = d.discord_allowed;
+    document.getElementById('dc-require-mention').checked = d.discord_require_mention;
+    document.getElementById('dc-free-channels').value   = d.discord_free_channels;
+    document.getElementById('dc-allow-bots').checked    = d.discord_allow_bots;
+    document.getElementById('sl-channel').value         = d.slack_channel;
+    document.getElementById('sl-allowed').value         = d.slack_allowed;
+    document.getElementById('wa-enabled').checked       = d.whatsapp_enabled;
+    document.getElementById('wa-mode').value            = d.whatsapp_mode;
+    document.getElementById('wa-allowed').value         = d.whatsapp_allowed;
+    // Signal
+    document.getElementById('sig-url').value            = d.signal_url;
+    document.getElementById('sig-account').value        = d.signal_account;
+    document.getElementById('sig-ignore-stories').checked = d.signal_ignore_stories;
+    document.getElementById('sig-home-channel').value   = d.signal_home_channel;
+    document.getElementById('sig-allowed').value        = d.signal_allowed;
+    // Email
+    document.getElementById('em-address').value         = d.email_address;
+    document.getElementById('em-imap-host').value       = d.email_imap_host;
+    document.getElementById('em-imap-port').value       = d.email_imap_port;
+    document.getElementById('em-smtp-host').value       = d.email_smtp_host;
+    document.getElementById('em-smtp-port').value       = d.email_smtp_port;
+    document.getElementById('em-poll').value            = d.email_poll_interval;
+    document.getElementById('em-allowed').value         = d.email_allowed;
+    // Home Assistant
+    document.getElementById('hass-url').value           = d.hass_url;
+    document.getElementById('hass-token-status').textContent = d.hass_token_set ? 'Token is set.' : 'No token saved.';
+    // Gateway-wide
+    document.getElementById('allow-all').checked        = d.allow_all_users;
+    document.getElementById('sr-mode').value            = d.session_mode;
+    document.getElementById('sr-idle').value            = d.session_idle_min;
+    document.getElementById('sr-hour').value            = d.session_at_hour;
   } catch(e) { showPageError(e.message); }
 }
 
 async function savePlatforms() {
   try {
     await api('POST', '/api/platforms', {
-      telegram_token:   document.getElementById('tg-token').value,
-      telegram_channel: document.getElementById('tg-channel').value,
-      telegram_allowed: document.getElementById('tg-allowed').value,
-      discord_token:    document.getElementById('dc-token').value,
-      discord_channel:  document.getElementById('dc-channel').value,
-      discord_allowed:  document.getElementById('dc-allowed').value,
-      slack_bot_token:  document.getElementById('sl-bot').value,
-      slack_app_token:  document.getElementById('sl-app').value,
-      slack_channel:    document.getElementById('sl-channel').value,
-      slack_allowed:    document.getElementById('sl-allowed').value,
-      whatsapp_enabled: document.getElementById('wa-enabled').checked,
-      whatsapp_mode:    document.getElementById('wa-mode').value,
-      whatsapp_allowed: document.getElementById('wa-allowed').value,
-      allow_all_users:  document.getElementById('allow-all').checked,
-      session_mode:     document.getElementById('sr-mode').value,
-      session_idle_min: +document.getElementById('sr-idle').value,
-      session_at_hour:  +document.getElementById('sr-hour').value,
+      telegram_token:          document.getElementById('tg-token').value,
+      telegram_channel:        document.getElementById('tg-channel').value,
+      telegram_allowed:        document.getElementById('tg-allowed').value,
+      discord_token:           document.getElementById('dc-token').value,
+      discord_channel:         document.getElementById('dc-channel').value,
+      discord_allowed:         document.getElementById('dc-allowed').value,
+      discord_require_mention: document.getElementById('dc-require-mention').checked,
+      discord_free_channels:   document.getElementById('dc-free-channels').value,
+      discord_allow_bots:      document.getElementById('dc-allow-bots').checked,
+      slack_bot_token:         document.getElementById('sl-bot').value,
+      slack_app_token:         document.getElementById('sl-app').value,
+      slack_channel:           document.getElementById('sl-channel').value,
+      slack_allowed:           document.getElementById('sl-allowed').value,
+      whatsapp_enabled:        document.getElementById('wa-enabled').checked,
+      whatsapp_mode:           document.getElementById('wa-mode').value,
+      whatsapp_allowed:        document.getElementById('wa-allowed').value,
+      signal_url:              document.getElementById('sig-url').value,
+      signal_account:          document.getElementById('sig-account').value,
+      signal_ignore_stories:   document.getElementById('sig-ignore-stories').checked,
+      signal_home_channel:     document.getElementById('sig-home-channel').value,
+      signal_allowed:          document.getElementById('sig-allowed').value,
+      email_address:           document.getElementById('em-address').value,
+      email_password:          document.getElementById('em-password').value,
+      email_imap_host:         document.getElementById('em-imap-host').value,
+      email_imap_port:         +document.getElementById('em-imap-port').value,
+      email_smtp_host:         document.getElementById('em-smtp-host').value,
+      email_smtp_port:         +document.getElementById('em-smtp-port').value,
+      email_poll_interval:     +document.getElementById('em-poll').value,
+      email_allowed:           document.getElementById('em-allowed').value,
+      hass_token:              document.getElementById('hass-token').value,
+      hass_url:                document.getElementById('hass-url').value,
+      allow_all_users:         document.getElementById('allow-all').checked,
+      session_mode:            document.getElementById('sr-mode').value,
+      session_idle_min:        +document.getElementById('sr-idle').value,
+      session_at_hour:         +document.getElementById('sr-hour').value,
     });
-    ['tg-token','dc-token','sl-bot','sl-app'].forEach(id => { document.getElementById(id).value = ''; });
+    ['tg-token','dc-token','sl-bot','sl-app','em-password','hass-token'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
     flash('plat-msg');
   } catch(e) { alert('Save failed: ' + e.message); }
 }
@@ -1254,28 +1576,34 @@ async function savePlatforms() {
 async function loadAgent() {
   try {
     const d = await api('GET', '/api/agent');
-    document.getElementById('ag-personality').value = d.personality;
-    document.getElementById('ag-effort').value      = d.reasoning_effort;
-    document.getElementById('ag-verbose').checked   = d.verbose;
-    document.getElementById('ag-toolprog').value    = d.tool_progress;
-    document.getElementById('ag-compact').checked   = d.display_compact;
-    document.getElementById('ag-maxturns').value    = d.max_turns;
-    document.getElementById('hd-mode').value        = d.human_delay_mode;
-    document.getElementById('hd-min').value         = d.human_delay_min_ms;
-    document.getElementById('hd-max').value         = d.human_delay_max_ms;
-    document.getElementById('mem-enabled').checked  = d.memory_enabled;
-    document.getElementById('mem-profile').checked  = d.user_profile_enabled;
-    document.getElementById('mem-charlim').value    = d.memory_char_limit;
-    document.getElementById('mem-userlim').value    = d.user_char_limit;
-    document.getElementById('mem-nudge').value      = d.nudge_interval;
-    document.getElementById('tts-prov').value       = d.tts_provider;
-    document.getElementById('tts-edge-voice').value = d.tts_edge_voice;
-    document.getElementById('tts-el-vid').value     = d.tts_el_voice_id;
-    document.getElementById('tts-el-model').value   = d.tts_el_model;
-    document.getElementById('tts-oai-model').value  = d.tts_oai_model;
-    document.getElementById('tts-oai-voice').value  = d.tts_oai_voice;
-    document.getElementById('stt-enabled').checked  = d.stt_enabled;
-    document.getElementById('stt-model').value      = d.stt_model;
+    document.getElementById('ag-personality').value    = d.personality;
+    document.getElementById('ag-effort').value         = d.reasoning_effort;
+    document.getElementById('ag-verbose').checked      = d.verbose;
+    document.getElementById('ag-toolprog').value       = d.tool_progress;
+    document.getElementById('ag-compact').checked      = d.display_compact;
+    document.getElementById('ag-skin').value           = d.display_skin || 'default';
+    document.getElementById('ag-bell').checked         = d.bell_on_complete;
+    document.getElementById('ag-show-reasoning').checked = d.show_reasoning;
+    document.getElementById('ag-bgnotif').value        = d.bg_process_notifications || 'all';
+    document.getElementById('ag-maxturns').value       = d.max_turns;
+    document.getElementById('ag-worktree').checked     = d.worktree;
+    document.getElementById('hd-mode').value           = d.human_delay_mode;
+    document.getElementById('hd-min').value            = d.human_delay_min_ms;
+    document.getElementById('hd-max').value            = d.human_delay_max_ms;
+    document.getElementById('mem-enabled').checked     = d.memory_enabled;
+    document.getElementById('mem-profile').checked     = d.user_profile_enabled;
+    document.getElementById('mem-charlim').value       = d.memory_char_limit;
+    document.getElementById('mem-userlim').value       = d.user_char_limit;
+    document.getElementById('mem-nudge').value         = d.nudge_interval;
+    document.getElementById('mem-skills-nudge').value  = d.skills_nudge_interval;
+    document.getElementById('tts-prov').value          = d.tts_provider;
+    document.getElementById('tts-edge-voice').value    = d.tts_edge_voice;
+    document.getElementById('tts-el-vid').value        = d.tts_el_voice_id;
+    document.getElementById('tts-el-model').value      = d.tts_el_model;
+    document.getElementById('tts-oai-model').value     = d.tts_oai_model;
+    document.getElementById('tts-oai-voice').value     = d.tts_oai_voice;
+    document.getElementById('stt-enabled').checked     = d.stt_enabled;
+    document.getElementById('stt-model').value         = d.stt_model;
     onHdModeChange();
     onTTSProvChange();
   } catch(e) { showPageError(e.message); }
@@ -1296,28 +1624,34 @@ function onTTSProvChange() {
 async function saveAgent() {
   try {
     await api('POST', '/api/agent', {
-      personality:          document.getElementById('ag-personality').value,
-      reasoning_effort:     document.getElementById('ag-effort').value,
-      verbose:              document.getElementById('ag-verbose').checked,
-      tool_progress:        document.getElementById('ag-toolprog').value,
-      display_compact:      document.getElementById('ag-compact').checked,
-      max_turns:            +document.getElementById('ag-maxturns').value,
-      human_delay_mode:     document.getElementById('hd-mode').value,
-      human_delay_min_ms:   +document.getElementById('hd-min').value,
-      human_delay_max_ms:   +document.getElementById('hd-max').value,
-      memory_enabled:       document.getElementById('mem-enabled').checked,
-      user_profile_enabled: document.getElementById('mem-profile').checked,
-      memory_char_limit:    +document.getElementById('mem-charlim').value,
-      user_char_limit:      +document.getElementById('mem-userlim').value,
-      nudge_interval:       +document.getElementById('mem-nudge').value,
-      tts_provider:         document.getElementById('tts-prov').value,
-      tts_edge_voice:       document.getElementById('tts-edge-voice').value,
-      tts_el_voice_id:      document.getElementById('tts-el-vid').value,
-      tts_el_model:         document.getElementById('tts-el-model').value,
-      tts_oai_model:        document.getElementById('tts-oai-model').value,
-      tts_oai_voice:        document.getElementById('tts-oai-voice').value,
-      stt_enabled:          document.getElementById('stt-enabled').checked,
-      stt_model:            document.getElementById('stt-model').value,
+      personality:              document.getElementById('ag-personality').value,
+      reasoning_effort:         document.getElementById('ag-effort').value,
+      verbose:                  document.getElementById('ag-verbose').checked,
+      tool_progress:            document.getElementById('ag-toolprog').value,
+      display_compact:          document.getElementById('ag-compact').checked,
+      display_skin:             document.getElementById('ag-skin').value,
+      bell_on_complete:         document.getElementById('ag-bell').checked,
+      show_reasoning:           document.getElementById('ag-show-reasoning').checked,
+      bg_process_notifications: document.getElementById('ag-bgnotif').value,
+      max_turns:                +document.getElementById('ag-maxturns').value,
+      worktree:                 document.getElementById('ag-worktree').checked,
+      human_delay_mode:         document.getElementById('hd-mode').value,
+      human_delay_min_ms:       +document.getElementById('hd-min').value,
+      human_delay_max_ms:       +document.getElementById('hd-max').value,
+      memory_enabled:           document.getElementById('mem-enabled').checked,
+      user_profile_enabled:     document.getElementById('mem-profile').checked,
+      memory_char_limit:        +document.getElementById('mem-charlim').value,
+      user_char_limit:          +document.getElementById('mem-userlim').value,
+      nudge_interval:           +document.getElementById('mem-nudge').value,
+      skills_nudge_interval:    +document.getElementById('mem-skills-nudge').value,
+      tts_provider:             document.getElementById('tts-prov').value,
+      tts_edge_voice:           document.getElementById('tts-edge-voice').value,
+      tts_el_voice_id:          document.getElementById('tts-el-vid').value,
+      tts_el_model:             document.getElementById('tts-el-model').value,
+      tts_oai_model:            document.getElementById('tts-oai-model').value,
+      tts_oai_voice:            document.getElementById('tts-oai-voice').value,
+      stt_enabled:              document.getElementById('stt-enabled').checked,
+      stt_model:                document.getElementById('stt-model').value,
     });
     flash('agent-msg');
   } catch(e) { alert('Save failed: ' + e.message); }
@@ -1327,43 +1661,52 @@ async function saveAgent() {
 async function loadTerminal() {
   try {
     const d = await api('GET', '/api/terminal');
-    document.getElementById('term-backend').value    = d.backend;
-    document.getElementById('term-cwd').value        = d.cwd;
-    document.getElementById('term-timeout').value    = d.timeout;
-    document.getElementById('term-lifetime').value   = d.lifetime_seconds;
-    document.getElementById('term-docker-img').value = d.docker_image;
-    document.getElementById('term-cpu').value        = d.container_cpu;
-    document.getElementById('term-mem').value        = d.container_memory;
-    document.getElementById('term-disk').value       = d.container_disk;
-    document.getElementById('term-persist').checked  = d.container_persistent;
-    document.getElementById('ssh-host').value        = d.ssh_host;
-    document.getElementById('ssh-user').value        = d.ssh_user;
-    document.getElementById('ssh-port').value        = d.ssh_port;
-    document.getElementById('ssh-key').value         = d.ssh_key;
-    document.getElementById('term-modal-img').value  = d.modal_image;
-    document.getElementById('term-sing-img').value   = d.singularity_image;
+    document.getElementById('term-backend').value       = d.backend;
+    document.getElementById('term-cwd').value           = d.cwd;
+    document.getElementById('term-timeout').value       = d.timeout;
+    document.getElementById('term-lifetime').value      = d.lifetime_seconds;
+    document.getElementById('term-docker-img').value    = d.docker_image;
+    document.getElementById('term-cpu').value           = d.container_cpu;
+    document.getElementById('term-mem').value           = d.container_memory;
+    document.getElementById('term-disk').value          = d.container_disk;
+    document.getElementById('term-persist').checked     = d.container_persistent;
+    document.getElementById('ssh-host').value           = d.ssh_host;
+    document.getElementById('ssh-user').value           = d.ssh_user;
+    document.getElementById('ssh-port').value           = d.ssh_port;
+    document.getElementById('ssh-key').value            = d.ssh_key;
+    document.getElementById('term-modal-img').value     = d.modal_image;
+    document.getElementById('term-sing-img').value      = d.singularity_image;
+    document.getElementById('term-daytona-img').value   = d.daytona_image;
+    document.getElementById('term-daytona-cpu').value   = d.container_cpu;
+    document.getElementById('term-daytona-mem').value   = d.container_memory;
+    document.getElementById('term-daytona-disk').value  = Math.min(d.container_disk, 10240);
+    const ks = document.getElementById('daytona-key-status');
+    if (ks) ks.textContent = d.daytona_key_set ? 'API key is set.' : 'No API key set (DAYTONA_API_KEY).';
     onTermBackendChange();
   } catch(e) { showPageError(e.message); }
 }
 
 function onTermBackendChange() {
   const b = document.getElementById('term-backend').value;
-  ['docker','ssh','modal','sing'].forEach(k => {
+  ['docker','ssh','modal','sing','daytona'].forEach(k => {
     document.getElementById('term-' + k + '-card').style.display = b === k ? '' : 'none';
   });
 }
 
 async function saveTerminal() {
+  const b = document.getElementById('term-backend').value;
+  const isDaytona = b === 'daytona';
   try {
     await api('POST', '/api/terminal', {
-      backend:              document.getElementById('term-backend').value,
+      backend:              b,
       cwd:                  document.getElementById('term-cwd').value,
       timeout:              +document.getElementById('term-timeout').value,
       lifetime_seconds:     +document.getElementById('term-lifetime').value,
       docker_image:         document.getElementById('term-docker-img').value,
-      container_cpu:        +document.getElementById('term-cpu').value,
-      container_memory:     +document.getElementById('term-mem').value,
-      container_disk:       +document.getElementById('term-disk').value,
+      daytona_image:        document.getElementById('term-daytona-img').value,
+      container_cpu:        isDaytona ? +document.getElementById('term-daytona-cpu').value : +document.getElementById('term-cpu').value,
+      container_memory:     isDaytona ? +document.getElementById('term-daytona-mem').value : +document.getElementById('term-mem').value,
+      container_disk:       isDaytona ? +document.getElementById('term-daytona-disk').value : +document.getElementById('term-disk').value,
       container_persistent: document.getElementById('term-persist').checked,
       ssh_host:             document.getElementById('ssh-host').value,
       ssh_user:             document.getElementById('ssh-user').value,
@@ -1390,6 +1733,8 @@ async function loadTools() {
     document.getElementById('gh-app-key').value    = d.github_app_key_path;
     document.getElementById('gh-app-install').value = d.github_app_install_id;
     document.getElementById('rl-url').value        = d.rl_api_url;
+    const dks = document.getElementById('daytona-key-tools-status');
+    if (dks) dks.textContent = d.daytona_key_set ? 'API key is set.' : 'No key set.';
   } catch(e) { showPageError(e.message); }
 }
 
@@ -1414,9 +1759,10 @@ async function saveTools() {
       tinker_key:              document.getElementById('tinker-key').value,
       wandb_key:               document.getElementById('wandb-key').value,
       rl_api_url:              document.getElementById('rl-url').value,
+      daytona_key:             document.getElementById('daytona-key').value,
     });
     ['fc-key','fal-key','bb-key','bb-project','voai-key','el-key',
-     'gh-token','honcho-key','tinker-key','wandb-key'].forEach(id => {
+     'gh-token','honcho-key','tinker-key','wandb-key','daytona-key'].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = '';
     });
     flash('tools-msg');
@@ -1425,20 +1771,86 @@ async function saveTools() {
 
 /* ── Advanced ── */
 let _mcpServers = {};
+let _quickCmds  = {};
+
+function renderQuickCmds() {
+  const list = document.getElementById('qcmd-list');
+  const entries = Object.entries(_quickCmds);
+  if (!entries.length) {
+    list.innerHTML = '<p class="hint" style="margin-top:6px">No quick commands. Add one above.</p>';
+    return;
+  }
+  list.innerHTML = entries.map(([name, cfg]) => {
+    const cmd = typeof cfg === 'object' ? (cfg.command || '') : String(cfg);
+    return `<div class="mcp-item">
+      <div class="mcp-fields">
+        <input type="text" value="${escHtml(name)}" placeholder="/command-name" class="qcmd-name" style="max-width:160px" />
+        <input type="text" value="${escHtml(cmd)}" placeholder="shell command" class="qcmd-cmd" />
+      </div>
+      <button class="danger" onclick="removeQuickCmd(this)" style="padding:8px 10px;margin-top:0">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function addQuickCmd() {
+  _quickCmds['cmd-' + Date.now()] = { type: 'exec', command: '' };
+  renderQuickCmds();
+}
+
+function removeQuickCmd(btn) { btn.closest('.mcp-item').remove(); }
+
+function collectQuickCmds() {
+  const out = {};
+  document.querySelectorAll('#qcmd-list .mcp-item').forEach(item => {
+    const name = item.querySelector('.qcmd-name').value.trim().replace(/^\//, '');
+    const cmd  = item.querySelector('.qcmd-cmd').value.trim();
+    if (!name) return;
+    out[name] = { type: 'exec', command: cmd };
+  });
+  return out;
+}
 
 async function loadAdvanced() {
   try {
     const d = await api('GET', '/api/advanced');
-    document.getElementById('comp-enabled').checked   = d.compression_enabled;
-    document.getElementById('comp-model').value       = d.compression_model;
-    document.getElementById('comp-threshold').value   = d.compression_threshold;
-    document.getElementById('adv-toolsets').value     = d.toolsets;
-    document.getElementById('dbg-web').checked        = d.web_debug;
-    document.getElementById('dbg-vision').checked     = d.vision_debug;
-    document.getElementById('dbg-moa').checked        = d.moa_debug;
-    document.getElementById('dbg-image').checked      = d.image_debug;
-    document.getElementById('dbg-oauth').checked      = d.oauth_trace;
-    _mcpServers = d.mcp_servers || {};
+    document.getElementById('comp-enabled').checked    = d.compression_enabled;
+    document.getElementById('comp-model').value        = d.compression_model;
+    document.getElementById('comp-threshold').value    = d.compression_threshold;
+    document.getElementById('comp-provider').value     = d.compression_provider || 'auto';
+    document.getElementById('adv-toolsets').value      = d.toolsets;
+    // Per-platform toolsets
+    const pts = d.platform_toolsets || {};
+    document.getElementById('pts-cli').value           = pts.cli       || '';
+    document.getElementById('pts-telegram').value      = pts.telegram  || '';
+    document.getElementById('pts-discord').value       = pts.discord   || '';
+    document.getElementById('pts-whatsapp').value      = pts.whatsapp  || '';
+    document.getElementById('pts-slack').value         = pts.slack     || '';
+    document.getElementById('pts-signal').value        = pts.signal    || '';
+    document.getElementById('pts-hass').value          = pts.homeassistant || '';
+    // Auxiliary models
+    document.getElementById('aux-vis-prov').value      = d.aux_vision_provider  || 'auto';
+    document.getElementById('aux-vis-model').value     = d.aux_vision_model     || '';
+    document.getElementById('aux-web-prov').value      = d.aux_web_provider     || 'auto';
+    document.getElementById('aux-web-model').value     = d.aux_web_model        || '';
+    // Delegation
+    document.getElementById('dlg-maxiter').value       = d.delegation_max_iter  || 50;
+    document.getElementById('dlg-toolsets').value      = d.delegation_toolsets  || 'terminal,file,web';
+    document.getElementById('dlg-model').value         = d.delegation_model     || '';
+    document.getElementById('dlg-provider').value      = d.delegation_provider  || '';
+    // Code execution
+    document.getElementById('ce-timeout').value        = d.code_exec_timeout    || 300;
+    document.getElementById('ce-maxcalls').value       = d.code_exec_max_calls  || 50;
+    // Debug
+    document.getElementById('dbg-web').checked         = d.web_debug;
+    document.getElementById('dbg-vision').checked      = d.vision_debug;
+    document.getElementById('dbg-moa').checked         = d.moa_debug;
+    document.getElementById('dbg-image').checked       = d.image_debug;
+    document.getElementById('dbg-oauth').checked       = d.oauth_trace;
+    document.getElementById('dbg-dump-req').checked    = d.dump_requests;
+    // Quick commands & MCP
+    _quickCmds  = d.quick_commands || {};
+    _mcpServers = d.mcp_servers    || {};
+    renderQuickCmds();
     renderMCPList();
   } catch(e) { showPageError(e.message); }
 }
@@ -1488,12 +1900,34 @@ async function saveAdvanced() {
       compression_enabled:   document.getElementById('comp-enabled').checked,
       compression_threshold: +document.getElementById('comp-threshold').value,
       compression_model:     document.getElementById('comp-model').value,
+      compression_provider:  document.getElementById('comp-provider').value,
       toolsets:              document.getElementById('adv-toolsets').value,
+      platform_toolsets: {
+        cli:           document.getElementById('pts-cli').value,
+        telegram:      document.getElementById('pts-telegram').value,
+        discord:       document.getElementById('pts-discord').value,
+        whatsapp:      document.getElementById('pts-whatsapp').value,
+        slack:         document.getElementById('pts-slack').value,
+        signal:        document.getElementById('pts-signal').value,
+        homeassistant: document.getElementById('pts-hass').value,
+      },
+      aux_vision_provider:   document.getElementById('aux-vis-prov').value,
+      aux_vision_model:      document.getElementById('aux-vis-model').value,
+      aux_web_provider:      document.getElementById('aux-web-prov').value,
+      aux_web_model:         document.getElementById('aux-web-model').value,
+      delegation_max_iter:   +document.getElementById('dlg-maxiter').value,
+      delegation_toolsets:   document.getElementById('dlg-toolsets').value,
+      delegation_model:      document.getElementById('dlg-model').value,
+      delegation_provider:   document.getElementById('dlg-provider').value,
+      code_exec_timeout:     +document.getElementById('ce-timeout').value,
+      code_exec_max_calls:   +document.getElementById('ce-maxcalls').value,
+      quick_commands:        collectQuickCmds(),
       web_debug:             document.getElementById('dbg-web').checked,
       vision_debug:          document.getElementById('dbg-vision').checked,
       moa_debug:             document.getElementById('dbg-moa').checked,
       image_debug:           document.getElementById('dbg-image').checked,
       oauth_trace:           document.getElementById('dbg-oauth').checked,
+      dump_requests:         document.getElementById('dbg-dump-req').checked,
       mcp_servers:           collectMCPServers(),
     });
     flash('adv-msg');

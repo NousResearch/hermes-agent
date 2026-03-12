@@ -51,7 +51,7 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
 
-from hermes_cli import __version__
+from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -1484,7 +1484,7 @@ def cmd_config(args):
 
 def cmd_version(args):
     """Show version."""
-    print(f"Hermes Agent v{__version__}")
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
     # Show Python version

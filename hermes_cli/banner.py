@@ -62,7 +62,7 @@ def _skin_branding(key: str, fallback: str) -> str:
 # ASCII Art & Branding
 # =========================================================================
 
-from hermes_cli import __version__ as VERSION
+from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -380,7 +380,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     border_color = _skin_color("banner_border", "#CD7F32")
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {title_color}]{agent_name} {VERSION}[/]",
+        title=f"[bold {title_color}]{agent_name} v{VERSION} ({RELEASE_DATE})[/]",
         border_style=border_color,
         padding=(0, 2),
     )

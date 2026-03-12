@@ -2011,7 +2011,7 @@ class AIAgent:
                 fn_name = getattr(item, "name", "") or ""
                 arguments = getattr(item, "arguments", "{}")
                 if not isinstance(arguments, str):
-                    arguments = str(arguments)
+                    arguments = json.dumps(arguments)
                 raw_call_id = getattr(item, "call_id", None)
                 raw_item_id = getattr(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
@@ -2032,7 +2032,7 @@ class AIAgent:
                 fn_name = getattr(item, "name", "") or ""
                 arguments = getattr(item, "input", "{}")
                 if not isinstance(arguments, str):
-                    arguments = str(arguments)
+                    arguments = json.dumps(arguments)
                 raw_call_id = getattr(item, "call_id", None)
                 raw_item_id = getattr(item, "id", None)
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)

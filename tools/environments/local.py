@@ -10,7 +10,7 @@ import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, build_terminal_subprocess_env
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
@@ -192,7 +192,7 @@ class LocalEnvironment(BaseEnvironment):
             # Ensure PATH always includes standard dirs — systemd services
             # and some terminal multiplexers inherit a minimal PATH.
             _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            run_env = dict(os.environ | self.env)
+            run_env = build_terminal_subprocess_env(self.env)
             existing_path = run_env.get("PATH", "")
             if "/usr/bin" not in existing_path.split(":"):
                 run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH

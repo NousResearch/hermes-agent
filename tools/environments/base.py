@@ -6,6 +6,27 @@ import subprocess
 from pathlib import Path
 
 
+_TERMINAL_BLOCKED_PROVIDER_ENV_KEYS = frozenset({
+    "ANTHROPIC_API_KEY",
+    "GLM_API_KEY",
+    "GLM_BASE_URL",
+    "KIMI_API_KEY",
+    "KIMI_BASE_URL",
+    "MINIMAX_API_KEY",
+    "MINIMAX_BASE_URL",
+    "MINIMAX_CN_API_KEY",
+    "MINIMAX_CN_BASE_URL",
+    "NOUS_API_KEY",
+    "NOUS_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+})
+
+
 def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
     Singularity overlays/SIF cache, etc.).
@@ -19,6 +40,16 @@ def get_sandbox_dir() -> Path:
         p = Path.home() / ".hermes" / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def build_terminal_subprocess_env(extra_env: dict | None = None) -> dict:
+    """Build a subprocess env without leaking Hermes runtime provider state."""
+    env = dict(os.environ)
+    for key in _TERMINAL_BLOCKED_PROVIDER_ENV_KEYS:
+        env.pop(key, None)
+    if extra_env:
+        env.update(extra_env)
+    return env
 
 
 class BaseEnvironment(ABC):

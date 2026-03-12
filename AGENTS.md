@@ -201,6 +201,11 @@ The registry handles schema collection, dispatch, availability checking, and err
 | `load_config()` | `hermes tools`, `hermes setup` | `hermes_cli/config.py` |
 | Direct YAML load | Gateway | `gateway/run.py` |
 
+### Terminal subprocess env scoping
+
+- Local terminal subprocesses and background processes must use `build_terminal_subprocess_env()` (`tools/environments/base.py`) instead of passing `os.environ` directly.
+- This preserves the normal shell environment while preventing Hermes provider vars (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, etc.) from leaking into unrelated external CLIs.
+
 ---
 
 ## Skin/Theme System

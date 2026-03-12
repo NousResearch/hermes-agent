@@ -50,6 +50,7 @@ config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+environments/benchmarks/evals/
 
 # Session logs and user data
 sessions/

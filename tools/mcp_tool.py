@@ -538,6 +538,14 @@ class SamplingHandler:
                 f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
             )
 
+        # Guard against empty choices (content filtering, provider errors)
+        if not getattr(response, "choices", None):
+            self.metrics["errors"] += 1
+            return self._error(
+                f"LLM returned empty response (no choices) for server "
+                f"'{self.server_name}'"
+            )
+
         # Track metrics
         choice = response.choices[0]
         self.metrics["requests"] += 1
@@ -1323,29 +1331,23 @@ def discover_mcp_tools() -> List[str]:
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
-        transport_desc = cfg.get("url", f'{cfg.get("command", "?")} {" ".join(cfg.get("args", [])[:2])}')
-        try:
-            registered = await _discover_and_register_server(name, cfg)
-            transport_type = "HTTP" if "url" in cfg else "stdio"
-            return registered
-        except Exception as exc:
-            logger.warning(
-                "Failed to connect to MCP server '%s': %s",
-                name, exc,
-            )
-            return []
+        return await _discover_and_register_server(name, cfg)
 
     async def _discover_all():
         nonlocal failed_count
+        server_names = list(new_servers.keys())
         # Connect to all servers in PARALLEL
         results = await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
             return_exceptions=True,
         )
-        for result in results:
+        for name, result in zip(server_names, results):
             if isinstance(result, Exception):
                 failed_count += 1
-                logger.warning("MCP discovery error: %s", result)
+                logger.warning(
+                    "Failed to connect to MCP server '%s': %s",
+                    name, result,
+                )
             elif isinstance(result, list):
                 all_tools.extend(result)
             else:

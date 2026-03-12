@@ -1103,6 +1103,19 @@ def fetch_nous_models(
                 continue
             model_ids.append(mid)
 
+    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
+    # users who want the best model should see opus first).
+    def _model_priority(mid: str) -> tuple:
+        low = mid.lower()
+        if "opus" in low:
+            return (0, mid)
+        if "pro" in low and "sonnet" not in low:
+            return (1, mid)
+        if "sonnet" in low:
+            return (3, mid)
+        return (2, mid)
+
+    model_ids.sort(key=_model_priority)
     return list(dict.fromkeys(model_ids))
 
 
@@ -1671,11 +1684,11 @@ def _save_model_choice(model_id: str) -> None:
     from hermes_cli.config import save_config, load_config, save_env_value
 
     config = load_config()
-    # Handle both string and dict model formats
+    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
-        config["model"] = model_id
+        config["model"] = {"default": model_id}
     save_config(config)
     save_env_value("LLM_MODEL", model_id)
 

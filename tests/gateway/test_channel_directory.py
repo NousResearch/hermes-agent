@@ -111,6 +111,13 @@ class TestResolveChannelName:
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "nonexistent") is None
 
+    def test_topic_name_resolves_to_composite_id(self, tmp_path):
+        platforms = {
+            "telegram": [{"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"}]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
@@ -169,6 +176,42 @@ class TestBuildFromSessions:
 
         assert len(entries) == 1
 
+    def test_keeps_distinct_topics_with_same_chat_id(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "group_root": {
+                "origin": {"platform": "telegram", "chat_id": "-1001", "chat_name": "Coaching Chat"},
+                "chat_type": "group",
+            },
+            "topic_a": {
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1001",
+                    "chat_name": "Coaching Chat",
+                    "thread_id": "17585",
+                },
+                "chat_type": "group",
+            },
+            "topic_b": {
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1001",
+                    "chat_name": "Coaching Chat",
+                    "thread_id": "17587",
+                },
+                "chat_type": "group",
+            },
+        })
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            entries = _build_from_sessions("telegram")
+
+        ids = {entry["id"] for entry in entries}
+        names = {entry["name"] for entry in entries}
+        assert ids == {"-1001", "-1001:17585", "-1001:17587"}
+        assert "Coaching Chat" in names
+        assert "Coaching Chat / topic 17585" in names
+        assert "Coaching Chat / topic 17587" in names
+
 
 class TestFormatDirectoryForDisplay:
     def test_empty_directory(self, tmp_path):
@@ -181,6 +224,7 @@ class TestFormatDirectoryForDisplay:
             "telegram": [
                 {"id": "123", "name": "Alice", "type": "dm"},
                 {"id": "456", "name": "Dev Group", "type": "group"},
+                {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"},
             ]
         })
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
@@ -189,6 +233,7 @@ class TestFormatDirectoryForDisplay:
         assert "Telegram:" in result
         assert "telegram:Alice" in result
         assert "telegram:Dev Group" in result
+        assert "telegram:Coaching Chat / topic 17585" in result
 
     def test_discord_grouped_by_guild(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

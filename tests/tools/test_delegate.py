@@ -23,6 +23,7 @@ from tools.delegate_tool import (
     delegate_task,
     _build_child_system_prompt,
     _strip_blocked_tools,
+    _resolve_delegation_credentials,
 )
 
 
@@ -253,6 +254,288 @@ class TestBlockedTools(unittest.TestCase):
     def test_constants(self):
         self.assertEqual(MAX_CONCURRENT_CHILDREN, 3)
         self.assertEqual(MAX_DEPTH, 2)
+
+
+class TestDelegationCredentialResolution(unittest.TestCase):
+    """Tests for provider:model credential resolution in delegation config."""
+
+    def test_no_provider_returns_none_credentials(self):
+        """When delegation.provider is empty, all credentials are None (inherit parent)."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        self.assertIsNone(creds["api_mode"])
+        self.assertIsNone(creds["model"])
+
+    def test_model_only_no_provider(self):
+        """When only model is set (no provider), model is returned but credentials are None."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolves_full_credentials(self, mock_resolve):
+        """When delegation.provider is set, full credentials are resolved."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-test-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(creds["api_key"], "sk-or-test-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        mock_resolve.assert_called_once_with(requested="openrouter")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
+        """Nous provider resolves Nous Portal base_url and api_key."""
+        mock_resolve.return_value = {
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-agent-key-xyz",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "hermes-3-llama-3.1-8b", "provider": "nous"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "nous")
+        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+        self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
+        mock_resolve.assert_called_once_with(requested="nous")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
+        """When provider resolution fails, ValueError is raised with helpful message."""
+        mock_resolve.side_effect = RuntimeError("OPENROUTER_API_KEY not set")
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-model", "provider": "openrouter"}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("openrouter", str(ctx.exception).lower())
+        self.assertIn("Cannot resolve", str(ctx.exception))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolves_but_no_api_key_raises(self, mock_resolve):
+        """When provider resolves but has no API key, ValueError is raised."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-model", "provider": "openrouter"}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("no API key", str(ctx.exception))
+
+    def test_missing_config_keys_inherit_parent(self):
+        """When config dict has no model/provider keys at all, inherits parent."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"max_iterations": 45}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["model"])
+        self.assertIsNone(creds["provider"])
+
+
+class TestDelegationProviderIntegration(unittest.TestCase):
+    """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
+        """When delegation.provider is configured, child agent gets resolved credentials."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-delegation-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test provider routing", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+            self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
+            self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_cross_provider_delegation(self, mock_creds, mock_cfg):
+        """Parent on Nous, subagent on OpenRouter — full credential switch."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "nous"
+        parent.base_url = "https://inference-api.nousresearch.com/v1"
+        parent.api_key = "nous-key-abc"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Cross-provider test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            # Child should use OpenRouter, NOT Nous
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+            self.assertEqual(kwargs["api_key"], "sk-or-key")
+            self.assertNotEqual(kwargs["base_url"], parent.base_url)
+            self.assertNotEqual(kwargs["api_key"], parent.api_key)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_empty_config_inherits_parent(self, mock_creds, mock_cfg):
+        """When delegation config is empty, child inherits parent credentials."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test inherit", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], parent.model)
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_credential_error_returns_json_error(self, mock_creds, mock_cfg):
+        """When credential resolution fails, delegate_task returns a JSON error."""
+        mock_cfg.return_value = {"model": "bad-model", "provider": "nonexistent"}
+        mock_creds.side_effect = ValueError(
+            "Cannot resolve delegation provider 'nonexistent': Unknown provider"
+        )
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(delegate_task(goal="Should fail", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Cannot resolve", result["error"])
+        self.assertIn("nonexistent", result["error"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_mode_all_children_get_credentials(self, mock_creds, mock_cfg):
+        """In batch mode, all children receive the resolved credentials."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "meta-llama/llama-4-scout",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "meta-llama/llama-4-scout",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-batch",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
+            delegate_task(tasks=tasks, parent_agent=parent)
+
+            for call in mock_run.call_args_list:
+                self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
+                self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
+                self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
+                self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
+                self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
+        """Setting only model (no provider) changes model but keeps parent credentials."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "",
+        }
+        mock_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Model only test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            # Model should be overridden
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            # But provider/base_url/api_key should inherit from parent
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["base_url"], parent.base_url)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, or Signal — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, or Signal. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, or Signal. The gateway
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
-│  │ Telegram │ │ Discord  │ │ WhatsApp │ │  Slack   │ │ Signal │ │
-│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │ Adapter  │ │ Adapter│ │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ │
-│       │             │            │             │           │      │
-│       └─────────────┼────────────┼─────────────┼───────────┘      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌───────┐│
+│  │ Telegram │ │ Discord  │ │ WhatsApp │ │ Slack  │ │ Signal │ │ Email ││
+│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │Adapter │ │Adapter │ │Adapter││
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └───┬────┘ └──┬────┘│
+│       │             │            │            │          │         │     │
+│       └─────────────┼────────────┼────────────┼──────────┼─────────┘     │
 │                           │                                     │
 │                  ┌────────▼────────┐                            │
 │                  │  Session Store  │                            │
@@ -114,9 +114,10 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 # Restrict to specific users (recommended):
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
-SIGNAL_ALLOWED_USERS=+15551234567,+15559876543
+SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
+EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 
-# Or allow specific users across all platforms (comma-separated user IDs):
+# Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321
 
 # Or explicitly allow all users (NOT recommended for bots with terminal access):
@@ -202,6 +203,7 @@ Each platform has its own toolset:
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
+| Email | `hermes-email` | Full tools including terminal |
 
 ## Next Steps
 
@@ -210,3 +212,4 @@ Each platform has its own toolset:
 - [Slack Setup](slack.md)
 - [WhatsApp Setup](whatsapp.md)
 - [Signal Setup](signal.md)
+- [Email Setup](email.md)

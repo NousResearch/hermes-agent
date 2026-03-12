@@ -67,6 +67,26 @@ Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but sh
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
 :::
 
+### Common TTS Issues
+
+- **Edge TTS selected but no audio or empty file**
+  - Check that the `edge-tts` package is installed in your virtualenv:
+    ```bash
+    source .venv/bin/activate
+    uv pip install edge-tts
+    ```
+  - If you're using Telegram and want voice bubbles, install `ffmpeg` as shown above. Without it, Hermes falls back to MP3 and sends a regular audio attachment.
+
+- **ElevenLabs provider selected but calls fail immediately**
+  - Ensure `ELEVENLABS_API_KEY` is set in `~/.hermes/.env` or your shell environment.
+  - Verify that the configured `voice_id` and `model_id` match values available in your ElevenLabs account.
+
+- **OpenAI TTS selected but you get an API error**
+  - Confirm `VOICE_TOOLS_OPENAI_KEY` is set and valid.
+  - Double-check that the model in your config (for example `gpt-4o-mini-tts`) is available to your account.
+
+Hermes logs detailed TTS errors (including stack traces) to the error log directory; see the **Logs** section in the user guide if you need to dig deeper.
+
 ## Voice Message Transcription
 
 Voice messages sent on Telegram, Discord, WhatsApp, or Slack are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.

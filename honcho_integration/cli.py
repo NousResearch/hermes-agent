@@ -153,9 +153,9 @@ def cmd_setup(args) -> None:
     # Recall mode
     current_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
     print(f"\n  Recall mode options:")
-    print("    hybrid  — pre-warmed context + memory tools available (default)")
-    print("    context — pre-warmed context only, memory tools suppressed")
-    print("    tools   — no pre-loaded context, rely on tool calls only")
+    print("    hybrid  — auto-injected context + Honcho tools available (default)")
+    print("    context — auto-injected context only, Honcho tools hidden")
+    print("    tools   — Honcho tools only, no auto-injected context")
     new_recall = _prompt("Recall mode", default=current_recall)
     if new_recall in ("hybrid", "context", "tools"):
         hermes_host["recallMode"] = new_recall
@@ -199,7 +199,7 @@ def cmd_setup(args) -> None:
         _mode_str = f"{hcfg.memory_mode}  (peers: {overrides})"
     print(f"  Mode:      {_mode_str}")
     print(f"  Frequency: {hcfg.write_frequency}")
-    print(f"\n  Tools available in chat:")
+    print(f"\n  Honcho tools available in chat:")
     print(f"    honcho_context  — ask Honcho a question about you (LLM-synthesized)")
     print(f"    honcho_search       — semantic search over your history (no LLM)")
     print(f"    honcho_profile      — your peer card, key facts (no LLM)")
@@ -702,7 +702,7 @@ def cmd_migrate(args) -> None:
     print()
     print("  Context injection")
     print("    OpenClaw: file excerpts injected synchronously before each LLM call.")
-    print("    Hermes:   Honcho context prefetched async at turn end, injected next turn.")
+    print("    Hermes:   Honcho context fetched async at turn end, injected next turn.")
     print("              First turn has no Honcho context; subsequent turns are loaded.")
     print()
     print("  Memory growth")
@@ -710,7 +710,7 @@ def cmd_migrate(args) -> None:
     print("    Hermes:   Honcho observes every message and updates representations")
     print("              automatically. Files become the seed, not the live store.")
     print()
-    print("  Tool surface (available to the agent during conversation)")
+    print("  Honcho tools (available to the agent during conversation)")
     print("    honcho_context   — ask Honcho a question, get a synthesized answer (LLM)")
     print("    honcho_search        — semantic search over stored context (no LLM)")
     print("    honcho_profile       — fast peer card snapshot (no LLM)")

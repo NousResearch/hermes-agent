@@ -90,9 +90,9 @@ class HonchoClientConfig:
     # Max chars of dialectic result to inject into Hermes system prompt
     dialectic_max_chars: int = 600
     # Recall mode: how memory retrieval works when Honcho is active.
-    # "hybrid"  — pre-warmed context + memory tools available (model decides)
-    # "context" — pre-warmed context only, honcho memory tools removed
-    # "tools"   — no pre-loaded context, rely on tool calls only
+    # "hybrid"  — auto-injected context + Honcho tools available (model decides)
+    # "context" — auto-injected context only, Honcho tools removed
+    # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
     # Session resolution
     session_strategy: str = "per-session"

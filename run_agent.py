@@ -1423,7 +1423,7 @@ class AIAgent:
         if hcfg.recall_mode == "context":
             self._strip_honcho_tools_from_surface()
             if not self.quiet_mode:
-                print("  Honcho active — recall_mode: context (tools suppressed)")
+                print("  Honcho active — recall_mode: context (Honcho tools hidden)")
         else:
             if not self.quiet_mode:
                 print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
@@ -1617,14 +1617,14 @@ class AIAgent:
             )
             if recall_mode == "context":
                 honcho_block += (
-                    "Honcho context is pre-loaded into this system prompt below. "
-                    "All memory retrieval comes from this context — no memory tools "
+                    "Honcho context is injected into this system prompt below. "
+                    "All memory retrieval comes from this context — no Honcho tools "
                     "are available. Answer questions about the user, prior sessions, "
                     "and recent work directly from the Honcho Memory section.\n"
                 )
             elif recall_mode == "tools":
                 honcho_block += (
-                    "Memory tools:\n"
+                    "Honcho tools:\n"
                     "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
                     "  honcho_profile                          — user's peer card, key facts, no LLM\n"
@@ -1633,11 +1633,11 @@ class AIAgent:
             else:  # hybrid
                 honcho_block += (
                     "Honcho context (user representation, peer card, and recent session summary) "
-                    "is pre-loaded into this system prompt below. Use it to answer continuity "
+                    "is injected into this system prompt below. Use it to answer continuity "
                     "questions ('where were we?', 'what were we working on?') WITHOUT calling "
-                    "any tools. Only call memory tools when you need information beyond what is "
+                    "any tools. Only call Honcho tools when you need information beyond what is "
                     "already present in the Honcho Memory section.\n"
-                    "Memory tools:\n"
+                    "Honcho tools:\n"
                     "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
                     "  honcho_profile                          — user's peer card, key facts, no LLM\n"

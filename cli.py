@@ -416,7 +416,7 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    VERSION, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
     get_available_skills as _get_available_skills,
     build_welcome_banner,
 )
@@ -993,7 +993,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Wrap in a panel with the title
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {_title_c}]{_agent_name} {VERSION}[/]",
+        title=f"[bold {_title_c}]{_agent_name} v{VERSION} ({RELEASE_DATE})[/]",
         border_style=_border_c,
         padding=(0, 2),
     )
@@ -1099,6 +1099,7 @@ class HermesCLI:
         compact: bool = False,
         resume: str = None,
         checkpoints: bool = False,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1113,6 +1114,7 @@ class HermesCLI:
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
+            pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
         self.console = Console()
@@ -1194,6 +1196,7 @@ class HermesCLI:
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        self.pass_session_id = pass_session_id
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1511,6 +1514,7 @@ class HermesCLI:
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                pass_session_id=self.pass_session_id,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -3120,8 +3124,8 @@ class HermesCLI:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on" if self.show_reasoning else "off"
-            _cprint(f"  {_GOLD}Reasoning effort: {level}{_RST}")
+            display_state = "on ✓" if self.show_reasoning else "off"
+            _cprint(f"  {_GOLD}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
             _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
             return
@@ -3133,14 +3137,16 @@ class HermesCLI:
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._on_reasoning
-            _cprint(f"  {_GOLD}Reasoning display: ON{_RST}")
-            _cprint(f"  {_DIM}Model thinking will be shown during and after each response.{_RST}")
+            save_config_value("display.show_reasoning", True)
+            _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
+            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = None
-            _cprint(f"  {_GOLD}Reasoning display: OFF{_RST}")
+            save_config_value("display.show_reasoning", False)
+            _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
 
         # Effort level change
@@ -3155,9 +3161,9 @@ class HermesCLI:
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -4544,7 +4550,7 @@ class HermesCLI:
                     
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit
@@ -4652,6 +4658,7 @@ def main(
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,
+    pass_session_id: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4757,6 +4764,7 @@ def main(
         compact=compact,
         resume=resume,
         checkpoints=checkpoints,
+        pass_session_id=pass_session_id,
     )
 
     # Inject worktree context into agent's system prompt

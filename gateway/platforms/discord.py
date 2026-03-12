@@ -251,6 +251,7 @@ class DiscordAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
         if not self._client:
@@ -289,6 +290,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         if not self._client:
@@ -326,6 +328,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
         if not self._client:

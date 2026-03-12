@@ -37,4 +37,5 @@ croniter
 # Optional: For messaging platform integrations (gateway)
 python-telegram-bot>=20.0
 discord.py>=2.0
+qq-botpy>=1.2.1
 aiohttp>=3.9.0

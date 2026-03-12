@@ -476,6 +476,30 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "qq",
+        "label": "QQ",
+        "emoji": "🐧",
+        "token_var": "QQ_BOT_APP_ID",
+        "setup_instructions": [
+            "1. Open the QQ Bot developer console and create a bot application",
+            "2. Copy the AppID and AppSecret for your bot",
+            "3. Enable QQ group/C2C public message events",
+            "4. Add your user openid to the allowlist below",
+            "5. Use home targets like user:USER_OPENID or group:GROUP_OPENID",
+        ],
+        "vars": [
+            {"name": "QQ_BOT_APP_ID", "prompt": "QQ AppID", "password": False,
+             "help": "Paste the AppID from the QQ bot console."},
+            {"name": "QQ_BOT_SECRET", "prompt": "QQ AppSecret", "password": True,
+             "help": "Paste the AppSecret from the QQ bot console."},
+            {"name": "QQ_ALLOWED_USERS", "prompt": "Allowed user openids (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Only these QQ users will be able to interact with Hermes."},
+            {"name": "QQ_HOME_CHANNEL", "prompt": "Home target (user:OPENID or group:OPENID)", "password": False,
+             "help": "Used for cron/notification delivery when the user says just 'qq'."},
+        ],
+    },
+    {
         "key": "slack",
         "label": "Slack",
         "emoji": "💼",
@@ -567,6 +591,13 @@ def _platform_status(platform: dict) -> str:
         if val and account:
             return "configured"
         if val or account:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "qq":
+        secret = get_env_value("QQ_BOT_SECRET")
+        if val and secret:
+            return "configured"
+        if val or secret:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "email":

@@ -115,6 +115,11 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be sent as attachments."
     ),
+    "qq": (
+        "You are on QQ bot messaging. Keep formatting plain and concise. "
+        "Prefer plain text over markdown-heavy formatting because rendering is limited. "
+        "Address replies as chat messages, not emails or terminal output."
+    ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "

@@ -24,6 +24,7 @@ class Platform(Enum):
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
+    QQ = "qq"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
@@ -159,10 +160,12 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
-            # Platforms that use token/api_key auth
-            if config.token or config.api_key:
+            if platform == Platform.QQ and config.token and config.api_key:
                 connected.append(platform)
-            # WhatsApp uses enabled flag only (bridge handles auth)
+            # Platforms that use token/api_key auth
+            elif platform != Platform.QQ and (config.token or config.api_key):
+                connected.append(platform)
+            # Platforms that use token/api_key auth
             elif platform == Platform.WHATSAPP:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
@@ -331,6 +334,7 @@ def load_gateway_config() -> GatewayConfig:
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
+        Platform.QQ: "QQ_BOT_APP_ID",
         Platform.SLACK: "SLACK_BOT_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
@@ -380,6 +384,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.DISCORD,
             chat_id=discord_home,
             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # QQ
+    qq_app_id = os.getenv("QQ_BOT_APP_ID")
+    qq_secret = os.getenv("QQ_BOT_SECRET")
+    if qq_app_id and qq_secret:
+        if Platform.QQ not in config.platforms:
+            config.platforms[Platform.QQ] = PlatformConfig()
+        config.platforms[Platform.QQ].enabled = True
+        config.platforms[Platform.QQ].token = qq_app_id
+        config.platforms[Platform.QQ].api_key = qq_secret
+        config.platforms[Platform.QQ].extra["sandbox"] = (
+            os.getenv("QQ_BOT_SANDBOX", "").lower() in ("true", "1", "yes")
+        )
+
+    qq_home = os.getenv("QQ_HOME_CHANNEL")
+    if qq_home and Platform.QQ in config.platforms:
+        config.platforms[Platform.QQ].home_channel = HomeChannel(
+            platform=Platform.QQ,
+            chat_id=qq_home,
+            name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
         )
     
     # WhatsApp (typically uses different auth mechanism)

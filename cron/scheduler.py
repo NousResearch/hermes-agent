@@ -100,6 +100,7 @@ def _deliver_result(job: dict, content: str) -> None:
     platform_map = {
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,
+        "qq": Platform.QQ,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,

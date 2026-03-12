@@ -516,7 +516,6 @@ def setup_model_provider(config: dict):
         keep_label = None  # No provider configured — don't show "Keep current"
 
     provider_choices = [
-        "Nous Portal API key (direct API key access)",
         "Login with Nous Portal (Nous Research subscription — OAuth)",
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
@@ -530,7 +529,7 @@ def setup_model_provider(config: dict):
         provider_choices.append(keep_label)
     
     # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
-    default_provider = len(provider_choices) - 1 if has_any_provider else 3
+    default_provider = len(provider_choices) - 1 if has_any_provider else 2
     
     if not has_any_provider:
         print_warning("An inference provider is required for Hermes to work.")
@@ -542,37 +541,7 @@ def setup_model_provider(config: dict):
     selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
     nous_models = []  # populated if Nous login succeeds
 
-    if provider_idx == 0:  # Nous Portal API Key (direct)
-        selected_provider = "nous-api"
-        print()
-        print_header("Nous Portal API Key")
-        print_info("Use a Nous Portal API key for direct access to Nous inference.")
-        print_info("Get your API key at: https://portal.nousresearch.com")
-        print()
-
-        existing_key = get_env_value("NOUS_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update Nous API key?", False):
-                api_key = prompt("  Nous API key", password=True)
-                if api_key:
-                    save_env_value("NOUS_API_KEY", api_key)
-                    print_success("Nous API key updated")
-        else:
-            api_key = prompt("  Nous API key", password=True)
-            if api_key:
-                save_env_value("NOUS_API_KEY", api_key)
-                print_success("Nous API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("nous-api", "https://inference-api.nousresearch.com/v1")
-
-    elif provider_idx == 1:  # Nous Portal
+    if provider_idx == 0:  # Nous Portal (OAuth)
         selected_provider = "nous"
         print()
         print_header("Nous Portal Login")
@@ -612,7 +581,7 @@ def setup_model_provider(config: dict):
             print_info("You can try again later with: hermes model")
             selected_provider = None
 
-    elif provider_idx == 2:  # OpenAI Codex
+    elif provider_idx == 1:  # OpenAI Codex
         selected_provider = "openai-codex"
         print()
         print_header("OpenAI Codex Login")
@@ -636,7 +605,7 @@ def setup_model_provider(config: dict):
             print_info("You can try again later with: hermes model")
             selected_provider = None
 
-    elif provider_idx == 3:  # OpenRouter
+    elif provider_idx == 2:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -686,7 +655,7 @@ def setup_model_provider(config: dict):
         except Exception as e:
             logger.debug("Could not save provider to config.yaml: %s", e)
 
-    elif provider_idx == 4:  # Custom endpoint
+    elif provider_idx == 3:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -737,7 +706,7 @@ def setup_model_provider(config: dict):
 
         print_success("Custom endpoint configured")
 
-    elif provider_idx == 5:  # Z.AI / GLM
+    elif provider_idx == 4:  # Z.AI / GLM
         selected_provider = "zai"
         print()
         print_header("Z.AI / GLM API Key")
@@ -791,7 +760,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("zai", zai_base_url)
 
-    elif provider_idx == 6:  # Kimi / Moonshot
+    elif provider_idx == 5:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
         print()
         print_header("Kimi / Moonshot API Key")
@@ -823,7 +792,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
 
-    elif provider_idx == 7:  # MiniMax
+    elif provider_idx == 6:  # MiniMax
         selected_provider = "minimax"
         print()
         print_header("MiniMax API Key")
@@ -855,7 +824,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax", pconfig.inference_base_url)
 
-    elif provider_idx == 8:  # MiniMax China
+    elif provider_idx == 7:  # MiniMax China
         selected_provider = "minimax-cn"
         print()
         print_header("MiniMax China API Key")
@@ -887,12 +856,12 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "nous-api", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -941,14 +910,6 @@ def setup_model_provider(config: dict):
             # instead of falling through to the OpenRouter static list.
             print_warning("Could not fetch available models from Nous Portal.")
             print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
-            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
-            if custom:
-                config['model'] = custom
-                save_env_value("LLM_MODEL", custom)
-        elif selected_provider == "nous-api":
-            # Nous API key provider — prompt for model manually
-            print_info("Enter a model name available on Nous inference API.")
-            print_info("Examples: anthropic/claude-opus-4.6, deepseek/deepseek-r1")
             custom = prompt(f"  Model name (Enter to keep '{current_model}')")
             if custom:
                 config['model'] = custom

@@ -935,6 +935,36 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
+        try:
+            blocked = check_website_access(url)
+        except WebsitePolicyError as policy_err:
+            error_msg = f"Website policy error: {policy_err}"
+            logger.warning("%s", error_msg)
+            return json.dumps({
+                "results": [{
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": error_msg,
+                }]
+            }, ensure_ascii=False)
+
+        if blocked:
+            logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+            return json.dumps({
+                "results": [{
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {
+                        "host": blocked["host"],
+                        "rule": blocked["rule"],
+                        "source": blocked["source"],
+                    },
+                }]
+            }, ensure_ascii=False)
+
         # Use Firecrawl's v2 crawl functionality
         # Docs: https://docs.firecrawl.dev/features/crawl
         # The crawl() method automatically waits for completion and returns all data
@@ -1039,6 +1069,38 @@ async def web_crawl_tool(
             # Extract URL and title from metadata
             page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
             title = metadata.get("title", "")
+
+            try:
+                final_blocked = check_website_access(page_url)
+            except WebsitePolicyError as policy_err:
+                error_msg = f"Website policy error: {policy_err}"
+                logger.warning("%s", error_msg)
+                pages.append({
+                    "url": page_url,
+                    "title": title,
+                    "content": "",
+                    "raw_content": "",
+                    "metadata": metadata,
+                    "error": error_msg,
+                })
+                continue
+
+            if final_blocked:
+                logger.info("Blocked crawled page %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                pages.append({
+                    "url": page_url,
+                    "title": title,
+                    "content": "",
+                    "raw_content": "",
+                    "metadata": metadata,
+                    "error": final_blocked["message"],
+                    "blocked_by_policy": {
+                        "host": final_blocked["host"],
+                        "rule": final_blocked["rule"],
+                        "source": final_blocked["source"],
+                    },
+                })
+                continue
             
             # Choose content (prefer markdown)
             content = content_markdown or content_html or ""
@@ -1135,9 +1197,11 @@ async def web_crawl_tool(
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
+                "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error")
+                "error": r.get("error"),
+                **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
             }
             for r in response.get("results", [])
         ]

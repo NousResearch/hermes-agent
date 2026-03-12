@@ -345,7 +345,10 @@ def test_browser_navigate_blocks_redirected_final_url(monkeypatch):
             }
         pytest.fail(f"unexpected URL checked: {url}")
 
+    cleanup_calls = []
+
     monkeypatch.setattr(browser_tool, "check_website_access", fake_check)
+    monkeypatch.setattr(browser_tool, "cleanup_browser", lambda task_id=None: cleanup_calls.append(task_id))
     monkeypatch.setattr(browser_tool, "_get_session_info", lambda task_id: {"_first_nav": False})
     monkeypatch.setattr(browser_tool, "_run_browser_command", lambda *args, **kwargs: {
         "success": True,
@@ -357,6 +360,7 @@ def test_browser_navigate_blocks_redirected_final_url(monkeypatch):
     assert result["success"] is False
     assert result["url"] == "https://blocked.test/final"
     assert result["blocked_by_policy"]["rule"] == "blocked.test"
+    assert cleanup_calls == ["default"]
 
 
 @pytest.mark.asyncio
@@ -436,4 +440,72 @@ async def test_web_extract_blocks_redirected_final_url(monkeypatch):
 
     assert result["results"][0]["url"] == "https://blocked.test/final"
     assert result["results"][0]["content"] == ""
+    assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
+
+@pytest.mark.asyncio
+async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
+    from tools import web_tools
+
+    monkeypatch.setattr(
+        web_tools,
+        "check_website_access",
+        lambda url: {
+            "host": "blocked.test",
+            "rule": "blocked.test",
+            "source": "config",
+            "message": "Blocked by website policy",
+        },
+    )
+    monkeypatch.setattr(
+        web_tools,
+        "_get_firecrawl_client",
+        lambda: pytest.fail("firecrawl should not run for blocked crawl URL"),
+    )
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+    result = json.loads(await web_tools.web_crawl_tool("https://blocked.test", use_llm_processing=False))
+
+    assert result["results"][0]["url"] == "https://blocked.test"
+    assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
+
+@pytest.mark.asyncio
+async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
+    from tools import web_tools
+
+    def fake_check(url):
+        if url == "https://allowed.test":
+            return None
+        if url == "https://blocked.test/final":
+            return {
+                "host": "blocked.test",
+                "rule": "blocked.test",
+                "source": "config",
+                "message": "Blocked by website policy",
+            }
+        pytest.fail(f"unexpected URL checked: {url}")
+
+    class FakeCrawlClient:
+        def crawl(self, url, **kwargs):
+            return {
+                "data": [
+                    {
+                        "markdown": "secret crawl content",
+                        "metadata": {
+                            "title": "Redirected crawl page",
+                            "sourceURL": "https://blocked.test/final",
+                        },
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(web_tools, "check_website_access", fake_check)
+    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeCrawlClient())
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+    result = json.loads(await web_tools.web_crawl_tool("https://allowed.test", use_llm_processing=False))
+
+    assert result["results"][0]["content"] == ""
+    assert result["results"][0]["error"] == "Blocked by website policy"
     assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"

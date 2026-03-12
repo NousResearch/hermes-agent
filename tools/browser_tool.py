@@ -1038,6 +1038,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             }, ensure_ascii=False)
 
         if final_blocked:
+            try:
+                cleanup_browser(effective_task_id)
+            except Exception as cleanup_err:
+                logger.warning("Failed to clean up blocked browser session for task %s: %s", effective_task_id, cleanup_err)
             return json.dumps({
                 "success": False,
                 "url": final_url,

@@ -1129,12 +1129,17 @@ class HermesCLI:
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
-        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
-        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Model comes from: CLI arg or config.yaml (single source of truth).
+        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
+        # authoritative.  This avoids conflicts in multi-agent setups where
+        # env vars would stomp each other.
+        _model_config = CLI_CONFIG.get("model", {})
+        _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
+        self.model = model or _config_model or "anthropic/claude-opus-4.6"
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
+        self._model_is_default = not model
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url

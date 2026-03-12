@@ -1544,7 +1544,7 @@ class GatewayRunner:
         config_path = _hermes_home / 'config.yaml'
 
         # Resolve current model and provider from config
-        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        current = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
         current_provider = "openrouter"
         try:
             if config_path.exists():
@@ -1999,7 +1999,7 @@ class GatewayRunner:
                 return
 
             # Read model from config (same as _run_agent)
-            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+            model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
             try:
                 import yaml as _y
                 _cfg_path = _hermes_home / "config.yaml"
@@ -3093,7 +3093,7 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+            model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
             try:
                 import yaml as _y

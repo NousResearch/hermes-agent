@@ -137,8 +137,7 @@ class TestBrowserVisionAnnotate:
 
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
-            patch("tools.browser_tool._aux_vision_client") as mock_client,
-            patch("tools.browser_tool._DEFAULT_VISION_MODEL", "test-model"),
+            patch("tools.browser_tool.call_llm") as mock_call_llm,
             patch("tools.browser_tool._get_vision_model", return_value="test-model"),
         ):
             mock_cmd.return_value = {"success": True, "data": {}}
@@ -159,8 +158,7 @@ class TestBrowserVisionAnnotate:
 
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
-            patch("tools.browser_tool._aux_vision_client") as mock_client,
-            patch("tools.browser_tool._DEFAULT_VISION_MODEL", "test-model"),
+            patch("tools.browser_tool.call_llm") as mock_call_llm,
             patch("tools.browser_tool._get_vision_model", return_value="test-model"),
         ):
             mock_cmd.return_value = {"success": True, "data": {}}

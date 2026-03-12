@@ -959,7 +959,7 @@ class TestFlushSentinelNotLeaked:
         agent.client.chat.completions.create.return_value = mock_response
 
         # Bypass auxiliary client so flush uses agent.client directly
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)):
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
             agent.flush_memories(messages, min_turns=0)
 
         # Check what was actually sent to the API

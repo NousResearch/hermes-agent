@@ -1956,24 +1956,26 @@ class TestToolLoopGovernance:
     def test_text_response_resets_counter(self):
         """A text response resets the tool loop counter."""
         handler = SamplingHandler("tl2", {"max_tool_rounds": 1})
-        fake_client = MagicMock()
+
+        # Use a list to hold the current response, so the side_effect can
+        # pick up changes between calls.
+        responses = [_make_llm_tool_response()]
 
         with patch(
             "agent.auxiliary_client.call_llm",
-            return_value=fake_client.chat.completions.create.return_value,
+            side_effect=lambda **kw: responses[0],
         ):
             # Tool response (round 1 of 1 allowed)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
             r1 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r1, CreateMessageResultWithTools)
 
             # Text response resets counter
-            fake_client.chat.completions.create.return_value = _make_llm_response()
+            responses[0] = _make_llm_response()
             r2 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r2, CreateMessageResult)
 
             # Tool response again (should succeed since counter was reset)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
+            responses[0] = _make_llm_tool_response()
             r3 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r3, CreateMessageResultWithTools)
 
@@ -2122,7 +2124,7 @@ class TestModelWhitelist:
             assert isinstance(result, CreateMessageResult)
 
     def test_disallowed_model_rejected(self):
-        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"]})
+        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"], "model": "test-model"})
         fake_client = MagicMock()
 
         with patch(

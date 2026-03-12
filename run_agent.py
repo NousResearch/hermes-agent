@@ -418,36 +418,50 @@ class AIAgent:
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
-        # Initialize OpenAI client - defaults to OpenRouter
-        client_kwargs = {}
-        
-        # Default to OpenRouter if no base_url provided
-        if base_url:
-            client_kwargs["base_url"] = base_url
+        # Initialize OpenAI client via centralized provider router.
+        # The router handles auth resolution, base URL, headers, and
+        # Codex wrapping for all known providers.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex Responses API streaming.
+        if api_key and base_url:
+            # Explicit credentials from CLI/gateway — construct directly.
+            # The runtime provider resolver already handled auth for us.
+            client_kwargs = {"api_key": api_key, "base_url": base_url}
+            effective_base = base_url
+            if "openrouter" in effective_base.lower():
+                client_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "X-OpenRouter-Title": "Hermes Agent",
+                    "X-OpenRouter-Categories": "productivity,cli-agent",
+                }
+            elif "api.kimi.com" in effective_base.lower():
+                client_kwargs["default_headers"] = {
+                    "User-Agent": "KimiCLI/1.0",
+                }
         else:
-            client_kwargs["base_url"] = OPENROUTER_BASE_URL
-        
-        # Handle API key - OpenRouter is the primary provider
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        else:
-            # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
-            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
-        
-        # OpenRouter app attribution — shows hermes-agent in rankings/analytics
-        effective_base = client_kwargs.get("base_url", "")
-        if "openrouter" in effective_base.lower():
-            client_kwargs["default_headers"] = {
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-            }
-        elif "api.kimi.com" in effective_base.lower():
-            # Kimi Code API requires a recognized coding-agent User-Agent
-            # (see https://github.com/MoonshotAI/kimi-cli)
-            client_kwargs["default_headers"] = {
-                "User-Agent": "KimiCLI/1.0",
-            }
+            # No explicit creds — use the centralized provider router
+            from agent.auxiliary_client import resolve_provider_client
+            _routed_client, _ = resolve_provider_client(
+                self.provider or "auto", model=self.model, raw_codex=True)
+            if _routed_client is not None:
+                client_kwargs = {
+                    "api_key": _routed_client.api_key,
+                    "base_url": str(_routed_client.base_url),
+                }
+                # Preserve any default_headers the router set
+                if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
+                    client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+            else:
+                # Final fallback: try raw OpenRouter key
+                client_kwargs = {
+                    "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+                    "base_url": OPENROUTER_BASE_URL,
+                    "default_headers": {
+                        "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                        "X-OpenRouter-Title": "Hermes Agent",
+                        "X-OpenRouter-Categories": "productivity,cli-agent",
+                    },
+                }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
@@ -2236,75 +2250,6 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    # API-key providers: provider → (base_url, [env_var_names])
-    _FALLBACK_API_KEY_PROVIDERS = {
-        "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
-        "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
-        "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
-        "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
-        "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
-    }
-
-    # OAuth providers: provider → (resolver_import_path, api_mode)
-    # Each resolver returns {"api_key": ..., "base_url": ...}.
-    _FALLBACK_OAUTH_PROVIDERS = {
-        "openai-codex": ("resolve_codex_runtime_credentials", "codex_responses"),
-        "nous": ("resolve_nous_runtime_credentials", "chat_completions"),
-    }
-
-    def _resolve_fallback_credentials(
-        self, fb_provider: str, fb_config: dict
-    ) -> Optional[tuple]:
-        """Resolve credentials for a fallback provider.
-
-        Returns (api_key, base_url, api_mode) on success, or None on failure.
-        Handles three cases:
-          1. OAuth providers (openai-codex, nous) — call credential resolver
-          2. API-key providers (openrouter, zai, etc.) — read env var
-          3. Custom endpoints — use base_url + api_key_env from config
-        """
-        # ── 1. OAuth providers ────────────────────────────────────────
-        if fb_provider in self._FALLBACK_OAUTH_PROVIDERS:
-            resolver_name, api_mode = self._FALLBACK_OAUTH_PROVIDERS[fb_provider]
-            try:
-                import hermes_cli.auth as _auth
-                resolver = getattr(_auth, resolver_name)
-                creds = resolver()
-                return creds["api_key"], creds["base_url"], api_mode
-            except Exception as e:
-                logging.warning(
-                    "Fallback to %s failed (credential resolution): %s",
-                    fb_provider, e,
-                )
-                return None
-
-        # ── 2. API-key providers ──────────────────────────────────────
-        fb_key = (fb_config.get("api_key") or "").strip()
-        if not fb_key:
-            key_env = (fb_config.get("api_key_env") or "").strip()
-            if key_env:
-                fb_key = os.getenv(key_env, "")
-            elif fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
-                for env_var in self._FALLBACK_API_KEY_PROVIDERS[fb_provider][1]:
-                    fb_key = os.getenv(env_var, "")
-                    if fb_key:
-                        break
-        if not fb_key:
-            logging.warning(
-                "Fallback model configured but no API key found for provider '%s'",
-                fb_provider,
-            )
-            return None
-
-        # ── 3. Resolve base URL ───────────────────────────────────────
-        fb_base_url = (fb_config.get("base_url") or "").strip()
-        if not fb_base_url and fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
-            fb_base_url = self._FALLBACK_API_KEY_PROVIDERS[fb_provider][0]
-        if not fb_base_url:
-            fb_base_url = OPENROUTER_BASE_URL
-
-        return fb_key, fb_base_url, "chat_completions"
-
     def _try_activate_fallback(self) -> bool:
         """Switch to the configured fallback model/provider.
 
@@ -2312,6 +2257,10 @@ class AIAgent:
         OpenAI client, model slug, and provider in-place so the retry loop
         can continue with the new backend.  One-shot: returns False if
         already activated or not configured.
+
+        Uses the centralized provider router (resolve_provider_client) for
+        auth resolution and client construction — no duplicated provider→key
+        mappings.
         """
         if self._fallback_activated or not self._fallback_model:
             return False
@@ -2322,25 +2271,31 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return False
 
-        resolved = self._resolve_fallback_credentials(fb_provider, fb)
-        if resolved is None:
-            return False
-        fb_key, fb_base_url, fb_api_mode = resolved
-
-        # Build new client
+        # Use centralized router for client construction.
+        # raw_codex=True because the main agent needs direct responses.stream()
+        # access for Codex providers.
         try:
-            client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
-            if "openrouter" in fb_base_url.lower():
-                client_kwargs["default_headers"] = {
-                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                    "X-OpenRouter-Title": "Hermes Agent",
-                    "X-OpenRouter-Categories": "productivity,cli-agent",
-                }
-            elif "api.kimi.com" in fb_base_url.lower():
-                client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+            from agent.auxiliary_client import resolve_provider_client
+            fb_client, _ = resolve_provider_client(
+                fb_provider, model=fb_model, raw_codex=True)
+            if fb_client is None:
+                logging.warning(
+                    "Fallback to %s failed: provider not configured",
+                    fb_provider)
+                return False
 
-            self.client = OpenAI(**client_kwargs)
-            self._client_kwargs = client_kwargs
+            # Determine api_mode from provider
+            fb_api_mode = "chat_completions"
+            if fb_provider == "openai-codex":
+                fb_api_mode = "codex_responses"
+            fb_base_url = str(fb_client.base_url)
+
+            # Swap client and config in-place
+            self.client = fb_client
+            self._client_kwargs = {
+                "api_key": fb_client.api_key,
+                "base_url": fb_base_url,
+            }
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider

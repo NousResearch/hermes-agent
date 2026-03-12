@@ -536,6 +536,7 @@ def resolve_provider_client(
     provider: str,
     model: str = None,
     async_mode: bool = False,
+    raw_codex: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -553,6 +554,10 @@ def resolve_provider_client(
         model: Model slug override.  If None, uses the provider's default
                auxiliary model.
         async_mode: If True, return an async-compatible client.
+        raw_codex: If True, return a raw OpenAI client for Codex providers
+            instead of wrapping in CodexAuxiliaryClient.  Use this when
+            the caller needs direct access to responses.stream() (e.g.,
+            the main agent loop).
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
@@ -597,6 +602,18 @@ def resolve_provider_client(
 
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
+        if raw_codex:
+            # Return the raw OpenAI client for callers that need direct
+            # access to responses.stream() (e.g., the main agent loop).
+            codex_token = _read_codex_access_token()
+            if not codex_token:
+                logger.warning("resolve_provider_client: openai-codex requested "
+                               "but no Codex OAuth token found (run: hermes model)")
+                return None, None
+            final_model = model or _CODEX_AUX_MODEL
+            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+            return (raw_client, final_model)
+        # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _try_codex()
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "

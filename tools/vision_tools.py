@@ -37,15 +37,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import get_async_vision_auxiliary_client
+from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
-
-# Resolve vision auxiliary client at module level.
-# Uses get_async_vision_auxiliary_client() which properly handles Codex
-# routing (Responses API adapter) instead of raw AsyncOpenAI construction.
-_aux_async_client, DEFAULT_VISION_MODEL = get_async_vision_auxiliary_client()
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
@@ -185,7 +180,7 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
-    model: str = DEFAULT_VISION_MODEL,
+    model: str = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -245,15 +240,6 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         
-        # Check auxiliary vision client availability
-        if _aux_async_client is None or DEFAULT_VISION_MODEL is None:
-            logger.error("Vision analysis unavailable: no auxiliary vision model configured")
-            return json.dumps({
-                "success": False,
-                "analysis": "Vision analysis unavailable: no auxiliary vision model configured. "
-                            "Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools."
-            }, indent=2, ensure_ascii=False)
-        
         # Determine if this is a local file path or a remote URL
         local_path = Path(image_url)
         if local_path.is_file():
@@ -309,18 +295,18 @@ async def vision_analyze_tool(
             }
         ]
         
-        logger.info("Processing image with %s...", model)
+        logger.info("Processing image with vision model...")
         
-        # Call the vision API
-        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
-        _extra = get_auxiliary_extra_body()
-        response = await _aux_async_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.1,
-            **auxiliary_max_tokens_param(2000),
-            **({} if not _extra else {"extra_body": _extra}),
-        )
+        # Call the vision API via centralized router
+        call_kwargs = {
+            "task": "vision",
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 2000,
+        }
+        if model:
+            call_kwargs["model"] = model
+        response = await async_call_llm(**call_kwargs)
         
         # Extract the analysis
         analysis = response.choices[0].message.content.strip()
@@ -391,7 +377,18 @@ async def vision_analyze_tool(
 
 def check_vision_requirements() -> bool:
     """Check if an auxiliary vision model is available."""
-    return _aux_async_client is not None
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client("openrouter")
+        if client is not None:
+            return True
+        client, _ = resolve_provider_client("nous")
+        if client is not None:
+            return True
+        client, _ = resolve_provider_client("custom")
+        return client is not None
+    except Exception:
+        return False
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -419,10 +416,9 @@ if __name__ == "__main__":
         print("Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools.")
         exit(1)
     else:
-        print(f"✅ Vision model available: {DEFAULT_VISION_MODEL}")
+        print("✅ Vision model available")
     
     print("🛠️ Vision tools ready for use!")
-    print(f"🧠 Using model: {DEFAULT_VISION_MODEL}")
     
     # Show debug mode status
     if _debug.active:
@@ -489,9 +485,7 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = (os.getenv("AUXILIARY_VISION_MODEL", "").strip()
-             or DEFAULT_VISION_MODEL
-             or "google/gemini-3-flash-preview")
+    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)
 
 

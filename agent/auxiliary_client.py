@@ -784,3 +784,253 @@ def auxiliary_max_tokens_param(value: int) -> dict:
             and "api.openai.com" in custom_base.lower()):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
+
+
+# ── Centralized LLM Call API ────────────────────────────────────────────────
+#
+# call_llm() and async_call_llm() own the full request lifecycle:
+#   1. Resolve provider + model from task config (or explicit args)
+#   2. Get or create a cached client for that provider
+#   3. Format request args for the provider + model (max_tokens handling, etc.)
+#   4. Make the API call
+#   5. Return the response
+#
+# Every auxiliary LLM consumer should use these instead of manually
+# constructing clients and calling .chat.completions.create().
+
+# Client cache: (provider, async_mode) -> (client, default_model)
+_client_cache: Dict[tuple, tuple] = {}
+
+
+def _get_cached_client(
+    provider: str, model: str = None, async_mode: bool = False,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Get or create a cached client for the given provider."""
+    cache_key = (provider, async_mode)
+    if cache_key in _client_cache:
+        cached_client, cached_default = _client_cache[cache_key]
+        return cached_client, model or cached_default
+    client, default_model = resolve_provider_client(provider, model, async_mode)
+    if client is not None:
+        _client_cache[cache_key] = (client, default_model)
+    return client, model or default_model
+
+
+def _resolve_task_provider_model(
+    task: str = None,
+    provider: str = None,
+    model: str = None,
+) -> Tuple[str, Optional[str]]:
+    """Determine provider + model for a call.
+
+    Priority:
+      1. Explicit provider/model args (always win)
+      2. Env var overrides (AUXILIARY_{TASK}_PROVIDER, etc.)
+      3. Config file (auxiliary.{task}.provider/model or compression.*)
+      4. "auto" (full auto-detection chain)
+
+    Returns (provider, model) where model may be None (use provider default).
+    """
+    if provider:
+        return provider, model
+
+    if task:
+        # Check env var overrides first
+        env_provider = _get_auxiliary_provider(task)
+        if env_provider != "auto":
+            # Check for env var model override too
+            env_model = None
+            for prefix in ("AUXILIARY_", "CONTEXT_"):
+                val = os.getenv(f"{prefix}{task.upper()}_MODEL", "").strip()
+                if val:
+                    env_model = val
+                    break
+            return env_provider, model or env_model
+
+        # Read from config file
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except ImportError:
+            return "auto", model
+
+        # Check auxiliary.{task} section
+        aux = config.get("auxiliary", {})
+        task_config = aux.get(task, {})
+        cfg_provider = task_config.get("provider", "").strip() or None
+        cfg_model = task_config.get("model", "").strip() or None
+
+        # Backwards compat: compression section has its own keys
+        if task == "compression" and not cfg_provider:
+            comp = config.get("compression", {})
+            cfg_provider = comp.get("summary_provider", "").strip() or None
+            cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
+
+        if cfg_provider and cfg_provider != "auto":
+            return cfg_provider, model or cfg_model
+        return "auto", model or cfg_model
+
+    return "auto", model
+
+
+def _build_call_kwargs(
+    provider: str,
+    model: str,
+    messages: list,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    tools: Optional[list] = None,
+    timeout: float = 30.0,
+    extra_body: Optional[dict] = None,
+) -> dict:
+    """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "timeout": timeout,
+    }
+
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+
+    if max_tokens is not None:
+        # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
+        # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
+        if provider == "custom":
+            custom_base = os.getenv("OPENAI_BASE_URL", "")
+            if "api.openai.com" in custom_base.lower():
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+    if tools:
+        kwargs["tools"] = tools
+
+    # Provider-specific extra_body
+    merged_extra = dict(extra_body or {})
+    if provider == "nous" or auxiliary_is_nous:
+        merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
+    if merged_extra:
+        kwargs["extra_body"] = merged_extra
+
+    return kwargs
+
+
+def call_llm(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    messages: list,
+    temperature: float = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = 30.0,
+    extra_body: dict = None,
+) -> Any:
+    """Centralized synchronous LLM call.
+
+    Resolves provider + model (from task config, explicit args, or auto-detect),
+    handles auth, request formatting, and model-specific arg adjustments.
+
+    Args:
+        task: Auxiliary task name ("compression", "vision", "web_extract",
+              "session_search", "skills_hub", "mcp", "flush_memories").
+              Reads provider:model from config/env. Ignored if provider is set.
+        provider: Explicit provider override.
+        model: Explicit model override.
+        messages: Chat messages list.
+        temperature: Sampling temperature (None = provider default).
+        max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
+        tools: Tool definitions (for function calling).
+        timeout: Request timeout in seconds.
+        extra_body: Additional request body fields.
+
+    Returns:
+        Response object with .choices[0].message.content
+
+    Raises:
+        RuntimeError: If no provider is configured.
+    """
+    resolved_provider, resolved_model = _resolve_task_provider_model(
+        task, provider, model)
+
+    client, final_model = _get_cached_client(resolved_provider, resolved_model)
+    if client is None:
+        # Fallback: try openrouter
+        if resolved_provider != "openrouter":
+            logger.warning("Provider %s unavailable, falling back to openrouter",
+                           resolved_provider)
+            client, final_model = _get_cached_client(
+                "openrouter", resolved_model or _OPENROUTER_MODEL)
+    if client is None:
+        raise RuntimeError(
+            f"No LLM provider configured for task={task} provider={resolved_provider}. "
+            f"Run: hermes setup")
+
+    kwargs = _build_call_kwargs(
+        resolved_provider, final_model, messages,
+        temperature=temperature, max_tokens=max_tokens,
+        tools=tools, timeout=timeout, extra_body=extra_body)
+
+    # Handle max_tokens vs max_completion_tokens retry
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as first_err:
+        err_str = str(first_err)
+        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+            kwargs.pop("max_tokens", None)
+            kwargs["max_completion_tokens"] = max_tokens
+            return client.chat.completions.create(**kwargs)
+        raise
+
+
+async def async_call_llm(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    messages: list,
+    temperature: float = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = 30.0,
+    extra_body: dict = None,
+) -> Any:
+    """Centralized asynchronous LLM call.
+
+    Same as call_llm() but async. See call_llm() for full documentation.
+    """
+    resolved_provider, resolved_model = _resolve_task_provider_model(
+        task, provider, model)
+
+    client, final_model = _get_cached_client(
+        resolved_provider, resolved_model, async_mode=True)
+    if client is None:
+        if resolved_provider != "openrouter":
+            logger.warning("Provider %s unavailable, falling back to openrouter",
+                           resolved_provider)
+            client, final_model = _get_cached_client(
+                "openrouter", resolved_model or _OPENROUTER_MODEL,
+                async_mode=True)
+    if client is None:
+        raise RuntimeError(
+            f"No LLM provider configured for task={task} provider={resolved_provider}. "
+            f"Run: hermes setup")
+
+    kwargs = _build_call_kwargs(
+        resolved_provider, final_model, messages,
+        temperature=temperature, max_tokens=max_tokens,
+        tools=tools, timeout=timeout, extra_body=extra_body)
+
+    try:
+        return await client.chat.completions.create(**kwargs)
+    except Exception as first_err:
+        err_str = str(first_err)
+        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+            kwargs.pop("max_tokens", None)
+            kwargs["max_completion_tokens"] = max_tokens
+            return await client.chat.completions.create(**kwargs)
+        raise

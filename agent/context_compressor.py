@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import get_text_auxiliary_client
+from agent.auxiliary_client import call_llm
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
@@ -53,8 +53,7 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, default_model = get_text_auxiliary_client("compression")
-        self.summary_model = summary_model_override or default_model
+        self.summary_model = summary_model_override or ""
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -120,73 +119,30 @@ TURNS TO SUMMARIZE:
 
 Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
-        # 1. Try the auxiliary model (cheap/fast)
-        if self.client:
-            try:
-                return self._call_summary_model(self.client, self.summary_model, prompt)
-            except Exception as e:
-                logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
-
-        # 2. Fallback: re-try via the centralized provider router.
-        #    This covers all configured providers (Codex OAuth, API-key
-        #    providers, etc.) without ad-hoc env var lookups.
-        from agent.auxiliary_client import resolve_provider_client
-        fallback_providers = ["custom", "openrouter", "nous", "codex"]
-        for fb_provider in fallback_providers:
-            try:
-                fb_client, fb_model = resolve_provider_client(
-                    fb_provider, model=self.model)
-                if fb_client is None:
-                    continue
-                # Don't retry the same client that just failed
-                if (self.client is not None
-                        and hasattr(fb_client, "base_url")
-                        and hasattr(self.client, "base_url")
-                        and str(fb_client.base_url) == str(self.client.base_url)):
-                    continue
-                logger.info("Retrying context summary with fallback provider "
-                            "%s (%s)", fb_provider, fb_model)
-                summary = self._call_summary_model(fb_client, fb_model, prompt)
-                # Promote successful fallback for future compressions
-                self.client = fb_client
-                self.summary_model = fb_model
-                return summary
-            except Exception as fallback_err:
-                logging.warning("Fallback provider %s failed: %s",
-                                fb_provider, fallback_err)
-
-        # 3. All providers failed — return None so the caller drops turns
-        #    without a summary.
-        logging.warning("Context compression: no provider available for "
-                        "summary. Middle turns will be dropped without summary.")
-        return None
-
-    def _call_summary_model(self, client, model: str, prompt: str) -> str:
-        """Make the actual LLM call to generate a summary. Raises on failure."""
-        kwargs = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "timeout": 30.0,
-        }
-        # Most providers (OpenRouter, local models) use max_tokens.
-        # Direct OpenAI with newer models (gpt-4o, o-series, gpt-5+)
-        # requires max_completion_tokens instead.
+        # Use the centralized LLM router — handles provider resolution,
+        # auth, and fallback internally.
         try:
-            kwargs["max_tokens"] = self.summary_target_tokens * 2
-            response = client.chat.completions.create(**kwargs)
-        except Exception as first_err:
-            if "max_tokens" in str(first_err) or "unsupported_parameter" in str(first_err):
-                kwargs.pop("max_tokens", None)
-                kwargs["max_completion_tokens"] = self.summary_target_tokens * 2
-                response = client.chat.completions.create(**kwargs)
-            else:
-                raise
-
-        summary = response.choices[0].message.content.strip()
-        if not summary.startswith("[CONTEXT SUMMARY]:"):
-            summary = "[CONTEXT SUMMARY]: " + summary
-        return summary
+            call_kwargs = {
+                "task": "compression",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": self.summary_target_tokens * 2,
+                "timeout": 30.0,
+            }
+            if self.summary_model:
+                call_kwargs["model"] = self.summary_model
+            response = call_llm(**call_kwargs)
+            summary = response.choices[0].message.content.strip()
+            if not summary.startswith("[CONTEXT SUMMARY]:"):
+                summary = "[CONTEXT SUMMARY]: " + summary
+            return summary
+        except RuntimeError:
+            logging.warning("Context compression: no provider available for "
+                            "summary. Middle turns will be dropped without summary.")
+            return None
+        except Exception as e:
+            logging.warning("Failed to generate context summary: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers

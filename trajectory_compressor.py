@@ -344,28 +344,32 @@ class TrajectoryCompressor:
             raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}")
     
     def _init_summarizer(self):
-        """Initialize LLM client for summarization (sync and async).
+        """Initialize LLM routing for summarization (sync and async).
 
-        Routes through the centralized provider router for known providers
-        (OpenRouter, Nous, Codex, etc.) so auth and headers are handled
-        consistently.  Falls back to raw construction for custom endpoints.
+        Uses call_llm/async_call_llm from the centralized provider router
+        which handles auth, headers, and provider detection internally.
+        For custom endpoints, falls back to raw client construction.
         """
-        from agent.auxiliary_client import resolve_provider_client
+        from agent.auxiliary_client import call_llm, async_call_llm
 
         provider = self._detect_provider()
         if provider:
-            # Use centralized router — handles auth, headers, Codex adapter
-            self.client, _ = resolve_provider_client(
+            # Store provider for use in _generate_summary calls
+            self._llm_provider = provider
+            self._use_call_llm = True
+            # Verify the provider is available
+            from agent.auxiliary_client import resolve_provider_client
+            client, _ = resolve_provider_client(
                 provider, model=self.config.summarization_model)
-            self.async_client, _ = resolve_provider_client(
-                provider, model=self.config.summarization_model,
-                async_mode=True)
-            if self.client is None:
+            if client is None:
                 raise RuntimeError(
                     f"Provider '{provider}' is not configured. "
                     f"Check your API key or run: hermes setup")
+            self.client = None  # Not used directly
+            self.async_client = None  # Not used directly
         else:
             # Custom endpoint — use config's raw base_url + api_key_env
+            self._use_call_llm = False
             api_key = os.getenv(self.config.api_key_env)
             if not api_key:
                 raise RuntimeError(
@@ -524,12 +528,22 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             try:
                 metrics.summarization_api_calls += 1
                 
-                response = self.client.chat.completions.create(
-                    model=self.config.summarization_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.summary_target_tokens * 2,
-                )
+                if getattr(self, '_use_call_llm', False):
+                    from agent.auxiliary_client import call_llm
+                    response = call_llm(
+                        provider=self._llm_provider,
+                        model=self.config.summarization_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.summary_target_tokens * 2,
+                    )
+                else:
+                    response = self.client.chat.completions.create(
+                        model=self.config.summarization_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.summary_target_tokens * 2,
+                    )
                 
                 summary = response.choices[0].message.content.strip()
                 
@@ -581,12 +595,22 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             try:
                 metrics.summarization_api_calls += 1
                 
-                response = await self.async_client.chat.completions.create(
-                    model=self.config.summarization_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.summary_target_tokens * 2,
-                )
+                if getattr(self, '_use_call_llm', False):
+                    from agent.auxiliary_client import async_call_llm
+                    response = await async_call_llm(
+                        provider=self._llm_provider,
+                        model=self.config.summarization_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.summary_target_tokens * 2,
+                    )
+                else:
+                    response = await self.async_client.chat.completions.create(
+                        model=self.config.summarization_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.summary_target_tokens * 2,
+                    )
                 
                 summary = response.choices[0].message.content.strip()
                 

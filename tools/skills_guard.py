@@ -936,13 +936,10 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
 
     # Call the LLM via the centralized provider router
     try:
-        from agent.auxiliary_client import resolve_provider_client
+        from agent.auxiliary_client import call_llm
 
-        client, _default_model = resolve_provider_client("openrouter")
-        if client is None:
-            return static_result
-
-        response = client.chat.completions.create(
+        response = call_llm(
+            provider="openrouter",
             model=model,
             messages=[{
                 "role": "user",

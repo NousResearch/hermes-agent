@@ -2623,19 +2623,22 @@ class AIAgent:
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import get_text_auxiliary_client
-            aux_client, aux_model = get_text_auxiliary_client()
+            from agent.auxiliary_client import call_llm as _call_llm
+            _aux_available = True
+            try:
+                response = _call_llm(
+                    task="flush_memories",
+                    messages=api_messages,
+                    tools=[memory_tool_def],
+                    temperature=0.3,
+                    max_tokens=5120,
+                    timeout=30.0,
+                )
+            except RuntimeError:
+                _aux_available = False
+                response = None
 
-            if aux_client:
-                api_kwargs = {
-                    "model": aux_model,
-                    "messages": api_messages,
-                    "tools": [memory_tool_def],
-                    "temperature": 0.3,
-                    "max_tokens": 5120,
-                }
-                response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
-            elif self.api_mode == "codex_responses":
+            if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
@@ -2643,7 +2646,7 @@ class AIAgent:
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
-            else:
+            elif not _aux_available:
                 api_kwargs = {
                     "model": self.model,
                     "messages": api_messages,
@@ -2655,7 +2658,7 @@ class AIAgent:
 
             # Extract tool calls from the response, handling both API formats
             tool_calls = []
-            if self.api_mode == "codex_responses" and not aux_client:
+            if self.api_mode == "codex_responses" and not _aux_available:
                 assistant_msg, _ = self._normalize_codex_response(response)
                 if assistant_msg and assistant_msg.tool_calls:
                     tool_calls = assistant_msg.tool_calls

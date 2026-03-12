@@ -414,43 +414,6 @@ class TestNormalizeResponse:
 
 
 # ---------------------------------------------------------------------------
-# Vision content conversion
-# ---------------------------------------------------------------------------
-
-
-class TestVisionContentConversion:
-    def test_base64_image(self):
-        from agent.anthropic_adapter import _convert_vision_content
-
-        content = [
-            {"type": "text", "text": "What's in this image?"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
-        ]
-        result = _convert_vision_content(content)
-        assert result[0] == {"type": "text", "text": "What's in this image?"}
-        assert result[1]["type"] == "image"
-        assert result[1]["source"]["type"] == "base64"
-        assert result[1]["source"]["media_type"] == "image/png"
-        assert result[1]["source"]["data"] == "iVBOR"
-
-    def test_url_image(self):
-        from agent.anthropic_adapter import _convert_vision_content
-
-        content = [
-            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
-        ]
-        result = _convert_vision_content(content)
-        assert result[0]["type"] == "image"
-        assert result[0]["source"]["type"] == "url"
-        assert result[0]["source"]["url"] == "https://example.com/img.png"
-
-    def test_passthrough_non_list(self):
-        from agent.anthropic_adapter import _convert_vision_content
-
-        assert _convert_vision_content("plain text") == "plain text"
-
-
-# ---------------------------------------------------------------------------
 # Role alternation
 # ---------------------------------------------------------------------------
 

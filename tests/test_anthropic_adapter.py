@@ -33,6 +33,14 @@ class TestIsOAuthToken:
     def test_api_key(self):
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
+    def test_managed_key(self):
+        # Managed keys from ~/.claude.json are NOT regular API keys
+        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is True
+
+    def test_jwt_token(self):
+        # JWTs from OAuth flow
+        assert _is_oauth_token("eyJhbGciOiJSUzI1NiJ9.test") is True
+
     def test_empty(self):
         assert _is_oauth_token("") is False
 

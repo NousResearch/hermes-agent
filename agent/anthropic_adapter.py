@@ -363,11 +363,16 @@ def build_anthropic_kwargs(
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
     # Map reasoning_config to Anthropic's thinking parameter
+    # Newer models (4.6+) prefer "adaptive" thinking; older models use "enabled"
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False:
             effort = reasoning_config.get("effort", "medium")
             budget = THINKING_BUDGET.get(effort, 8000)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Use adaptive thinking for 4.5+ models (they deprecate type=enabled)
+            if any(v in model for v in ("4-6", "4-5", "4.6", "4.5")):
+                kwargs["thinking"] = {"type": "adaptive", "budget_tokens": budget}
+            else:
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
             kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs

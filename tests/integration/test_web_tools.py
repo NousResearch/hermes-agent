@@ -12,7 +12,7 @@ Usage:
 
 Requirements:
     - FIRECRAWL_API_KEY environment variable must be set
-    - NOUS_API_KEY environment variable (optional, for LLM tests)
+    - An auxiliary LLM provider (OPENROUTER_API_KEY or Nous Portal auth) (optional, for LLM tests)
 """
 
 import pytest
@@ -128,12 +128,12 @@ class WebToolsTester:
         else:
             self.log_result("Firecrawl API Key", "passed", "Found")
         
-        # Check Nous API key (optional)
+        # Check auxiliary LLM provider (optional)
         if not check_auxiliary_model():
-            self.log_result("Nous API Key", "skipped", "NOUS_API_KEY not set (LLM tests will be skipped)")
+            self.log_result("Auxiliary LLM", "skipped", "No auxiliary LLM provider available (LLM tests will be skipped)")
             self.test_llm = False
         else:
-            self.log_result("Nous API Key", "passed", "Found")
+            self.log_result("Auxiliary LLM", "passed", "Found")
         
         # Check debug mode
         debug_info = get_debug_session_info()
@@ -579,7 +579,7 @@ class WebToolsTester:
             "results": self.test_results,
             "environment": {
                 "firecrawl_api_key": check_firecrawl_api_key(),
-                "nous_api_key": check_auxiliary_model(),
+                "auxiliary_model": check_auxiliary_model(),
                 "debug_mode": get_debug_session_info()["enabled"]
             }
         }

@@ -54,7 +54,7 @@ class TestCodeGeneration:
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
-        assert code is not None
+        assert isinstance(code, str) and len(code) == CODE_LENGTH
         assert len(code) == CODE_LENGTH
         assert all(c in ALPHABET for c in code)
 
@@ -65,7 +65,7 @@ class TestCodeGeneration:
             codes = set()
             for i in range(3):
                 code = store.generate_code("telegram", f"user{i}")
-                assert code is not None
+                assert isinstance(code, str) and len(code) == CODE_LENGTH
                 codes.add(code)
         assert len(codes) == 3
 
@@ -91,7 +91,7 @@ class TestRateLimiting:
             store = PairingStore()
             code1 = store.generate_code("telegram", "user1")
             code2 = store.generate_code("telegram", "user1")
-        assert code1 is not None
+        assert isinstance(code1, str) and len(code1) == CODE_LENGTH
         assert code2 is None  # rate limited
 
     def test_different_users_not_rate_limited(self, tmp_path):
@@ -99,14 +99,14 @@ class TestRateLimiting:
             store = PairingStore()
             code1 = store.generate_code("telegram", "user1")
             code2 = store.generate_code("telegram", "user2")
-        assert code1 is not None
-        assert code2 is not None
+        assert isinstance(code1, str) and len(code1) == CODE_LENGTH
+        assert isinstance(code2, str) and len(code2) == CODE_LENGTH
 
     def test_rate_limit_expires(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code1 = store.generate_code("telegram", "user1")
-            assert code1 is not None
+            assert isinstance(code1, str) and len(code1) == CODE_LENGTH
 
             # Simulate rate limit expiry
             limits = store._load_json(store._rate_limit_path())
@@ -114,7 +114,8 @@ class TestRateLimiting:
             store._save_json(store._rate_limit_path(), limits)
 
             code2 = store.generate_code("telegram", "user1")
-        assert code2 is not None
+        assert isinstance(code2, str) and len(code2) == CODE_LENGTH
+        assert code2 != code1
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ class TestMaxPending:
                 codes.append(code)
 
         # First MAX_PENDING_PER_PLATFORM should succeed
-        assert all(c is not None for c in codes[:MAX_PENDING_PER_PLATFORM])
+        assert all(isinstance(c, str) and len(c) == CODE_LENGTH for c in codes[:MAX_PENDING_PER_PLATFORM])
         # Next one should be blocked
         assert codes[MAX_PENDING_PER_PLATFORM] is None
 
@@ -143,7 +144,7 @@ class TestMaxPending:
                 store.generate_code("telegram", f"user{i}")
             # Different platform should still work
             code = store.generate_code("discord", "user0")
-        assert code is not None
+        assert isinstance(code, str) and len(code) == CODE_LENGTH
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +159,9 @@ class TestApprovalFlow:
             code = store.generate_code("telegram", "user1", "Alice")
             result = store.approve_code("telegram", code)
 
-        assert result is not None
+        assert isinstance(result, dict)
+        assert "user_id" in result
+        assert "user_name" in result
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
 
@@ -187,14 +190,18 @@ class TestApprovalFlow:
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             result = store.approve_code("telegram", code.lower())
-        assert result is not None
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
 
     def test_approve_strips_whitespace(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
             result = store.approve_code("telegram", f"  {code}  ")
-        assert result is not None
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
 
     def test_invalid_code_returns_none(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):

@@ -31,6 +31,9 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     description: Brief description # Required, max 1024 chars
     version: 1.0.0                # Optional
     license: MIT                  # Optional (agentskills.io)
+    platforms: [macos]            # Optional — restrict to specific OS platforms
+                                  #   Valid: macos, linux, windows
+                                  #   Omit to load on all platforms (default)
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
       hermes:
@@ -60,12 +63,16 @@ Usage:
 """
 
 import json
+import logging
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
@@ -77,6 +84,41 @@ SKILLS_DIR = HERMES_HOME / "skills"
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+
+# Platform identifiers for the 'platforms' frontmatter field.
+# Maps user-friendly names to sys.platform prefixes.
+_PLATFORM_MAP = {
+    "macos": "darwin",
+    "linux": "linux",
+    "windows": "win32",
+}
+
+
+def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
+    """Check if a skill is compatible with the current OS platform.
+
+    Skills declare platform requirements via a top-level ``platforms`` list
+    in their YAML frontmatter::
+
+        platforms: [macos]          # macOS only
+        platforms: [macos, linux]   # macOS and Linux
+
+    Valid values: ``macos``, ``linux``, ``windows``.
+
+    If the field is absent or empty the skill is compatible with **all**
+    platforms (backward-compatible default).
+    """
+    platforms = frontmatter.get("platforms")
+    if not platforms:
+        return True  # No restriction → loads everywhere
+    if not isinstance(platforms, list):
+        platforms = [platforms]
+    current = sys.platform
+    for p in platforms:
+        mapped = _PLATFORM_MAP.get(str(p).lower().strip(), str(p).lower().strip())
+        if current.startswith(mapped):
+            return True
+    return False
 
 
 def check_skills_requirements() -> bool:
@@ -180,33 +222,81 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip('"\'') for t in tags_value.split(',') if t.strip()]
 
 
-def _find_all_skills() -> List[Dict[str, Any]]:
+
+def _get_disabled_skill_names() -> Set[str]:
+    """Load disabled skill names from config (once per call).
+
+    Resolves platform from ``HERMES_PLATFORM`` env var, falls back to
+    the global disabled list.
     """
-    Recursively find all skills in ~/.hermes/skills/.
-    
-    Returns metadata for progressive disclosure (tier 1):
-    - name, description, category
-    
+    import os
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        skills_cfg = config.get("skills", {})
+        resolved_platform = os.getenv("HERMES_PLATFORM")
+        if resolved_platform:
+            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            if platform_disabled is not None:
+                return set(platform_disabled)
+        return set(skills_cfg.get("disabled", []))
+    except Exception:
+        return set()
+
+
+def _is_skill_disabled(name: str, platform: str = None) -> bool:
+    """Check if a skill is disabled in config."""
+    import os
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        skills_cfg = config.get("skills", {})
+        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
+        if resolved_platform:
+            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            if platform_disabled is not None:
+                return name in platform_disabled
+        return name in skills_cfg.get("disabled", [])
+    except Exception:
+        return False
+
+
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Recursively find all skills in ~/.hermes/skills/.
+
+    Args:
+        skip_disabled: If True, return ALL skills regardless of disabled
+            state (used by ``hermes skills`` config UI). Default False
+            filters out disabled skills.
+
     Returns:
-        List of skill metadata dicts
+        List of skill metadata dicts (name, description, category).
     """
     skills = []
-    
+
     if not SKILLS_DIR.exists():
         return skills
-    
+
+    # Load disabled set once (not per-skill)
+    disabled = set() if skip_disabled else _get_disabled_skill_names()
+
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
         if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
             continue
-            
+
         skill_dir = skill_md.parent
-        
+
         try:
             content = skill_md.read_text(encoding='utf-8')
             frontmatter, body = _parse_frontmatter(content)
-            
+
+            if not skill_matches_platform(frontmatter):
+                continue
+
             name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
-            
+            if name in disabled:
+                continue
+
             description = frontmatter.get('description', '')
             if not description:
                 for line in body.strip().split('\n'):
@@ -214,21 +304,25 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                     if line and not line.startswith('#'):
                         description = line
                         break
-            
+
             if len(description) > MAX_DESCRIPTION_LENGTH:
                 description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
-            
+
             category = _get_category_from_path(skill_md)
-            
+
             skills.append({
                 "name": name,
                 "description": description,
                 "category": category,
             })
-            
-        except Exception:
+
+        except (UnicodeDecodeError, PermissionError) as e:
+            logger.warning("Failed to read skill file %s: %s", skill_md, e)
             continue
-    
+        except Exception as e:
+            logger.warning("Error parsing skill %s: %s", skill_md, e, exc_info=True)
+            continue
+
     return skills
 
 
@@ -265,7 +359,11 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
         
         return description if description else None
-    except Exception:
+    except (UnicodeDecodeError, PermissionError) as e:
+        logger.debug("Failed to read category description %s: %s", desc_file, e)
+        return None
+    except Exception as e:
+        logger.warning("Error parsing category description %s: %s", desc_file, e, exc_info=True)
         return None
 
 

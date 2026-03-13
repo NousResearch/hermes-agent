@@ -11,8 +11,13 @@ model:
   
   # Inference provider selection:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
+  #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
+  #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
+  #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
+  #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
+  #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   
@@ -45,6 +50,16 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+
+# =============================================================================
+# Git Worktree Isolation
+# =============================================================================
+# When enabled, each CLI session creates an isolated git worktree so multiple
+# agents can work on the same repo concurrently without file collisions.
+# Equivalent to always passing --worktree / -w on the command line.
+#
+# worktree: true    # Always create a worktree when in a git repo
+# worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -116,8 +131,23 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+
+# -----------------------------------------------------------------------------
+# OPTION 6: Daytona cloud execution
+# Commands run in Daytona cloud sandboxes
+# Great for: Cloud dev environments, persistent workspaces, team collaboration
+# Requires: pip install daytona, DAYTONA_API_KEY env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "daytona"
+#   cwd: "~"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   container_disk: 10240          # Daytona max is 10GB per sandbox
+
 #
-# --- Container resource limits (docker, singularity, modal -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores
@@ -180,8 +210,58 @@ compression:
   threshold: 0.85
   
   # Model to use for generating summaries (fast/cheap recommended)
-  # This model compresses the middle turns into a concise summary
+  # This model compresses the middle turns into a concise summary.
+  # IMPORTANT: it receives the full middle section of the conversation, so it
+  # MUST support a context length at least as large as your main model's.
   summary_model: "google/gemini-3-flash-preview"
+  
+  # Provider for the summary model (default: "auto")
+  # Options: "auto", "openrouter", "nous", "main"
+  # summary_provider: "auto"
+
+# =============================================================================
+# Auxiliary Models (Advanced — Experimental)
+# =============================================================================
+# Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
+# browser screenshot analysis, web page summarization, and context compression.
+#
+# By default these use Gemini Flash via OpenRouter or Nous Portal and are
+# auto-detected from your credentials.  You do NOT need to change anything
+# here for normal usage.
+#
+# WARNING: Overriding these with providers other than OpenRouter or Nous Portal
+# is EXPERIMENTAL and may not work.  Not all models/providers support vision,
+# produce usable summaries, or accept the same API format.  Change at your own
+# risk — if things break, reset to "auto" / empty values.
+#
+# Each task has its own provider + model pair so you can mix providers.
+# For example: OpenRouter for vision (needs multimodal), but your main
+# local endpoint for compression (just needs text).
+#
+# Provider options:
+#   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
+#   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
+#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "codex"      - Force Codex OAuth (requires: hermes model → Codex).
+#                  Uses gpt-5.3-codex which supports vision.
+#   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).
+#                  Works with OpenAI API, local models, or any OpenAI-compatible
+#                  endpoint.  Also falls back to Codex OAuth and API-key providers.
+#
+# Model: leave empty to use the provider's default.  When empty, OpenRouter
+# uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
+# Other providers pick a sensible default automatically.
+#
+# auxiliary:
+#   # Image analysis: vision_analyze tool + browser screenshots
+#   vision:
+#     provider: "auto"
+#     model: ""              # e.g. "google/gemini-2.5-flash", "openai/gpt-4o"
+#
+#   # Web page scraping / summarization + browser page text extraction
+#   web_extract:
+#     provider: "auto"
+#     model: ""
 
 # =============================================================================
 # Persistent Memory
@@ -266,7 +346,7 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
-  reasoning_effort: "xhigh"
+  reasoning_effort: "medium"
   
   # Predefined personalities (use with /personality command)
   personalities:
@@ -323,11 +403,13 @@ agent:
 #     discord: [web, vision, skills, todo]
 #
 # If not set, defaults are:
-#   cli:      hermes-cli      (everything + cronjob management)
-#   telegram: hermes-telegram  (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
-#   discord:  hermes-discord   (same as telegram)
-#   whatsapp: hermes-whatsapp  (same as telegram)
-#   slack:    hermes-slack     (same as telegram)
+#   cli:           hermes-cli            (everything + cronjob management)
+#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   discord:       hermes-discord        (same as telegram)
+#   whatsapp:      hermes-whatsapp       (same as telegram)
+#   slack:         hermes-slack          (same as telegram)
+#   signal:        hermes-signal         (same as telegram)
+#   homeassistant: hermes-homeassistant  (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -335,6 +417,8 @@ platform_toolsets:
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
+  signal: [hermes-signal]
+  homeassistant: [hermes-homeassistant]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -476,6 +560,21 @@ toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#
+# Sampling (server-initiated LLM requests) — enabled by default.
+# Per-server config under the 'sampling' key:
+#   analysis:
+#     command: npx
+#     args: ["-y", "analysis-server"]
+#     sampling:
+#       enabled: true           # default: true
+#       model: "gemini-3-flash" # override model (optional)
+#       max_tokens_cap: 4096    # max tokens per request
+#       timeout: 30             # LLM call timeout (seconds)
+#       max_rpm: 10             # max requests per minute
+#       allowed_models: []      # model whitelist (empty = all)
+#       max_tool_rounds: 5      # tool loop limit (0 = disable)
+#       log_level: "info"       # audit verbosity
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
@@ -527,6 +626,10 @@ code_execution:
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+  # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
+  # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
+  #                                           # Resolves full credentials (base_url, api_key) automatically.
+  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
@@ -556,3 +659,64 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
+
+  # Background process notifications (gateway/messaging only).
+  # Controls how chatty the process watcher is when you use
+  # terminal(background=true, check_interval=...) from Telegram/Discord/etc.
+  #   off:     No watcher messages at all
+  #   result:  Only the final completion message
+  #   error:   Only the final message when exit code != 0
+  #   all:     Running output updates + final message (default)
+  background_process_notifications: all
+
+
+  # Play terminal bell when agent finishes a response.
+  # Useful for long-running tasks — your terminal will ding when the agent is done.
+  # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
+  bell_on_complete: false
+
+  # Show model reasoning/thinking before each response.
+  # When enabled, a dim box shows the model's thought process above the response.
+  # Toggle at runtime with /reasoning show or /reasoning hide.
+  show_reasoning: false
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Skin / Theme
+  # ───────────────────────────────────────────────────────────────────────────
+  # Customize CLI visual appearance — banner colors, spinner faces, tool prefix,
+  # response box label, and branding text. Change at runtime with /skin <name>.
+  #
+  # Built-in skins:
+  #   default  — Classic Hermes gold/kawaii
+  #   ares     — Crimson/bronze war-god theme with spinner wings
+  #   mono     — Clean grayscale monochrome
+  #   slate    — Cool blue developer-focused
+  #
+  # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
+  # Schema (all fields optional, missing values inherit from default):
+  #
+  #   name: my-theme
+  #   description: Short description
+  #   colors:
+  #     banner_border: "#HEX"    # Panel border
+  #     banner_title: "#HEX"     # Panel title
+  #     banner_accent: "#HEX"    # Section headers (Available Tools, etc.)
+  #     banner_dim: "#HEX"       # Dim/muted text
+  #     banner_text: "#HEX"      # Body text (tool names, skill names)
+  #     ui_accent: "#HEX"        # UI accent color
+  #     response_border: "#HEX"  # Response box border color
+  #   spinner:
+  #     waiting_faces: ["(⚔)", "(⛨)"]       # Faces shown while waiting
+  #     thinking_faces: ["(⚔)", "(⌁)"]      # Faces shown while thinking
+  #     thinking_verbs: ["forging", "plotting"]  # Verbs for spinner messages
+  #     wings:                                # Optional left/right spinner decorations
+  #       - ["⟪⚔", "⚔⟫"]
+  #       - ["⟪▲", "▲⟫"]
+  #   branding:
+  #     agent_name: "My Agent"               # Banner title and branding
+  #     welcome: "Welcome message"           # Shown at CLI startup
+  #     response_label: " ⚔ Agent "         # Response box header label
+  #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
+  #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
+  #
+  skin: default

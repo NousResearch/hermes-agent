@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Set
 from model_tools import handle_function_call
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., mini-swe-agent's modal/docker backends). Running them in a separate
+# (e.g., mini-swe-agent's modal/docker/daytona backends). Running them in a separate
 # thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
 # Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
 # making tool calls). Too small = thread pool starvation, tasks queue for minutes.
@@ -249,23 +249,62 @@ class HermesAgentLoop:
             reasoning = _extract_reasoning_from_message(assistant_msg)
             reasoning_per_turn.append(reasoning)
 
-            # Check for tool calls -- standard OpenAI spec
+            # Check for tool calls -- standard OpenAI spec.
+            # Fallback: if response has no structured tool_calls but content
+            # contains raw tool call tags (e.g. <tool_call>), parse them using
+            # hermes-agent's standalone parsers. This handles the case where
+            # ManagedServer's ToolCallTranslator couldn't parse because vLLM
+            # isn't installed.
+            if (
+                not assistant_msg.tool_calls
+                and assistant_msg.content
+                and self.tool_schemas
+                and "<tool_call>" in (assistant_msg.content or "")
+            ):
+                try:
+                    from environments.tool_call_parsers import get_parser
+                    fallback_parser = get_parser("hermes")
+                    parsed_content, parsed_calls = fallback_parser.parse(
+                        assistant_msg.content
+                    )
+                    if parsed_calls:
+                        assistant_msg.tool_calls = parsed_calls
+                        if parsed_content is not None:
+                            assistant_msg.content = parsed_content
+                        logger.debug(
+                            "Fallback parser extracted %d tool calls from raw content",
+                            len(parsed_calls),
+                        )
+                except Exception:
+                    pass  # Fall through to no tool calls
+
             if assistant_msg.tool_calls:
+                # Normalize tool calls to dicts — they may come as objects
+                # (OpenAI API) or dicts (vLLM ToolCallTranslator).
+                def _tc_to_dict(tc):
+                    if isinstance(tc, dict):
+                        return {
+                            "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("function", {}).get("name", tc.get("name", "")),
+                                "arguments": tc.get("function", {}).get("arguments", tc.get("arguments", "{}")),
+                            },
+                        }
+                    return {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+
                 # Build the assistant message dict for conversation history
                 msg_dict: Dict[str, Any] = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in assistant_msg.tool_calls
-                    ],
+                    "tool_calls": [_tc_to_dict(tc) for tc in assistant_msg.tool_calls],
                 }
 
                 # Preserve reasoning_content for multi-turn chat template handling
@@ -278,8 +317,13 @@ class HermesAgentLoop:
 
                 # Execute each tool call via hermes-agent's dispatch
                 for tc in assistant_msg.tool_calls:
-                    tool_name = tc.function.name
-                    tool_args_raw = tc.function.arguments
+                    # Handle both object (OpenAI) and dict (vLLM) formats
+                    if isinstance(tc, dict):
+                        tool_name = tc.get("function", {}).get("name", tc.get("name", ""))
+                        tool_args_raw = tc.get("function", {}).get("arguments", tc.get("arguments", "{}"))
+                    else:
+                        tool_name = tc.function.name
+                        tool_args_raw = tc.function.arguments
 
                     # Validate tool name
                     if tool_name not in self.valid_tool_names:
@@ -336,7 +380,7 @@ class HermesAgentLoop:
                                 tool_elapsed = _time.monotonic() - tool_submit_time
                             else:
                                 # Run tool calls in a thread pool so backends that
-                                # use asyncio.run() internally (modal, docker) get
+                                # use asyncio.run() internally (modal, docker, daytona) get
                                 # a clean event loop instead of deadlocking.
                                 loop = asyncio.get_event_loop()
                                 # Capture current tool_name/args for the lambda
@@ -390,10 +434,11 @@ class HermesAgentLoop:
                             pass
 
                     # Add tool response to conversation
+                    tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tc.id,
+                            "tool_call_id": tc_id,
                             "content": tool_result,
                         }
                     )

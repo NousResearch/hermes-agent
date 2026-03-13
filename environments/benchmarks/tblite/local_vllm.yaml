@@ -1,0 +1,40 @@
+# OpenThoughts-TBLite Evaluation -- Local vLLM Backend
+#
+# Runs against a local vLLM server with Docker sandboxes.
+#
+# Start the vLLM server from the atropos directory:
+#   python -m example_trainer.vllm_api_server \
+#       --model Qwen/Qwen3-4B-Instruct-2507 \
+#       --port 9001 \
+#       --gpu-memory-utilization 0.8 \
+#       --max-model-len=32000
+#
+# Then run:
+#   python environments/benchmarks/tblite/tblite_env.py evaluate \
+#       --config environments/benchmarks/tblite/local_vllm.yaml
+
+env:
+  enabled_toolsets: ["terminal", "file"]
+  max_agent_turns: 60
+  max_token_length: 16000
+  agent_temperature: 0.6
+  terminal_backend: "docker"
+  terminal_timeout: 300
+  tool_pool_size: 16
+  dataset_name: "NousResearch/openthoughts-tblite"
+  test_timeout: 600
+  task_timeout: 1200
+  eval_concurrency: 8
+  tool_call_parser: "hermes"
+  system_prompt: "You are an expert terminal agent. You MUST use the provided tools to complete tasks. Use the terminal tool to run shell commands, read_file to read files, write_file to write files, search_files to search, and patch to edit files. Do NOT write out solutions as text - execute them using the tools. Always start by exploring the environment with terminal commands."
+  tokenizer_name: "Qwen/Qwen3-4B-Instruct-2507"
+  use_wandb: false
+  wandb_name: "tblite-qwen3-4b-instruct"
+  ensure_scores_are_not_same: false
+  data_dir_to_save_evals: "environments/benchmarks/evals/tblite-qwen3-4b-local"
+
+openai:
+  base_url: "http://localhost:9001"
+  model_name: "Qwen/Qwen3-4B-Instruct-2507"
+  server_type: "vllm"
+  health_check: false

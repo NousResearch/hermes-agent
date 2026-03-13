@@ -105,8 +105,17 @@ class TodoStore:
             "cancelled": "[~]",
         }
 
-        lines = ["[Your task list was preserved across context compression]"]
-        for item in self._items:
+        # Only inject pending/in_progress items — completed/cancelled ones
+        # cause the model to re-do finished work after compression.
+        active_items = [
+            item for item in self._items
+            if item["status"] in ("pending", "in_progress")
+        ]
+        if not active_items:
+            return None
+
+        lines = ["[Your active task list was preserved across context compression]"]
+        for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
 

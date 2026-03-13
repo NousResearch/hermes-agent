@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, singularity, ssh, modal).
+across all terminal backends (local, docker, singularity, ssh, modal, daytona).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -294,7 +294,7 @@ class ShellFileOperations(FileOperations):
     File operations implemented via shell commands.
     
     Works with ANY terminal backend that has execute(command, cwd) method.
-    This includes local, docker, singularity, ssh, and modal environments.
+    This includes local, docker, singularity, ssh, modal, and daytona environments.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
@@ -400,10 +400,16 @@ class ShellFileOperations(FileOperations):
                     return home
                 elif path.startswith('~/'):
                     return home + path[1:]  # Replace ~ with home
-                # ~username format - let shell expand it
-                expand_result = self._exec(f"echo {path}")
-                if expand_result.exit_code == 0:
-                    return expand_result.stdout.strip()
+                # ~username format - extract and validate username before
+                # letting shell expand it (prevent shell injection via
+                # paths like "~; rm -rf /").
+                rest = path[1:]  # strip leading ~
+                slash_idx = rest.find('/')
+                username = rest[:slash_idx] if slash_idx >= 0 else rest
+                if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
+                    expand_result = self._exec(f"echo {path}")
+                    if expand_result.exit_code == 0 and expand_result.stdout.strip():
+                        return expand_result.stdout.strip()
         
         return path
     
@@ -819,6 +825,14 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
+        # Validate that the path exists before searching
+        check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
+        if "not_found" in check.stdout:
+            return SearchResult(
+                error=f"Path not found: {path}. Verify the path exists (use 'terminal' to check).",
+                total_count=0
+            )
+        
         if target == "files":
             return self._search_files(pattern, path, limit, offset)
         else:
@@ -919,6 +933,11 @@ class ShellFileOperations(FileOperations):
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
+        # rg exit codes: 0=matches found, 1=no matches, 2=error
+        if result.exit_code == 2 and not result.stdout.strip():
+            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+        
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
@@ -943,37 +962,35 @@ class ShellFileOperations(FileOperations):
             # rg match lines:   "file:lineno:content"  (colon separator)
             # rg context lines: "file-lineno-content"   (dash separator)
             # rg group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
+            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
                 # Try match line first (colon-separated: file:line:content)
-                parts = line.split(':', 2)
-                if len(parts) >= 3:
-                    try:
-                        matches.append(SearchMatch(
-                            path=parts[0],
-                            line_number=int(parts[1]),
-                            content=parts[2][:500]
-                        ))
-                        continue
-                    except ValueError:
-                        pass
+                m = _match_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+                    continue
                 
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    parts = line.split('-', 2)
-                    if len(parts) >= 3:
-                        try:
-                            matches.append(SearchMatch(
-                                path=parts[0],
-                                line_number=int(parts[1]),
-                                content=parts[2][:500]
-                            ))
-                        except ValueError:
-                            pass
+                    m = _ctx_re.match(line)
+                    if m:
+                        matches.append(SearchMatch(
+                            path=(m.group(1) or '') + m.group(2),
+                            line_number=int(m.group(3)),
+                            content=m.group(4)[:500]
+                        ))
             
             total = len(matches)
             page = matches[offset:offset + limit]
@@ -1013,6 +1030,11 @@ class ShellFileOperations(FileOperations):
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
+        # grep exit codes: 0=matches found, 1=no matches, 2=error
+        if result.exit_code == 2 and not result.stdout.strip():
+            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+        
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
             total = len(all_files)
@@ -1035,34 +1057,33 @@ class ShellFileOperations(FileOperations):
             # grep match lines:   "file:lineno:content" (colon)
             # grep context lines: "file-lineno-content"  (dash)
             # grep group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
+            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
-                parts = line.split(':', 2)
-                if len(parts) >= 3:
-                    try:
-                        matches.append(SearchMatch(
-                            path=parts[0],
-                            line_number=int(parts[1]),
-                            content=parts[2][:500]
-                        ))
-                        continue
-                    except ValueError:
-                        pass
+                m = _match_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+                    continue
                 
                 if context > 0:
-                    parts = line.split('-', 2)
-                    if len(parts) >= 3:
-                        try:
-                            matches.append(SearchMatch(
-                                path=parts[0],
-                                line_number=int(parts[1]),
-                                content=parts[2][:500]
-                            ))
-                        except ValueError:
-                            pass
+                    m = _ctx_re.match(line)
+                    if m:
+                        matches.append(SearchMatch(
+                            path=(m.group(1) or '') + m.group(2),
+                            line_number=int(m.group(3)),
+                            content=m.group(4)[:500]
+                        ))
+
             
             total = len(matches)
             page = matches[offset:offset + limit]

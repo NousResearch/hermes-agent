@@ -271,3 +271,62 @@ You can reload MCP servers without restarting Hermes:
 
 - In the CLI: the agent reconnects automatically
 - In messaging: send `/reload-mcp`
+
+## Sampling (Server-Initiated LLM Requests)
+
+MCP's `sampling/createMessage` capability allows MCP servers to request LLM completions through the Hermes agent. This enables agent-in-the-loop workflows where servers can leverage the LLM during tool execution — for example, a database server asking the LLM to interpret query results, or a code analysis server requesting the LLM to review findings.
+
+### How It Works
+
+When an MCP server sends a `sampling/createMessage` request:
+
+1. The sampling callback validates against rate limits and model whitelist
+2. Resolves which model to use (config override > server hint > default)
+3. Converts MCP messages to OpenAI-compatible format
+4. Offloads the LLM call to a thread via `asyncio.to_thread()` (non-blocking)
+5. Returns the response (text or tool use) back to the server
+
+### Configuration
+
+Sampling is **enabled by default** for all MCP servers. No extra setup needed — if you have an auxiliary LLM client configured, sampling works automatically.
+
+```yaml
+mcp_servers:
+  analysis_server:
+    command: "npx"
+    args: ["-y", "my-analysis-server"]
+    sampling:
+      enabled: true           # default: true
+      model: "gemini-3-flash" # override model (optional)
+      max_tokens_cap: 4096    # max tokens per request (default: 4096)
+      timeout: 30             # LLM call timeout in seconds (default: 30)
+      max_rpm: 10             # max requests per minute (default: 10)
+      allowed_models: []      # model whitelist (empty = allow all)
+      max_tool_rounds: 5      # max consecutive tool use rounds (0 = disable)
+      log_level: "info"       # audit verbosity: debug, info, warning
+```
+
+### Tool Use in Sampling
+
+Servers can include `tools` and `toolChoice` in sampling requests, enabling multi-turn tool-augmented workflows within a single sampling session. The callback forwards tool definitions to the LLM, handles tool use responses with proper `ToolUseContent` types, and enforces `max_tool_rounds` to prevent infinite loops.
+
+### Security
+
+- **Rate limiting**: Per-server sliding window (default: 10 req/min)
+- **Token cap**: Servers can't request more than `max_tokens_cap` (default: 4096)
+- **Model whitelist**: `allowed_models` restricts which models a server can use
+- **Tool loop limit**: `max_tool_rounds` caps consecutive tool use rounds
+- **Credential stripping**: LLM responses are sanitized before returning to the server
+- **Non-blocking**: LLM calls run in a separate thread via `asyncio.to_thread()`
+- **Typed errors**: All failures return structured `ErrorData` per MCP spec
+
+To disable sampling for untrusted servers:
+
+```yaml
+mcp_servers:
+  untrusted:
+    command: "npx"
+    args: ["-y", "untrusted-server"]
+    sampling:
+      enabled: false
+```

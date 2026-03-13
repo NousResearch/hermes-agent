@@ -47,8 +47,7 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
-from openai import AsyncOpenAI
-from agent.auxiliary_client import get_async_text_auxiliary_client
+from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -56,20 +55,35 @@ logger = logging.getLogger(__name__)
 _firecrawl_client = None
 
 def _get_firecrawl_client():
-    """Get or create the Firecrawl client (lazy initialization)."""
+    """Get or create the Firecrawl client (lazy initialization).
+
+    Uses the cloud API by default (requires FIRECRAWL_API_KEY).
+    Set FIRECRAWL_API_URL to point at a self-hosted instance instead —
+    in that case the API key is optional (set USE_DB_AUTHENTICATION=false
+    on your Firecrawl server to disable auth entirely).
+    """
     global _firecrawl_client
     if _firecrawl_client is None:
         api_key = os.getenv("FIRECRAWL_API_KEY")
-        if not api_key:
-            raise ValueError("FIRECRAWL_API_KEY environment variable not set")
-        _firecrawl_client = Firecrawl(api_key=api_key)
+        api_url = os.getenv("FIRECRAWL_API_URL")
+        if not api_key and not api_url:
+            raise ValueError(
+                "FIRECRAWL_API_KEY environment variable not set. "
+                "Set it for cloud Firecrawl, or set FIRECRAWL_API_URL "
+                "to use a self-hosted instance."
+            )
+        kwargs = {}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_url:
+            kwargs["api_url"] = api_url
+        _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
-# Resolve async auxiliary client at module level.
-# Handles Codex Responses API adapter transparently.
-_aux_async_client, DEFAULT_SUMMARIZER_MODEL = get_async_text_auxiliary_client()
+# Allow per-task override via env var
+DEFAULT_SUMMARIZER_MODEL = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
@@ -227,22 +241,22 @@ Create a markdown summary that captures all key information in a well-organized,
 
     for attempt in range(max_retries):
         try:
-            if _aux_async_client is None:
-                logger.warning("No auxiliary model available for web content processing")
-                return None
-            from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
-            _extra = get_auxiliary_extra_body()
-            response = await _aux_async_client.chat.completions.create(
-                model=model,
-                messages=[
+            call_kwargs = {
+                "task": "web_extract",
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
-                **auxiliary_max_tokens_param(max_tokens),
-                **({} if not _extra else {"extra_body": _extra}),
-            )
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            }
+            if model:
+                call_kwargs["model"] = model
+            response = await async_call_llm(**call_kwargs)
             return response.choices[0].message.content.strip()
+        except RuntimeError:
+            logger.warning("No auxiliary model available for web content processing")
+            return None
         except Exception as api_error:
             last_error = api_error
             if attempt < max_retries - 1:
@@ -346,25 +360,18 @@ Synthesize these into ONE cohesive, comprehensive summary that:
 Create a single, unified markdown summary."""
 
     try:
-        if _aux_async_client is None:
-            logger.warning("No auxiliary model for synthesis, concatenating summaries")
-            fallback = "\n\n".join(summaries)
-            if len(fallback) > max_output_size:
-                fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
-            return fallback
-
-        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
-        _extra = get_auxiliary_extra_body()
-        response = await _aux_async_client.chat.completions.create(
-            model=model,
-            messages=[
+        call_kwargs = {
+            "task": "web_extract",
+            "messages": [
                 {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
                 {"role": "user", "content": synthesis_prompt}
             ],
-            temperature=0.1,
-            **auxiliary_max_tokens_param(20000),
-            **({} if not _extra else {"extra_body": _extra}),
-        )
+            "temperature": 0.1,
+            "max_tokens": 20000,
+        }
+        if model:
+            call_kwargs["model"] = model
+        response = await async_call_llm(**call_kwargs)
         final_summary = response.choices[0].message.content.strip()
         
         # Enforce hard cap
@@ -691,8 +698,8 @@ async def web_extract_tool(
         debug_call_data["pages_extracted"] = pages_extracted
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Process each result with LLM if enabled and auxiliary client is available
-        if use_llm_processing and _aux_async_client is not None:
+        # Process each result with LLM if enabled
+        if use_llm_processing:
             logger.info("Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
@@ -758,10 +765,6 @@ async def web_extract_tool(
                 else:
                     logger.warning("%s (no content to process)", url)
         else:
-            if use_llm_processing and _aux_async_client is None:
-                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
-                debug_call_data["processing_applied"].append("llm_processing_unavailable")
-            
             # Print summary of extracted pages for debugging (original behavior)
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
@@ -771,6 +774,7 @@ async def web_extract_tool(
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
+                "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "error": r.get("error"),
@@ -990,8 +994,8 @@ async def web_crawl_tool(
         debug_call_data["pages_crawled"] = pages_crawled
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Process each result with LLM if enabled and auxiliary client is available
-        if use_llm_processing and _aux_async_client is not None:
+        # Process each result with LLM if enabled
+        if use_llm_processing:
             logger.info("Processing crawled content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
@@ -1057,10 +1061,6 @@ async def web_crawl_tool(
                 else:
                     logger.warning("%s (no content to process)", page_url)
         else:
-            if use_llm_processing and _aux_async_client is None:
-                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
-                debug_call_data["processing_applied"].append("llm_processing_unavailable")
-            
             # Print summary of crawled pages for debugging (original behavior)
             for result in response.get('results', []):
                 page_url = result.get('url', 'Unknown URL')
@@ -1115,7 +1115,15 @@ def check_firecrawl_api_key() -> bool:
 
 def check_auxiliary_model() -> bool:
     """Check if an auxiliary text model is available for LLM content processing."""
-    return _aux_async_client is not None
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+        for p in ("openrouter", "nous", "custom", "codex"):
+            client, _ = resolve_provider_client(p)
+            if client is not None:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def get_debug_session_info() -> Dict[str, Any]:

@@ -66,7 +66,8 @@ DEFAULT_AGENT_IDENTITY = (
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below."
+    "being genuinely useful over being verbose unless otherwise directed below. "
+    "Be targeted and efficient in your exploration and investigations."
 )
 
 MEMORY_GUIDANCE = (
@@ -102,12 +103,41 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Audio "
-        "(.ogg) sends as voice bubbles. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as native photos."
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
+        "bubbles, and videos (.mp4) play inline. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (
-        "You are in a Discord server or group chat communicating with your user."
+        "You are in a Discord server or group chat communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are sent as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be sent as attachments."
+    ),
+    "slack": (
+        "You are in a Slack workspace communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be uploaded as attachments."
+    ),
+    "signal": (
+        "You are on a text messaging communication platform, Signal. "
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
+        "files arrive as downloadable documents. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as photos."
+    ),
+    "email": (
+        "You are communicating via email. Write clear, well-structured responses "
+        "suitable for email. Use plain text formatting (no markdown). "
+        "Keep responses concise but complete. You can send file attachments — "
+        "include MEDIA:/absolute/path/to/file in your response. The subject line "
+        "is preserved for threading. Do not include greetings or sign-offs unless "
+        "contextually appropriate."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
@@ -137,17 +167,84 @@ def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
             if len(desc) > max_chars:
                 desc = desc[:max_chars - 3] + "..."
             return desc
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read skill description from %s: %s", skill_file, e)
     return ""
 
 
-def build_skills_system_prompt() -> str:
+def _skill_is_platform_compatible(skill_file: Path) -> bool:
+    """Quick check if a SKILL.md is compatible with the current OS platform.
+
+    Reads just enough to parse the ``platforms`` frontmatter field.
+    Skills without the field (the vast majority) are always compatible.
+    """
+    try:
+        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        return skill_matches_platform(frontmatter)
+    except Exception:
+        return True  # Err on the side of showing the skill
+
+
+def _read_skill_conditions(skill_file: Path) -> dict:
+    """Extract conditional activation fields from SKILL.md frontmatter."""
+    try:
+        from tools.skills_tool import _parse_frontmatter
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        hermes = frontmatter.get("metadata", {}).get("hermes", {})
+        return {
+            "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes.get("requires_toolsets", []),
+            "fallback_for_tools": hermes.get("fallback_for_tools", []),
+            "requires_tools": hermes.get("requires_tools", []),
+        }
+    except Exception:
+        return {}
+
+
+def _skill_should_show(
+    conditions: dict,
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+) -> bool:
+    """Return False if the skill's conditional activation rules exclude it."""
+    if available_tools is None and available_toolsets is None:
+        return True  # No filtering info — show everything (backward compat)
+
+    at = available_tools or set()
+    ats = available_toolsets or set()
+
+    # fallback_for: hide when the primary tool/toolset IS available
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if ts in ats:
+            return False
+    for t in conditions.get("fallback_for_tools", []):
+        if t in at:
+            return False
+
+    # requires: hide when a required tool/toolset is NOT available
+    for ts in conditions.get("requires_toolsets", []):
+        if ts not in ats:
+            return False
+    for t in conditions.get("requires_tools", []):
+        if t not in at:
+            return False
+
+    return True
+
+
+def build_skills_system_prompt(
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> str:
     """Build a compact skill index for the system prompt.
 
     Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
     Includes per-skill descriptions from frontmatter so the model can
     match skills by meaning, not just name.
+    Filters out skills incompatible with the current OS platform.
     """
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     skills_dir = hermes_home / "skills"
@@ -157,13 +254,27 @@ def build_skills_system_prompt() -> str:
 
     # Collect skills with descriptions, grouped by category
     # Each entry: (skill_name, description)
+    # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
+    # → category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
+        # Skip skills incompatible with the current OS platform
+        if not _skill_is_platform_compatible(skill_file):
+            continue
+        # Skip skills whose conditional activation rules exclude them
+        conditions = _read_skill_conditions(skill_file)
+        if not _skill_should_show(conditions, available_tools, available_toolsets):
+            continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:
-            category = parts[0]
+            # Category is everything between skills_dir and the skill folder
+            # e.g. parts = ("mlops", "training", "axolotl", "SKILL.md")
+            #   → category = "mlops/training", skill_name = "axolotl"
+            # e.g. parts = ("github", "github-auth", "SKILL.md")
+            #   → category = "github", skill_name = "github-auth"
             skill_name = parts[-2]
+            category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
         else:
             category = "general"
             skill_name = skill_file.parent.name
@@ -174,9 +285,11 @@ def build_skills_system_prompt() -> str:
         return ""
 
     # Read category-level descriptions from DESCRIPTION.md
+    # Checks both the exact category path and parent directories
     category_descriptions = {}
     for category in skills_by_category:
-        desc_file = skills_dir / category / "DESCRIPTION.md"
+        cat_path = Path(category)
+        desc_file = skills_dir / cat_path / "DESCRIPTION.md"
         if desc_file.exists():
             try:
                 content = desc_file.read_text(encoding="utf-8")

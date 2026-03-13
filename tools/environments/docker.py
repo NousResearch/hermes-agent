@@ -7,6 +7,7 @@ persistence via bind mounts.
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -19,13 +20,57 @@ from tools.interrupt import is_interrupted
 logger = logging.getLogger(__name__)
 
 
+# Common Docker Desktop install paths checked when 'docker' is not in PATH.
+# macOS Intel: /usr/local/bin, macOS Apple Silicon (Homebrew): /opt/homebrew/bin,
+# Docker Desktop app bundle: /Applications/Docker.app/Contents/Resources/bin
+_DOCKER_SEARCH_PATHS = [
+    "/usr/local/bin/docker",
+    "/opt/homebrew/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+]
+
+_docker_executable: Optional[str] = None  # resolved once, cached
+
+
+def find_docker() -> Optional[str]:
+    """Locate the docker CLI binary.
+
+    Checks ``shutil.which`` first (respects PATH), then probes well-known
+    install locations on macOS where Docker Desktop may not be in PATH
+    (e.g. when running as a gateway service via launchd).
+
+    Returns the absolute path, or ``None`` if docker cannot be found.
+    """
+    global _docker_executable
+    if _docker_executable is not None:
+        return _docker_executable
+
+    found = shutil.which("docker")
+    if found:
+        _docker_executable = found
+        return found
+
+    for path in _DOCKER_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            _docker_executable = path
+            logger.info("Found docker at non-PATH location: %s", path)
+            return path
+
+    return None
+
 
 # Security flags applied to every container.
 # The container itself is the security boundary (isolated from host).
-# We drop all capabilities, block privilege escalation, and limit PIDs.
+# We drop all capabilities then add back the minimum needed:
+#   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
+#   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+# Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",
+    "--cap-add", "DAC_OVERRIDE",
+    "--cap-add", "CHOWN",
+    "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
@@ -139,9 +184,14 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
         logger.info(f"Docker run_args: {all_run_args}")
 
+        # Resolve the docker executable once so it works even when
+        # /usr/local/bin is not in PATH (common on macOS gateway/service).
+        docker_exe = find_docker() or "docker"
+
         self._inner = _Docker(
             image=image, cwd=cwd, timeout=timeout,
             run_args=all_run_args,
+            executable=docker_exe,
         )
         self._container_id = self._inner.container_id
 
@@ -156,8 +206,9 @@ class DockerEnvironment(BaseEnvironment):
         if _storage_opt_ok is not None:
             return _storage_opt_ok
         try:
+            docker = find_docker() or "docker"
             result = subprocess.run(
-                ["docker", "info", "--format", "{{.Driver}}"],
+                [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, timeout=10,
             )
             driver = result.stdout.strip().lower()
@@ -167,14 +218,14 @@ class DockerEnvironment(BaseEnvironment):
             # overlay2 only supports storage-opt on XFS with pquota.
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
-                ["docker", "create", "--storage-opt", "size=1m", "hello-world"],
+                [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
-                    subprocess.run(["docker", "rm", container_id],
+                    subprocess.run([docker, "rm", container_id],
                                    capture_output=True, timeout=5)
                 _storage_opt_ok = True
             else:
@@ -187,9 +238,17 @@ class DockerEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
+
+        # Merge sudo password (if any) with caller-supplied stdin_data.
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
 
         # docker exec -w doesn't expand ~, so prepend a cd into the command
         if work_dir == "~" or work_dir.startswith("~/"):
@@ -198,7 +257,7 @@ class DockerEnvironment(BaseEnvironment):
 
         assert self._inner.container_id, "Container not started"
         cmd = [self._inner.config.executable, "exec"]
-        if stdin_data is not None:
+        if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
         for key in self._inner.config.forward_env:
@@ -213,12 +272,12 @@ class DockerEnvironment(BaseEnvironment):
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
                 text=True,
             )
-            if stdin_data:
+            if effective_stdin:
                 try:
-                    proc.stdin.write(stdin_data)
+                    proc.stdin.write(effective_stdin)
                     proc.stdin.close()
                 except Exception:
                     pass

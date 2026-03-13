@@ -79,8 +79,12 @@ def show_status(args):
         "OpenRouter": "OPENROUTER_API_KEY",
         "Anthropic": "ANTHROPIC_API_KEY", 
         "OpenAI": "OPENAI_API_KEY",
+        "Z.AI/GLM": "GLM_API_KEY",
+        "Kimi": "KIMI_API_KEY",
+        "MiniMax": "MINIMAX_API_KEY",
+        "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
-        "Browserbase": "BROWSERBASE_API_KEY",
+        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
@@ -128,7 +132,7 @@ def show_status(args):
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
         f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
     )
-    codex_auth_file = codex_status.get("auth_file")
+    codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
         print(f"    Auth file:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
@@ -136,6 +140,28 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    # =========================================================================
+    # API-Key Providers
+    # =========================================================================
+    print()
+    print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
+
+    apikey_providers = {
+        "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        "Kimi / Moonshot":  ("KIMI_API_KEY",),
+        "MiniMax":          ("MINIMAX_API_KEY",),
+        "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+    }
+    for pname, env_vars in apikey_providers.items():
+        key_val = ""
+        for ev in env_vars:
+            key_val = get_env_value(ev) or ""
+            if key_val:
+                break
+        configured = bool(key_val)
+        label = "configured" if configured else "not configured (run: hermes model)"
+        print(f"  {pname:<16} {check_mark(configured)} {label}")
 
     # =========================================================================
     # Terminal Configuration
@@ -163,6 +189,9 @@ def show_status(args):
     elif terminal_env == "docker":
         docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
+    elif terminal_env == "daytona":
+        daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
+        print(f"  Daytona Image: {daytona_image}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
@@ -177,6 +206,9 @@ def show_status(args):
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
+        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+        "Slack": ("SLACK_BOT_TOKEN", None),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -232,7 +264,7 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            with open(jobs_file) as f:
+            with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
@@ -252,7 +284,7 @@ def show_status(args):
     if sessions_file.exists():
         import json
         try:
-            with open(sessions_file) as f:
+            with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)
                 print(f"  Active:       {len(data)} session(s)")
         except Exception:

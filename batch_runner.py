@@ -29,7 +29,6 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from multiprocessing import Pool, Lock
 import traceback
-
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.console import Console
 import fire
@@ -250,7 +249,7 @@ def _process_single_prompt(
     task_id = f"task_{prompt_index}"
     
     # Per-prompt container image override: if the dataset row has an 'image' field,
-    # register it for this task's sandbox. Works with Docker, Modal, and Singularity.
+    # register it for this task's sandbox. Works with Docker, Modal, Singularity, and Daytona.
     container_image = prompt_data.get("image") or prompt_data.get("docker_image")
     if container_image:
         # Verify the image is accessible before spending tokens on the agent loop.
@@ -292,6 +291,7 @@ def _process_single_prompt(
             "docker_image": container_image,
             "modal_image": container_image,
             "singularity_image": f"docker://{container_image}",
+            "daytona_image": container_image,
         }
         if prompt_data.get("cwd"):
             overrides["cwd"] = prompt_data["cwd"]
@@ -606,7 +606,7 @@ class BatchRunner:
         # Create batches
         self.batches = self._create_batches()
         
-        print(f"📊 Batch Runner Initialized")
+        print("📊 Batch Runner Initialized")
         print(f"   Dataset: {self.dataset_file} ({len(self.dataset)} prompts)")
         print(f"   Batch size: {self.batch_size}")
         print(f"   Total batches: {len(self.batches)}")
@@ -700,14 +700,13 @@ class BatchRunner:
             lock (Lock): Optional lock for thread-safe access
         """
         checkpoint_data["last_updated"] = datetime.now().isoformat()
-        
+
+        from utils import atomic_json_write
         if lock:
             with lock:
-                with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
-                    json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+                atomic_json_write(self.checkpoint_file, checkpoint_data)
         else:
-            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
-                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            atomic_json_write(self.checkpoint_file, checkpoint_data)
     
     def _scan_completed_prompts_by_content(self) -> set:
         """
@@ -827,18 +826,20 @@ class BatchRunner:
             print("=" * 70)
             print(f"   Original dataset size:     {len(self.dataset):,} prompts")
             print(f"   Already completed:         {len(skipped_indices):,} prompts")
-            print(f"   ─────────────────────────────────────────")
+            print("   ─────────────────────────────────────────")
             print(f"   🎯 RESUMING WITH:          {len(filtered_entries):,} prompts")
             print(f"   New batches created:       {len(batches_to_process)}")
             print("=" * 70 + "\n")
         
-        # Initialize checkpoint data (needed for saving at the end)
-        checkpoint_data = {
-            "run_name": self.run_name,
-            "completed_prompts": [],
-            "batch_stats": {},
-            "last_updated": None
-        }
+        # Load existing checkpoint (so resume doesn't clobber prior progress)
+        checkpoint_data = self._load_checkpoint()
+        if checkpoint_data.get("run_name") != self.run_name:
+            checkpoint_data = {
+                "run_name": self.run_name,
+                "completed_prompts": [],
+                "batch_stats": {},
+                "last_updated": None
+            }
         
         # Prepare configuration for workers
         config = {
@@ -860,7 +861,7 @@ class BatchRunner:
         }
         
         # For backward compatibility, still track by index (but this is secondary to content matching)
-        completed_prompts_set = set()
+        completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
         
         # Aggregate statistics across all batches
         total_tool_stats = {}
@@ -869,6 +870,9 @@ class BatchRunner:
         
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
         
+        # Checkpoint writes happen in the parent process; keep a lock for safety.
+        checkpoint_lock = Lock()
+
         # Process batches in parallel
         with Pool(processes=self.num_workers) as pool:
             # Create tasks for each batch
@@ -884,7 +888,7 @@ class BatchRunner:
             ]
             
             print(f"✅ Created {len(tasks)} batch tasks")
-            print(f"🚀 Starting parallel batch processing...\n")
+            print("🚀 Starting parallel batch processing...\n")
             
             # Use rich Progress for better visual tracking with persistent bottom bar
             # redirect_stdout/stderr lets rich manage all output so progress bar stays clean
@@ -914,6 +918,25 @@ class BatchRunner:
                     for result in pool.imap_unordered(_process_batch_worker, tasks):
                         results.append(result)
                         progress.update(task, advance=1)
+
+                        # Incremental checkpoint update (so resume works after crash)
+                        try:
+                            batch_num = result.get('batch_num')
+                            completed = result.get('completed_prompts', []) or []
+                            completed_prompts_set.update(completed)
+
+                            if isinstance(batch_num, int):
+                                checkpoint_data.setdefault('batch_stats', {})[str(batch_num)] = {
+                                    'processed': result.get('processed', 0),
+                                    'skipped': result.get('skipped', 0),
+                                    'discarded_no_reasoning': result.get('discarded_no_reasoning', 0),
+                                }
+
+                            checkpoint_data['completed_prompts'] = sorted(completed_prompts_set)
+                            self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
+                        except Exception as ckpt_err:
+                            # Don't fail the run if checkpoint write fails
+                            print(f"⚠️  Warning: Failed to save incremental checkpoint: {ckpt_err}")
                 except Exception as e:
                     logger.error("Batch worker failed: %s", e, exc_info=True)
                     raise
@@ -945,9 +968,12 @@ class BatchRunner:
             for key in total_reasoning_stats:
                 total_reasoning_stats[key] += batch_result.get("reasoning_stats", {}).get(key, 0)
         
-        # Save final checkpoint
-        checkpoint_data["completed_prompts"] = all_completed_prompts
-        self._save_checkpoint(checkpoint_data)
+        # Save final checkpoint (best-effort; incremental writes already happened)
+        try:
+            checkpoint_data["completed_prompts"] = all_completed_prompts
+            self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
+        except Exception as ckpt_err:
+            print(f"âš ï¸  Warning: Failed to save final checkpoint: {ckpt_err}")
         
         # Calculate success rates
         for tool_name in total_tool_stats:
@@ -1031,7 +1057,7 @@ class BatchRunner:
         print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
-        print(f"\n📈 Tool Usage Statistics:")
+        print("\n📈 Tool Usage Statistics:")
         print("-" * 70)
         
         if total_tool_stats:
@@ -1058,7 +1084,7 @@ class BatchRunner:
         # Print reasoning coverage stats
         total_discarded = sum(r.get("discarded_no_reasoning", 0) for r in results)
         
-        print(f"\n🧠 Reasoning Coverage:")
+        print("\n🧠 Reasoning Coverage:")
         print("-" * 70)
         total_turns = total_reasoning_stats["total_assistant_turns"]
         with_reasoning = total_reasoning_stats["turns_with_reasoning"]
@@ -1075,8 +1101,8 @@ class BatchRunner:
             print(f"   🚫 Samples discarded (zero reasoning): {total_discarded:,}")
         
         print(f"\n💾 Results saved to: {self.output_dir}")
-        print(f"   - Trajectories: trajectories.jsonl (combined)")
-        print(f"   - Individual batches: batch_*.jsonl (for debugging)")
+        print("   - Trajectories: trajectories.jsonl (combined)")
+        print("   - Individual batches: batch_*.jsonl (for debugging)")
         print(f"   - Statistics: {self.stats_file.name}")
         print(f"   - Checkpoint: {self.checkpoint_file.name}")
 
@@ -1086,7 +1112,7 @@ def main(
     batch_size: int = None,
     run_name: str = None,
     distribution: str = "default",
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str = "anthropic/claude-sonnet-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
@@ -1129,7 +1155,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "xhigh")
+        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1190,7 +1216,7 @@ def main(
     providers_order_list = [p.strip() for p in providers_order.split(",")] if providers_order else None
     
     # Build reasoning_config from CLI flags
-    # --reasoning_disabled takes priority, then --reasoning_effort, then default (xhigh)
+    # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
     reasoning_config = None
     if reasoning_disabled:
         # Completely disable reasoning/thinking tokens
@@ -1212,7 +1238,7 @@ def main(
             with open(prefill_messages_file, 'r', encoding='utf-8') as f:
                 prefill_messages = json.load(f)
             if not isinstance(prefill_messages, list):
-                print(f"❌ Error: prefill_messages_file must contain a JSON array of messages")
+                print("❌ Error: prefill_messages_file must contain a JSON array of messages")
                 return
             print(f"💬 Loaded {len(prefill_messages)} prefill messages from {prefill_messages_file}")
         except Exception as e:

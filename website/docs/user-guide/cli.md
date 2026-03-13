@@ -33,6 +33,10 @@ hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
 # Verbose mode (debug output)
 hermes chat --verbose
+
+# Isolated git worktree (for running multiple agents in parallel)
+hermes -w                         # Interactive mode in worktree
+hermes -w -q "Fix issue #123"     # Single query in worktree
 ```
 
 ## Interface Layout
@@ -60,6 +64,10 @@ hermes chat --verbose
 ```
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
+
+### Session Resume Display
+
+When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Previous Conversation" panel appears between the banner and the input prompt, showing a compact recap of the conversation history. See [Sessions — Conversation Recap on Resume](sessions.md#conversation-recap-on-resume) for details and configuration.
 
 ## Keybindings
 
@@ -91,10 +99,12 @@ Type `/` to see an autocomplete dropdown of all available commands.
 |---------|-------------|
 | `/tools` | List all available tools grouped by toolset |
 | `/toolsets` | List available toolsets with descriptions |
-| `/model [name]` | Show or change the current model |
+| `/model [provider:model]` | Show or change the current model (supports `provider:model` syntax) |
+| `/provider` | Show available providers with auth status |
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set/clear custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`) and display (`show`/`hide`) |
 
 ### Conversation Management
 
@@ -106,13 +116,14 @@ Type `/` to see an autocomplete dropdown of all available commands.
 | `/save` | Save the current conversation |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
 
 ### Skills & Scheduling
 
 | Command | Description |
 |---------|-------------|
 | `/cron` | Manage scheduled tasks |
-| `/skills` | Search, install, inspect, or manage skills |
+| `/skills` | Browse, search, install, inspect, or manage skills |
 | `/platforms` | Show gateway/messaging platform status |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose |
 | `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
@@ -120,6 +131,23 @@ Type `/` to see an autocomplete dropdown of all available commands.
 :::tip
 Commands are case-insensitive — `/HELP` works the same as `/help`. Most commands work mid-conversation.
 :::
+
+## Quick Commands
+
+You can define custom commands that run shell commands instantly without invoking the LLM. These work in both the CLI and messaging platforms (Telegram, Discord, etc.).
+
+```yaml
+# ~/.hermes/config.yaml
+quick_commands:
+  status:
+    type: exec
+    command: systemctl status hermes-agent
+  gpu:
+    type: exec
+    command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+```
+
+Then type `/status` or `/gpu` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
 
 ## Skill Slash Commands
 
@@ -223,13 +251,15 @@ Resume options:
 ```bash
 hermes --continue                          # Resume the most recent CLI session
 hermes -c                                  # Short form
+hermes -c "my project"                     # Resume a named session (latest in lineage)
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
+hermes --resume "refactoring auth"         # Resume by title
 hermes -r 20260225_143052_a1b2c3           # Short form
 ```
 
 Resuming restores the full conversation history from SQLite. The agent sees all previous messages, tool calls, and responses — just as if you never left.
 
-Use `hermes sessions list` to browse past sessions.
+Use `/title My Session Name` inside a chat to name the current session, or `hermes sessions rename <id> <title>` from the command line. Use `hermes sessions list` to browse past sessions.
 
 ### Session Logging
 

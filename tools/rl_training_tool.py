@@ -54,8 +54,11 @@ ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
 CONFIGS_DIR = TINKER_ATROPOS_ROOT / "configs"
 LOGS_DIR = TINKER_ATROPOS_ROOT / "logs"
 
-# Ensure logs directory exists
-LOGS_DIR.mkdir(exist_ok=True)
+
+def _ensure_logs_dir():
+    """Lazily create logs directory on first use (avoid side effects at import time)."""
+    if TINKER_ATROPOS_ROOT.exists():
+        LOGS_DIR.mkdir(exist_ok=True)
 
 
 # ============================================================================
@@ -314,6 +317,8 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
     """
     run_id = run_state.run_id
     
+    _ensure_logs_dir()
+
     # Log file paths
     api_log = LOGS_DIR / f"api_{run_id}.log"
     trainer_log = LOGS_DIR / f"trainer_{run_id}.log"
@@ -323,7 +328,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 1: Start the Atropos API server (run-api)
         print(f"[{run_id}] Starting Atropos API server (run-api)...")
         
-        api_log_file = open(api_log, "w")
+        # File must stay open while the subprocess runs; we store the handle
+        # on run_state so _stop_training_run() can close it when done.
+        api_log_file = open(api_log, "w")  # closed by _stop_training_run
+        run_state.api_log_file = api_log_file
         run_state.api_process = subprocess.Popen(
             ["run-api"],
             stdout=api_log_file,
@@ -337,6 +345,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.api_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"API server exited with code {run_state.api_process.returncode}. Check {api_log}"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Atropos API server started")
@@ -344,7 +353,8 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 2: Start the Tinker trainer
         print(f"[{run_id}] Starting Tinker trainer: launch_training.py --config {config_path}")
         
-        trainer_log_file = open(trainer_log, "w")
+        trainer_log_file = open(trainer_log, "w")  # closed by _stop_training_run
+        run_state.trainer_log_file = trainer_log_file
         run_state.trainer_process = subprocess.Popen(
             [sys.executable, "launch_training.py", "--config", str(config_path)],
             stdout=trainer_log_file,
@@ -360,8 +370,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.trainer_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Trainer exited with code {run_state.trainer_process.returncode}. Check {trainer_log}"
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Trainer started, inference server on port 8001")
@@ -380,11 +389,13 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if not env_info:
             run_state.status = "failed"
             run_state.error_message = f"Environment '{run_state.environment}' not found"
+            _stop_training_run(run_state)
             return
         
         print(f"[{run_id}] Starting environment: {env_info.file_path} serve")
         
-        env_log_file = open(env_log, "w")
+        env_log_file = open(env_log, "w")  # closed by _stop_training_run
+        run_state.env_log_file = env_log_file
         run_state.env_process = subprocess.Popen(
             [sys.executable, str(env_info.file_path), "serve", "--config", str(config_path)],
             stdout=env_log_file,
@@ -398,10 +409,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         if run_state.env_process.poll() is not None:
             run_state.status = "failed"
             run_state.error_message = f"Environment exited with code {run_state.env_process.returncode}. Check {env_log}"
-            if run_state.trainer_process:
-                run_state.trainer_process.terminate()
-            if run_state.api_process:
-                run_state.api_process.terminate()
+            _stop_training_run(run_state)
             return
         
         run_state.status = "running"
@@ -479,6 +487,16 @@ def _stop_training_run(run_state: RunState):
     
     if run_state.status == "running":
         run_state.status = "stopped"
+
+    # Close log file handles that were opened for subprocess stdout.
+    for attr in ("env_log_file", "trainer_log_file", "api_log_file"):
+        fh = getattr(run_state, attr, None)
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            setattr(run_state, attr, None)
 
 
 # ============================================================================
@@ -993,7 +1011,7 @@ async def rl_list_runs() -> str:
 TEST_MODELS = [
     {"id": "qwen/qwen3-8b", "name": "Qwen3 8B", "scale": "small"},
     {"id": "z-ai/glm-4.7-flash", "name": "GLM-4.7 Flash", "scale": "medium"},
-    {"id": "minimax/minimax-m2.1", "name": "MiniMax M2.1", "scale": "large"},
+    {"id": "minimax/minimax-m2.5", "name": "MiniMax M2.5", "scale": "large"},
 ]
 
 # Default test parameters - quick but representative
@@ -1079,6 +1097,7 @@ async def rl_test_inference(
     }
     
     # Create output directory for test results
+    _ensure_logs_dir()
     test_output_dir = LOGS_DIR / "inference_tests"
     test_output_dir.mkdir(exist_ok=True)
     
@@ -1353,7 +1372,7 @@ RL_CHECK_STATUS_SCHEMA = {"name": "rl_check_status", "description": "Get status 
 RL_STOP_TRAINING_SCHEMA = {"name": "rl_stop_training", "description": "Stop a running training job. Use if metrics look bad, training is stagnant, or you want to try different settings.", "parameters": {"type": "object", "properties": {"run_id": {"type": "string", "description": "The run ID to stop"}}, "required": ["run_id"]}}
 RL_GET_RESULTS_SCHEMA = {"name": "rl_get_results", "description": "Get final results and metrics for a completed training run. Returns final metrics and path to trained weights.", "parameters": {"type": "object", "properties": {"run_id": {"type": "string", "description": "The run ID to get results for"}}, "required": ["run_id"]}}
 RL_LIST_RUNS_SCHEMA = {"name": "rl_list_runs", "description": "List all training runs (active and completed) with their status.", "parameters": {"type": "object", "properties": {}, "required": []}}
-RL_TEST_INFERENCE_SCHEMA = {"name": "rl_test_inference", "description": "Quick inference test for any environment. Runs a few steps of inference + scoring using OpenRouter. Default: 3 steps x 16 completions = 48 rollouts per model, testing 3 models = 144 total. Tests environment loading, prompt construction, inference parsing, and verifier logic. Use BEFORE training to catch issues.", "parameters": {"type": "object", "properties": {"num_steps": {"type": "integer", "description": "Number of steps to run (default: 3, recommended max for testing)", "default": 3}, "group_size": {"type": "integer", "description": "Completions per step (default: 16, like training)", "default": 16}, "models": {"type": "array", "items": {"type": "string"}, "description": "Optional list of OpenRouter model IDs. Default: qwen/qwen3-8b, z-ai/glm-4.7-flash, minimax/minimax-m2.1"}}, "required": []}}
+RL_TEST_INFERENCE_SCHEMA = {"name": "rl_test_inference", "description": "Quick inference test for any environment. Runs a few steps of inference + scoring using OpenRouter. Default: 3 steps x 16 completions = 48 rollouts per model, testing 3 models = 144 total. Tests environment loading, prompt construction, inference parsing, and verifier logic. Use BEFORE training to catch issues.", "parameters": {"type": "object", "properties": {"num_steps": {"type": "integer", "description": "Number of steps to run (default: 3, recommended max for testing)", "default": 3}, "group_size": {"type": "integer", "description": "Completions per step (default: 16, like training)", "default": 16}, "models": {"type": "array", "items": {"type": "string"}, "description": "Optional list of OpenRouter model IDs. Default: qwen/qwen3-8b, z-ai/glm-4.7-flash, minimax/minimax-m2.5"}}, "required": []}}
 
 _rl_env = ["TINKER_API_KEY", "WANDB_API_KEY"]
 

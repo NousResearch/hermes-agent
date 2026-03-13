@@ -98,10 +98,9 @@ class TestFlushMemoriesUsesAuxiliaryClient:
     def test_flush_uses_auxiliary_when_available(self, monkeypatch):
         agent = _make_agent(monkeypatch, api_mode="codex_responses", provider="openai-codex")
 
-        mock_aux_client = MagicMock()
-        mock_aux_client.chat.completions.create.return_value = _chat_response_with_memory_call()
+        mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_aux_client, "gpt-4o-mini")):
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi there"},
@@ -110,9 +109,9 @@ class TestFlushMemoriesUsesAuxiliaryClient:
             with patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
                 agent.flush_memories(messages)
 
-        mock_aux_client.chat.completions.create.assert_called_once()
-        call_kwargs = mock_aux_client.chat.completions.create.call_args
-        assert call_kwargs.kwargs.get("model") == "gpt-4o-mini" or call_kwargs[1].get("model") == "gpt-4o-mini"
+        mock_call.assert_called_once()
+        call_kwargs = mock_call.call_args
+        assert call_kwargs.kwargs.get("task") == "flush_memories"
 
     def test_flush_uses_main_client_when_no_auxiliary(self, monkeypatch):
         """Non-Codex mode with no auxiliary falls back to self.client."""
@@ -120,7 +119,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         agent.client = MagicMock()
         agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)):
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi there"},
@@ -135,10 +134,9 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         """Verify that memory tool calls from the flush response actually get executed."""
         agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
 
-        mock_aux_client = MagicMock()
-        mock_aux_client.chat.completions.create.return_value = _chat_response_with_memory_call()
+        mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_aux_client, "gpt-4o-mini")):
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
@@ -157,10 +155,9 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         """After flush, the flush prompt and any response should be removed from messages."""
         agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
 
-        mock_aux_client = MagicMock()
-        mock_aux_client.chat.completions.create.return_value = _chat_response_with_memory_call()
+        mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_aux_client, "gpt-4o-mini")):
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
@@ -202,7 +199,7 @@ class TestFlushMemoriesCodexFallback:
             model="gpt-5-codex",
         )
 
-        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)), \
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
              patch.object(agent, "_run_codex_stream", return_value=codex_response) as mock_stream, \
              patch.object(agent, "_build_api_kwargs") as mock_build, \
              patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:

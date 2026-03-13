@@ -7,11 +7,20 @@ import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
+
+# Track files read per task to detect re-read loops after context compression.
+# Per task_id we store:
+#   "last_key":     the key of the most recent read/search call (or None)
+#   "consecutive":  how many times that exact call has been repeated in a row
+#   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
+_read_tracker_lock = threading.Lock()
+_read_tracker: dict = {}
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
@@ -75,6 +84,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 image = overrides.get("singularity_image") or config["singularity_image"]
             elif env_type == "modal":
                 image = overrides.get("modal_image") or config["modal_image"]
+            elif env_type == "daytona":
+                image = overrides.get("daytona_image") or config["daytona_image"]
             else:
                 image = ""
 
@@ -82,12 +93,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal"):
+            if env_type in ("docker", "singularity", "modal", "daytona"):
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "docker_volumes": config.get("docker_volumes", []),
                 }
             terminal_env = _create_environment(
                 env_type=env_type,
@@ -126,9 +138,97 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        if result.content:
+            result.content = redact_sensitive_text(result.content)
+        result_dict = result.to_dict()
+
+        # Track reads to detect *consecutive* re-read loops.
+        # The counter resets whenever any other tool is called in between,
+        # so only truly back-to-back identical reads trigger warnings/blocks.
+        read_key = ("read", path, offset, limit)
+        with _read_tracker_lock:
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0, "read_history": set(),
+            })
+            task_data["read_history"].add((path, offset, limit))
+            if task_data["last_key"] == read_key:
+                task_data["consecutive"] += 1
+            else:
+                task_data["last_key"] = read_key
+                task_data["consecutive"] = 1
+            count = task_data["consecutive"]
+
+        if count >= 4:
+            # Hard block: stop returning content to break the loop
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have read this exact file region {count} times in a row. "
+                    "The content has NOT changed. You already have this information. "
+                    "STOP re-reading and proceed with your task."
+                ),
+                "path": path,
+                "already_read": count,
+            }, ensure_ascii=False)
+        elif count >= 3:
+            result_dict["_warning"] = (
+                f"You have read this exact file region {count} times consecutively. "
+                "The content has not changed since your last read. Use the information you already have. "
+                "If you are stuck in a loop, stop reading and proceed with writing or responding."
+            )
+
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def get_read_files_summary(task_id: str = "default") -> list:
+    """Return a list of files read in this session for the given task.
+
+    Used by context compression to preserve file-read history across
+    compression boundaries.
+    """
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id, {})
+        read_history = task_data.get("read_history", set())
+        seen_paths: dict = {}
+        for (path, offset, limit) in read_history:
+            if path not in seen_paths:
+                seen_paths[path] = []
+            seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
+        return [
+            {"path": p, "regions": regions}
+            for p, regions in sorted(seen_paths.items())
+        ]
+
+
+def clear_read_tracker(task_id: str = None):
+    """Clear the read tracker.
+
+    Call with a task_id to clear just that task, or without to clear all.
+    Should be called when a session is destroyed to prevent memory leaks
+    in long-running gateway processes.
+    """
+    with _read_tracker_lock:
+        if task_id:
+            _read_tracker.pop(task_id, None)
+        else:
+            _read_tracker.clear()
+
+
+def notify_other_tool_call(task_id: str = "default"):
+    """Reset consecutive read/search counter for a task.
+
+    Called by the tool dispatcher (model_tools.py) whenever a tool OTHER
+    than read_file / search_files is executed.  This ensures we only warn
+    or block on *truly consecutive* repeated reads — if the agent does
+    anything else in between (write, patch, terminal, etc.) the counter
+    resets and the next read is treated as fresh.
+    """
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data:
+            task_data["last_key"] = None
+            task_data["consecutive"] = 0
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
@@ -138,7 +238,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
-        print(f"[FileTools] write_file error: {type(e).__name__}: {e}", flush=True)  
+        logger.error("write_file error: %s: %s", type(e).__name__, e)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -162,7 +262,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Hint when old_string not found — saves iterations where the agent
+        # retries with stale content instead of re-reading the file.
+        if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
+            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -173,12 +279,54 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        # Track searches to detect *consecutive* repeated search loops.
+        search_key = ("search", pattern, target, str(path), file_glob or "")
+        with _read_tracker_lock:
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0, "read_history": set(),
+            })
+            if task_data["last_key"] == search_key:
+                task_data["consecutive"] += 1
+            else:
+                task_data["last_key"] = search_key
+                task_data["consecutive"] = 1
+            count = task_data["consecutive"]
+
+        if count >= 4:
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have run this exact search {count} times in a row. "
+                    "The results have NOT changed. You already have this information. "
+                    "STOP re-searching and proceed with your task."
+                ),
+                "pattern": pattern,
+                "already_searched": count,
+            }, ensure_ascii=False)
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        if hasattr(result, 'matches'):
+            for m in result.matches:
+                if hasattr(m, 'content') and m.content:
+                    m.content = redact_sensitive_text(m.content)
+        result_dict = result.to_dict()
+
+        if count >= 3:
+            result_dict["_warning"] = (
+                f"You have run this exact search {count} times consecutively. "
+                "The results have not changed. Use the information you already have."
+            )
+
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Hint when results were truncated — explicit next offset is clearer
+        # than relying on the model to infer it from total_count vs match count.
+        if result_dict.get("truncated"):
+            next_offset = offset + limit
+            result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

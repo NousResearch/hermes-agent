@@ -134,9 +134,23 @@ List all images on the current page with their URLs and alt text. Useful for fin
 
 Take a screenshot and analyze it with vision AI. Use this when text snapshots don't capture important visual information — especially useful for CAPTCHAs, complex layouts, or visual verification challenges.
 
+The screenshot is saved persistently and the file path is returned alongside the AI analysis. On messaging platforms (Telegram, Discord, Slack, WhatsApp), you can ask the agent to share the screenshot — it will be sent as a native photo attachment via the `MEDIA:` mechanism.
+
 ```
 What does the chart on this page show?
 ```
+
+Screenshots are stored in `~/.hermes/browser_screenshots/` and automatically cleaned up after 24 hours.
+
+### `browser_console`
+
+Get browser console output (log/warn/error messages) and uncaught JavaScript exceptions from the current page. Essential for detecting silent JS errors that don't appear in the accessibility tree.
+
+```
+Check the browser console for any JavaScript errors
+```
+
+Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
 
 ### `browser_close`
 
@@ -170,6 +184,17 @@ Agent workflow:
 3. Returns formatted results
 4. browser_close()
 ```
+
+## Session Recording
+
+Automatically record browser sessions as WebM video files:
+
+```yaml
+browser:
+  record_sessions: true  # default: false
+```
+
+When enabled, recording starts automatically on the first `browser_navigate` and saves to `~/.hermes/browser_recordings/` when the session closes. Works in both local and cloud (Browserbase) modes. Recordings older than 72 hours are automatically cleaned up.
 
 ## Stealth Features
 

@@ -24,7 +24,7 @@ Make it a **Tool** when:
 
 ## Skill Directory Structure
 
-Bundled skills live in `skills/` organized by category:
+Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
 
 ```
 skills/
@@ -50,6 +50,9 @@ description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
 license: MIT
+platforms: [macos, linux]          # Optional — restrict to specific OS platforms
+                                   #   Valid: macos, linux, windows
+                                   #   Omit to load on all platforms (default)
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -76,6 +79,20 @@ Known failure modes and how to handle them.
 How the agent confirms it worked.
 ```
 
+### Platform-Specific Skills
+
+Skills can restrict themselves to specific operating systems using the `platforms` field:
+
+```yaml
+platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders)
+platforms: [macos, linux]     # macOS and Linux
+platforms: [windows]          # Windows only
+```
+
+When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted or empty, the skill loads on all platforms (backward compatible).
+
+See `skills/apple/` for examples of macOS-only skills.
+
 ## Skill Guidelines
 
 ### No External Dependencies
@@ -98,14 +115,16 @@ Run the skill and verify the agent follows the instructions correctly:
 hermes chat --toolsets skills -q "Use the X skill to do Y"
 ```
 
-## Should the Skill Be Bundled?
+## Where Should the Skill Live?
 
 Bundled skills (in `skills/`) ship with every Hermes install. They should be **broadly useful to most users**:
 
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is specialized (a niche engineering tool, a specific SaaS integration, a game), it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo, is discoverable via `hermes skills browse` (labeled "official"), and installs with builtin trust.
+
+If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
 
 ## Publishing Skills
 
@@ -136,5 +155,6 @@ All hub-installed skills go through a security scanner that checks for:
 
 Trust levels:
 - `builtin` — ships with Hermes (always trusted)
+- `official` — from `optional-skills/` in the repo (builtin trust, no third-party warning)
 - `trusted` — from openai/skills, anthropics/skills
 - `community` — any findings = blocked unless `--force`

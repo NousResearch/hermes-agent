@@ -162,6 +162,132 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
+    """When provider resolves to openai-codex and no model was explicitly
+    chosen, the global config default (e.g. anthropic/claude-opus-4.6) must
+    be replaced with a Codex-compatible model.  Fixes #651."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+    )
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    assert shell._model_is_default is True
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    assert "anthropic" not in shell.model
+    assert "claude" not in shell.model
+    assert shell.model == "gpt-5.2-codex"
+
+
+def test_codex_provider_uses_config_model(monkeypatch):
+    """Model comes from config.yaml, not LLM_MODEL env var.
+    Config.yaml is the single source of truth to avoid multi-agent conflicts."""
+    cli = _import_cli()
+
+    # LLM_MODEL env var should be IGNORED (even if set)
+    monkeypatch.setenv("LLM_MODEL", "should-be-ignored")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    # Set model via config
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "gpt-5.2-codex",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    })
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "fake-codex-token",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    # Model from config (may be normalized by codex provider logic)
+    assert "codex" in shell.model.lower()
+    # LLM_MODEL env var is NOT used
+    assert shell.model != "should-be-ignored"
+
+
+def test_codex_provider_preserves_explicit_codex_model(monkeypatch):
+    """If the user explicitly passes a Codex-compatible model, it must be
+    preserved even when the provider resolves to openai-codex."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5.1-codex-mini", compact=True, max_turns=1)
+
+    assert shell._model_is_default is False
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "gpt-5.1-codex-mini"
+
+
+def test_codex_provider_strips_provider_prefix_from_model(monkeypatch):
+    """openai/gpt-5.3-codex should become gpt-5.3-codex — the Codex
+    Responses API does not accept provider-prefixed model slugs."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="openai/gpt-5.3-codex", compact=True, max_turns=1)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "gpt-5.3-codex"
+
+
 def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",

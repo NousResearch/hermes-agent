@@ -63,7 +63,12 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **Anthropic** | `hermes model` (API key, setup-token, or Claude Code auto-detect) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
+| **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
+| **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
+| **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
@@ -71,7 +76,288 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](#auxiliary-models) below.
+:::
+
+### Anthropic (Native)
+
+Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+
+```bash
+# With an API key (pay-per-token)
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+hermes chat --provider anthropic --model claude-sonnet-4-6
+
+# With a Claude Code setup-token (Pro/Max subscription)
+export ANTHROPIC_API_KEY=sk-ant-oat01-...  # from 'claude setup-token'
+hermes chat --provider anthropic
+
+# Auto-detect Claude Code credentials (if you have Claude Code installed)
+hermes chat --provider anthropic  # reads ~/.claude.json automatically
+```
+
+Or set it permanently:
+```yaml
+model:
+  provider: "anthropic"
+  default: "claude-sonnet-4-6"
+```
+
+:::tip Aliases
+`--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
+:::
+
+### First-Class Chinese AI Providers
+
+These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
+
+```bash
+# z.ai / ZhipuAI GLM
+hermes chat --provider zai --model glm-4-plus
+# Requires: GLM_API_KEY in ~/.hermes/.env
+
+# Kimi / Moonshot AI
+hermes chat --provider kimi-coding --model moonshot-v1-auto
+# Requires: KIMI_API_KEY in ~/.hermes/.env
+
+# MiniMax (global endpoint)
+hermes chat --provider minimax --model MiniMax-Text-01
+# Requires: MINIMAX_API_KEY in ~/.hermes/.env
+
+# MiniMax (China endpoint)
+hermes chat --provider minimax-cn --model MiniMax-Text-01
+# Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
+```
+
+Or set the provider permanently in `config.yaml`:
+```yaml
+model:
+  provider: "zai"       # or: kimi-coding, minimax, minimax-cn
+  default: "glm-4-plus"
+```
+
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, or `MINIMAX_CN_BASE_URL` environment variables.
+
+## Custom & Self-Hosted LLM Providers
+
+Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.
+
+### General Setup
+
+Two ways to configure a custom endpoint:
+
+**Interactive (recommended):**
+```bash
+hermes model
+# Select "Custom endpoint (self-hosted / VLLM / etc.)"
+# Enter: API base URL, API key, Model name
+```
+
+**Manual (`.env` file):**
+```bash
+# Add to ~/.hermes/.env
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=your-key-or-dummy
+LLM_MODEL=your-model-name
+```
+
+Everything below follows this same pattern — just change the URL, key, and model name.
+
+---
+
+### Ollama — Local Models, Zero Config
+
+[Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use.
+
+```bash
+# Install and run a model
+ollama pull llama3.1:70b
+ollama serve   # Starts on port 11434
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_API_KEY=ollama           # Any non-empty string
+LLM_MODEL=llama3.1:70b
+```
+
+Ollama's OpenAI-compatible endpoint supports chat completions, streaming, and tool calling (for supported models). No GPU required for smaller models — Ollama handles CPU inference automatically.
+
+:::tip
+List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`.
+:::
+
+---
+
+### vLLM — High-Performance GPU Inference
+
+[vLLM](https://docs.vllm.ai/) is the standard for production LLM serving. Best for: maximum throughput on GPU hardware, serving large models, continuous batching.
+
+```bash
+# Start vLLM server
+pip install vllm
+vllm serve meta-llama/Llama-3.1-70B-Instruct \
+  --port 8000 \
+  --tensor-parallel-size 2    # Multi-GPU
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+vLLM supports tool calling, structured output, and multi-modal models. Use `--enable-auto-tool-choice` and `--tool-call-parser hermes` for Hermes-format tool calling with NousResearch models.
+
+---
+
+### SGLang — Fast Serving with RadixAttention
+
+[SGLang](https://github.com/sgl-project/sglang) is an alternative to vLLM with RadixAttention for KV cache reuse. Best for: multi-turn conversations (prefix caching), constrained decoding, structured output.
+
+```bash
+# Start SGLang server
+pip install sglang[all]
+python -m sglang.launch_server \
+  --model meta-llama/Llama-3.1-70B-Instruct \
+  --port 8000 \
+  --tp 2
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+---
+
+### llama.cpp / llama-server — CPU & Metal Inference
+
+[llama.cpp](https://github.com/ggml-org/llama.cpp) runs quantized models on CPU, Apple Silicon (Metal), and consumer GPUs. Best for: running models without a datacenter GPU, Mac users, edge deployment.
+
+```bash
+# Build and start llama-server
+cmake -B build && cmake --build build --config Release
+./build/bin/llama-server \
+  -m models/llama-3.1-8b-instruct-Q4_K_M.gguf \
+  --port 8080 --host 0.0.0.0
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8080/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=llama-3.1-8b-instruct
+```
+
+:::tip
+Download GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf). Q4_K_M quantization offers the best balance of quality vs. memory usage.
+:::
+
+---
+
+### LiteLLM Proxy — Multi-Provider Gateway
+
+[LiteLLM](https://docs.litellm.ai/) is an OpenAI-compatible proxy that unifies 100+ LLM providers behind a single API. Best for: switching between providers without config changes, load balancing, fallback chains, budget controls.
+
+```bash
+# Install and start
+pip install litellm[proxy]
+litellm --model anthropic/claude-sonnet-4 --port 4000
+
+# Or with a config file for multiple models:
+litellm --config litellm_config.yaml --port 4000
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:4000/v1
+OPENAI_API_KEY=sk-your-litellm-key
+LLM_MODEL=anthropic/claude-sonnet-4
+```
+
+Example `litellm_config.yaml` with fallback:
+```yaml
+model_list:
+  - model_name: "best"
+    litellm_params:
+      model: anthropic/claude-sonnet-4
+      api_key: sk-ant-...
+  - model_name: "best"
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: sk-...
+router_settings:
+  routing_strategy: "latency-based-routing"
+```
+
+---
+
+### ClawRouter — Cost-Optimized Routing
+
+[ClawRouter](https://github.com/BlockRunAI/ClawRouter) by BlockRunAI is a local routing proxy that auto-selects models based on query complexity. It classifies requests across 14 dimensions and routes to the cheapest model that can handle the task. Payment is via USDC cryptocurrency (no API keys).
+
+```bash
+# Install and start
+npx @blockrun/clawrouter    # Starts on port 8402
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8402/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=blockrun/auto     # or: blockrun/eco, blockrun/premium, blockrun/agentic
+```
+
+Routing profiles:
+| Profile | Strategy | Savings |
+|---------|----------|---------|
+| `blockrun/auto` | Balanced quality/cost | 74-100% |
+| `blockrun/eco` | Cheapest possible | 95-100% |
+| `blockrun/premium` | Best quality models | 0% |
+| `blockrun/free` | Free models only | 100% |
+| `blockrun/agentic` | Optimized for tool use | varies |
+
+:::note
+ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requests route through BlockRun's backend API. Run `npx @blockrun/clawrouter doctor` to check wallet status.
+:::
+
+---
+
+### Other Compatible Providers
+
+Any service with an OpenAI-compatible API works. Some popular options:
+
+| Provider | Base URL | Notes |
+|----------|----------|-------|
+| [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
+| [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
+| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
+| [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
+| [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
+| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
+| [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
+| [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
+| [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
+| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
+
+```bash
+# Example: Together AI
+OPENAI_BASE_URL=https://api.together.xyz/v1
+OPENAI_API_KEY=your-together-key
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
+```
+
+---
+
+### Choosing the Right Setup
+
+| Use Case | Recommended |
+|----------|-------------|
+| **Just want it to work** | OpenRouter (default) or Nous Portal |
+| **Local models, easy setup** | Ollama |
+| **Production GPU serving** | vLLM or SGLang |
+| **Mac / no GPU** | Ollama or llama.cpp |
+| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
+| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
+| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
+| **Enterprise / Azure** | Azure OpenAI with custom endpoint |
+| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot, or MiniMax (first-class providers) |
+
+:::tip
+You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
 :::
 
 ## Optional API Keys
@@ -85,6 +371,31 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
+
+### Self-Hosting Firecrawl
+
+By default, Hermes uses the [Firecrawl cloud API](https://firecrawl.dev/) for web search and scraping. If you prefer to run Firecrawl locally, you can point Hermes at a self-hosted instance instead.
+
+**What you get:** No API key required, no rate limits, no per-page costs, full data sovereignty.
+
+**What you lose:** The cloud version uses Firecrawl's proprietary "Fire-engine" for advanced anti-bot bypassing (Cloudflare, CAPTCHAs, IP rotation). Self-hosted uses basic fetch + Playwright, so some protected sites may fail. Search uses DuckDuckGo instead of Google.
+
+**Setup:**
+
+1. Clone and start the Firecrawl Docker stack (5 containers: API, Playwright, Redis, RabbitMQ, PostgreSQL — requires ~4-8 GB RAM):
+   ```bash
+   git clone https://github.com/mendableai/firecrawl
+   cd firecrawl
+   # In .env, set: USE_DB_AUTHENTICATION=false
+   docker compose up -d
+   ```
+
+2. Point Hermes at your instance (no API key needed):
+   ```bash
+   hermes config set FIRECRAWL_API_URL http://localhost:3002
+   ```
+
+You can also set both `FIRECRAWL_API_KEY` and `FIRECRAWL_API_URL` if your self-hosted instance has authentication enabled.
 
 ## OpenRouter Provider Routing
 
@@ -108,10 +419,42 @@ Configure which environment the agent uses for terminal commands:
 
 ```yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal
+  backend: local    # or: docker, ssh, singularity, modal, daytona
   cwd: "."          # Working directory ("." = current dir)
   timeout: 180      # Command timeout in seconds
+
+  # Docker-specific settings
+  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_volumes:                    # Share host directories with the container
+    - "/home/user/projects:/workspace/projects"
+    - "/home/user/data:/data:ro"     # :ro for read-only
+
+  # Container resource limits (docker, singularity, modal, daytona)
+  container_cpu: 1                   # CPU cores
+  container_memory: 5120             # MB (default 5GB)
+  container_disk: 51200              # MB (default 50GB)
+  container_persistent: true         # Persist filesystem across sessions
 ```
+
+### Docker Volume Mounts
+
+When using the Docker backend, `docker_volumes` lets you share host directories with the container. Each entry uses standard Docker `-v` syntax: `host_path:container_path[:options]`.
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/projects:/workspace/projects"   # Read-write (default)
+    - "/home/user/datasets:/data:ro"              # Read-only
+    - "/home/user/outputs:/outputs"               # Agent writes, you read
+```
+
+This is useful for:
+- **Providing files** to the agent (datasets, configs, reference code)
+- **Receiving files** from the agent (generated code, reports, exports)
+- **Shared workspaces** where both you and the agent access the same files
+
+Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 
@@ -125,13 +468,163 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+## Git Worktree Isolation
+
+Enable isolated git worktrees for running multiple agents in parallel on the same repo:
+
+```yaml
+worktree: true    # Always create a worktree (same as hermes -w)
+# worktree: false # Default — only when -w flag is passed
+```
+
+When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+
+You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
+
+```
+# .worktreeinclude
+.env
+.venv/
+node_modules/
+```
+
 ## Context Compression
 
 ```yaml
 compression:
   enabled: true
-  threshold: 0.85    # Compress at 85% of context limit
+  threshold: 0.85              # Compress at 85% of context limit
+  summary_model: "google/gemini-3-flash-preview"   # Model for summarization
+  # summary_provider: "auto"   # "auto", "openrouter", "nous", "main"
 ```
+
+The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
+
+## Iteration Budget Pressure
+
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns) without realizing it's running low. Budget pressure automatically warns the model as it approaches the limit:
+
+| Threshold | Level | What the model sees |
+|-----------|-------|---------------------|
+| **70%** | Caution | `[BUDGET: 63/90. 27 iterations left. Start consolidating.]` |
+| **90%** | Warning | `[BUDGET WARNING: 81/90. Only 9 left. Respond NOW.]` |
+
+Warnings are injected into the last tool result's JSON (as a `_budget_warning` field) rather than as separate messages — this preserves prompt caching and doesn't disrupt the conversation structure.
+
+```yaml
+agent:
+  max_turns: 90                # Max iterations per conversation turn (default: 90)
+```
+
+Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
+
+## Auxiliary Models
+
+Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via OpenRouter or Nous Portal — you don't need to configure anything.
+
+To use a different model, add an `auxiliary` section to `~/.hermes/config.yaml`:
+
+```yaml
+auxiliary:
+  # Image analysis (vision_analyze tool + browser screenshots)
+  vision:
+    provider: "auto"           # "auto", "openrouter", "nous", "main"
+    model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
+
+  # Web page summarization + browser page text extraction
+  web_extract:
+    provider: "auto"
+    model: ""                  # e.g. "google/gemini-2.5-flash"
+```
+
+### Changing the Vision Model
+
+To use GPT-4o instead of Gemini Flash for image analysis:
+
+```yaml
+auxiliary:
+  vision:
+    model: "openai/gpt-4o"
+```
+
+Or via environment variable (in `~/.hermes/.env`):
+
+```bash
+AUXILIARY_VISION_MODEL=openai/gpt-4o
+```
+
+### Provider Options
+
+| Provider | Description | Requirements |
+|----------|-------------|-------------|
+| `"auto"` | Best available (default). Vision tries OpenRouter → Nous → Codex. | — |
+| `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
+| `"nous"` | Force Nous Portal | `hermes login` |
+| `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
+| `"main"` | Use your custom endpoint (`OPENAI_BASE_URL` + `OPENAI_API_KEY`). Works with OpenAI, local models, or any OpenAI-compatible API. | `OPENAI_BASE_URL` + `OPENAI_API_KEY` |
+
+### Common Setups
+
+**Using OpenAI API key for vision:**
+```yaml
+# In ~/.hermes/.env:
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_API_KEY=sk-...
+
+auxiliary:
+  vision:
+    provider: "main"
+    model: "gpt-4o"       # or "gpt-4o-mini" for cheaper
+```
+
+**Using OpenRouter for vision** (route to any model):
+```yaml
+auxiliary:
+  vision:
+    provider: "openrouter"
+    model: "openai/gpt-4o"      # or "google/gemini-2.5-flash", etc.
+```
+
+**Using Codex OAuth** (ChatGPT Pro/Plus account — no API key needed):
+```yaml
+auxiliary:
+  vision:
+    provider: "codex"     # uses your ChatGPT OAuth token
+    # model defaults to gpt-5.3-codex (supports vision)
+```
+
+**Using a local/self-hosted model:**
+```yaml
+auxiliary:
+  vision:
+    provider: "main"      # uses your OPENAI_BASE_URL endpoint
+    model: "my-local-model"
+```
+
+:::tip
+If you use Codex OAuth as your main model provider, vision works automatically — no extra configuration needed. Codex is included in the auto-detection chain for vision.
+:::
+
+:::warning
+**Vision requires a multimodal model.** If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
+:::
+
+### Environment Variables
+
+You can also configure auxiliary models via environment variables instead of `config.yaml`:
+
+| Setting | Environment Variable |
+|---------|---------------------|
+| Vision provider | `AUXILIARY_VISION_PROVIDER` |
+| Vision model | `AUXILIARY_VISION_MODEL` |
+| Web extract provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
+| Web extract model | `AUXILIARY_WEB_EXTRACT_MODEL` |
+| Compression provider | `CONTEXT_COMPRESSION_PROVIDER` |
+| Compression model | `CONTEXT_COMPRESSION_MODEL` |
+
+:::tip
+Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
+:::
 
 ## Reasoning Effort
 
@@ -139,10 +632,20 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = use model default. Options: xhigh (max), high, medium, low, minimal, none
+  reasoning_effort: ""   # empty = medium (default). Options: xhigh (max), high, medium, low, minimal, none
 ```
 
-When unset (default), the model's own default reasoning level is used. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+
+You can also change the reasoning effort at runtime with the `/reasoning` command:
+
+```
+/reasoning           # Show current effort level and display state
+/reasoning high      # Set reasoning effort to high
+/reasoning none      # Disable reasoning
+/reasoning show      # Show model thinking above each response
+/reasoning hide      # Hide model thinking
+```
 
 ## TTS Configuration
 
@@ -166,6 +669,9 @@ display:
   tool_progress: all    # off | new | all | verbose
   personality: "kawaii"  # Default personality for the CLI
   compact: false         # Compact output mode (less whitespace)
+  resume_display: full   # full (show previous messages on resume) | minimal (one-liner only)
+  bell_on_complete: false  # Play terminal bell when agent finishes (great for long tasks)
+  show_reasoning: false    # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
 ```
 
 | Mode | What you see |
@@ -183,6 +689,33 @@ stt:
 ```
 
 Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+
+## Quick Commands
+
+Define custom commands that run shell commands without invoking the LLM — zero token usage, instant execution. Especially useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+
+```yaml
+quick_commands:
+  status:
+    type: exec
+    command: systemctl status hermes-agent
+  disk:
+    type: exec
+    command: df -h /
+  update:
+    type: exec
+    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+  gpu:
+    type: exec
+    command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
+```
+
+Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging platform. The command runs locally on the host and returns the output directly — no LLM call, no tokens consumed.
+
+- **30-second timeout** — long-running commands are killed with an error message
+- **Priority** — quick commands are checked before skill commands, so you can override skill names
+- **Type** — only `exec` is supported (runs a shell command); other types show an error
+- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal
 
 ## Human Delay
 
@@ -205,6 +738,27 @@ code_execution:
   max_tool_calls: 50           # Max tool calls within code execution
 ```
 
+## Browser
+
+Configure browser automation behavior:
+
+```yaml
+browser:
+  inactivity_timeout: 120        # Seconds before auto-closing idle sessions
+  record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+```
+
+## Checkpoints
+
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints feature page](/docs/user-guide/features/checkpoints) for details.
+
+```yaml
+checkpoints:
+  enabled: false                 # Enable automatic checkpoints (also: hermes --checkpoints)
+  max_snapshots: 50              # Max checkpoints to keep per directory
+```
+
+
 ## Delegation
 
 Configure subagent behavior for the delegate tool:
@@ -216,7 +770,15 @@ delegation:
     - terminal
     - file
     - web
+  # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
+  # provider: "openrouter"                  # Override provider (empty = inherit parent)
 ```
+
+**Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+
+**Precedence:** `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
 ## Clarify
 

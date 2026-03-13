@@ -29,6 +29,7 @@ Usage:
 import json
 import logging
 import os
+import platform
 import signal
 import sys
 import time
@@ -83,8 +84,8 @@ def _check_disk_usage_warning():
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug("Could not stat file %s: %s", f, e)
         
         total_gb = total_bytes / (1024 ** 3)
         
@@ -192,23 +193,35 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     result = {"password": None, "done": False}
     
     def read_password_thread():
-        """Read password from /dev/tty with echo disabled."""
+        """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
         tty_fd = None
         old_attrs = None
         try:
-            import termios
-            tty_fd = os.open("/dev/tty", os.O_RDONLY)
-            old_attrs = termios.tcgetattr(tty_fd)
-            new_attrs = termios.tcgetattr(tty_fd)
-            new_attrs[3] = new_attrs[3] & ~termios.ECHO
-            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-            chars = []
-            while True:
-                b = os.read(tty_fd, 1)
-                if not b or b in (b"\n", b"\r"):
-                    break
-                chars.append(b)
-            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+            if platform.system() == "Windows":
+                import msvcrt
+                chars = []
+                while True:
+                    c = msvcrt.getwch()
+                    if c in ("\r", "\n"):
+                        break
+                    if c == "\x03":
+                        raise KeyboardInterrupt
+                    chars.append(c)
+                result["password"] = "".join(chars)
+            else:
+                import termios
+                tty_fd = os.open("/dev/tty", os.O_RDONLY)
+                old_attrs = termios.tcgetattr(tty_fd)
+                new_attrs = termios.tcgetattr(tty_fd)
+                new_attrs[3] = new_attrs[3] & ~termios.ECHO
+                termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+                chars = []
+                while True:
+                    b = os.read(tty_fd, 1)
+                    if not b or b in (b"\n", b"\r"):
+                        break
+                    chars.append(b)
+                result["password"] = b"".join(chars).decode("utf-8", errors="replace")
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
@@ -218,13 +231,13 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 try:
                     import termios as _termios
                     _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to restore terminal attributes: %s", e)
             if tty_fd is not None:
                 try:
                     os.close(tty_fd)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to close tty fd: %s", e)
             result["done"] = True
     
     try:
@@ -278,32 +291,50 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 
-def _transform_sudo_command(command: str) -> str:
+def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
-    
+
     This is a shared helper used by all execution environments to provide
     consistent sudo handling across local, SSH, and container environments.
-    
-    If SUDO_PASSWORD is set (via env, config, or interactive prompt):
-      'sudo apt install curl' -> password piped via sudo -S
-      
+
+    Returns:
+        (transformed_command, sudo_stdin) where:
+        - transformed_command has every bare ``sudo`` replaced with
+          ``sudo -S -p ''`` so sudo reads its password from stdin.
+        - sudo_stdin is the password string with a trailing newline that the
+          caller must prepend to the process's stdin stream.  sudo -S reads
+          exactly one line (the password) and passes the rest of stdin to the
+          child command, so prepending is safe even when the caller also has
+          its own stdin_data to pipe.
+        - If no password is available, sudo_stdin is None and the command is
+          returned unchanged so it fails gracefully with
+          "sudo: a password is required".
+
+    Callers that drive a subprocess directly (local, ssh, docker, singularity)
+    should prepend sudo_stdin to their stdin_data and pass the merged bytes to
+    Popen's stdin pipe.
+
+    Callers that cannot pipe subprocess stdin (modal, daytona) must embed the
+    password in the command string themselves; see their execute() methods for
+    how they handle the non-None sudo_stdin case.
+
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
       Prompts user for password with 45s timeout, caches for session.
-      
+
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
     global _cached_sudo_password
     import re
-    
+
     # Check if command even contains sudo
     if not re.search(r'\bsudo\b', command):
-        return command  # No sudo in command, return as-is
-    
+        return command, None  # No sudo in command, nothing to do
+
     # Try to get password from: env var -> session cache -> interactive prompt
     sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
-    
+
     if not sudo_password:
         # No password configured - check if we're in interactive mode
         if os.getenv("HERMES_INTERACTIVE"):
@@ -311,21 +342,21 @@ def _transform_sudo_command(command: str) -> str:
             sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
             if sudo_password:
                 _cached_sudo_password = sudo_password  # Cache for session
-    
+
     if not sudo_password:
-        return command  # No password, let it fail gracefully
-    
+        return command, None  # No password, let it fail gracefully
+
     def replace_sudo(match):
-        # Replace 'sudo' with password-piped version
-        # The -S flag makes sudo read password from stdin
-        # The -p '' suppresses the password prompt
-        # Use shlex.quote() to prevent shell injection via password content
-        import shlex
-        return f"echo {shlex.quote(sudo_password)} | sudo -S -p ''"
-    
+        # Replace bare 'sudo' with 'sudo -S -p ""'.
+        # The password is returned as sudo_stdin and must be written to the
+        # process's stdin pipe by the caller — it never appears in any
+        # command-line argument or shell string.
+        return "sudo -S -p ''"
+
     # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
-    # This handles: sudo, sudo -flag, etc.
-    return re.sub(r'\bsudo\b', replace_sudo, command)
+    transformed = re.sub(r'\bsudo\b', replace_sudo, command)
+    # Trailing newline is required: sudo -S reads one line for the password.
+    return transformed, sudo_password + "\n"
 
 
 # Environment classes now live in tools/environments/
@@ -403,6 +434,23 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 # Configuration from environment variables
+
+def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
+    """Parse an environment variable with *converter*, raising a clear error on bad values.
+
+    Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
+    causes an unhandled ValueError that kills every terminal command.
+    """
+    raw = os.getenv(name, default)
+    try:
+        return converter(raw)
+    except (ValueError, json.JSONDecodeError):
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} (expected {type_label}). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -415,7 +463,7 @@ def _get_env_config() -> Dict[str, Any]:
     if env_type == "local":
         default_cwd = os.getcwd()
     else:
-        default_cwd = "~"
+        default_cwd = "/root"
     
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If the CWD looks like a host-local path that can't exist inside a
@@ -423,8 +471,9 @@ def _get_env_config() -> Dict[str, Any]:
     # catches the case where cli.py (or .env) leaked the host's CWD.
     # SSH is excluded since /home/ paths are valid on remote machines.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if env_type in ("modal", "docker", "singularity") and cwd:
-        host_prefixes = ("/Users/", "C:\\", "C:/")
+    if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
+        # Host paths that won't exist inside containers
+        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",
@@ -436,20 +485,21 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
-        "timeout": int(os.getenv("TERMINAL_TIMEOUT", "180")),
-        "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": int(os.getenv("TERMINAL_SSH_PORT", "22")),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
-        # Container resource config (applies to docker, singularity, modal -- ignored for local/ssh)
-        "container_cpu": float(os.getenv("TERMINAL_CONTAINER_CPU", "1")),
-        "container_memory": int(os.getenv("TERMINAL_CONTAINER_MEMORY", "5120")),     # MB (default 5GB)
-        "container_disk": int(os.getenv("TERMINAL_CONTAINER_DISK", "51200")),        # MB (default 50GB)
+        # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
+        "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
+        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
+        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
-        "docker_volumes": json.loads(os.getenv("TERMINAL_DOCKER_VOLUMES", "[]")),
+        "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
 
 
@@ -460,7 +510,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment from mini-swe-agent.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal", "ssh"
+        env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -503,7 +553,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         if memory > 0:
             sandbox_kwargs["memory"] = memory
         if disk > 0:
-            sandbox_kwargs["ephemeral_disk"] = disk
+            try:
+                import inspect, modal
+                if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
+                    sandbox_kwargs["ephemeral_disk"] = disk
+            except Exception:
+                pass
         
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
@@ -511,6 +566,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
     
+    elif env_type == "daytona":
+        # Lazy import so daytona SDK is only required when backend is selected.
+        from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
+        return _DaytonaEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=int(cpu), memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -522,9 +586,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cwd=cwd,
             timeout=timeout,
         )
-    
+
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', or 'ssh'")
+        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -648,8 +712,8 @@ def get_active_environments_info() -> Dict[str, Any]:
             try:
                 size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
                 total_size += size
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("Could not stat path %s: %s", path, e)
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
@@ -676,8 +740,8 @@ def cleanup_all_environments():
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Failed to remove orphaned path %s: %s", path, e)
     
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
@@ -799,9 +863,11 @@ def terminal_tool(
             image = overrides.get("singularity_image") or config["singularity_image"]
         elif env_type == "modal":
             image = overrides.get("modal_image") or config["modal_image"]
+        elif env_type == "daytona":
+            image = overrides.get("daytona_image") or config["daytona_image"]
         else:
             image = ""
-        
+
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
@@ -851,7 +917,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal"):
+                        if env_type in ("docker", "singularity", "modal", "daytona"):
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1068,9 +1134,14 @@ def check_terminal_requirements() -> bool:
             return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment
-            # Check if docker is available
+            # Check if docker is available (use find_docker for macOS PATH issues)
+            from tools.environments.docker import find_docker
             import subprocess
-            result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
+            docker = find_docker()
+            if not docker:
+                logger.error("Docker executable not found in PATH or common install locations")
+                return False
+            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":
             from minisweagent.environments.singularity import SingularityEnvironment
@@ -1090,6 +1161,9 @@ def check_terminal_requirements() -> bool:
             from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
             # Check for modal token
             return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+        elif env_type == "daytona":
+            from daytona import Daytona
+            return os.getenv("DAYTONA_API_KEY") is not None
         else:
             return False
     except Exception as e:
@@ -1128,10 +1202,11 @@ if __name__ == "__main__":
 
     print("\nEnvironment Variables:")
     default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
-    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/ssh)")
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/daytona/ssh)")
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
+    print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")

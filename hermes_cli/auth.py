@@ -23,6 +23,7 @@ import stat
 import base64
 import hashlib
 import subprocess
+import threading
 import time
 import uuid
 import webbrowser
@@ -44,6 +45,10 @@ try:
     import fcntl
 except Exception:
     fcntl = None
+try:
+    import msvcrt
+except Exception:
+    msvcrt = None
 
 # =============================================================================
 # Constants
@@ -72,15 +77,19 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 @dataclass
 class ProviderConfig:
-    """Describes a known OAuth provider."""
+    """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code" or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
     scope: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
+    # For API-key providers: env vars to check (in priority order)
+    api_key_env_vars: tuple = ()
+    # Optional env var for base URL override
+    base_url_env_var: str = ""
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -99,7 +108,123 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "zai": ProviderConfig(
+        id="zai",
+        name="Z.AI / GLM",
+        auth_type="api_key",
+        inference_base_url="https://api.z.ai/api/paas/v4",
+        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_env_var="GLM_BASE_URL",
+    ),
+    "kimi-coding": ProviderConfig(
+        id="kimi-coding",
+        name="Kimi / Moonshot",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.ai/v1",
+        api_key_env_vars=("KIMI_API_KEY",),
+        base_url_env_var="KIMI_BASE_URL",
+    ),
+    "minimax": ProviderConfig(
+        id="minimax",
+        name="MiniMax",
+        auth_type="api_key",
+        inference_base_url="https://api.minimax.io/v1",
+        api_key_env_vars=("MINIMAX_API_KEY",),
+        base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "anthropic": ProviderConfig(
+        id="anthropic",
+        name="Anthropic",
+        auth_type="api_key",
+        inference_base_url="https://api.anthropic.com",
+        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+    ),
+    "minimax-cn": ProviderConfig(
+        id="minimax-cn",
+        name="MiniMax (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.minimaxi.com/v1",
+        api_key_env_vars=("MINIMAX_CN_API_KEY",),
+        base_url_env_var="MINIMAX_CN_BASE_URL",
+    ),
 }
+
+
+# =============================================================================
+# Kimi Code Endpoint Detection
+# =============================================================================
+
+# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# KIMI_BASE_URL explicitly.
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
+
+
+def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
+    """Return the correct Kimi base URL based on the API key prefix.
+
+    If the user has explicitly set KIMI_BASE_URL, that always wins.
+    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    """
+    if env_override:
+        return env_override
+    if api_key.startswith("sk-kimi-"):
+        return KIMI_CODE_BASE_URL
+    return default_url
+
+
+# =============================================================================
+# Z.AI Endpoint Detection
+# =============================================================================
+
+# Z.AI has separate billing for general vs coding plans, and global vs China
+# endpoints.  A key that works on one may return "Insufficient balance" on
+# another.  We probe at setup time and store the working endpoint.
+
+ZAI_ENDPOINTS = [
+    # (id, base_url, default_model, label)
+    ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
+]
+
+
+def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
+    """Probe z.ai endpoints to find one that accepts this API key.
+
+    Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
+    first working endpoint, or None if all fail.
+    """
+    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
+        try:
+            resp = httpx.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "stream": False,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
+                return {
+                    "id": ep_id,
+                    "base_url": base_url,
+                    "model": model,
+                    "label": label,
+                }
+            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
+        except Exception as exc:
+            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    return None
 
 
 # =============================================================================
@@ -186,31 +311,64 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
+_auth_lock_holder = threading.local()
+
 @contextmanager
 def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes."""
+    """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
+    # Reentrant: if this thread already holds the lock, just yield.
+    if getattr(_auth_lock_holder, "depth", 0) > 0:
+        _auth_lock_holder.depth += 1
+        try:
+            yield
+        finally:
+            _auth_lock_holder.depth -= 1
+        return
+
     lock_path = _auth_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with lock_path.open("a+") as lock_file:
-        if fcntl is None:
+    if fcntl is None and msvcrt is None:
+        _auth_lock_holder.depth = 1
+        try:
             yield
-            return
+        finally:
+            _auth_lock_holder.depth = 0
+        return
 
+    # On Windows, msvcrt.locking needs the file to have content and the
+    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
         deadline = time.time() + max(1.0, timeout_seconds)
         while True:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                 break
-            except BlockingIOError:
+            except (BlockingIOError, OSError, PermissionError):
                 if time.time() >= deadline:
                     raise TimeoutError("Timed out waiting for auth store lock")
                 time.sleep(0.05)
 
+        _auth_lock_holder.depth = 1
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            _auth_lock_holder.depth = 0
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
@@ -355,9 +513,19 @@ def resolve_provider(
     1. active_provider in auth.json with valid credentials
     2. Explicit CLI api_key/base_url -> "openrouter"
     3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
-    4. Fallback: "openrouter"
+    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
+    5. Fallback: "openrouter"
     """
     normalized = (requested or "auto").strip().lower()
+
+    # Normalize provider aliases
+    _PROVIDER_ALIASES = {
+        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "kimi": "kimi-coding", "moonshot": "kimi-coding",
+        "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "claude": "anthropic", "claude-code": "anthropic",
+    }
+    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
     if normalized in {"openrouter", "custom"}:
         return "openrouter"
@@ -386,6 +554,14 @@ def resolve_provider(
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
+
+    # Auto-detect API-key providers by checking their env vars
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        for env_var in pconfig.api_key_env_vars:
+            if os.getenv(env_var, "").strip():
+                return pid
 
     return "openrouter"
 
@@ -926,6 +1102,19 @@ def fetch_nous_models(
                 continue
             model_ids.append(mid)
 
+    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
+    # users who want the best model should see opus first).
+    def _model_priority(mid: str) -> tuple:
+        low = mid.lower()
+        if "opus" in low:
+            return (0, mid)
+        if "pro" in low and "sonnet" not in low:
+            return (1, mid)
+        if "sonnet" in low:
+            return (3, mid)
+        return (2, mid)
+
+    model_ids.sort(key=_model_priority)
     return list(dict.fromkeys(model_ids))
 
 
@@ -1230,6 +1419,42 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
+    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "api_key":
+        return {"configured": False}
+
+    api_key = ""
+    key_source = ""
+    for env_var in pconfig.api_key_env_vars:
+        val = os.getenv(env_var, "").strip()
+        if val:
+            api_key = val
+            key_source = env_var
+            break
+
+    env_url = ""
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url
+    else:
+        base_url = pconfig.inference_base_url
+
+    return {
+        "configured": bool(api_key),
+        "provider": provider_id,
+        "name": pconfig.name,
+        "key_source": key_source,
+        "base_url": base_url,
+        "logged_in": bool(api_key),  # compat with OAuth status shape
+    }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
@@ -1237,7 +1462,52 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    # API-key providers
+    pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "api_key":
+        return get_api_key_provider_status(target)
     return {"logged_in": False}
+
+
+def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+    """Resolve API key and base URL for an API-key provider.
+
+    Returns dict with: provider, api_key, base_url, source.
+    """
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "api_key":
+        raise AuthError(
+            f"Provider '{provider_id}' is not an API-key provider.",
+            provider=provider_id,
+            code="invalid_provider",
+        )
+
+    api_key = ""
+    key_source = ""
+    for env_var in pconfig.api_key_env_vars:
+        val = os.getenv(env_var, "").strip()
+        if val:
+            api_key = val
+            key_source = env_var
+            break
+
+    env_url = ""
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url.rstrip("/")
+    else:
+        base_url = pconfig.inference_base_url
+
+    return {
+        "provider": provider_id,
+        "api_key": api_key,
+        "base_url": base_url.rstrip("/"),
+        "source": key_source or "default",
+    }
 
 
 # =============================================================================
@@ -1301,7 +1571,11 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
         model_cfg = {}
 
     model_cfg["provider"] = provider_id
-    model_cfg["base_url"] = inference_base_url.rstrip("/")
+    if inference_base_url and inference_base_url.strip():
+        model_cfg["base_url"] = inference_base_url.rstrip("/")
+    else:
+        # Clear stale base_url to prevent contamination when switching providers
+        model_cfg.pop("base_url", None)
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -1409,17 +1683,20 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
 
 
 def _save_model_choice(model_id: str) -> None:
-    """Save the selected model to config.yaml and .env."""
-    from hermes_cli.config import save_config, load_config, save_env_value
+    """Save the selected model to config.yaml (single source of truth).
+
+    The model is stored in config.yaml only — NOT in .env.  This avoids
+    conflicts in multi-agent setups where env vars would stomp each other.
+    """
+    from hermes_cli.config import save_config, load_config
 
     config = load_config()
-    # Handle both string and dict model formats
+    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
-        config["model"] = model_id
+        config["model"] = {"default": model_id}
     save_config(config)
-    save_env_value("LLM_MODEL", model_id)
 
 
 def login_command(args) -> None:

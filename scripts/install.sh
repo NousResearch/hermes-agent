@@ -492,9 +492,23 @@ install_system_packages() {
                         return 0
                     fi
                 fi
+            elif [ -e /dev/tty ]; then
+                # Non-interactive (e.g. curl | bash) but a terminal is available.
+                # Read the prompt from /dev/tty (same approach the setup wizard uses).
+                echo ""
+                log_info "Installing ${description} requires sudo."
+                read -p "Install? [Y/n] " -n 1 -r < /dev/tty
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                    if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
+                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        return 0
+                    fi
+                fi
             else
-                log_warn "Non-interactive mode: cannot prompt for sudo password"
-                log_info "Install missing packages manually: sudo $install_cmd"
+                log_warn "Non-interactive mode and no terminal available — cannot install system packages"
+                log_info "Install manually after setup completes: sudo $install_cmd"
             fi
         fi
     fi
@@ -558,17 +572,16 @@ clone_repo() {
         fi
     else
         # Try SSH first (for private repo access), fall back to HTTPS
-        # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -579,10 +592,12 @@ clone_repo() {
 
     cd "$INSTALL_DIR"
 
-    # Ensure submodules are initialized and updated (for existing installs or if --recurse failed)
-    log_info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
-    git submodule update --init --recursive
-    log_success "Submodules ready"
+    # Only init mini-swe-agent (terminal tool backend — required).
+    # tinker-atropos (RL training) is optional and heavy — users can opt in later
+    # with: git submodule update --init tinker-atropos && uv pip install -e ./tinker-atropos
+    log_info "Initializing mini-swe-agent submodule (terminal backend)..."
+    git submodule update --init mini-swe-agent
+    log_success "Submodule ready"
 
     log_success "Repository ready"
 }
@@ -665,12 +680,11 @@ install_deps() {
         log_warn "mini-swe-agent not found (run: git submodule update --init)"
     fi
 
-    log_info "Installing tinker-atropos (RL training backend)..."
+    # tinker-atropos (RL training) is optional — skip by default.
+    # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
     if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        $UV_CMD pip install -e "./tinker-atropos" || log_warn "tinker-atropos install failed (RL tools may not work)"
-        log_success "tinker-atropos installed"
-    else
-        log_warn "tinker-atropos not found (run: git submodule update --init)"
+        log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
+        log_info "  To install: $UV_CMD pip install -e \"./tinker-atropos\""
     fi
 
     log_success "All dependencies installed"
@@ -829,6 +843,33 @@ install_node_deps() {
             log_warn "npm install failed (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"
+
+        # Install Playwright browser + system dependencies.
+        # Playwright's install-deps only supports apt/dnf/zypper natively.
+        # For Arch/Manjaro we install the system libs via pacman first.
+        log_info "Installing browser engine (Playwright Chromium)..."
+        case "$DISTRO" in
+            arch|manjaro)
+                if command -v pacman &> /dev/null; then
+                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
+                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
+                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                    elif [ "$(id -u)" -eq 0 ]; then
+                        pacman -S --noconfirm --needed \
+                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                    else
+                        log_warn "Cannot install browser deps without sudo. Run manually:"
+                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                    fi
+                fi
+                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
+                ;;
+            *)
+                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || true
+                ;;
+        esac
+        log_success "Browser engine installed"
     fi
 
     # Install WhatsApp bridge dependencies

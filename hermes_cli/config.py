@@ -14,8 +14,10 @@ This module provides:
 
 import os
 import platform
-import sys
+import stat
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -46,13 +48,32 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+def _secure_dir(path):
+    """Set directory to owner-only access (0700). No-op on Windows."""
+    try:
+        os.chmod(path, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _secure_file(path):
+    """Set file to owner-only read/write (0600). No-op on Windows."""
+    try:
+        if os.path.exists(str(path)):
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists."""
+    """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
-    (home / "cron").mkdir(parents=True, exist_ok=True)
-    (home / "sessions").mkdir(parents=True, exist_ok=True)
-    (home / "logs").mkdir(parents=True, exist_ok=True)
-    (home / "memories").mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    _secure_dir(home)
+    for subdir in ("cron", "sessions", "logs", "memories"):
+        d = home / subdir
+        d.mkdir(parents=True, exist_ok=True)
+        _secure_dir(d)
 
 
 # =============================================================================
@@ -62,7 +83,9 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    "agent": {
+        "max_turns": 90,
+    },
     
     "terminal": {
         "backend": "local",
@@ -71,26 +94,82 @@ DEFAULT_CONFIG = {
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal — ignored for local/ssh)
+        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Docker volume mounts — share host directories with the container.
+        # Each entry is "host_path:container_path" (standard Docker -v syntax).
+        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        "docker_volumes": [],
     },
     
     "browser": {
         "inactivity_timeout": 120,
+        "record_sessions": False,  # Auto-record browser sessions as WebM videos
+    },
+
+    # Filesystem checkpoints — automatic snapshots before destructive file ops.
+    # When enabled, the agent takes a snapshot of the working directory once per
+    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    "checkpoints": {
+        "enabled": False,
+        "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
     
     "compression": {
         "enabled": True,
-        "threshold": 0.85,
+        "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
+        "summary_provider": "auto",
+    },
+    
+    # Auxiliary model config — provider:model for each side task.
+    # Format: provider is the provider name, model is the model slug.
+    # "auto" for provider = auto-detect best available provider.
+    # Empty model = use provider's default auxiliary model.
+    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
+    # the configured provider is unavailable.
+    "auxiliary": {
+        "vision": {
+            "provider": "auto",    # auto | openrouter | nous | codex | custom
+            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+        },
+        "web_extract": {
+            "provider": "auto",
+            "model": "",
+        },
+        "compression": {
+            "provider": "auto",
+            "model": "",
+        },
+        "session_search": {
+            "provider": "auto",
+            "model": "",
+        },
+        "skills_hub": {
+            "provider": "auto",
+            "model": "",
+        },
+        "mcp": {
+            "provider": "auto",
+            "model": "",
+        },
+        "flush_memories": {
+            "provider": "auto",
+            "model": "",
+        },
     },
     
     "display": {
         "compact": False,
         "personality": "kawaii",
+        "resume_display": "full",
+        "bell_on_complete": False,
+        "show_reasoning": False,
+        "skin": "default",
     },
     
     # Text-to-speech configuration
@@ -129,7 +208,16 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
-    
+
+    # Subagent delegation — override the provider:model used by delegate_task
+    # so child agents can run on a different (cheaper/faster) provider and model.
+    # Uses the same runtime provider resolution as CLI/gateway startup, so all
+    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    "delegation": {
+        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -140,16 +228,41 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
+    # Empty string means use server-local time.
+    "timezone": "",
+
+    # Discord platform settings (gateway mode)
+    "discord": {
+        "require_mention": True,       # Require @mention to respond in server channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
-    
+    # User-defined quick commands that bypass the agent loop (type: exec only)
+    "quick_commands": {},
+    # Custom personalities — add your own entries here
+    # Supports string format: {"name": "system prompt"}
+    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    "personalities": {},
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 5,
+    "_config_version": 7,
 }
 
 # =============================================================================
 # Config Migration System
 # =============================================================================
+
+# Track which env vars were introduced in each config version.
+# Migration only mentions vars new since the user's previous version.
+ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
+    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
+    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
+    5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
+        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+}
 
 # Required environment variables with metadata for migration prompts.
 # LLM provider is required but handled in the setup wizard's provider
@@ -160,12 +273,100 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
+    "NOUS_BASE_URL": {
+        "description": "Nous Portal base URL override",
+        "prompt": "Nous Portal base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENROUTER_API_KEY": {
         "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GLM_API_KEY": {
+        "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
+        "prompt": "Z.AI / GLM API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ZAI_API_KEY": {
+        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "prompt": "Z.AI API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "Z_AI_API_KEY": {
+        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "prompt": "Z.AI API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GLM_BASE_URL": {
+        "description": "Z.AI / GLM base URL override",
+        "prompt": "Z.AI / GLM base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_API_KEY": {
+        "description": "Kimi / Moonshot API key",
+        "prompt": "Kimi API key",
+        "url": "https://platform.moonshot.cn/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_BASE_URL": {
+        "description": "Kimi / Moonshot base URL override",
+        "prompt": "Kimi base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_API_KEY": {
+        "description": "MiniMax API key (international)",
+        "prompt": "MiniMax API key",
+        "url": "https://www.minimax.io/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_BASE_URL": {
+        "description": "MiniMax base URL override",
+        "prompt": "MiniMax base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_CN_API_KEY": {
+        "description": "MiniMax API key (China endpoint)",
+        "prompt": "MiniMax (China) API key",
+        "url": "https://www.minimaxi.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_CN_BASE_URL": {
+        "description": "MiniMax (China) base URL override",
+        "prompt": "MiniMax (China) base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -179,8 +380,16 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "FIRECRAWL_API_URL": {
+        "description": "Firecrawl API URL for self-hosted instances (optional)",
+        "prompt": "Firecrawl API URL (leave empty for cloud)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
     "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for browser automation",
+        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
@@ -188,7 +397,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID",
+        "description": "Browserbase project ID (optional — only needed for cloud browser)",
         "prompt": "Browserbase project ID",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
@@ -247,7 +456,7 @@ OPTIONAL_ENV_VARS = {
         "description": "Honcho API key for AI-native persistent memory",
         "prompt": "Honcho API key",
         "url": "https://app.honcho.dev",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context"],
         "password": True,
         "category": "tool",
     },
@@ -282,14 +491,18 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "SLACK_BOT_TOKEN": {
-        "description": "Slack bot integration",
+        "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
+                       "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
+                       "im:history, im:read, im:write, users:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
         "category": "messaging",
     },
     "SLACK_APP_TOKEN": {
-        "description": "Slack Socket Mode connection",
+        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
+                       "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
+                       "message.channels, message.groups, app_mention",
         "prompt": "Slack App Token (xapp-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
@@ -320,7 +533,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 60)",
+        "description": "Maximum tool-calling iterations per conversation (default: 90)",
         "prompt": "Max iterations",
         "url": None,
         "password": False,
@@ -476,6 +689,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
+    # ── Version 4 → 5: add timezone field ──
+    if current_ver < 5:
+        config = load_config()
+        if "timezone" not in config:
+            old_tz = os.getenv("HERMES_TIMEZONE", "")
+            if old_tz and old_tz.strip():
+                config["timezone"] = old_tz.strip()
+                results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")
+            else:
+                config["timezone"] = ""
+                results["config_added"].append("timezone= (empty, uses server-local)")
+            save_config(config)
+            if not quiet:
+                tz_display = config["timezone"] or "(server-local)"
+                print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -516,34 +745,47 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if v["name"] not in required_names and not v.get("advanced")
     ]
     
-    if interactive and missing_optional:
-        print("  Would you like to configure any optional keys now?")
-        try:
-            answer = input("  Configure optional keys? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-        
-        if answer in ("y", "yes"):
+    # Only offer to configure env vars that are NEW since the user's previous version
+    new_var_names = set()
+    for ver in range(current_ver + 1, latest_ver + 1):
+        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
+
+    if new_var_names and interactive and not quiet:
+        new_and_unset = [
+            (name, OPTIONAL_ENV_VARS[name])
+            for name in sorted(new_var_names)
+            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
+        ]
+        if new_and_unset:
+            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
+            for name, info in new_and_unset:
+                print(f"    • {name} — {info.get('description', '')}")
             print()
-            for var in missing_optional:
-                desc = var.get("description", "")
-                if var.get("url"):
-                    print(f"  {desc}")
-                    print(f"  Get your key at: {var['url']}")
-                else:
-                    print(f"  {desc}")
-                
-                if var.get("password"):
-                    import getpass
-                    value = getpass.getpass(f"  {var['prompt']} (Enter to skip): ")
-                else:
-                    value = input(f"  {var['prompt']} (Enter to skip): ").strip()
-                
-                if value:
-                    save_env_value(var["name"], value)
-                    results["env_added"].append(var["name"])
-                    print(f"  ✓ Saved {var['name']}")
+            try:
+                answer = input("  Configure new keys? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+
+            if answer in ("y", "yes"):
                 print()
+                for name, info in new_and_unset:
+                    if info.get("url"):
+                        print(f"  {info.get('description', name)}")
+                        print(f"  Get your key at: {info['url']}")
+                    else:
+                        print(f"  {info.get('description', name)}")
+                    if info.get("password"):
+                        import getpass
+                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                    else:
+                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                    if value:
+                        save_env_value(name, value)
+                        results["env_added"].append(name)
+                        print(f"  ✓ Saved {name}")
+                    print()
+            else:
+                print("  Set later with: hermes config set KEY VALUE")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
@@ -592,6 +834,23 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy root-level max_turns into agent.max_turns."""
+    config = dict(config)
+    agent_config = dict(config.get("agent") or {})
+
+    if "max_turns" in config and "max_turns" not in agent_config:
+        agent_config["max_turns"] = config["max_turns"]
+
+    if "max_turns" not in agent_config:
+        agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+
+    config["agent"] = agent_config
+    config.pop("max_turns", None)
+    return config
+
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -601,23 +860,107 @@ def load_config() -> Dict[str, Any]:
     
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
-            
+
+            if "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return config
+    return _normalize_max_turns_config(config)
+
+
+_COMMENTED_SECTIONS = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+#
+# security:
+#   redact_secrets: false
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes login) — OpenAI Codex
+#   nous         (OAuth — hermes login) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
+
+
+_COMMENTED_SECTIONS = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+#
+# security:
+#   redact_secrets: false
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes login) — OpenAI Codex
+#   nous         (OAuth — hermes login) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
 
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    from utils import atomic_yaml_write
+
     ensure_hermes_home()
     config_path = get_config_path()
-    
-    with open(config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    normalized = _normalize_max_turns_config(config)
+
+    # Build optional commented-out sections for features that are off by
+    # default or only relevant when explicitly configured.
+    sections = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        sections.append("security")
+    fb = normalized.get("fallback_model", {})
+    if not fb or not (fb.get("provider") and fb.get("model")):
+        sections.append("fallback")
+
+    atomic_yaml_write(
+        config_path,
+        normalized,
+        extra_content=_COMMENTED_SECTIONS if sections else None,
+    )
+    _secure_file(config_path)
 
 
 def load_env() -> Dict[str, str]:
@@ -668,8 +1011,27 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
     
-    with open(env_path, 'w', **write_kw) as f:
-        f.writelines(lines)
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    try:
+        with os.fdopen(fd, 'w', **write_kw) as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(env_path)
+
+    # Restrict .env permissions to owner-only (contains API keys)
+    if not _IS_WINDOWS:
+        try:
+            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
 
 
 def get_env_value(key: str) -> Optional[str]:
@@ -734,9 +1096,17 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
+    # Display
+    print()
+    print(color("◆ Display", Colors.CYAN, Colors.BOLD))
+    display = config.get('display', {})
+    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+    print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+
     # Terminal
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
@@ -753,12 +1123,25 @@ def show_config():
         print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
+    elif terminal.get('backend') == 'daytona':
+        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        daytona_key = get_env_value('DAYTONA_API_KEY')
+        print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
     
+    # Timezone
+    print()
+    print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
+    tz = config.get('timezone', '')
+    if tz:
+        print(f"  Timezone:     {tz}")
+    else:
+        print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+
     # Compression
     print()
     print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
@@ -766,8 +1149,33 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
+        comp_provider = compression.get('summary_provider', 'auto')
+        if comp_provider != 'auto':
+            print(f"  Provider:     {comp_provider}")
+    
+    # Auxiliary models
+    auxiliary = config.get('auxiliary', {})
+    aux_tasks = {
+        "Vision":      auxiliary.get('vision', {}),
+        "Web extract": auxiliary.get('web_extract', {}),
+    }
+    has_overrides = any(
+        t.get('provider', 'auto') != 'auto' or t.get('model', '')
+        for t in aux_tasks.values()
+    )
+    if has_overrides:
+        print()
+        print(color("◆ Auxiliary Models (overrides)", Colors.CYAN, Colors.BOLD))
+        for label, task_cfg in aux_tasks.items():
+            prov = task_cfg.get('provider', 'auto')
+            mdl = task_cfg.get('model', '')
+            if prov != 'auto' or mdl:
+                parts = [f"provider={prov}"]
+                if mdl:
+                    parts.append(f"model={mdl}")
+                print(f"  {label:12s}  {', '.join(parts)}")
     
     # Messaging
     print()
@@ -820,15 +1228,16 @@ def set_config_value(key: str, value: str):
     """Set a configuration value."""
     # Check if it's an API key (goes to .env)
     api_keys = [
-        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
+        'TINKER_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):
+    if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
@@ -840,7 +1249,7 @@ def set_config_value(key: str, value: str):
     user_config = {}
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
@@ -868,7 +1277,7 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w') as f:
+    with open(config_path, 'w', encoding="utf-8") as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
@@ -878,8 +1287,10 @@ def set_config_value(key: str, value: str):
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
+        "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
+        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

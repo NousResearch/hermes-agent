@@ -1,0 +1,43 @@
+# YC-Bench Evaluation -- Default Configuration
+#
+# Long-horizon agent benchmark: agent plays CEO of an AI startup over
+# a simulated 1-3 year run, interacting via yc-bench CLI subcommands.
+#
+# Requires: pip install "hermes-agent[yc-bench]"
+#
+# Usage:
+#   python environments/benchmarks/yc_bench/yc_bench_env.py evaluate \
+#       --config environments/benchmarks/yc_bench/default.yaml
+#
+#   # Override model:
+#   python environments/benchmarks/yc_bench/yc_bench_env.py evaluate \
+#       --config environments/benchmarks/yc_bench/default.yaml \
+#       --openai.model_name anthropic/claude-opus-4-20250514
+
+env:
+  enabled_toolsets: ["terminal"]
+  max_agent_turns: 200
+  max_token_length: 32000
+  agent_temperature: 0.0
+  terminal_backend: "local"
+  terminal_timeout: 60
+  presets: ["fast_test", "medium", "hard"]
+  seeds: [1, 2, 3]
+  run_timeout: 3600          # 60 min wall-clock per run, auto-FAIL if exceeded
+  survival_weight: 0.5       # weight of binary survival in composite score
+  funds_weight: 0.5          # weight of normalised final funds in composite score
+  db_dir: "/tmp/yc_bench_dbs"
+  company_name: "BenchCo"
+  start_date: "01/01/2025"   # MM/DD/YYYY (yc-bench convention)
+  tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
+  use_wandb: true
+  wandb_name: "yc-bench"
+  ensure_scores_are_not_same: false
+  data_dir_to_save_evals: "environments/benchmarks/evals/yc-bench"
+
+openai:
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-sonnet-4.6"
+  server_type: "openai"
+  health_check: false
+  # api_key loaded from OPENROUTER_API_KEY in .env

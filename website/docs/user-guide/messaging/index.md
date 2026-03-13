@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, or WhatsApp — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, or WhatsApp. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, or Email. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ Chat with Hermes from Telegram, Discord, Slack, or WhatsApp. The gateway is a si
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
-│  │ Telegram │ │ Discord  │ │ WhatsApp │ │  Slack   │           │
-│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │ Adapter  │           │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘           │
-│       │             │            │             │                │
-│       └─────────────┼────────────┼─────────────┘                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌───────┐│
+│  │ Telegram │ │ Discord  │ │ WhatsApp │ │ Slack  │ │ Signal │ │ Email ││
+│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │Adapter │ │Adapter │ │Adapter││
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬────┘ └───┬────┘ └──┬────┘│
+│       │             │            │            │          │         │     │
+│       └─────────────┼────────────┼────────────┼──────────┼─────────┘     │
 │                           │                                     │
 │                  ┌────────▼────────┐                            │
 │                  │  Session Store  │                            │
@@ -63,7 +63,8 @@ hermes gateway status       # Check service status
 | Command | Description |
 |---------|-------------|
 | `/new` or `/reset` | Start fresh conversation |
-| `/model [name]` | Show or change the model |
+| `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
+| `/provider` | Show available providers with auth status |
 | `/personality [name]` | Set a personality |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
@@ -72,6 +73,7 @@ hermes gateway status       # Check service status
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/insights [days]` | Show usage insights and analytics |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -112,8 +114,10 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 # Restrict to specific users (recommended):
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
+SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
+EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 
-# Or allow specific users across all platforms (comma-separated user IDs):
+# Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321
 
 # Or explicitly allow all users (NOT recommended for bots with terminal access):
@@ -198,6 +202,8 @@ Each platform has its own toolset:
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | Slack | `hermes-slack` | Full tools including terminal |
+| Signal | `hermes-signal` | Full tools including terminal |
+| Email | `hermes-email` | Full tools including terminal |
 
 ## Next Steps
 
@@ -205,3 +211,5 @@ Each platform has its own toolset:
 - [Discord Setup](discord.md)
 - [Slack Setup](slack.md)
 - [WhatsApp Setup](whatsapp.md)
+- [Signal Setup](signal.md)
+- [Email Setup](email.md)

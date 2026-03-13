@@ -5,6 +5,7 @@ Skills Hub — Source adapters and hub state management for the Hermes Skills Hu
 This is a library module (not an agent tool). It provides:
   - GitHubAuth: Shared GitHub API authentication (PAT, gh CLI, GitHub App)
   - SkillSource ABC: Interface for all skill registry adapters
+  - OptionalSkillSource: Official optional skills shipped with the repo (not activated by default)
   - GitHubSource: Fetch skills from any GitHub repo via the Contents API
   - HubLockFile: Track provenance of installed hub skills
   - Hub state directory management (quarantine, audit log, taps, index cache)
@@ -62,7 +63,7 @@ class SkillMeta:
     """Minimal metadata returned by search results."""
     name: str
     description: str
-    source: str           # "github", "clawhub", "claude-marketplace", "lobehub"
+    source: str           # "official", "github", "clawhub", "claude-marketplace", "lobehub"
     identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
@@ -571,14 +572,23 @@ class ClawHubSource(SkillSource):
             logger.warning("ClawHub fetch failed for %s: could not resolve latest version", slug)
             return None
 
-        version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
-        if not isinstance(version_data, dict):
-            return None
+        # Primary method: download the skill as a ZIP bundle from /download
+        files = self._download_zip(slug, latest_version)
 
-        files = self._extract_files(version_data)
+        # Fallback: try the version metadata endpoint for inline/raw content
+        if "SKILL.md" not in files:
+            version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
+            if isinstance(version_data, dict):
+                # Files may be nested under version_data["version"]["files"]
+                files = self._extract_files(version_data) or files
+                if "SKILL.md" not in files:
+                    nested = version_data.get("version", {})
+                    if isinstance(nested, dict):
+                        files = self._extract_files(nested) or files
+
         if "SKILL.md" not in files:
             logger.warning(
-                "ClawHub fetch for %s resolved version %s but no inline/raw file content was available",
+                "ClawHub fetch for %s resolved version %s but could not retrieve file content",
                 slug,
                 latest_version,
             )
@@ -671,6 +681,65 @@ class ClawHubSource(SkillSource):
                 if content is not None:
                     files[fname] = content
 
+        return files
+
+    def _download_zip(self, slug: str, version: str) -> Dict[str, str]:
+        """Download skill as a ZIP bundle from the /download endpoint and extract text files."""
+        import io
+        import zipfile
+
+        files: Dict[str, str] = {}
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = httpx.get(
+                    f"{self.BASE_URL}/download",
+                    params={"slug": slug, "version": version},
+                    timeout=30,
+                    follow_redirects=True,
+                )
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("retry-after", "5"))
+                    retry_after = min(retry_after, 15)  # Cap wait time
+                    logger.debug(
+                        "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                        slug, retry_after, attempt + 1, max_retries,
+                    )
+                    time.sleep(retry_after)
+                    continue
+                if resp.status_code != 200:
+                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                    return files
+
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        # Sanitize path — strip leading slashes and ..
+                        name = info.filename.lstrip("/")
+                        if ".." in name or name.startswith("/"):
+                            continue
+                        # Only extract text-sized files (skip large binaries)
+                        if info.file_size > 500_000:
+                            logger.debug("Skipping large file in ZIP: %s (%d bytes)", name, info.file_size)
+                            continue
+                        try:
+                            raw = zf.read(info.filename)
+                            files[name] = raw.decode("utf-8")
+                        except (UnicodeDecodeError, KeyError):
+                            logger.debug("Skipping non-text file in ZIP: %s", name)
+                            continue
+
+                return files
+
+            except zipfile.BadZipFile:
+                logger.warning("ClawHub returned invalid ZIP for %s v%s", slug, version)
+                return files
+            except httpx.HTTPError as exc:
+                logger.debug("ClawHub ZIP download failed for %s v%s: %s", slug, version, exc)
+                return files
+
+        logger.debug("ClawHub ZIP download exhausted retries for %s v%s", slug, version)
         return files
 
     def _fetch_text(self, url: str) -> Optional[str]:
@@ -939,6 +1008,170 @@ class LobeHubSource(SkillSource):
         ]
 
         return "\n".join(fm_lines) + "\n\n" + "\n".join(body_lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Official optional skills source adapter
+# ---------------------------------------------------------------------------
+
+class OptionalSkillSource(SkillSource):
+    """
+    Fetch skills from the optional-skills/ directory shipped with the repo.
+
+    These skills are official (maintained by Nous Research) but not activated
+    by default — they don't appear in the system prompt and aren't copied to
+    ~/.hermes/skills/ during setup.  They are discoverable via the Skills Hub
+    (search / install / inspect) and labelled "official" with "builtin" trust.
+    """
+
+    def __init__(self):
+        self._optional_dir = Path(__file__).parent.parent / "optional-skills"
+
+    def source_id(self) -> str:
+        return "official"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "builtin"
+
+    # -- search -----------------------------------------------------------
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        results: List[SkillMeta] = []
+        query_lower = query.lower()
+
+        for meta in self._scan_all():
+            searchable = f"{meta.name} {meta.description} {' '.join(meta.tags)}".lower()
+            if query_lower in searchable:
+                results.append(meta)
+            if len(results) >= limit:
+                break
+
+        return results
+
+    # -- fetch ------------------------------------------------------------
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        # identifier format: "official/category/skill" or "official/skill"
+        rel = identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
+        skill_dir = self._optional_dir / rel
+
+        # Guard against path traversal (e.g. "official/../../etc")
+        try:
+            resolved = skill_dir.resolve()
+            if not str(resolved).startswith(str(self._optional_dir.resolve())):
+                return None
+        except (OSError, ValueError):
+            return None
+
+        if not resolved.is_dir():
+            # Try searching by skill name only (last segment)
+            skill_name = rel.rsplit("/", 1)[-1]
+            skill_dir = self._find_skill_dir(skill_name)
+            if not skill_dir:
+                return None
+        else:
+            skill_dir = resolved
+
+        files: Dict[str, str] = {}
+        for f in skill_dir.rglob("*"):
+            if f.is_file() and not f.name.startswith("."):
+                rel_path = str(f.relative_to(skill_dir))
+                try:
+                    files[rel_path] = f.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+        if not files:
+            return None
+
+        # Determine category from directory structure
+        name = skill_dir.name
+
+        return SkillBundle(
+            name=name,
+            files=files,
+            source="official",
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            trust_level="builtin",
+        )
+
+    # -- inspect ----------------------------------------------------------
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        rel = identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
+        skill_name = rel.rsplit("/", 1)[-1]
+
+        for meta in self._scan_all():
+            if meta.name == skill_name:
+                return meta
+        return None
+
+    # -- internal helpers -------------------------------------------------
+
+    def _find_skill_dir(self, name: str) -> Optional[Path]:
+        """Find a skill directory by name anywhere in optional-skills/."""
+        if not self._optional_dir.is_dir():
+            return None
+        for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if skill_md.parent.name == name:
+                return skill_md.parent
+        return None
+
+    def _scan_all(self) -> List[SkillMeta]:
+        """Enumerate all optional skills with metadata."""
+        if not self._optional_dir.is_dir():
+            return []
+
+        results: List[SkillMeta] = []
+        for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
+            parent = skill_md.parent
+            rel_parts = parent.relative_to(self._optional_dir).parts
+            if any(part.startswith(".") for part in rel_parts):
+                continue
+
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            fm = self._parse_frontmatter(content)
+            name = fm.get("name", parent.name)
+            desc = fm.get("description", "")
+            tags = []
+            meta_block = fm.get("metadata", {})
+            if isinstance(meta_block, dict):
+                hermes_meta = meta_block.get("hermes", {})
+                if isinstance(hermes_meta, dict):
+                    tags = hermes_meta.get("tags", [])
+
+            rel_path = str(parent.relative_to(self._optional_dir))
+
+            results.append(SkillMeta(
+                name=name,
+                description=desc[:200],
+                source="official",
+                identifier=f"official/{rel_path}",
+                trust_level="builtin",
+                path=rel_path,
+                tags=tags if isinstance(tags, list) else [],
+            ))
+
+        return results
+
+    @staticmethod
+    def _parse_frontmatter(content: str) -> dict:
+        """Parse YAML frontmatter from SKILL.md content."""
+        if not content.startswith("---"):
+            return {}
+        match = re.search(r'\n---\s*\n', content[3:])
+        if not match:
+            return {}
+        yaml_text = content[3:match.start() + 3]
+        try:
+            parsed = yaml.safe_load(yaml_text)
+            return parsed if isinstance(parsed, dict) else {}
+        except yaml.YAMLError:
+            return {}
 
 
 # ---------------------------------------------------------------------------
@@ -1219,6 +1452,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     extra_taps = taps_mgr.list_taps()
 
     sources: List[SkillSource] = [
+        OptionalSkillSource(),        # Official optional skills (highest priority)
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

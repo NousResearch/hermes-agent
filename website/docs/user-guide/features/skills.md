@@ -50,10 +50,13 @@ The agent only loads the full skill content when it actually needs it.
 name: my-skill
 description: Brief description of what this skill does
 version: 1.0.0
+platforms: [macos, linux]     # Optional — restrict to specific OS platforms
 metadata:
   hermes:
     tags: [python, automation]
     category: devops
+    fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
+    requires_toolsets: [terminal]   # Optional — conditional activation (see below)
 ---
 
 # Skill Title
@@ -71,6 +74,47 @@ Trigger conditions for this skill.
 ## Verification
 How to confirm it worked.
 ```
+
+### Platform-Specific Skills
+
+Skills can restrict themselves to specific operating systems using the `platforms` field:
+
+| Value | Matches |
+|-------|---------|
+| `macos` | macOS (Darwin) |
+| `linux` | Linux |
+| `windows` | Windows |
+
+```yaml
+platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders, FindMy)
+platforms: [macos, linux]     # macOS and Linux
+```
+
+When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
+
+### Conditional Activation (Fallback Skills)
+
+Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.
+
+```yaml
+metadata:
+  hermes:
+    fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
+    requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
+    fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
+    requires_tools: [terminal]        # Show ONLY when these specific tools are available
+```
+
+| Field | Behavior |
+|-------|----------|
+| `fallback_for_toolsets` | Skill is **hidden** when the listed toolsets are available. Shown when they're missing. |
+| `fallback_for_tools` | Same, but checks individual tools instead of toolsets. |
+| `requires_toolsets` | Skill is **hidden** when the listed toolsets are unavailable. Shown when they're present. |
+| `requires_tools` | Same, but checks individual tools. |
+
+**Example:** The built-in `duckduckgo-search` skill uses `fallback_for_toolsets: [web]`. When you have `FIRECRAWL_API_KEY` set, the web toolset is available and the agent uses `web_search` — the DuckDuckGo skill stays hidden. If the API key is missing, the web toolset is unavailable and the DuckDuckGo skill automatically appears as a fallback.
+
+Skills without any conditional fields behave exactly as before — they're always shown.
 
 ## Skill Directory Structure
 
@@ -123,9 +167,11 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ## Skills Hub
 
-Search, install, and manage skills from online registries:
+Browse, search, install, and manage skills from online registries and official optional skills:
 
 ```bash
+hermes skills browse                     # Browse all hub skills (official first)
+hermes skills browse --source official   # Browse only official optional skills
 hermes skills search kubernetes          # Search all sources
 hermes skills install openai/skills/k8s  # Install with security scan
 hermes skills inspect openai/skills/k8s  # Preview before installing
@@ -144,6 +190,7 @@ All hub-installed skills go through a **security scanner** that checks for data 
 | Level | Source | Policy |
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
+| `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
 | `trusted` | openai/skills, anthropics/skills | Trusted sources |
 | `community` | Everything else | Any findings = blocked unless `--force` |
 
@@ -152,6 +199,7 @@ All hub-installed skills go through a **security scanner** that checks for data 
 All the same commands work with `/skills` prefix:
 
 ```
+/skills browse
 /skills search kubernetes
 /skills install openai/skills/skill-creator
 /skills list

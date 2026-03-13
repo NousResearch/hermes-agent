@@ -17,15 +17,21 @@ from tools.environments.base import BaseEnvironment
 _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
 
 
-def _find_shell() -> str:
-    """Find the best shell for command execution.
+def _find_bash() -> str:
+    """Find bash for command execution.
 
-    On Unix: uses $SHELL, falls back to bash.
+    The fence wrapper uses bash syntax (semicolons, $?, printf), so we
+    must use bash — not the user's $SHELL which could be fish/zsh/etc.
     On Windows: uses Git Bash (bundled with Git for Windows).
-    Raises RuntimeError if no suitable shell is found on Windows.
     """
     if not _IS_WINDOWS:
-        return os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+        return (
+            shutil.which("bash")
+            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
+            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+            or os.environ.get("SHELL")  # last resort: whatever they have
+            or "/bin/sh"
+        )
 
     # Windows: look for Git Bash (installed with Git for Windows).
     # Allow override via env var (same pattern as Claude Code).
@@ -52,6 +58,11 @@ def _find_shell() -> str:
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+# Backward compat — process_registry.py imports this name
+_find_shell = _find_bash
+
 
 # Noise lines emitted by interactive shells when stdin is not a terminal.
 # Used as a fallback when output fence markers are missing.
@@ -150,16 +161,25 @@ class LocalEnvironment(BaseEnvironment):
 
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
+
+        # Merge the sudo password (if any) with caller-supplied stdin_data.
+        # sudo -S reads exactly one line (the password) then passes the rest
+        # of stdin to the child, so prepending is safe even when stdin_data
+        # is also present.
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
 
         try:
-            # Use the user's shell as an interactive login shell (-lic) so
-            # that ALL rc files are sourced — including content after the
-            # interactive guard in .bashrc (case $- in *i*)..esac) where
-            # tools like nvm, pyenv, and cargo install their init scripts.
-            # -l alone isn't enough: .profile sources .bashrc, but the guard
-            # returns early because the shell isn't interactive.
-            user_shell = _find_shell()
+            # The fence wrapper uses bash syntax (semicolons, $?, printf).
+            # Always use bash for the wrapper — NOT $SHELL which could be
+            # fish, zsh, or another shell with incompatible syntax.
+            # The -lic flags source rc files so tools like nvm/pyenv work.
+            user_shell = _find_bash()
             # Wrap with output fences so we can later extract the real
             # command output and discard shell init/exit noise.
             fenced_cmd = (
@@ -169,23 +189,31 @@ class LocalEnvironment(BaseEnvironment):
                 f" printf '{_OUTPUT_FENCE}';"
                 f" exit $__hermes_rc"
             )
+            # Ensure PATH always includes standard dirs — systemd services
+            # and some terminal multiplexers inherit a minimal PATH.
+            _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            run_env = dict(os.environ | self.env)
+            existing_path = run_env.get("PATH", "")
+            if "/usr/bin" not in existing_path.split(":"):
+                run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
             proc = subprocess.Popen(
                 [user_shell, "-lic", fenced_cmd],
                 text=True,
                 cwd=work_dir,
-                env=os.environ | self.env,
+                env=run_env,
                 encoding="utf-8",
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
             )
 
-            if stdin_data is not None:
+            if effective_stdin is not None:
                 def _write_stdin():
                     try:
-                        proc.stdin.write(stdin_data)
+                        proc.stdin.write(effective_stdin)
                         proc.stdin.close()
                     except (BrokenPipeError, OSError):
                         pass

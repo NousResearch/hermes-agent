@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
+
 
 
 # ---------------------------------------------------------------------------
@@ -934,20 +934,12 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
     if not model:
         return static_result
 
-    # Call the LLM via the OpenAI SDK (same pattern as run_agent.py)
+    # Call the LLM via the centralized provider router
     try:
-        from openai import OpenAI
-        import os
+        from agent.auxiliary_client import call_llm
 
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        if not api_key:
-            return static_result
-
-        client = OpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=api_key,
-        )
-        response = client.chat.completions.create(
+        response = call_llm(
+            provider="openrouter",
             model=model,
             messages=[{
                 "role": "user",
@@ -1046,6 +1038,9 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    # Official optional skills shipped with the repo
+    if source.startswith("official/") or source == "official":
+        return "builtin"
     # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
         if source.startswith(trusted) or source == trusted:

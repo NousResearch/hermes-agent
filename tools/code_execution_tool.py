@@ -78,7 +78,7 @@ _TOOL_STUBS = {
     "web_extract": (
         "web_extract",
         "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, content, error}."""',
+        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
         '{"urls": urls}',
     ),
     "read_file": (
@@ -95,15 +95,15 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "grep", path: str = ".", file_glob: str = None, limit: int = 50',
-        '"""Search file contents (target="grep") or find files by name (target="find"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit}',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
     ),
     "patch": (
         "patch",
-        "path: str, old_string: str, new_string: str, replace_all: bool = False",
-        '"""Replace old_string with new_string in a file. Returns dict with status."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all}',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
     ),
     "terminal": (
         "terminal",
@@ -137,9 +137,44 @@ def generate_hermes_tools_module(enabled_tools: List[str]) -> str:
 
     header = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket
+import json, os, socket, shlex, time
 
 _sock = None
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers (avoid common scripting pitfalls)
+# ---------------------------------------------------------------------------
+
+def json_parse(text: str):
+    """Parse JSON tolerant of control characters (strict=False).
+    Use this instead of json.loads() when parsing output from terminal()
+    or web_extract() that may contain raw tabs/newlines in strings."""
+    return json.loads(text, strict=False)
+
+
+def shell_quote(s: str) -> str:
+    """Shell-escape a string for safe interpolation into commands.
+    Use this when inserting dynamic content into terminal() commands:
+        terminal(f"echo {shell_quote(user_input)}")
+    """
+    return shlex.quote(s)
+
+
+def retry(fn, max_attempts=3, delay=2):
+    """Retry a function up to max_attempts times with exponential backoff.
+    Use for transient failures (network errors, API rate limits):
+        result = retry(lambda: terminal("gh issue list ..."))
+    """
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                time.sleep(delay * (2 ** attempt))
+    raise last_err
 
 def _connect():
     global _sock
@@ -276,6 +311,7 @@ def _rpc_server_loop(
                         sys.stderr.close()
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                 except Exception as exc:
+                    logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = json.dumps({"error": str(exc)})
 
                 tool_call_counter[0] += 1
@@ -292,15 +328,15 @@ def _rpc_server_loop(
                 conn.sendall((result + "\n").encode())
 
     except socket.timeout:
-        pass
-    except OSError:
-        pass
+        logger.debug("RPC listener socket timeout")
+    except OSError as e:
+        logger.debug("RPC listener socket error: %s", e, exc_info=True)
     finally:
         if conn:
             try:
                 conn.close()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("RPC conn close error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +386,11 @@ def execute_code(
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    sock_path = os.path.join(tempfile.gettempdir(), f"hermes_rpc_{uuid.uuid4().hex}.sock")
+    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
+    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
+    # On Linux, tempfile.gettempdir() already returns /tmp.
+    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -358,9 +398,9 @@ def execute_code(
 
     try:
         # Write the auto-generated hermes_tools module
-        tools_src = generate_hermes_tools_module(
-            list(sandbox_tools) if enabled_tools else list(SANDBOX_ALLOWED_TOOLS)
-        )
+        # sandbox_tools is already the correct set (intersection with session
+        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
+        tools_src = generate_hermes_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
             f.write(tools_src)
 
@@ -400,6 +440,11 @@ def execute_code(
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Inject user's configured timezone so datetime.now() in sandboxed
+        # code reflects the correct wall-clock time.
+        _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+        if _tz_name:
+            child_env["TZ"] = _tz_name
 
         proc = subprocess.Popen(
             [sys.executable, "script.py"],
@@ -413,11 +458,17 @@ def execute_code(
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout
-        stdout_chunks: list = []
         stderr_chunks: list = []
 
-        # Background readers to avoid pipe buffer deadlocks
+        # Background readers to avoid pipe buffer deadlocks.
+        # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
+        # and a rolling window of the last TAIL_BYTES so the final print()
+        # output is never lost.  Stderr keeps head-only (errors appear early).
+        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
+        _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
+
         def _drain(pipe, chunks, max_bytes):
+            """Simple head-only drain (used for stderr)."""
             total = 0
             try:
                 while True:
@@ -428,11 +479,51 @@ def execute_code(
                         keep = max_bytes - total
                         chunks.append(data[:keep])
                     total += len(data)
+            except (ValueError, OSError) as e:
+                logger.debug("Error reading process output: %s", e, exc_info=True)
+
+        stdout_total_bytes = [0]  # mutable ref for total bytes seen
+
+        def _drain_head_tail(pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref):
+            """Drain stdout keeping both head and tail data."""
+            head_collected = 0
+            from collections import deque
+            tail_buf = deque()
+            tail_collected = 0
+            try:
+                while True:
+                    data = pipe.read(4096)
+                    if not data:
+                        break
+                    total_ref[0] += len(data)
+                    # Fill head buffer first
+                    if head_collected < head_bytes:
+                        keep = min(len(data), head_bytes - head_collected)
+                        head_chunks.append(data[:keep])
+                        head_collected += keep
+                        data = data[keep:]  # remaining goes to tail
+                        if not data:
+                            continue
+                    # Everything past head goes into rolling tail buffer
+                    tail_buf.append(data)
+                    tail_collected += len(data)
+                    # Evict old tail data to stay within tail_bytes budget
+                    while tail_collected > tail_bytes and tail_buf:
+                        oldest = tail_buf.popleft()
+                        tail_collected -= len(oldest)
             except (ValueError, OSError):
                 pass
+            # Transfer final tail to output list
+            tail_chunks.extend(tail_buf)
+
+        stdout_head_chunks: list = []
+        stdout_tail_chunks: list = []
 
         stdout_reader = threading.Thread(
-            target=_drain, args=(proc.stdout, stdout_chunks, MAX_STDOUT_BYTES), daemon=True
+            target=_drain_head_tail,
+            args=(proc.stdout, stdout_head_chunks, stdout_tail_chunks,
+                  _STDOUT_HEAD_BYTES, _STDOUT_TAIL_BYTES, stdout_total_bytes),
+            daemon=True
         )
         stderr_reader = threading.Thread(
             target=_drain, args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES), daemon=True
@@ -456,18 +547,27 @@ def execute_code(
         stdout_reader.join(timeout=3)
         stderr_reader.join(timeout=3)
 
-        stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stdout_head = b"".join(stdout_head_chunks).decode("utf-8", errors="replace")
+        stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
-        # Truncation notice
-        if len(stdout_text) >= MAX_STDOUT_BYTES:
-            stdout_text = stdout_text[:MAX_STDOUT_BYTES] + "\n[output truncated at 50KB]"
+        # Assemble stdout with head+tail truncation
+        total_stdout = stdout_total_bytes[0]
+        if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
+            omitted = total_stdout - len(stdout_head) - len(stdout_tail)
+            truncated_notice = (
+                f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
+                f"out of {total_stdout:,} total] ...\n\n"
+            )
+            stdout_text = stdout_head + truncated_notice + stdout_tail
+        else:
+            stdout_text = stdout_head + stdout_tail
 
         exit_code = proc.returncode if proc.returncode is not None else -1
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
-        server_sock.close()
+        server_sock.close()  # break accept() so thread exits promptly
         rpc_thread.join(timeout=3)
 
         # Build response
@@ -504,14 +604,18 @@ def execute_code(
     finally:
         # Cleanup temp dir and socket
         try:
+            server_sock.close()
+        except Exception as e:
+            logger.debug("Server socket close error: %s", e)
+        try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception as e:
-            logger.debug("Could not clean temp dir: %s", e)
+            logger.debug("Could not clean temp dir: %s", e, exc_info=True)
         try:
             os.unlink(sock_path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Could not remove socket file: %s", e, exc_info=True)
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -521,11 +625,12 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.terminate()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError) as e:
+        logger.debug("Could not kill process group: %s", e, exc_info=True)
         try:
             proc.kill()
-        except Exception as e:
-            logger.debug("Could not kill process: %s", e)
+        except Exception as e2:
+            logger.debug("Could not kill process: %s", e2, exc_info=True)
 
     if escalate:
         # Give the process 5s to exit after SIGTERM, then SIGKILL
@@ -537,11 +642,12 @@ def _kill_process_group(proc, escalate: bool = False):
                     proc.kill()
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError) as e:
+                logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
                 try:
                     proc.kill()
-                except Exception as e:
-                    logger.debug("Could not kill process: %s", e)
+                except Exception as e2:
+                    logger.debug("Could not kill process: %s", e2, exc_info=True)
 
 
 def _load_config() -> dict:
@@ -557,9 +663,58 @@ def _load_config() -> dict:
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
-EXECUTE_CODE_SCHEMA = {
-    "name": "execute_code",
-    "description": (
+# Per-tool documentation lines for the execute_code description.
+# Ordered to match the canonical display order.
+_TOOL_DOC_LINES = [
+    ("web_search",
+     "  web_search(query: str, limit: int = 5) -> dict\n"
+     "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
+    ("web_extract",
+     "  web_extract(urls: list[str]) -> dict\n"
+     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+    ("read_file",
+     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
+     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+    ("write_file",
+     "  write_file(path: str, content: str) -> dict\n"
+     "    Always overwrites the entire file."),
+    ("search_files",
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
+     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+    ("patch",
+     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
+     "    Replaces old_string with new_string in the file."),
+    ("terminal",
+     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
+     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+]
+
+
+def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
+    """Build the execute_code schema with description listing only enabled tools.
+
+    When tools are disabled via ``hermes tools`` (e.g. web is turned off),
+    the schema description should NOT mention web_search / web_extract —
+    otherwise the model thinks they are available and keeps trying to use them.
+    """
+    if enabled_sandbox_tools is None:
+        enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+
+    # Build tool documentation lines for only the enabled tools
+    tool_lines = "\n".join(
+        doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools
+    )
+
+    # Build example import list from enabled tools
+    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
+    if not import_examples:
+        import_examples = sorted(enabled_sandbox_tools)[:2]
+    if import_examples:
+        import_str = ", ".join(import_examples) + ", ..."
+    else:
+        import_str = "..."
+
+    description = (
         "Run a Python script that can call Hermes tools programmatically. "
         "Use this when you need 3+ tool calls with processing logic between them, "
         "need to filter/reduce large tool outputs before they enter your context, "
@@ -568,41 +723,40 @@ EXECUTE_CODE_SCHEMA = {
         "Use normal tool calls instead when: single tool call with no processing, "
         "you need to see the full result and apply complex reasoning, "
         "or the task requires interactive user input.\n\n"
-        "Available via `from hermes_tools import ...`:\n\n"
-        "  web_search(query: str, limit: int = 5) -> dict\n"
-        "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n"
-        "  web_extract(urls: list[str]) -> dict\n"
-        "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown\n"
-        "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-        "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n"
-        "  write_file(path: str, content: str) -> dict\n"
-        "    Always overwrites the entire file.\n"
-        "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-        "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n"
-        "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-        "    Replaces old_string with new_string in the file.\n"
-        "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-        "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\n"
+        f"Available via `from hermes_tools import ...`:\n\n"
+        f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
-        "datetime, collections, etc.) for processing between tool calls."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "code": {
-                "type": "string",
-                "description": (
-                    "Python code to execute. Import tools with "
-                    "`from hermes_tools import web_search, terminal, ...` "
-                    "and print your final result to stdout."
-                ),
+        "datetime, collections, etc.) for processing between tool calls.\n\n"
+        "Also available (no import needed — built into hermes_tools):\n"
+        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
+        "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
+        "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
+    )
+
+    return {
+        "name": "execute_code",
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Python code to execute. Import tools with "
+                        f"`from hermes_tools import {import_str}` "
+                        "and print your final result to stdout."
+                    ),
+                },
             },
+            "required": ["code"],
         },
-        "required": ["code"],
-    },
-}
+    }
+
+
+# Default schema used at registration time (all sandbox tools listed)
+EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---

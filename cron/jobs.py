@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
+from hermes_time import now as _hermes_now
+
 try:
     from croniter import croniter
     HAS_CRONITER = True
@@ -24,16 +26,35 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = Path.home() / ".hermes"
+HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
 
 
+def _secure_dir(path: Path):
+    """Set directory to owner-only access (0700). No-op on Windows."""
+    try:
+        os.chmod(path, 0o700)
+    except (OSError, NotImplementedError):
+        pass  # Windows or other platforms where chmod is not supported
+
+
+def _secure_file(path: Path):
+    """Set file to owner-only read/write (0600). No-op on Windows."""
+    try:
+        if path.exists():
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def ensure_dirs():
-    """Ensure cron directories exist."""
+    """Ensure cron directories exist with secure permissions."""
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _secure_dir(CRON_DIR)
+    _secure_dir(OUTPUT_DIR)
 
 
 # =============================================================================
@@ -128,7 +149,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
-        run_at = datetime.now() + timedelta(minutes=minutes)
+        run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
@@ -146,37 +167,56 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     )
 
 
+def _ensure_aware(dt: datetime) -> datetime:
+    """Return a timezone-aware datetime in Hermes configured timezone.
+
+    Backward compatibility:
+    - Older stored timestamps may be naive.
+    - Naive values are interpreted as *system-local wall time* (the timezone
+      `datetime.now()` used when they were created), then converted to the
+      configured Hermes timezone.
+
+    This preserves relative ordering for legacy naive timestamps across
+    timezone changes and avoids false not-due results.
+    """
+    target_tz = _hermes_now().tzinfo
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        return dt.replace(tzinfo=local_tz).astimezone(target_tz)
+    return dt.astimezone(target_tz)
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
-    
+
     Returns ISO timestamp string, or None if no more runs.
     """
-    now = datetime.now()
-    
+    now = _hermes_now()
+
     if schedule["kind"] == "once":
-        run_at = datetime.fromisoformat(schedule["run_at"])
+        run_at = _ensure_aware(datetime.fromisoformat(schedule["run_at"]))
         # If in the future, return it; if in the past, no more runs
         return schedule["run_at"] if run_at > now else None
-    
+
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
         if last_run_at:
             # Next run is last_run + interval
-            last = datetime.fromisoformat(last_run_at)
+            last = _ensure_aware(datetime.fromisoformat(last_run_at))
             next_run = last + timedelta(minutes=minutes)
         else:
             # First run is now + interval
             next_run = now + timedelta(minutes=minutes)
         return next_run.isoformat()
-    
+
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
             return None
         cron = croniter(schedule["expr"], now)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
-    
+
     return None
 
 
@@ -204,10 +244,11 @@ def save_jobs(jobs: List[Dict[str, Any]]):
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": datetime.now().isoformat()}, f, indent=2)
+            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, JOBS_FILE)
+        _secure_file(JOBS_FILE)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -249,7 +290,7 @@ def create_job(
         deliver = "origin" if origin else "local"
     
     job_id = uuid.uuid4().hex[:12]
-    now = datetime.now().isoformat()
+    now = _hermes_now().isoformat()
     
     job = {
         "id": job_id,
@@ -328,7 +369,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] == job_id:
-            now = datetime.now().isoformat()
+            now = _hermes_now().isoformat()
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
@@ -361,7 +402,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now."""
-    now = datetime.now()
+    now = _hermes_now()
     jobs = load_jobs()
     due = []
     
@@ -373,7 +414,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
         if not next_run:
             continue
         
-        next_run_dt = datetime.fromisoformat(next_run)
+        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:
             due.append(job)
     
@@ -385,11 +426,13 @@ def save_job_output(job_id: str, output: str):
     ensure_dirs()
     job_output_dir = OUTPUT_DIR / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(job_output_dir)
     
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
     
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(output)
+    _secure_file(output_file)
     
     return output_file

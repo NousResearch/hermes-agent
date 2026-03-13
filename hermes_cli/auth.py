@@ -1541,8 +1541,20 @@ def detect_external_credentials() -> List[Dict[str, Any]]:
 # CLI Commands — login / logout
 # =============================================================================
 
-def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Path:
-    """Update config.yaml and auth.json to reflect the active provider."""
+def _update_config_for_provider(
+    provider_id: str,
+    inference_base_url: str,
+    default_model: Optional[str] = None,
+) -> Path:
+    """Update config.yaml and auth.json to reflect the active provider.
+
+    When *default_model* is provided the function also writes it as the
+    ``model.default`` value.  This prevents a race condition where the
+    gateway (which re-reads config per-message) picks up the new provider
+    before the caller has finished model selection, resulting in a
+    mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
+    MiniMax's API).
+    """
     # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -1576,6 +1588,15 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
     else:
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
+
+    # When switching to a non-OpenRouter provider, ensure model.default is
+    # valid for the new provider.  An OpenRouter-formatted name like
+    # "anthropic/claude-opus-4.6" will fail on direct-API providers.
+    if default_model:
+        cur_default = model_cfg.get("default", "")
+        if not cur_default or "/" in cur_default:
+            model_cfg["default"] = default_model
+
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

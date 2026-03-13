@@ -209,13 +209,33 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
 
-    # Subagent delegation — override the provider:model used by delegate_task
-    # so child agents can run on a different (cheaper/faster) provider and model.
-    # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # Model profiles — optional context-specific model/provider routes.
+    # Keep values empty to inherit the global `model` config.
+    #
+    # Common pattern:
+    #   - chat:      high quality model for direct conversations
+    #   - coding:    strong code model for terminal/file heavy delegated work
+    #   - planning:  cheaper reasoning model for plan/spec subtasks
+    #   - research:  web synthesis model for web-heavy delegated work
+    #
+    # For local OpenAI-compatible endpoints (Ollama/vLLM/LM Studio), set:
+    #   provider: openrouter   (or custom)
+    #   base_url: http://localhost:11434/v1
+    #   api_key_env: OLLAMA_API_KEY  (optional)
+    "model_profiles": {
+        "chat": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+        "coding": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+        "planning": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+        "research": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+        "delegation": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+    },
+
+    # Subagent delegation — legacy override for delegate_task.
+    # If model/provider are set here they take precedence over model_profiles.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "model": "",       # empty = inherit parent model
+        "provider": "",    # empty = inherit parent provider + credentials
+        "model_profile": "",  # optional default profile name (coding/planning/research/...)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

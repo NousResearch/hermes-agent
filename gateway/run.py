@@ -188,12 +188,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
 
 def _resolve_gateway_model() -> str:
-    """Read model from env/config — mirrors the resolution in _run_agent_sync.
-
-    Without this, temporary AIAgent instances (memory flush, /compress) fall
-    back to the hardcoded default ("anthropic/claude-opus-4.6") which fails
-    when the active provider is openai-codex.
-    """
+    """Resolve gateway chat model with optional model_profiles.chat override."""
     model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
     try:
         import yaml as _y
@@ -206,6 +201,12 @@ def _resolve_gateway_model() -> str:
                 model = _model_cfg
             elif isinstance(_model_cfg, dict):
                 model = _model_cfg.get("default", model)
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.runtime_provider import resolve_model_for_profile
+        model = resolve_model_for_profile("chat", model)
     except Exception:
         pass
     return model

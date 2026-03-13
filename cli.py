@@ -215,11 +215,19 @@ def load_cli_config() -> Dict[str, Any]:
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
+        "model_profiles": {
+            "chat": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+            "coding": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+            "planning": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+            "research": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+            "delegation": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
+        },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
-            "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
+            "model": "",       # Subagent model override (legacy; empty = inherit parent model)
+            "provider": "",    # Subagent provider override (legacy; empty = inherit parent provider)
+            "model_profile": "",  # Default profile name for delegate_task (optional)
         },
     }
     
@@ -1137,18 +1145,35 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
-        self.model = model or _config_model or "anthropic/claude-opus-4.6"
+
+        profile_model = ""
+        profile_provider = ""
+        profile_base_url = ""
+        profile_api_key = ""
+        try:
+            from hermes_cli.runtime_provider import resolve_model_profile
+            chat_profile = resolve_model_profile("chat")
+            profile_model = chat_profile.get("model", "")
+            profile_provider = chat_profile.get("provider", "")
+            profile_base_url = chat_profile.get("base_url", "")
+            profile_api_key = chat_profile.get("api_key", "")
+        except Exception:
+            pass
+
+        # Explicit CLI args always win. Then chat profile. Then global model default.
+        self.model = model or profile_model or _config_model or "anthropic/claude-opus-4.6"
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
         self._model_is_default = not model
 
-        self._explicit_api_key = api_key
-        self._explicit_base_url = base_url
+        self._explicit_api_key = api_key or profile_api_key or None
+        self._explicit_base_url = base_url or profile_base_url or None
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
+            or profile_provider
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or CLI_CONFIG["model"].get("provider")
             or "auto"

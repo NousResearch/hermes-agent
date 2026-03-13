@@ -83,10 +83,18 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        # Use explicit None checks — dict.get() returns None for keys
+        # with null/None values, bypassing the default parameter.
+        at_hour = data.get("at_hour")
+        if at_hour is None:
+            at_hour = 4
+        idle_minutes = data.get("idle_minutes")
+        if idle_minutes is None:
+            idle_minutes = 1440
         return cls(
             mode=data.get("mode", "both"),
-            at_hour=data.get("at_hour", 4),
-            idle_minutes=data.get("idle_minutes", 1440),
+            at_hour=at_hour,
+            idle_minutes=idle_minutes,
         )
 
 

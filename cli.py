@@ -175,7 +175,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.85,    # Compress at 85% of model's context limit
+            "threshold": 0.50,    # Compress at 50% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
         "agent": {
@@ -3608,6 +3608,19 @@ class HermesCLI:
                                 continue
                             print(f"\n⚡ New message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
+                            # Debug: log to file (stdout may be devnull from redirect_stdout)
+                            try:
+                                import pathlib as _pl
+                                _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                                with open(_dbg, "a") as _f:
+                                    import time as _t
+                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                                             f"children={len(self.agent._active_children)}, "
+                                             f"parent._interrupt={self.agent._interrupt_requested}\n")
+                                    for _ci, _ch in enumerate(self.agent._active_children):
+                                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                            except Exception:
+                                pass
                             break
                     except queue.Empty:
                         pass  # Queue empty or timeout, continue waiting
@@ -3877,6 +3890,16 @@ class HermesCLI:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    # Debug: log to file when message enters interrupt queue
+                    try:
+                        import pathlib as _pl
+                        _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                        with open(_dbg, "a") as _f:
+                            import time as _t
+                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                     f"agent_running={self._agent_running}\n")
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)

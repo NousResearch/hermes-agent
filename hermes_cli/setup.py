@@ -302,11 +302,23 @@ def _configure_model_profiles_interactive(config: Dict[str, Any], allow_custom_p
             continue
 
         if selection == len(choices) - 1:
+            print_info("Base URL: the OpenAI-compatible /v1 endpoint for this provider.")
             base_url = prompt("  Base URL (OpenAI-compatible /v1 endpoint)", current.get("base_url", ""))
+            print_info("API key env var: the name Hermes will use in ~/.hermes/.env to store/read the secret.")
             api_key_env = prompt("  API key env var name (optional)", current.get("api_key_env", ""))
             api_key_default = current.get("api_key", "")
+            print_info("API key: if you type one here, Hermes will save it to ~/.hermes/.env — never config.yaml.")
             api_key = prompt("  API key (optional, leave blank to use env var)", password=True) or api_key_default
-            resolved_key = api_key or (os.getenv(api_key_env, "") if api_key_env else "")
+            api_key_env = str(api_key_env or "").strip()
+            api_key = str(api_key or "").strip()
+            if api_key and not api_key_env:
+                print_warning("Env var name is mandatory if you enter an API key here — otherwise routing may break. Leaving the key unsaved.")
+                resolved_key = ""
+            elif api_key and api_key_env:
+                save_env_value(api_key_env, api_key)
+                resolved_key = api_key
+            else:
+                resolved_key = (os.getenv(api_key_env, "") if api_key_env else "") or api_key_default
 
             suggestions = []
             if base_url and resolved_key:
@@ -329,8 +341,8 @@ def _configure_model_profiles_interactive(config: Dict[str, Any], allow_custom_p
                 "model": str(model_name or "").strip(),
                 "provider": "custom",
                 "base_url": str(base_url or "").strip(),
-                "api_key_env": str(api_key_env or "").strip(),
-                "api_key": str(api_key or "").strip(),
+                "api_key_env": api_key_env,
+                "api_key": "",
             }
             print_success(f"Saved {profile_name} custom profile")
             continue

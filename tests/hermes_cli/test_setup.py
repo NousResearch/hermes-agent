@@ -185,3 +185,75 @@ def test_reset_model_profiles_config_keeps_defaults_only(tmp_path, monkeypatch):
 
     assert set(profiles.keys()) == {"chat", "coding", "planning", "research", "delegation"}
     assert cfg["model_routing"] == {"rules": []}
+
+
+def test_custom_endpoint_profile_saves_api_key_to_env_not_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = load_config()
+    _ensure_model_profiles_config(cfg)
+
+    yes_no_answers = iter([True, True, False, False, False, False, False])
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: next(yes_no_answers))
+    prompt_choices = iter([2])  # Custom endpoint (manual)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: next(prompt_choices))
+    monkeypatch.setattr(
+        "hermes_cli.setup._discover_working_profile_providers",
+        lambda: ([
+            ("openrouter", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "test-key"}),
+        ], []),
+    )
+
+    prompt_values = iter([
+        "https://example.test/v1",
+        "ROUTING_TEST_KEY",
+        "super-secret-key",
+        "custom-router-model",
+    ])
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+
+    saved_env = {}
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda key, value: saved_env.setdefault(key, value))
+
+    _configure_model_profiles_interactive(cfg)
+
+    chat = cfg["model_profiles"]["chat"]
+    assert chat["provider"] == "custom"
+    assert chat["base_url"] == "https://example.test/v1"
+    assert chat["api_key_env"] == "ROUTING_TEST_KEY"
+    assert chat["api_key"] == ""
+    assert saved_env["ROUTING_TEST_KEY"] == "super-secret-key"
+
+
+def test_custom_endpoint_profile_requires_env_var_name_for_inline_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = load_config()
+    _ensure_model_profiles_config(cfg)
+
+    yes_no_answers = iter([True, True, False, False, False, False, False])
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: next(yes_no_answers))
+    prompt_choices = iter([2])
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: next(prompt_choices))
+    monkeypatch.setattr(
+        "hermes_cli.setup._discover_working_profile_providers",
+        lambda: ([
+            ("openrouter", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "test-key"}),
+        ], []),
+    )
+
+    prompt_values = iter([
+        "https://example.test/v1",
+        "",
+        "super-secret-key",
+        "custom-router-model",
+    ])
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+
+    _configure_model_profiles_interactive(cfg)
+
+    output = capsys.readouterr().out.lower()
+    chat = cfg["model_profiles"]["chat"]
+    assert "env var name is mandatory" in output
+    assert chat["provider"] == "custom"
+    assert chat["api_key_env"] == ""
+    assert chat["api_key"] == ""

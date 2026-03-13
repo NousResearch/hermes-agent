@@ -400,8 +400,9 @@ def build_anthropic_kwargs(
 
     # Map reasoning_config to Anthropic's thinking parameter
     # Newer models (4.6+) prefer "adaptive" thinking; older models use "enabled"
+    # Haiku models do NOT support extended thinking at all
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False:
+        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = reasoning_config.get("effort", "medium")
             budget = THINKING_BUDGET.get(effort, 8000)
             # Use adaptive thinking for 4.5+ models (they deprecate type=enabled)

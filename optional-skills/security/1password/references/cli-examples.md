@@ -13,7 +13,7 @@ op account list
 
 ```bash
 op read "op://app-prod/db/password"
-op read "op://app-prod/one-time password?attribute=otp"
+op read "op://app-prod/npm/one-time password?attribute=otp"
 ```
 
 ## Inject secrets

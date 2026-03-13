@@ -43,6 +43,23 @@ from gateway.platforms.base import (
 )
 
 
+def _clean_discord_id(entry: str) -> str:
+    """Strip common prefixes from a Discord user ID or username entry.
+
+    Users sometimes paste IDs with prefixes like ``user:123``, ``<@123>``,
+    or ``<@!123>`` from Discord's UI or other tools.  This normalises the
+    entry to just the bare ID or username.
+    """
+    entry = entry.strip()
+    # Strip Discord mention syntax: <@123> or <@!123>
+    if entry.startswith("<@") and entry.endswith(">"):
+        entry = entry.lstrip("<@!").rstrip(">")
+    # Strip "user:" prefix (seen in some Discord tools / onboarding pastes)
+    if entry.lower().startswith("user:"):
+        entry = entry[5:]
+    return entry.strip()
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
@@ -99,7 +116,8 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
             if allowed_env:
                 self._allowed_user_ids = {
-                    uid.strip() for uid in allowed_env.split(",") if uid.strip()
+                    _clean_discord_id(uid) for uid in allowed_env.split(",")
+                    if uid.strip()
                 }
             
             adapter_self = self  # capture for closure

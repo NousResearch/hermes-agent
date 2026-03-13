@@ -2615,12 +2615,19 @@ class AIAgent:
             if self._interrupt_requested:
                 # Force-close the HTTP connection to stop token generation
                 try:
-                    self.client.close()
+                    if self.api_mode == "anthropic_messages":
+                        self._anthropic_client.close()
+                    else:
+                        self.client.close()
                 except Exception:
                     pass
                 # Rebuild the client for future calls (cheap, no network)
                 try:
-                    self.client = OpenAI(**self._client_kwargs)
+                    if self.api_mode == "anthropic_messages":
+                        from agent.anthropic_adapter import build_anthropic_client
+                        self._anthropic_client = build_anthropic_client(self._anthropic_api_key)
+                    else:
+                        self.client = OpenAI(**self._client_kwargs)
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")

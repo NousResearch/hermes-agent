@@ -1,0 +1,23 @@
+{
+  "name": "billions_identity",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@0xpolygonid/js-sdk": "^1.42.1",
+    "@iden3/js-iden3-auth": "^1.14.0",
+    "axios": "^1.13.6",
+    "dotenv": "^17.3.1",
+    "ethers": "^6.16.0",
+    "force": "^0.0.3",
+    "shell-quote": "^1.8.3",
+    "uuid": "^13.0.0",
+    "yargs": "^18.0.0"
+  }
+}

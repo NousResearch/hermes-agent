@@ -1852,3 +1852,104 @@ class TestAutoTtsTempFileCleanup:
         assert finally_idx > 0, "play_tts must be in a try/finally block"
         assert remove_idx > 0, "finally block must call os.remove on _tts_path"
         assert remove_idx > finally_idx, "os.remove must be inside the finally block"
+
+
+# =====================================================================
+# Voice channel awareness (get_voice_channel_info / context)
+# =====================================================================
+
+
+class TestVoiceChannelAwareness:
+    """Tests for get_voice_channel_info() and get_voice_channel_context()."""
+
+    def _make_adapter(self):
+        from gateway.platforms.discord import DiscordAdapter
+        from gateway.config import PlatformConfig
+        config = PlatformConfig(enabled=True, extra={})
+        config.token = "fake-token"
+        adapter = object.__new__(DiscordAdapter)
+        adapter._voice_clients = {}
+        adapter._voice_text_channels = {}
+        adapter._voice_receivers = {}
+        adapter._client = MagicMock()
+        adapter._client.user = SimpleNamespace(id=99999, name="HermesBot")
+        return adapter
+
+    def _make_member(self, user_id, display_name, is_bot=False):
+        return SimpleNamespace(
+            id=user_id, display_name=display_name, bot=is_bot,
+        )
+
+    def test_returns_none_when_not_connected(self):
+        adapter = self._make_adapter()
+        assert adapter.get_voice_channel_info(111) is None
+
+    def test_returns_none_when_vc_disconnected(self):
+        adapter = self._make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = False
+        adapter._voice_clients[111] = vc
+        assert adapter.get_voice_channel_info(111) is None
+
+    def test_returns_info_with_members(self):
+        adapter = self._make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        bot_member = self._make_member(99999, "HermesBot", is_bot=True)
+        user_a = self._make_member(1001, "Alice")
+        user_b = self._make_member(1002, "Bob")
+        vc.channel.name = "general-voice"
+        vc.channel.members = [bot_member, user_a, user_b]
+        adapter._voice_clients[111] = vc
+
+        info = adapter.get_voice_channel_info(111)
+        assert info is not None
+        assert info["channel_name"] == "general-voice"
+        assert info["member_count"] == 2  # bot excluded
+        names = [m["display_name"] for m in info["members"]]
+        assert "Alice" in names
+        assert "Bob" in names
+        assert "HermesBot" not in names
+
+    def test_speaking_detection(self):
+        adapter = self._make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        user_a = self._make_member(1001, "Alice")
+        user_b = self._make_member(1002, "Bob")
+        vc.channel.name = "voice"
+        vc.channel.members = [user_a, user_b]
+        adapter._voice_clients[111] = vc
+
+        # Set up a mock receiver with Alice speaking
+        import time as _time
+        receiver = MagicMock()
+        receiver._lock = threading.Lock()
+        receiver._last_packet_time = {100: _time.monotonic()}  # ssrc 100 is active
+        receiver._ssrc_to_user = {100: 1001}  # ssrc 100 -> Alice
+        adapter._voice_receivers[111] = receiver
+
+        info = adapter.get_voice_channel_info(111)
+        alice = [m for m in info["members"] if m["display_name"] == "Alice"][0]
+        bob = [m for m in info["members"] if m["display_name"] == "Bob"][0]
+        assert alice["is_speaking"] is True
+        assert bob["is_speaking"] is False
+        assert info["speaking_count"] == 1
+
+    def test_context_string_format(self):
+        adapter = self._make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        user_a = self._make_member(1001, "Alice")
+        vc.channel.name = "chat-room"
+        vc.channel.members = [user_a]
+        adapter._voice_clients[111] = vc
+
+        ctx = adapter.get_voice_channel_context(111)
+        assert "#chat-room" in ctx
+        assert "1 participant" in ctx
+        assert "Alice" in ctx
+
+    def test_context_empty_when_not_connected(self):
+        adapter = self._make_adapter()
+        assert adapter.get_voice_channel_context(111) == ""

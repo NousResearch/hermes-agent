@@ -231,6 +231,7 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._quick_commands = self._load_quick_commands()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -571,6 +572,26 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _load_quick_commands() -> dict:
+        """Load user-defined quick commands from config.yaml.
+
+        Returns a dict mapping command names to their definitions,
+        or an empty dict if not configured.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                qc = cfg.get("quick_commands", {})
+                if isinstance(qc, dict):
+                    return qc
+        except Exception:
+            pass
+        return {}
 
     async def start(self) -> bool:
         """
@@ -1001,7 +1022,7 @@ class GatewayRunner:
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            quick_commands = self.config.get("quick_commands", {})
+            quick_commands = self._quick_commands
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":

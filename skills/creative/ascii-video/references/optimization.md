@@ -1,5 +1,15 @@
 # Optimization Reference
 
+**Cross-references:**
+- Grid system, resolution presets, portrait GridLayer: `architecture.md`
+- Effect building blocks (pre-computation strategies): `effects.md`
+- `_render_vf()`, tonemap (subsampled percentile): `composition.md`
+- Scene protocol, render_clip: `scenes.md`
+- Shader pipeline, encoding (ffmpeg flags): `shaders.md`
+- Input sources (audio chunking, WAV extraction): `inputs.md`
+- Common bugs (memory, OOM, frame drops): `troubleshooting.md`
+- Complete scene examples: `examples.md`
+
 ## Hardware Detection
 
 Detect the user's hardware at script startup and adapt rendering parameters automatically. Never hardcode worker counts or resolution.
@@ -124,6 +134,8 @@ def apply_quality_profile(profile):
 parser = argparse.ArgumentParser()
 parser.add_argument("--quality", choices=["draft", "preview", "production", "max", "auto"],
                     default="auto", help="Render quality preset")
+parser.add_argument("--aspect", choices=["landscape", "portrait", "square"],
+                    default="landscape", help="Aspect ratio preset")
 parser.add_argument("--workers", type=int, default=0, help="Override worker count (0=auto)")
 parser.add_argument("--resolution", type=str, default="", help="Override resolution e.g. 1280x720")
 args = parser.parse_args()
@@ -132,6 +144,16 @@ hw = detect_hardware()
 if args.workers > 0:
     hw["workers"] = args.workers
 profile = quality_profile(hw, target_duration, args.quality)
+
+# Apply aspect ratio preset (before manual resolution override)
+ASPECT_PRESETS = {
+    "landscape": (1920, 1080),
+    "portrait":  (1080, 1920),
+    "square":    (1080, 1080),
+}
+if args.aspect != "landscape" and not args.resolution:
+    profile["vw"], profile["vh"] = ASPECT_PRESETS[args.aspect]
+
 if args.resolution:
     w, h = args.resolution.split("x")
     profile["vw"], profile["vh"] = int(w), int(h)
@@ -140,6 +162,47 @@ apply_quality_profile(profile)
 log(f"Hardware: {hw['cpu_count']} cores, {hw['mem_gb']:.1f}GB RAM, {hw['platform']}")
 log(f"Render:   {profile['vw']}x{profile['vh']} @{profile['fps']}fps, "
     f"CRF {profile['crf']}, {profile['workers']} workers")
+```
+
+### Portrait Mode Considerations
+
+Portrait (1080x1920) has the same pixel count as landscape 1080p, so performance is equivalent. But composition patterns differ:
+
+| Concern | Landscape | Portrait |
+|---------|-----------|----------|
+| Grid cols at `lg` | 160 | 90 |
+| Grid rows at `lg` | 45 | 80 |
+| Max text line chars | ~50 centered | ~25-30 centered |
+| Vertical rain | Short travel | Long, dramatic travel |
+| Horizontal spectrum | Full width | Needs rotation or compression |
+| Radial effects | Natural circles | Tall ellipses (aspect correction handles this) |
+| Particle explosions | Wide spread | Tall spread |
+| Text stacking | 3-4 lines comfortable | 8-10 lines comfortable |
+| Quote layout | 2-3 wide lines | 5-6 short lines |
+
+**Portrait-optimized patterns:**
+- Vertical rain/matrix effects are naturally enhanced — longer column travel
+- Fire columns rise through more screen space
+- Rising embers/particles have more vertical runway
+- Text can be stacked more aggressively with more lines
+- Radial effects work if aspect correction is applied (GridLayer handles this automatically)
+- Spectrum bars can be rotated 90 degrees (vertical bars from bottom)
+
+**Portrait text layout:**
+```python
+def layout_text_portrait(text, max_chars_per_line=25, grid=None):
+    """Break text into short lines for portrait display."""
+    words = text.split()
+    lines = []; current = ""
+    for w in words:
+        if len(current) + len(w) + 1 > max_chars_per_line:
+            lines.append(current.strip())
+            current = w + " "
+        else:
+            current += w + " "
+    if current.strip():
+        lines.append(current.strip())
+    return lines
 ```
 
 ## Performance Budget
@@ -172,6 +235,74 @@ canvas[y:y+ch, x:x+cw] = np.maximum(canvas[y:y+ch, x:x+cw],
 ```
 
 Collect all characters from all palettes + overlay text into the init set. Lazy-init for any missed characters.
+
+## Pre-Rendered Background Textures
+
+Alternative to `_render_vf()` for backgrounds where characters don't need to change every frame. Pre-bake a static ASCII texture once at init, then multiply by a per-cell color field each frame. One matrix multiply vs thousands of bitmap blits.
+
+Use when: background layer uses a fixed character palette and only color/brightness varies per frame. NOT suitable for layers where character selection depends on a changing value field.
+
+### Init: Bake the Texture
+
+```python
+# In GridLayer.__init__:
+self._bg_row_idx = np.clip(
+    (np.arange(VH) - self.oy) // self.ch, 0, self.rows - 1
+)
+self._bg_col_idx = np.clip(
+    (np.arange(VW) - self.ox) // self.cw, 0, self.cols - 1
+)
+self._bg_textures = {}
+
+def make_bg_texture(self, palette):
+    """Pre-render a static ASCII texture (grayscale float32) once."""
+    if palette not in self._bg_textures:
+        texture = np.zeros((VH, VW), dtype=np.float32)
+        rng = random.Random(12345)
+        ch_list = [c for c in palette if c != " " and c in self.bm]
+        if not ch_list:
+            ch_list = list(self.bm.keys())[:5]
+        for row in range(self.rows):
+            y = self.oy + row * self.ch
+            if y + self.ch > VH:
+                break
+            for col in range(self.cols):
+                x = self.ox + col * self.cw
+                if x + self.cw > VW:
+                    break
+                bm = self.bm[rng.choice(ch_list)]
+                texture[y:y+self.ch, x:x+self.cw] = bm
+        self._bg_textures[palette] = texture
+    return self._bg_textures[palette]
+```
+
+### Render: Color Field x Cached Texture
+
+```python
+def render_bg(self, color_field, palette=PAL_CIRCUIT):
+    """Fast background: pre-rendered ASCII texture * per-cell color field.
+    color_field: (rows, cols, 3) uint8. Returns (VH, VW, 3) uint8."""
+    texture = self.make_bg_texture(palette)
+    # Expand cell colors to pixel coords via pre-computed index maps
+    color_px = color_field[
+        self._bg_row_idx[:, None], self._bg_col_idx[None, :]
+    ].astype(np.float32)
+    return (texture[:, :, None] * color_px).astype(np.uint8)
+```
+
+### Usage in a Scene
+
+```python
+# Build per-cell color from effect fields (cheap — rows*cols, not VH*VW)
+hue = ((t * 0.05 + val * 0.2) % 1.0).astype(np.float32)
+R, G, B = hsv2rgb(hue, np.full_like(val, 0.5), val)
+color_field = mkc(R, G, B, g.rows, g.cols)  # (rows, cols, 3) uint8
+
+# Render background — single matrix multiply, no per-cell loop
+canvas_bg = g.render_bg(color_field, PAL_DENSE)
+```
+
+The texture init loop runs once and is cached per palette. Per-frame cost is one fancy-index lookup + one broadcast multiply — orders of magnitude faster than the per-cell bitmap blit loop in `render()` for dense backgrounds.
 
 ## Coordinate Array Caching
 
@@ -215,8 +346,8 @@ all_rows = []
 all_cols = []
 all_fades = []
 for c in range(cols):
-    head = int(state["ry"][c])
-    trail_len = state["rln"][c]
+    head = int(S["ry"][c])
+    trail_len = S["rln"][c]
     for i in range(trail_len):
         row = head - i
         if 0 <= row < rows:
@@ -253,6 +384,57 @@ for fi in range(n_cols):
                                           (1 - frac * 0.6) * (0.5 + rms * 0.5))
 # Now map fire_val to chars and colors in one vectorized pass
 ```
+
+## PIL String Rendering for Text-Heavy Scenes
+
+Alternative to per-cell bitmap blitting when rendering many long text strings (scrolling tickers, typewriter sequences, idea floods). Uses PIL's native `ImageDraw.text()` which renders an entire string in one C call, vs one Python-loop bitmap blit per character.
+
+Typical win: a scene with 56 ticker rows renders 56 PIL `text()` calls instead of ~10K individual bitmap blits.
+
+Use when: scene renders many rows of readable text strings. NOT suitable for sparse or spatially-scattered single characters (use normal `render()` for those).
+
+```python
+from PIL import Image, ImageDraw
+
+def render_text_layer(grid, rows_data, font):
+    """Render dense text rows via PIL instead of per-cell bitmap blitting.
+
+    Args:
+        grid: GridLayer instance (for oy, ch, ox, font metrics)
+        rows_data: list of (row_index, text_string, rgb_tuple) — one per row
+        font: PIL ImageFont instance (grid.font)
+
+    Returns:
+        uint8 array (VH, VW, 3) — canvas with rendered text
+    """
+    img = Image.new("RGB", (VW, VH), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    for row_idx, text, color in rows_data:
+        y = grid.oy + row_idx * grid.ch
+        if y + grid.ch > VH:
+            break
+        draw.text((grid.ox, y), text, fill=color, font=font)
+    return np.array(img)
+```
+
+### Usage in a Ticker Scene
+
+```python
+# Build ticker data (text + color per row)
+rows_data = []
+for row in range(n_tickers):
+    text = build_ticker_text(row, t)       # scrolling substring
+    color = hsv2rgb_scalar(hue, 0.85, bri) # (R, G, B) tuple
+    rows_data.append((row, text, color))
+
+# One PIL pass instead of thousands of bitmap blits
+canvas_tickers = render_text_layer(g_md, rows_data, g_md.font)
+
+# Blend with other layers normally
+result = blend_canvas(canvas_bg, canvas_tickers, "screen", 0.9)
+```
+
+This is purely a rendering optimization — same visual output, fewer draw calls. The grid's `render()` method is still needed for sparse character fields where characters are placed individually based on value fields.
 
 ## Bloom Optimization
 
@@ -433,3 +615,82 @@ Scale with hardware. Baseline: 1080p, 24fps, ~180ms/frame/worker.
 At 720p: multiply times by ~0.5. At 4K: multiply by ~4.
 
 Heavier effects (many particles, dense grids, extra shader passes) add ~20-50%.
+
+---
+
+## Temp File Cleanup
+
+Rendering generates intermediate files that accumulate across runs. Clean up after the final concat/mux step.
+
+### Files to Clean
+
+| File type | Source | Location |
+|-----------|--------|----------|
+| WAV extracts | `ffmpeg -i input.mp3 ... tmp.wav` | `tempfile.mktemp()` or project dir |
+| Segment clips | `render_clip()` output | `segments/seg_00.mp4` etc. |
+| Concat list | ffmpeg concat demuxer input | `segments/concat.txt` |
+| ffmpeg stderr logs | piped to file for debugging | `*.log` in project dir |
+| Feature cache | pickled numpy arrays | `*.pkl` or `*.npz` |
+
+### Cleanup Function
+
+```python
+import glob
+import tempfile
+import shutil
+
+def cleanup_render_artifacts(segments_dir="segments", keep_final=True):
+    """Remove intermediate files after successful render.
+    
+    Call this AFTER verifying the final output exists and plays correctly.
+    
+    Args:
+        segments_dir: directory containing segment clips and concat list
+        keep_final: if True, only delete intermediates (not the final output)
+    """
+    removed = []
+    
+    # 1. Segment clips
+    if os.path.isdir(segments_dir):
+        shutil.rmtree(segments_dir)
+        removed.append(f"directory: {segments_dir}")
+    
+    # 2. Temporary WAV files
+    for wav in glob.glob("*.wav"):
+        if wav.startswith("tmp") or wav.startswith("extracted_"):
+            os.remove(wav)
+            removed.append(wav)
+    
+    # 3. ffmpeg stderr logs
+    for log in glob.glob("ffmpeg_*.log"):
+        os.remove(log)
+        removed.append(log)
+    
+    # 4. Feature cache (optional — useful to keep for re-renders)
+    # for cache in glob.glob("features_*.npz"):
+    #     os.remove(cache)
+    #     removed.append(cache)
+    
+    print(f"Cleaned {len(removed)} artifacts: {removed}")
+    return removed
+```
+
+### Integration with Render Pipeline
+
+Call cleanup at the end of the main render script, after the final output is verified:
+
+```python
+# At end of main()
+if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+    cleanup_render_artifacts(segments_dir="segments")
+    print(f"Done. Output: {output_path}")
+else:
+    print("WARNING: final output missing or empty — skipping cleanup")
+```
+
+### Temp File Best Practices
+
+- Use `tempfile.mkdtemp()` for segment directories — avoids polluting the project dir
+- Name WAV extracts with `tempfile.mktemp(suffix=".wav")` so they're in the OS temp dir
+- For debugging, set `KEEP_INTERMEDIATES=1` env var to skip cleanup
+- Feature caches (`.npz`) are cheap to store and expensive to recompute — default to keeping them

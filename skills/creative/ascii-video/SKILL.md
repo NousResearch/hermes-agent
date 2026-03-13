@@ -59,16 +59,20 @@ Every mode follows the same 6-stage pipeline. See `references/architecture.md` f
 | Dimension | Options | Reference |
 |-----------|---------|-----------|
 | **Character palette** | Density ramps, block elements, symbols, scripts (katakana, Greek, runes, braille), dots, project-specific | `architecture.md` § Character Palettes |
-| **Color strategy** | HSV (angle/distance/time/value mapped), discrete RGB palettes, monochrome, complementary, triadic, temperature | `architecture.md` § Color System |
+| **Color strategy** | HSV (angle/distance/time/value mapped), OKLAB/OKLCH (perceptually uniform), discrete RGB palettes, auto-generated harmony (complementary/triadic/analogous/tetradic), monochrome, temperature | `architecture.md` § Color System |
 | **Color tint** | Warm, cool, amber, matrix green, neon pink, sepia, ice, blood, void, sunset | `shaders.md` § Color Grade |
-| **Background texture** | Sine fields, noise, smooth noise, cellular/voronoi, video source | `effects.md` § Background Fills |
-| **Primary effects** | Rings, spirals, tunnel, vortex, waves, interference, aurora, ripple, fire | `effects.md` § Radial / Wave / Fire |
-| **Particles** | Energy sparks, snow, rain, bubbles, runes, binary data, orbits, gravity wells | `effects.md` § Particle Systems |
+| **Background texture** | Sine fields, fBM noise, domain warp, voronoi cells, reaction-diffusion, cellular automata, video source | `effects.md` § Background Fills, Noise-Based Fields, Simulation-Based Fields |
+| **Primary effects** | Rings, spirals, tunnel, vortex, waves, interference, aurora, ripple, fire, strange attractors, SDFs (geometric shapes with smooth booleans) | `effects.md` § Radial / Wave / Fire / SDF-Based Fields |
+| **Particles** | Energy sparks, snow, rain, bubbles, runes, binary data, orbits, gravity wells, flocking boids, flow-field followers, trail-drawing particles | `effects.md` § Particle Systems |
 | **Shader mood** | Retro CRT, clean modern, glitch art, cinematic, dreamy, harsh industrial, psychedelic | `shaders.md` § Design Philosophy |
 | **Grid density** | xs(8px) through xxl(40px), mixed per layer | `architecture.md` § Grid System |
 | **Font** | Menlo, Monaco, Courier, SF Mono, JetBrains Mono, Fira Code, IBM Plex | `architecture.md` § Font Selection |
+| **Coordinate space** | Cartesian, polar, tiled, rotated, skewed, fisheye, twisted, Möbius, domain-warped | `effects.md` § Coordinate Transforms |
 | **Mirror mode** | None, horizontal, vertical, quad, diagonal, kaleidoscope | `shaders.md` § Mirror Effects |
-| **Transition style** | Crossfade, wipe (directional/radial), dissolve, glitch cut | `shaders.md` § Transitions |
+| **Masking** | Circle, rect, ring, gradient, text stencil, value-field-as-mask, animated iris/wipe/dissolve | `composition.md` § Masking |
+| **Temporal motion** | Static, audio-reactive, eased keyframes, morphing between fields, temporal noise (smooth in-place evolution) | `effects.md` § Temporal Coherence |
+| **Transition style** | Crossfade, wipe (directional/radial), dissolve, glitch cut, iris open/close, mask-based reveal | `shaders.md` § Transitions, `composition.md` § Animated Masks |
+| **Aspect ratio** | Landscape (16:9), portrait (9:16), square (1:1), ultrawide (21:9) | `architecture.md` § Resolution Presets |
 
 ### Per-Section Variation
 
@@ -95,10 +99,11 @@ Establish with user:
 - **Input source** — file path, format, duration
 - **Mode** — which of the 6 modes above
 - **Sections** — time-mapped style changes (timestamps → effect names)
-- **Resolution** — default 1920x1080 @ 24fps; GIFs typically 640x360 @ 15fps
+- **Resolution** — landscape 1920x1080 (default), portrait 1080x1920, square 1080x1080 @ 24fps; GIFs typically 640x360 @ 15fps
 - **Style direction** — dense/sparse, bright/dark, chaotic/minimal, color palette
 - **Text/branding** — easter eggs, overlays, credits, themed character sets
 - **Output format** — MP4 (default), GIF, PNG sequence
+- **Aspect ratio** — landscape (16:9), portrait (9:16 for TikTok/Reels/Stories), square (1:1 for IG feed)
 
 ### Step 2: Detect Hardware and Set Quality
 
@@ -240,11 +245,12 @@ Image.fromarray(canvas).save("test.png")
 
 | File | Contents |
 |------|----------|
-| `references/architecture.md` | Grid system, font selection, character palettes (library of 20+), color system (HSV + discrete RGB), `_render_vf()` helper, compositing, v2 effect function contract |
+| `references/architecture.md` | Grid system (landscape/portrait/square resolution presets), font selection, character palettes (library of 20+), color system (HSV + OKLAB/OKLCH + discrete RGB + color harmony generation + perceptual gradient interpolation), `_render_vf()` helper, compositing, v2 effect function contract |
 | `references/inputs.md` | All input sources: audio analysis, video sampling, image conversion, text/lyrics, TTS integration (ElevenLabs, voice assignment, audio mixing) |
-| `references/effects.md` | Effect building blocks: 12 value field generators (`vf_sinefield` through `vf_noise_static`), 8 hue field generators (`hf_fixed` through `hf_plasma`), radial/wave/fire effects, particles, composing guide |
+| `references/effects.md` | Effect building blocks: 20+ value field generators (trig, noise/fBM, domain warp, voronoi, reaction-diffusion, cellular automata, strange attractors, SDFs), 8 hue field generators, coordinate transforms (rotate/tile/polar/Möbius), temporal coherence (easing, keyframes, morphing), radial/wave/fire effects, advanced particles (flocking, flow fields, trails), composing guide |
 | `references/shaders.md` | 38 shader implementations (geometry, channel, color, glow, noise, pattern, tone, glitch, mirror), `ShaderChain` class, full `_apply_shader_step()` dispatch, audio-reactive scaling, transitions, tint presets |
-| `references/composition.md` | **v2 core**: pixel blend modes (20 modes with implementations), multi-grid composition, `_render_vf()` helper, adaptive `tonemap()`, per-scene gamma, `FeedbackBuffer` with spatial transforms, `PixelBlendStack` |
-| `references/scenes.md` | **v2 scene protocol**: scene function contract, `Renderer` class, `SCENES` table structure, `render_clip()` loop, beat-synced cutting, parallel rendering + pickling constraints, 4 complete scene examples, scene design checklist |
+| `references/composition.md` | **v2 core**: pixel blend modes (20 modes with implementations), multi-grid composition, `_render_vf()` helper, adaptive `tonemap()`, per-scene gamma, `FeedbackBuffer` with spatial transforms, `PixelBlendStack`, masking/stencil system (shape masks, text stencils, animated masks, boolean ops) |
+| `references/scenes.md` | **v2 scene protocol**: scene function contract (local time convention), `Renderer` class, `SCENES` table structure, `render_clip()` loop, beat-synced cutting, parallel rendering + pickling constraints, 4 complete scene examples, scene design checklist |
+| `references/design-patterns.md` | **Scene composition patterns**: layer hierarchy (bg/content/accent), directional parameter arcs vs oscillation, scene concepts and visual metaphors, counter-rotating dual systems, wave collision, progressive fragmentation, entropy/consumption, staggered layer entry (crescendo), scene ordering |
 | `references/troubleshooting.md` | NumPy broadcasting traps, blend mode pitfalls, multiprocessing/pickling issues, brightness diagnostics, ffmpeg deadlocks, font issues, performance bottlenecks, common mistakes |
 | `references/optimization.md` | Hardware detection, adaptive quality profiles (draft/preview/production/max), CLI integration, vectorized effect patterns, parallel rendering, memory management |

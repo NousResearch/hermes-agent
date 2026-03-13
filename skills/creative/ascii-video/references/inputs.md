@@ -1,5 +1,14 @@
 # Input Sources
 
+**Cross-references:**
+- Grid system, resolution presets: `architecture.md`
+- Effect building blocks (audio-reactive modulation): `effects.md`
+- Scene protocol, SCENES table (feature routing): `scenes.md`
+- Shader pipeline, output encoding: `shaders.md`
+- Performance tuning (audio chunking, WAV caching): `optimization.md`
+- Common bugs (sample rate, dtype, silence handling): `troubleshooting.md`
+- Complete scene examples with feature usage: `examples.md`
+
 ## Audio Analysis
 
 ### Loading
@@ -294,23 +303,73 @@ For narrated videos (testimonials, quotes, storytelling), generate speech audio 
 ### ElevenLabs Voice Generation
 
 ```python
-import requests
+import requests, time, os
 
 def generate_tts(text, voice_id, api_key, output_path, model="eleven_multilingual_v2"):
-    """Generate TTS audio via ElevenLabs API."""
+    """Generate TTS audio via ElevenLabs API. Streams response to disk."""
+    # Skip if already generated (idempotent re-runs)
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return
+
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
-    data = {"text": text, "model_id": model,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
-    resp = requests.post(url, json=data, headers=headers, timeout=30)
+    data = {
+        "text": text,
+        "model_id": model,
+        "voice_settings": {
+            "stability": 0.65,
+            "similarity_boost": 0.80,
+            "style": 0.15,
+            "use_speaker_boost": True,
+        },
+    }
+    resp = requests.post(url, json=data, headers=headers, stream=True)
     resp.raise_for_status()
     with open(output_path, "wb") as f:
-        f.write(resp.content)
+        for chunk in resp.iter_content(chunk_size=4096):
+            f.write(chunk)
+    time.sleep(0.3)  # rate limit: avoid 429s on batch generation
+```
+
+Voice settings notes:
+- `stability` 0.65 gives natural variation without drift. Lower (0.3-0.5) for more expressive reads, higher (0.7-0.9) for monotone/narration.
+- `similarity_boost` 0.80 keeps it close to the voice profile. Lower for more generic sound.
+- `style` 0.15 adds slight stylistic variation. Keep low (0-0.2) for straightforward reads.
+- `use_speaker_boost` True improves clarity at the cost of slightly more processing time.
+
+### Voice Pool
+
+ElevenLabs has ~20 built-in voices. Use multiple voices for variety across quotes. Reference pool:
+
+```python
+VOICE_POOL = [
+    ("JBFqnCBsd6RMkjVDRZzb", "George"),
+    ("nPczCjzI2devNBz1zQrb", "Brian"),
+    ("pqHfZKP75CvOlQylNhV4", "Bill"),
+    ("CwhRBWXzGAHq8TQ4Fs17", "Roger"),
+    ("cjVigY5qzO86Huf0OWal", "Eric"),
+    ("onwK4e9ZLuTAKqWW03F9", "Daniel"),
+    ("IKne3meq5aSn9XLyUdCD", "Charlie"),
+    ("iP95p4xoKVk53GoZ742B", "Chris"),
+    ("bIHbv24MWmeRgasZH58o", "Will"),
+    ("TX3LPaxmHKxFdv7VOQHJ", "Liam"),
+    ("SAz9YHcvj6GT2YYXdXww", "River"),
+    ("EXAVITQu4vr4xnSDxMaL", "Sarah"),
+    ("Xb7hH8MSUJpSbSDYk0k2", "Alice"),
+    ("pFZP5JQG7iQjIQuC4Bku", "Lily"),
+    ("XrExE9yKIg1WjnnlVkGX", "Matilda"),
+    ("FGY2WhTYpPnrIDTdsKH5", "Laura"),
+    ("SOYHLrjzK2X1ezoPC6cr", "Harry"),
+    ("hpp4J3VqNfWAUOO0d1Us", "Bella"),
+    ("N2lVS1w4EtoT3dr4eOWO", "Callum"),
+    ("cgSgspJ2msm6clMCkdW9", "Jessica"),
+    ("pNInz6obpgDQGcFmaJgB", "Adam"),
+]
 ```
 
 ### Voice Assignment
 
-Use multiple voices for variety. Shuffle deterministically so re-runs are consistent:
+Shuffle deterministically so re-runs produce the same voice mapping:
 
 ```python
 import random as _rng
@@ -318,81 +377,197 @@ import random as _rng
 def assign_voices(n_quotes, voice_pool, seed=42):
     """Assign a different voice to each quote, cycling if needed."""
     r = _rng.Random(seed)
-    shuffled = list(voice_pool)
-    r.shuffle(shuffled)
-    return [shuffled[i % len(shuffled)] for i in range(n_quotes)]
+    ids = [v[0] for v in voice_pool]
+    r.shuffle(ids)
+    return [ids[i % len(ids)] for i in range(n_quotes)]
 ```
 
 ### Pronunciation Control
 
-TTS text should be separate from display text. Common fixes:
+TTS text must be separate from display text. The display text has line breaks for visual layout; the TTS text is a flat sentence with phonetic fixes.
+
+Common fixes:
 - Brand names: spell phonetically ("Nous" -> "Noose", "nginx" -> "engine-x")
 - Abbreviations: expand ("API" -> "A P I", "CLI" -> "C L I")
 - Technical terms: add phonetic hints
+- Punctuation for pacing: periods create pauses, commas create slight pauses
 
 ```python
-QUOTES = [("Display text here", "Author")]
-QUOTES_TTS = ["TTS text with phonetic spelling here"]
+# Display text: line breaks control visual layout
+QUOTES = [
+    ("It can do far more than the Claws,\nand you don't need to buy a Mac Mini.\nNous Research has a winner here.", "Brian Roemmele"),
+]
+
+# TTS text: flat, phonetically corrected for speech
+QUOTES_TTS = [
+    "It can do far more than the Claws, and you don't need to buy a Mac Mini. Noose Research has a winner here.",
+]
 # Keep both arrays in sync -- same indices
 ```
 
 ### Audio Pipeline
 
-1. Generate individual TTS clips (MP3/WAV per quote)
-2. Get duration of each clip
-3. Calculate timing: speech start/end per quote with gaps
+1. Generate individual TTS clips (MP3 per quote, skipping existing)
+2. Convert each to WAV (mono, 22050 Hz) for duration measurement and concatenation
+3. Calculate timing: intro pad + speech + gaps + outro pad = target duration
 4. Concatenate into single TTS track with silence padding
 5. Mix with background music
 
 ```python
-def build_tts_track(tts_clips, target_duration, gap_seconds=2.0):
-    """Concatenate TTS clips with gaps, pad to target duration."""
-    # Get durations
+def build_tts_track(tts_clips, target_duration, intro_pad=5.0, outro_pad=4.0):
+    """Concatenate TTS clips with calculated gaps, pad to target duration.
+
+    Returns:
+        timing: list of (start_time, end_time, quote_index) tuples
+    """
+    sr = 22050
+
+    # Convert MP3s to WAV for duration and sample-level concatenation
     durations = []
     for clip in tts_clips:
+        wav = clip.replace(".mp3", ".wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", clip, "-ac", "1", "-ar", str(sr),
+             "-sample_fmt", "s16", wav],
+            capture_output=True, check=True)
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", clip],
+             "-of", "csv=p=0", wav],
             capture_output=True, text=True)
         durations.append(float(result.stdout.strip()))
-    
-    # Calculate timing
+
+    # Calculate gap to fill target duration
     total_speech = sum(durations)
-    total_gaps = target_duration - total_speech
-    gap = max(0.5, total_gaps / (len(tts_clips) + 1))
-    
-    timing = []  # (start, end, quote_index)
-    t = gap  # start after initial gap
+    n_gaps = len(tts_clips) - 1
+    remaining = target_duration - total_speech - intro_pad - outro_pad
+    gap = max(1.0, remaining / max(1, n_gaps))
+
+    # Build timing and concatenate samples
+    timing = []
+    t = intro_pad
+    all_audio = [np.zeros(int(sr * intro_pad), dtype=np.int16)]
+
     for i, dur in enumerate(durations):
+        wav = tts_clips[i].replace(".mp3", ".wav")
+        with wave.open(wav) as wf:
+            samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
         timing.append((t, t + dur, i))
-        t += dur + gap
-    
-    # Concatenate with ffmpeg
-    # ... silence padding + concat filter
+        all_audio.append(samples)
+        t += dur
+        if i < len(tts_clips) - 1:
+            all_audio.append(np.zeros(int(sr * gap), dtype=np.int16))
+            t += gap
+
+    all_audio.append(np.zeros(int(sr * outro_pad), dtype=np.int16))
+
+    # Pad or trim to exactly target_duration
+    full = np.concatenate(all_audio)
+    target_samples = int(sr * target_duration)
+    if len(full) < target_samples:
+        full = np.pad(full, (0, target_samples - len(full)))
+    else:
+        full = full[:target_samples]
+
+    # Write concatenated TTS track
+    with wave.open("tts_full.wav", "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(full.tobytes())
+
     return timing
 ```
 
 ### Audio Mixing
 
-Mix TTS (center) with background music (wide stereo, low volume):
+Mix TTS (center) with background music (wide stereo, low volume). The filter chain:
+1. TTS mono duplicated to both channels (centered)
+2. BGM loudness-normalized, volume reduced to 15%, stereo widened with `extrastereo`
+3. Mixed together with dropout transition for smooth endings
 
 ```python
 def mix_audio(tts_path, bgm_path, output_path, bgm_volume=0.15):
     """Mix TTS centered with BGM panned wide stereo."""
+    filter_complex = (
+        # TTS: mono -> stereo center
+        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono,"
+        "pan=stereo|c0=c0|c1=c0[tts];"
+        # BGM: normalize loudness, reduce volume, widen stereo
+        f"[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+        f"loudnorm=I=-16:TP=-1.5:LRA=11,"
+        f"volume={bgm_volume},"
+        f"extrastereo=m=2.5[bgm];"
+        # Mix with smooth dropout at end
+        "[tts][bgm]amix=inputs=2:duration=longest:dropout_transition=3,"
+        "aformat=sample_fmts=s16:sample_rates=44100:channel_layouts=stereo[out]"
+    )
     cmd = [
         "ffmpeg", "-y",
-        "-i", tts_path,   # mono TTS
-        "-i", bgm_path,   # stereo BGM
-        "-filter_complex",
-        f"[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono,"
-        f"pan=stereo|c0=c0|c1=c0[tts];"  # TTS center
-        f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,"
-        f"volume={bgm_volume},"
-        f"extrastereo=2.5[bgm];"  # BGM wide stereo
-        f"[tts][bgm]amix=inputs=2:duration=longest[out]",
-        "-map", "[out]", "-c:a", "pcm_s16le", output_path
+        "-i", tts_path,
+        "-i", bgm_path,
+        "-filter_complex", filter_complex,
+        "-map", "[out]", output_path,
     ]
     subprocess.run(cmd, capture_output=True, check=True)
+```
+
+### Per-Quote Visual Style
+
+Cycle through visual presets per quote for variety. Each preset defines a background effect, color scheme, and text color:
+
+```python
+QUOTE_STYLES = [
+    {"hue": 0.08, "accent": 0.7, "bg": "spiral",       "text_rgb": (255, 220, 140)},  # warm gold
+    {"hue": 0.55, "accent": 0.6, "bg": "rings",         "text_rgb": (180, 220, 255)},  # cool blue
+    {"hue": 0.75, "accent": 0.7, "bg": "wave",          "text_rgb": (220, 180, 255)},  # purple
+    {"hue": 0.35, "accent": 0.6, "bg": "matrix",        "text_rgb": (140, 255, 180)},  # green
+    {"hue": 0.95, "accent": 0.8, "bg": "fire",          "text_rgb": (255, 180, 160)},  # red/coral
+    {"hue": 0.12, "accent": 0.5, "bg": "interference",  "text_rgb": (255, 240, 200)},  # amber
+    {"hue": 0.60, "accent": 0.7, "bg": "tunnel",        "text_rgb": (160, 210, 255)},  # cyan
+    {"hue": 0.45, "accent": 0.6, "bg": "aurora",        "text_rgb": (180, 255, 220)},  # teal
+]
+
+style = QUOTE_STYLES[quote_index % len(QUOTE_STYLES)]
+```
+
+This guarantees no two adjacent quotes share the same look, even without randomness.
+
+### Typewriter Text Rendering
+
+Display quote text character-by-character synced to speech progress. Recently revealed characters are brighter, creating a "just typed" glow:
+
+```python
+def render_typewriter(ch, co, lines, block_start, cols, progress, total_chars, text_rgb, t):
+    """Overlay typewriter text onto character/color grids.
+    progress: 0.0 (nothing visible) to 1.0 (all text visible)."""
+    chars_visible = int(total_chars * min(1.0, progress * 1.2))  # slight overshoot for snappy feel
+    tr, tg, tb = text_rgb
+    char_count = 0
+    for li, line in enumerate(lines):
+        row = block_start + li
+        col = (cols - len(line)) // 2
+        for ci, c in enumerate(line):
+            if char_count < chars_visible:
+                age = chars_visible - char_count
+                bri_factor = min(1.0, 0.5 + 0.5 / (1 + age * 0.015))  # newer = brighter
+                hue_shift = math.sin(char_count * 0.3 + t * 2) * 0.05
+                stamp(ch, co, c, row, col + ci,
+                      (int(min(255, tr * bri_factor * (1.0 + hue_shift))),
+                       int(min(255, tg * bri_factor)),
+                       int(min(255, tb * bri_factor * (1.0 - hue_shift)))))
+            char_count += 1
+
+    # Blinking cursor at insertion point
+    if progress < 1.0 and int(t * 3) % 2 == 0:
+        # Find cursor position (char_count == chars_visible)
+        cc = 0
+        for li, line in enumerate(lines):
+            for ci, c in enumerate(line):
+                if cc == chars_visible:
+                    stamp(ch, co, "\u258c", block_start + li,
+                          (cols - len(line)) // 2 + ci, (255, 220, 100))
+                    return
+                cc += 1
 ```
 
 ### Feature Analysis on Mixed Audio
@@ -404,4 +579,114 @@ Run the standard audio analysis (FFT, beat detection) on the final mixed track s
 features = analyze_audio("mixed_final.wav", fps=24)
 ```
 
-This means visuals will pulse with both the music beats and the speech energy -- creating natural synchronization.
+Visuals pulse with both the music beats and the speech energy.
+
+---
+
+## Audio-Video Sync Verification
+
+After rendering, verify that visual beat markers align with actual audio beats. Drift accumulates from frame timing errors, ffmpeg concat boundaries, and rounding in `fi / fps`.
+
+### Beat Timestamp Extraction
+
+```python
+def extract_beat_timestamps(features, fps, threshold=0.5):
+    """Extract timestamps where beat feature exceeds threshold."""
+    beat = features["beat"]
+    timestamps = []
+    for fi in range(len(beat)):
+        if beat[fi] > threshold:
+            timestamps.append(fi / fps)
+    return timestamps
+
+def extract_visual_beat_timestamps(video_path, fps, brightness_jump=30):
+    """Detect visual beats by brightness jumps between consecutive frames.
+    Returns timestamps where mean brightness increases by more than threshold."""
+    import subprocess
+    cmd = ["ffmpeg", "-i", video_path, "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    proc = subprocess.run(cmd, capture_output=True)
+    frames = np.frombuffer(proc.stdout, dtype=np.uint8)
+    # Infer frame dimensions from total byte count
+    n_pixels = len(frames)
+    # For 1080p: 1920*1080 pixels per frame
+    # Auto-detect from video metadata is more robust:
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", video_path],
+        capture_output=True, text=True)
+    w, h = map(int, probe.stdout.strip().split(","))
+    ppf = w * h  # pixels per frame
+    n_frames = n_pixels // ppf
+    frames = frames[:n_frames * ppf].reshape(n_frames, ppf)
+    means = frames.mean(axis=1)
+    
+    timestamps = []
+    for i in range(1, len(means)):
+        if means[i] - means[i-1] > brightness_jump:
+            timestamps.append(i / fps)
+    return timestamps
+```
+
+### Sync Report
+
+```python
+def sync_report(audio_beats, visual_beats, tolerance_ms=50):
+    """Compare audio beat timestamps to visual beat timestamps.
+    
+    Args:
+        audio_beats: list of timestamps (seconds) from audio analysis
+        visual_beats: list of timestamps (seconds) from video brightness analysis
+        tolerance_ms: max acceptable drift in milliseconds
+    
+    Returns:
+        dict with matched/unmatched/drift statistics
+    """
+    tolerance = tolerance_ms / 1000.0
+    matched = []
+    unmatched_audio = []
+    unmatched_visual = list(visual_beats)
+    
+    for at in audio_beats:
+        best_match = None
+        best_delta = float("inf")
+        for vt in unmatched_visual:
+            delta = abs(at - vt)
+            if delta < best_delta:
+                best_delta = delta
+                best_match = vt
+        if best_match is not None and best_delta < tolerance:
+            matched.append({"audio": at, "visual": best_match, "drift_ms": best_delta * 1000})
+            unmatched_visual.remove(best_match)
+        else:
+            unmatched_audio.append(at)
+    
+    drifts = [m["drift_ms"] for m in matched]
+    return {
+        "matched": len(matched),
+        "unmatched_audio": len(unmatched_audio),
+        "unmatched_visual": len(unmatched_visual),
+        "total_audio_beats": len(audio_beats),
+        "total_visual_beats": len(visual_beats),
+        "mean_drift_ms": np.mean(drifts) if drifts else 0,
+        "max_drift_ms": np.max(drifts) if drifts else 0,
+        "p95_drift_ms": np.percentile(drifts, 95) if len(drifts) > 1 else 0,
+    }
+
+# Usage:
+audio_beats = extract_beat_timestamps(features, fps=24)
+visual_beats = extract_visual_beat_timestamps("output.mp4", fps=24)
+report = sync_report(audio_beats, visual_beats)
+print(f"Matched: {report['matched']}/{report['total_audio_beats']} beats")
+print(f"Mean drift: {report['mean_drift_ms']:.1f}ms, Max: {report['max_drift_ms']:.1f}ms")
+# Target: mean drift < 20ms, max drift < 42ms (1 frame at 24fps)
+```
+
+### Common Sync Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Consistent late visual beats | ffmpeg concat adds frames at boundaries | Use `-vsync cfr` flag; pad segments to exact frame count |
+| Drift increases over time | Floating-point accumulation in `t = fi / fps` | Use integer frame counter, compute `t` fresh each frame |
+| Random missed beats | Beat threshold too high / feature smoothing too aggressive | Lower threshold; reduce EMA alpha for beat feature |
+| Beats land on wrong frame | Off-by-one in frame indexing | Verify: frame 0 = t=0, frame 1 = t=1/fps (not t=0) |

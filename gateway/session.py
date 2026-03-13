@@ -177,6 +177,26 @@ def build_session_context_prompt(context: SessionContext) -> str:
     elif context.source.user_id:
         lines.append(f"**User ID:** {context.source.user_id}")
     
+    # Platform-specific behavioral notes
+    if context.source.platform == Platform.SLACK:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Slack. "
+            "You do NOT have access to Slack-specific APIs — you cannot search "
+            "channel history, pin/unpin messages, manage channels, or list users. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+    elif context.source.platform == Platform.DISCORD:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Discord. "
+            "You do NOT have access to Discord-specific APIs — you cannot search "
+            "channel history, pin messages, manage roles, or list server members. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:

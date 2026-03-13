@@ -1,36 +1,46 @@
-# Model Profiles (chat / planning / coding / research)
+# Model Routing Profiles
 
 This feature lets users route different work types to different models/providers.
 
-Instead of one global model for everything, users can configure:
-- chat model (main conversation)
-- coding model (terminal/file-heavy delegated tasks)
-- planning model (specs/roadmaps)
-- research model (web/browser-heavy tasks)
+Instead of one global model for everything, users can configure context-specific routing profiles.
+
+Built-in starter categories:
+- chat
+- coding
+- planning
+- research
+- delegation
+
+Users may also add custom categories such as `ops`, `fast`, `cheap`, `vision`, or `review`.
 
 ## What was added
 
 - New config section: `model_profiles`
 - New delegation option: `model_profile` (tool argument)
 - New delegation default: `delegation.model_profile` (config)
-- Automatic profile inference for delegated tasks:
-  - `terminal` or `file` toolsets => `coding`
-  - `web` or `browser` toolsets => `research`
-  - otherwise => `planning`
-- `chat` profile is applied to CLI, gateway temporary agents, and cron jobs
+- Automatic profile inference for delegated tasks uses configurable ordered routing rules when present.
+- Built-in toolset heuristics remain as a fallback only.
+- `chat` is intended for direct conversation surfaces; CLI/cron should normally inherit the primary model unless explicitly routed.
 - Legacy `delegation.model` / `delegation.provider` behavior remains and takes precedence
 
-## CLI onboarding (no manual file edits)
+## Routing configuration (no manual file edits)
 
 Use:
 
 ```bash
-hermes model
+hermes configure-model-routing
 ```
 
-After provider/model setup, Hermes now asks:
-- "Configure model profiles for chat/coding/planning/research now?"
-- then walks each profile interactively
+This command is separate from `hermes model`.
+
+- `hermes model` remains the primary/default model selector.
+- `hermes configure-model-routing` configures context-specific routing profiles.
+
+The routing flow uses the same Hermes-style interactive picker logic and supports reset:
+
+```bash
+hermes configure-model-routing --reset
+```
 
 Provider suggestions in that flow are filtered to providers that currently resolve with working credentials.
 Model suggestions are fetched from each provider's live `/models` endpoint when available.
@@ -124,7 +134,24 @@ Or per item in batch mode:
 }
 ```
 
-If omitted, profile is inferred from toolsets (or defaults to planning).
+If omitted, profile is inferred from routing rules first, then fallback toolset heuristics.
+
+## Configurable routing rules
+
+Optional ordered rules live under `model_routing.rules`:
+
+```yaml
+model_routing:
+  rules:
+    - if_toolsets_any: [terminal, file]
+      profile: coding
+    - if_toolsets_any: [web, browser]
+      profile: research
+    - if_goal_matches: [deploy, infra, migration]
+      profile: ops
+```
+
+First matching rule wins.
 
 ## Precedence rules
 
@@ -143,21 +170,23 @@ If omitted, profile is inferred from toolsets (or defaults to planning).
 1. legacy `delegation.model` / `delegation.provider` (if set) => override everything
 2. explicit `model_profile` on tool call / task item
 3. `delegation.model_profile`
-4. inferred profile from toolsets
+4. inferred profile from ordered routing rules
+5. fallback heuristic from toolsets
 
 ## Backward compatibility
 
 Existing configs continue to work.
 
-If users do nothing, Hermes behavior remains effectively unchanged except that profile-based routing becomes available.
+- If users do nothing, `hermes model` still behaves as the default-model selector.
+- Routing remains opt-in and can be reset independently.
 
 ## Validation checklist for end users
 
 - `hermes` starts with expected chat model/provider
 - `delegate_task` coding-style tasks hit coding profile
 - `delegate_task` web-style tasks hit research profile
-- cron jobs use chat profile model
-- gateway temporary agents (e.g. memory flush paths) use chat profile model
+- direct chat surfaces use the expected chat profile model
+- delegated tasks use either explicit profile, routing rules, or fallback inference
 
 ## Troubleshooting
 

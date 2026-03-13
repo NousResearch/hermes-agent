@@ -108,6 +108,19 @@ class TestModelProfileInference(unittest.TestCase):
         self.assertEqual(_infer_model_profile([]), "planning")
         self.assertEqual(_infer_model_profile(["memory"], goal="write a roadmap"), "planning")
 
+    @patch("hermes_cli.config.load_config")
+    def test_configurable_rules_override_builtin_heuristics(self, mock_load_config):
+        mock_load_config.return_value = {
+            "model_routing": {
+                "rules": [
+                    {"if_toolsets_any": ["terminal"], "profile": "ops"},
+                    {"if_goal_matches": ["test"], "profile": "qa"},
+                ]
+            }
+        }
+        self.assertEqual(_infer_model_profile(["terminal"]), "ops")
+        self.assertEqual(_infer_model_profile(["memory"], goal="test the release flow"), "qa")
+
 
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
@@ -557,7 +570,13 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._resolve_profile_credentials")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_inferred_profile_used_for_coding_task(self, mock_base_creds, mock_profile_creds, mock_cfg):
-        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": "", "model_profile": ""}
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+            "model_profile": "",
+            "model_profiles": {"coding": {"model": "openai/gpt-5-codex", "provider": "openrouter"}},
+        }
         mock_base_creds.return_value = {
             "model": None,
             "provider": None,

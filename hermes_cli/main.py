@@ -12,6 +12,7 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes configure-model-routing  # Configure context-specific model routing
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
@@ -718,6 +719,23 @@ def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
+
+
+def cmd_configure_model_routing(args):
+    """Configure model routing profiles without overloading the default model command."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.setup import _configure_model_profiles_interactive, _reset_model_profiles_config
+
+    config = load_config()
+    if getattr(args, "reset", False):
+        _reset_model_profiles_config(config)
+        save_config(config)
+        print("Model routing reset to defaults.")
+        return
+
+    _configure_model_profiles_interactive(config)
+    save_config(config)
+    print("Model routing configuration saved.")
 
 
 def cmd_model(args):
@@ -2326,6 +2344,21 @@ For more help on a command:
         description="Interactively select your inference provider and default model"
     )
     model_parser.set_defaults(func=cmd_model)
+
+    # =========================================================================
+    # configure-model-routing command
+    # =========================================================================
+    routing_parser = subparsers.add_parser(
+        "configure-model-routing",
+        help="Configure context-specific model routing",
+        description="Configure model routing profiles without changing the primary default model"
+    )
+    routing_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset model routing profiles and routing rules to defaults"
+    )
+    routing_parser.set_defaults(func=cmd_configure_model_routing)
 
     # =========================================================================
     # gateway command

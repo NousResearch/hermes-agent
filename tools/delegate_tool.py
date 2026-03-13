@@ -79,13 +79,41 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
 
 
 def _infer_model_profile(toolsets: Optional[List[str]], goal: Optional[str] = None) -> str:
-    """Infer best-fit profile from requested toolsets/task intent."""
+    """Infer best-fit profile from requested toolsets/task intent.
+
+    First applies any user-configured ordered routing rules from config.yaml.
+    Falls back to simple built-in heuristics if no rule matches.
+    """
     normalized = {str(t).strip().lower() for t in (toolsets or []) if str(t).strip()}
+    goal_text = (goal or "").strip().lower()
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        routing = config.get("model_routing", {}) if isinstance(config, dict) else {}
+        rules = routing.get("rules", []) if isinstance(routing, dict) else []
+        if isinstance(rules, list):
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                profile = str(rule.get("profile", "") or "").strip().lower()
+                if not profile:
+                    continue
+                toolset_any = {str(t).strip().lower() for t in rule.get("if_toolsets_any", []) if str(t).strip()}
+                goal_matches = [str(t).strip().lower() for t in rule.get("if_goal_matches", []) if str(t).strip()]
+                if toolset_any and not (toolset_any & normalized):
+                    continue
+                if goal_matches and not any(token in goal_text for token in goal_matches):
+                    continue
+                if toolset_any or goal_matches:
+                    return profile
+    except Exception:
+        pass
+
     if {"terminal", "file"} & normalized:
         return "coding"
     if "web" in normalized or "browser" in normalized:
         return "research"
-    goal_text = (goal or "").strip().lower()
     if any(token in goal_text for token in ("plan", "roadmap", "spec", "design")):
         return "planning"
     return "planning"
@@ -428,6 +456,17 @@ def delegate_task(
     # Build task specs with per-task credential/model routing.
     prepared_tasks = []
     default_profile = (cfg.get("model_profile") or "").strip() or None
+    model_profiles_cfg = cfg.get("model_profiles", {}) if isinstance(cfg.get("model_profiles"), dict) else {}
+
+    def _profile_has_explicit_config(name: Optional[str]) -> bool:
+        key = (name or "").strip().lower()
+        if not key:
+            return False
+        raw = model_profiles_cfg.get(key, {})
+        if not isinstance(raw, dict):
+            return False
+        return any(str(raw.get(field, "") or "").strip() for field in ("model", "provider", "base_url", "api_key_env", "api_key"))
+
     for i, task in enumerate(task_list):
         task_toolsets = task.get("toolsets") or toolsets
         requested_profile = (
@@ -440,7 +479,7 @@ def delegate_task(
         creds = dict(base_creds)
         profile_used = None
 
-        if not legacy_override_active:
+        if not legacy_override_active and (requested_profile or _profile_has_explicit_config(inferred_profile)):
             try:
                 profile_creds = _resolve_profile_credentials(inferred_profile)
             except ValueError as exc:

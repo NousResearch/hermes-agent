@@ -233,6 +233,22 @@ DEFAULT_CONFIG = {
         "delegation": {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""},
     },
 
+    # Model routing rules — ordered first-match rules for auto-selecting a
+    # model profile in context-specific flows (e.g. delegated subtasks).
+    #
+    # Example:
+    #   model_routing:
+    #     rules:
+    #       - if_toolsets_any: [terminal, file]
+    #         profile: coding
+    #       - if_toolsets_any: [web, browser]
+    #         profile: research
+    #       - if_goal_matches: [roadmap, spec, plan]
+    #         profile: planning
+    "model_routing": {
+        "rules": [],
+    },
+
     # Subagent delegation — legacy override for delegate_task.
     # If model/provider are set here they take precedence over model_profiles.
     "delegation": {

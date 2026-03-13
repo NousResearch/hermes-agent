@@ -7,6 +7,8 @@ from hermes_cli.setup import (
     _discover_working_profile_providers,
     _configure_model_profiles_interactive,
     _ensure_model_profiles_config,
+    _ordered_model_profile_names,
+    _reset_model_profiles_config,
 )
 
 
@@ -130,8 +132,8 @@ def test_configure_model_profiles_uses_only_working_provider_choices(tmp_path, m
     cfg = load_config()
     _ensure_model_profiles_config(cfg)
 
-    # yes: configure wizard, yes: configure chat
-    yes_no_answers = iter([True, True, False, False, False])
+    # yes: configure wizard, yes: configure chat, no: coding/planning/research/delegation/custom add
+    yes_no_answers = iter([True, True, False, False, False, False, False])
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: next(yes_no_answers))
 
     # provider pick -> first working provider (openrouter), model pick -> first live suggestion
@@ -142,7 +144,7 @@ def test_configure_model_profiles_uses_only_working_provider_choices(tmp_path, m
     monkeypatch.setattr(
         "hermes_cli.setup._discover_working_profile_providers",
         lambda: ([
-            ("openrouter", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"}),
+            ("openrouter", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "test-key"}),
         ], []),
     )
     monkeypatch.setattr(
@@ -155,3 +157,31 @@ def test_configure_model_profiles_uses_only_working_provider_choices(tmp_path, m
     chat = cfg["model_profiles"]["chat"]
     assert chat["provider"] == "openrouter"
     assert chat["model"] == "anthropic/claude-sonnet-4"
+
+
+def test_custom_profiles_are_preserved_and_ordered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = load_config()
+    cfg["model_profiles"] = {
+        "ops": {"model": "gpt-4.1-mini", "provider": "openrouter"},
+        "chat": {"model": "anthropic/claude-sonnet-4", "provider": "openrouter"},
+    }
+
+    profiles = _ensure_model_profiles_config(cfg)
+
+    assert "ops" in profiles
+    ordered = _ordered_model_profile_names(profiles)
+    assert ordered[:5] == ["chat", "coding", "planning", "research", "delegation"]
+    assert ordered[-1] == "ops"
+
+
+def test_reset_model_profiles_config_keeps_defaults_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = load_config()
+    cfg["model_profiles"] = {"ops": {"model": "x", "provider": "custom"}}
+    cfg["model_routing"] = {"rules": [{"profile": "ops", "if_goal_matches": ["deploy"]}]}
+
+    profiles = _reset_model_profiles_config(cfg)
+
+    assert set(profiles.keys()) == {"chat", "coding", "planning", "research", "delegation"}
+    assert cfg["model_routing"] == {"rules": []}

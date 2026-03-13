@@ -124,17 +124,26 @@ def _sync_model_from_disk(config: Dict[str, Any]) -> None:
         _set_default_model(config, disk_model.strip())
 
 
+def _blank_profile_entry() -> Dict[str, str]:
+    return {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""}
+
+
 def _ensure_model_profiles_config(config: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
-    """Ensure model_profiles exists with canonical profile keys."""
+    """Ensure model_profiles exists with canonical profile keys while preserving custom ones."""
     profiles = config.get("model_profiles")
     if not isinstance(profiles, dict):
         profiles = {}
 
-    for name in ("chat", "coding", "planning", "research", "delegation"):
-        entry = profiles.get(name)
+    normalized: Dict[str, Dict[str, str]] = {}
+    for name, entry in profiles.items():
+        if not isinstance(name, str):
+            continue
+        key = name.strip().lower()
+        if not key:
+            continue
         if not isinstance(entry, dict):
             entry = {}
-        profiles[name] = {
+        normalized[key] = {
             "model": str(entry.get("model", "") or "").strip(),
             "provider": str(entry.get("provider", "") or "").strip(),
             "base_url": str(entry.get("base_url", "") or "").strip(),
@@ -142,8 +151,23 @@ def _ensure_model_profiles_config(config: Dict[str, Any]) -> Dict[str, Dict[str,
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
 
-    config["model_profiles"] = profiles
-    return profiles
+    for name in ("chat", "coding", "planning", "research", "delegation"):
+        normalized.setdefault(name, _blank_profile_entry())
+
+    config["model_profiles"] = normalized
+    return normalized
+
+
+def _ordered_model_profile_names(profiles: Dict[str, Dict[str, str]]) -> List[str]:
+    canonical = ["chat", "coding", "planning", "research", "delegation"]
+    extras = sorted(name for name in profiles.keys() if name not in canonical)
+    return canonical + extras
+
+
+def _reset_model_profiles_config(config: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    config["model_profiles"] = {}
+    config["model_routing"] = {"rules": []}
+    return _ensure_model_profiles_config(config)
 
 
 def _discover_working_profile_providers() -> Tuple[List[Tuple[str, dict]], List[str]]:
@@ -196,26 +220,44 @@ def _live_model_suggestions_for_runtime(runtime: dict) -> List[str]:
     return sorted(list(dict.fromkeys(models)))[:40]
 
 
-def _configure_model_profiles_interactive(config: Dict[str, Any]) -> None:
-    """Optional onboarding wizard for per-category model profiles."""
+def _configure_model_profiles_interactive(config: Dict[str, Any], allow_custom_profiles: bool = True) -> None:
+    """Interactive wizard for per-category model routing profiles."""
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.runtime_provider import get_primary_model
 
-    if not prompt_yes_no("Configure model profiles for chat/coding/planning/research now?", False):
+    # Show primary model info
+    primary = get_primary_model()
+    primary_model = primary.get("model", "")
+    primary_provider = primary.get("provider", "")
+    
+    if primary_model:
+        provider_label = {pid: p.name for pid, p in PROVIDER_REGISTRY.items()}
+        provider_label["openrouter"] = "OpenRouter"
+        provider_label["custom"] = "Custom endpoint"
+        
+        primary_provider_label = provider_label.get(primary_provider, primary_provider)
+        print_info(f"Current primary model: {primary_model} ({primary_provider_label})")
+        print_info("Routing profiles inherit the primary model unless customized:")
+        for profile in ["chat", "coding", "planning", "research"]:
+            print_info(f"  • {profile}: {primary_model} ({primary_provider_label})")
+        print()
+
+    if not prompt_yes_no("Configure model routing profiles now?", False):
         return
 
     profiles = _ensure_model_profiles_config(config)
     working, _errors = _discover_working_profile_providers()
 
     if not working:
-        print_warning("No working providers detected for profile routing right now.")
-        print_info("Finish provider login first, then run `hermes model` again.")
+        print_warning("No working providers detected for model routing right now.")
+        print_info("Finish provider login first, then run `hermes configure-model-routing` again.")
         return
 
     provider_label = {pid: p.name for pid, p in PROVIDER_REGISTRY.items()}
     provider_label["openrouter"] = "OpenRouter"
     provider_label["custom"] = "Custom endpoint"
 
-    ordered_profiles = ["chat", "coding", "planning", "research"]
+    ordered_profiles = _ordered_model_profile_names(profiles)
     for profile_name in ordered_profiles:
         print()
         print_header(f"Model Profile: {profile_name}")
@@ -223,13 +265,21 @@ def _configure_model_profiles_interactive(config: Dict[str, Any]) -> None:
         current = profiles.get(profile_name, {})
         current_model = current.get("model", "")
         current_provider = current.get("provider", "")
+        
+        # Show effective configuration (including primary model inheritance)
+        effective_model = current_model or primary_model
+        effective_provider = current_provider or primary_provider
+        effective_provider_label = provider_label.get(effective_provider, effective_provider)
+        
         if current_model:
             print_info(f"Current: model={current_model} provider={current_provider or 'inherit'}")
+        else:
+            print_info(f"Current: inherits primary model -> {effective_model} ({effective_provider_label})")
 
         if not prompt_yes_no(f"Configure {profile_name} profile?", profile_name == "chat"):
             continue
 
-        choices = ["Inherit main model/provider"]
+        choices = [f"Inherit primary model ({primary_model})"]
         working_ids: List[str] = []
         for pid, runtime in working:
             lbl = provider_label.get(pid, pid)
@@ -240,14 +290,15 @@ def _configure_model_profiles_interactive(config: Dict[str, Any]) -> None:
         selection = prompt_choice("Select provider for this profile:", choices, 0)
 
         if selection == 0:
+            # Explicitly set to primary model (not empty)
             profiles[profile_name] = {
-                "model": "",
-                "provider": "",
-                "base_url": "",
-                "api_key_env": "",
-                "api_key": "",
+                "model": primary_model,
+                "provider": primary_provider,
+                "base_url": primary.get("base_url", ""),
+                "api_key_env": primary.get("api_key_env", ""),
+                "api_key": primary.get("api_key", ""),
             }
-            print_success(f"{profile_name} set to inherit main model/provider")
+            print_success(f"{profile_name} explicitly set to primary model: {primary_model}")
             continue
 
         if selection == len(choices) - 1:
@@ -314,6 +365,16 @@ def _configure_model_profiles_interactive(config: Dict[str, Any]) -> None:
             "api_key": "",
         }
         print_success(f"Saved {profile_name} profile -> {provider_id}:{model_name}")
+
+    if allow_custom_profiles and prompt_yes_no("Add a custom routing profile category?", False):
+        custom_name = prompt("  Profile name (e.g. ops, fast, cheap, vision)").strip().lower()
+        if custom_name:
+            if custom_name in profiles:
+                print_warning(f"Profile '{custom_name}' already exists.")
+            else:
+                profiles[custom_name] = _blank_profile_entry()
+                print_success(f"Added custom profile category: {custom_name}")
+                print_info("Run `hermes configure-model-routing` again to configure it.")
 
 
 # Import config helpers

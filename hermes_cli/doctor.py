@@ -635,6 +635,40 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", "(60 req/hr rate limit — set in ~/.hermes/.env for better rates)")
 
     # =========================================================================
+    # Honcho memory
+    # =========================================================================
+    print()
+    print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from honcho_integration.client import HonchoClientConfig, GLOBAL_CONFIG_PATH
+        hcfg = HonchoClientConfig.from_global_config()
+
+        if not GLOBAL_CONFIG_PATH.exists():
+            check_warn("Honcho config not found", f"run: hermes honcho setup")
+        elif not hcfg.enabled:
+            check_info("Honcho disabled (set enabled: true in ~/.honcho/config.json to activate)")
+        elif not hcfg.api_key:
+            check_fail("Honcho API key not set", "run: hermes honcho setup")
+            issues.append("No Honcho API key — run 'hermes honcho setup'")
+        else:
+            from honcho_integration.client import get_honcho_client, reset_honcho_client
+            reset_honcho_client()
+            try:
+                get_honcho_client(hcfg)
+                check_ok(
+                    "Honcho connected",
+                    f"workspace={hcfg.workspace_id} mode={hcfg.memory_mode} freq={hcfg.write_frequency}",
+                )
+            except Exception as _e:
+                check_fail("Honcho connection failed", str(_e))
+                issues.append(f"Honcho unreachable: {_e}")
+    except ImportError:
+        check_warn("honcho-ai not installed", "pip install honcho-ai")
+    except Exception as _e:
+        check_warn("Honcho check failed", str(_e))
+
+    # =========================================================================
     # Summary
     # =========================================================================
     print()

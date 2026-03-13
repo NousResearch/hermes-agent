@@ -20,9 +20,24 @@ Instead of one global model for everything, users can configure:
 - `chat` profile is applied to CLI, gateway temporary agents, and cron jobs
 - Legacy `delegation.model` / `delegation.provider` behavior remains and takes precedence
 
+## CLI onboarding (no manual file edits)
+
+Use:
+
+```bash
+hermes model
+```
+
+After provider/model setup, Hermes now asks:
+- "Configure model profiles for chat/coding/planning/research now?"
+- then walks each profile interactively
+
+Provider suggestions in that flow are filtered to providers that currently resolve with working credentials.
+Model suggestions are fetched from each provider's live `/models` endpoint when available.
+
 ## Config format
 
-Add this to `~/.hermes/config.yaml`:
+Equivalent config written by the wizard goes to `~/.hermes/config.yaml`:
 
 ```yaml
 model:

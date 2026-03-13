@@ -2,7 +2,12 @@ import json
 
 from hermes_cli.auth import _update_config_for_provider, get_active_provider
 from hermes_cli.config import load_config, save_config
-from hermes_cli.setup import setup_model_provider
+from hermes_cli.setup import (
+    setup_model_provider,
+    _discover_working_profile_providers,
+    _configure_model_profiles_interactive,
+    _ensure_model_profiles_config,
+)
 
 
 def _clear_provider_env(monkeypatch):
@@ -95,3 +100,58 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["base_url"] == "https://custom.example/v1"
     assert reloaded["model"]["default"] == "custom/model"
+
+
+def test_discover_working_profile_providers_filters_failing(monkeypatch):
+    def _fake_resolve(requested=None, **_kwargs):
+        if requested in {"openrouter", "openai-codex"}:
+            return {
+                "provider": requested,
+                "base_url": "https://example.com/v1",
+                "api_key": "k",
+                "api_mode": "chat_completions",
+            }
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_resolve)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    working, errors = _discover_working_profile_providers()
+
+    ids = [pid for pid, _ in working]
+    assert "openrouter" in ids
+    assert "openai-codex" in ids
+    assert all(pid not in ids for pid in ("nous", "zai", "custom"))
+    assert errors
+
+
+def test_configure_model_profiles_uses_only_working_provider_choices(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = load_config()
+    _ensure_model_profiles_config(cfg)
+
+    # yes: configure wizard, yes: configure chat
+    yes_no_answers = iter([True, True, False, False, False])
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: next(yes_no_answers))
+
+    # provider pick -> first working provider (openrouter), model pick -> first live suggestion
+    prompt_choices = iter([1, 0])
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: next(prompt_choices))
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+
+    monkeypatch.setattr(
+        "hermes_cli.setup._discover_working_profile_providers",
+        lambda: ([
+            ("openrouter", {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"}),
+        ], []),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.setup._live_model_suggestions_for_runtime",
+        lambda _runtime: ["anthropic/claude-sonnet-4"],
+    )
+
+    _configure_model_profiles_interactive(cfg)
+
+    chat = cfg["model_profiles"]["chat"]
+    assert chat["provider"] == "openrouter"
+    assert chat["model"] == "anthropic/claude-sonnet-4"

@@ -2759,6 +2759,36 @@ For more help on a command:
     honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
+    # memory command
+    # =========================================================================
+    memory_parser = subparsers.add_parser("memory", help="Review and manage agent memory")
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_action")
+    memory_subparsers.add_parser("list", help="List all memory entries with provenance")
+    memory_delete = memory_subparsers.add_parser("delete", help="Delete a memory entry by content substring")
+    memory_delete.add_argument("text", help="Substring of the entry to delete")
+    memory_delete.add_argument("--target", choices=["memory", "user", "all"], default="all", help="Which store to delete from")
+    memory_subparsers.add_parser("clear", help="Clear all memory entries")
+    memory_forget = memory_subparsers.add_parser("forget-session", help="Remove all entries saved during a session")
+    memory_forget.add_argument("session_id", help="Session ID to forget")
+    def cmd_memory(args):
+        from hermes_cli.knowledge import cmd_memory as _cmd
+        _cmd(args)
+    memory_parser.set_defaults(func=cmd_memory)
+
+    # =========================================================================
+    # knowledge command
+    # =========================================================================
+    knowledge_parser = subparsers.add_parser("knowledge", help="Unified view of everything the agent has learned")
+    knowledge_subparsers = knowledge_parser.add_subparsers(dest="knowledge_action")
+    knowledge_subparsers.add_parser("show", help="Show all knowledge")
+    knowledge_forget = knowledge_subparsers.add_parser("forget-session", help="Remove all knowledge from a session")
+    knowledge_forget.add_argument("session_id", help="Session ID to forget")
+    def cmd_knowledge(args):
+        from hermes_cli.knowledge import cmd_knowledge as _cmd
+        _cmd(args)
+    knowledge_parser.set_defaults(func=cmd_knowledge)
+
+    # =========================================================================
     # tools command
     # =========================================================================
     tools_parser = subparsers.add_parser(

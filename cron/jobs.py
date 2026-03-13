@@ -431,8 +431,19 @@ def save_job_output(job_id: str, output: str):
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
     
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(output)
-    _secure_file(output_file)
+    fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(output)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, output_file)
+        _secure_file(output_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     
     return output_file

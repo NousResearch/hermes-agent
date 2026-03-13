@@ -153,6 +153,47 @@ class TestGenerateSummaryNoneContent:
         assert len(result) < len(msgs)
 
 
+class TestNonStringContent:
+    """Regression: content as dict (e.g., llama.cpp tool calls) must not crash."""
+
+    def test_dict_content_coerced_to_string(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = {"text": "some summary"}
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+        assert isinstance(summary, str)
+        assert "CONTEXT SUMMARY" in summary
+
+    def test_none_content_coerced_to_empty(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+        # None content → empty string → "[CONTEXT SUMMARY]: " prefix added
+        assert summary is not None
+        assert "CONTEXT SUMMARY" in summary
+
+
 class TestCompressWithClient:
     def test_summarization_path(self):
         mock_client = MagicMock()

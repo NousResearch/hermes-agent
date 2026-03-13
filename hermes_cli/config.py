@@ -194,8 +194,13 @@ DEFAULT_CONFIG = {
     },
     
     "stt": {
-        "enabled": True,
-        "model": "whisper-1",
+        "provider": "local",  # "local" (free, faster-whisper) | "openai" (Whisper API)
+        "local": {
+            "model": "base",  # tiny, base, small, medium, large-v3
+        },
+        "openai": {
+            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
     },
     
     "human_delay": {

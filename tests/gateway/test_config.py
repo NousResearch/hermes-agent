@@ -82,6 +82,32 @@ class TestSessionResetPolicy:
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
 
+    def test_from_dict_explicit_null_values(self):
+        """Explicit null values in YAML config should fall back to defaults.
+
+        dict.get() returns None (not the default) when the key exists with
+        a None value, so from_dict must handle this explicitly.
+        See: https://github.com/NousResearch/hermes-agent/issues/1119
+        """
+        data = {"mode": "both", "at_hour": None, "idle_minutes": None}
+        policy = SessionResetPolicy.from_dict(data)
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 1440
+
+    def test_from_dict_missing_keys(self):
+        """Missing keys should also fall back to defaults."""
+        policy = SessionResetPolicy.from_dict({})
+        assert policy.mode == "both"
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 1440
+
+    def test_from_dict_partial_null(self):
+        """Only one field null, the other present with a valid value."""
+        data = {"at_hour": None, "idle_minutes": 60}
+        policy = SessionResetPolicy.from_dict(data)
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 60
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):

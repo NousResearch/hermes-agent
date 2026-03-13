@@ -214,12 +214,15 @@ def _resolve_gateway_model() -> str:
 class GatewayRunner:
     """
     Main gateway controller.
-    
+
     Manages the lifecycle of all platform adapters and routes
     messages to/from the agent.
     """
-    
+
+    _instance: "GatewayRunner | None" = None
+
     def __init__(self, config: Optional[GatewayConfig] = None):
+        GatewayRunner._instance = self
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
 

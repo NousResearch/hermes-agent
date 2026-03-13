@@ -25,19 +25,23 @@ Usage:
         port: 8720
 """
 
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
     from fastapi import FastAPI, HTTPException, Request, Depends
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
     from pydantic import BaseModel, Field
     from sse_starlette.sse import EventSourceResponse
     import uvicorn
@@ -53,7 +57,6 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +170,7 @@ class HTTPAdapter(BasePlatformAdapter):
             if not auth_token:
                 return  # No auth configured
             auth = request.headers.get("Authorization", "")
-            if not auth.startswith("Bearer ") or auth[7:] != auth_token:
+            if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], auth_token):
                 raise HTTPException(status_code=401, detail="Invalid or missing auth token")
 
         return Depends(verify_token)
@@ -206,17 +209,18 @@ class HTTPAdapter(BasePlatformAdapter):
             return self._get_tools()
 
         @app.post("/v1/chat/completions", dependencies=[auth])
-        async def chat_completions(req: ChatCompletionRequest):
+        async def chat_completions(req: ChatCompletionRequest, request: Request):
             if not self._message_handler:
                 raise HTTPException(status_code=503, detail="Agent not ready")
 
+            client_id = request.headers.get("X-Client-ID")
             if req.stream:
                 return EventSourceResponse(
-                    self._handle_streaming_request(req),
+                    self._handle_streaming_request(req, client_id=client_id),
                     media_type="text/event-stream",
                 )
             else:
-                return await self._handle_request(req)
+                return await self._handle_request(req, client_id=client_id)
 
         @app.post("/v1/node/register", dependencies=[auth])
         async def register_node(req: NodeRegisterRequest):
@@ -346,7 +350,7 @@ class HTTPAdapter(BasePlatformAdapter):
     # Non-streaming request handler
     # ------------------------------------------------------------------
 
-    async def _handle_request(self, req: ChatCompletionRequest) -> dict:
+    async def _handle_request(self, req: ChatCompletionRequest, client_id: str = None) -> dict:
         """Handle a non-streaming chat completion request."""
         request_id = str(uuid.uuid4())
         user_message = req.messages[-1].content if req.messages else ""
@@ -358,7 +362,7 @@ class HTTPAdapter(BasePlatformAdapter):
 
         try:
             # Build MessageEvent and dispatch to gateway
-            event = self._build_message_event(request_id, user_message, req.messages)
+            event = self._build_message_event(request_id, user_message, req.messages, client_id=client_id)
             await self.handle_message(event)
 
             # Wait for send() to resolve the future (with timeout)
@@ -391,7 +395,7 @@ class HTTPAdapter(BasePlatformAdapter):
     # Streaming request handler
     # ------------------------------------------------------------------
 
-    async def _handle_streaming_request(self, req: ChatCompletionRequest):
+    async def _handle_streaming_request(self, req: ChatCompletionRequest, client_id: str = None):
         """Handle a streaming chat completion request via SSE."""
         request_id = str(uuid.uuid4())
         user_message = req.messages[-1].content if req.messages else ""
@@ -403,7 +407,7 @@ class HTTPAdapter(BasePlatformAdapter):
 
         try:
             # Build MessageEvent and dispatch (runs in background)
-            event = self._build_message_event(request_id, user_message, req.messages)
+            event = self._build_message_event(request_id, user_message, req.messages, client_id=client_id)
             asyncio.create_task(self._dispatch_and_wait(event, request_id))
 
             # Yield SSE events from the queue
@@ -439,9 +443,7 @@ class HTTPAdapter(BasePlatformAdapter):
 
         finally:
             self._streaming_queues.pop(request_id, None)
-
-        # Send done signal
-        yield {"data": "[DONE]"}
+            yield {"data": "[DONE]"}
 
     async def _dispatch_and_wait(self, event: MessageEvent, request_id: str):
         """Dispatch message to gateway handler in background."""
@@ -465,14 +467,19 @@ class HTTPAdapter(BasePlatformAdapter):
         request_id: str,
         user_message: str,
         messages: list,
+        client_id: str = None,
     ) -> MessageEvent:
         """Build a MessageEvent from the HTTP request."""
-        # Use request_id as chat_id so send() can route the response back
+        # Stable user identity from client header or auth token hash
+        user_id = client_id or ("http-user-" + hashlib.sha256(
+            (self._auth_token or "anonymous").encode()
+        ).hexdigest()[:12])
+
         source = self.build_source(
-            chat_id=request_id,
+            chat_id=request_id,      # unique per request (for response routing)
             chat_name="HTTP API",
             chat_type="dm",
-            user_id=request_id,
+            user_id=user_id,          # stable across requests
             user_name="HTTP Client",
         )
 
@@ -490,20 +497,21 @@ class HTTPAdapter(BasePlatformAdapter):
 
     def _build_status(self) -> dict:
         """Build status response for /v1/status."""
+        skills = self._get_skills()
+        tools = self._get_tools()
         return {
             "is_online": self._running and self._message_handler is not None,
             "agent_name": "Hermes Agent",
             "uptime": time.time() - self._start_time,
-            "memory_count": 0,   # Populated by subclass or hook if available
-            "skill_count": 0,
-            "active_tool_count": 0,
+            "memory_count": 0,
+            "skill_count": len(skills),
+            "active_tool_count": len(tools),
         }
 
     def _get_skills(self) -> list:
         """Return agent skills for /v1/skills."""
         # Skills are stored as SKILL.md files in ~/.hermes/skills/
         skills = []
-        from pathlib import Path
         skills_dir = Path(os.path.expanduser("~/.hermes/skills"))
         if skills_dir.exists():
             for skill_file in skills_dir.glob("*.md"):

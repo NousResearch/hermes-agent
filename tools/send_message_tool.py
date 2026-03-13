@@ -321,8 +321,9 @@ async def _send_email(extra, chat_id, message):
 async def _send_http(chat_id, message):
     """Send via the HTTP adapter's in-process send mechanism."""
     try:
-        from gateway.run import get_gateway_runner
-        runner = get_gateway_runner()
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        runner = getattr(GatewayRunner, '_instance', None)
         if runner and Platform.HTTP in runner.adapters:
             adapter = runner.adapters[Platform.HTTP]
             result = await adapter.send(chat_id, message)

@@ -10,6 +10,7 @@ No external dependencies beyond aiohttp (already in messaging extra).
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
@@ -63,7 +64,7 @@ class WebAdapter(BasePlatformAdapter):
         self._site: Optional[web.TCPSite] = None
 
         # Config
-        self._host: str = config.extra.get("host", "0.0.0.0")
+        self._host: str = config.extra.get("host", "127.0.0.1")
         self._port: int = config.extra.get("port", 8765)
         self._token: str = config.extra.get("token", "") or secrets.token_hex(16)
 
@@ -87,7 +88,7 @@ class WebAdapter(BasePlatformAdapter):
         self._app.router.add_get("/", self._handle_index)
         self._app.router.add_get("/ws", self._handle_websocket)
         self._app.router.add_post("/upload", self._handle_upload)
-        self._app.router.add_static("/media", str(self._media_dir), show_index=False)
+        self._app.router.add_get("/media/{filename}", self._handle_media)
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
@@ -316,7 +317,7 @@ class WebAdapter(BasePlatformAdapter):
 
                     # Auth handshake
                     if msg_type == "auth":
-                        if data.get("token") == self._token:
+                        if hmac.compare_digest(data.get("token", ""), self._token):
                             authenticated = True
                             self._clients[session_id] = ws
                             await ws.send_str(json.dumps({
@@ -356,7 +357,7 @@ class WebAdapter(BasePlatformAdapter):
     async def _handle_upload(self, request: web.Request) -> web.Response:
         """Handle file uploads (images, voice recordings)."""
         token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != self._token:
+        if not hmac.compare_digest(token, self._token):
             return web.json_response({"error": "Unauthorized"}, status=401)
 
         reader = await request.multipart()
@@ -364,7 +365,8 @@ class WebAdapter(BasePlatformAdapter):
         if not field:
             return web.json_response({"error": "No file"}, status=400)
 
-        orig_name = field.filename or "file"
+        # Sanitize filename to prevent path traversal attacks
+        orig_name = Path(field.filename or "file").name
         filename = f"upload_{uuid.uuid4().hex[:8]}_{orig_name}"
         dest = self._media_dir / filename
 
@@ -376,6 +378,19 @@ class WebAdapter(BasePlatformAdapter):
                 f.write(chunk)
 
         return web.json_response({"url": f"/media/{filename}", "filename": filename})
+
+    async def _handle_media(self, request: web.Request) -> web.Response:
+        """Serve media files with token authentication."""
+        token = request.query.get("token", "")
+        if not hmac.compare_digest(token, self._token):
+            return web.Response(status=401, text="Unauthorized")
+
+        filename = Path(request.match_info["filename"]).name
+        filepath = self._media_dir / filename
+        if not filepath.exists() or not filepath.is_file():
+            return web.Response(status=404, text="Not found")
+
+        return web.FileResponse(filepath)
 
     # ---- Message Processing ----
 
@@ -570,6 +585,7 @@ def _build_chat_html() -> str:
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <style>
 :root {
     --bg: #08090d;
@@ -1157,7 +1173,7 @@ function handleServerMessage(data) {
         case 'play_audio':
             // Invisible TTS playback — no UI element, just play audio
             {
-                const a = new Audio(data.url);
+                const a = new Audio(mediaUrl(data.url));
                 currentTtsAudio = a;
                 voiceAwaitingResponse = false;
                 a.onended = () => {
@@ -1357,7 +1373,7 @@ function addImageMessage(id, url, caption, ts) {
     div.id = 'msg-' + id;
     if (caption) div.innerHTML = renderMarkdown(caption);
     const img = document.createElement('img');
-    img.src = url;
+    img.src = mediaUrl(url);
     img.alt = caption || 'Image';
     img.onclick = () => window.open(url, '_blank');
     div.appendChild(img);
@@ -1381,7 +1397,7 @@ function addVoiceMessage(id, url, caption, ts) {
         div.appendChild(p);
     }
 
-    const audio = new Audio(url);
+    const audio = new Audio(mediaUrl(url));
     audio.preload = 'metadata';
 
     // Build voice bubble
@@ -1481,7 +1497,7 @@ function addDocumentMessage(id, url, filename, caption, ts) {
     if (caption) div.innerHTML = renderMarkdown(caption);
     const a = document.createElement('a');
     a.className = 'file-download';
-    a.href = url;
+    a.href = mediaUrl(url);
     a.download = filename;
     a.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>' + filename;
     div.appendChild(a);
@@ -1516,9 +1532,16 @@ function addTranscriptMessage(text) {
     scrollToBottom();
 }
 
+function mediaUrl(url) {
+    if (url && url.startsWith('/media/')) {
+        return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(authToken);
+    }
+    return url;
+}
+
 function renderMarkdown(text) {
     try {
-        return marked.parse(text);
+        return DOMPurify.sanitize(marked.parse(text));
     } catch (e) {
         return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }

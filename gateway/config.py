@@ -478,7 +478,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WEB].enabled = True
         config.platforms[Platform.WEB].extra.update({
             "port": int(os.getenv("WEB_UI_PORT", "8765")),
-            "host": os.getenv("WEB_UI_HOST", "0.0.0.0"),
+            "host": os.getenv("WEB_UI_HOST", "127.0.0.1"),
             "token": os.getenv("WEB_UI_TOKEN", ""),
         })
 

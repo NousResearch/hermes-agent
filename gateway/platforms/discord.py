@@ -294,7 +294,8 @@ class VoiceReceiver:
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
-        except Exception:
+        except Exception as e:
+            logger.debug("Opus decode error for SSRC %s: %s", ssrc, e)
             return
 
     # ------------------------------------------------------------------
@@ -406,14 +407,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Load opus codec for voice channel support
         if not discord.opus.is_loaded():
-            try:
-                discord.opus.load_opus("/opt/homebrew/lib/libopus.dylib")
-            except Exception:
-                # Try common Linux path as fallback
+            import ctypes.util
+            opus_path = ctypes.util.find_library("opus")
+            if opus_path:
                 try:
-                    discord.opus.load_opus("libopus.so.0")
+                    discord.opus.load_opus(opus_path)
                 except Exception:
-                    logger.warning("Opus codec not found — voice channel playback disabled")
+                    logger.warning("Opus codec found at %s but failed to load", opus_path)
+            if not discord.opus.is_loaded():
+                logger.warning("Opus codec not found — voice channel playback disabled")
         
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)

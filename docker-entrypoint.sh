@@ -6,6 +6,8 @@
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
+export PYTHONUNBUFFERED=1
+
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 
 # ── Directory structure ───────────────────────────────────────
@@ -74,8 +76,12 @@ EOF
 
 # ── Bootstrap auth.json from env var (Nous Portal OAuth token) ─
 if [ -n "${HERMES_AUTH_JSON:-}" ]; then
-  echo "$HERMES_AUTH_JSON" | base64 -d > "$HERMES_HOME/auth.json"
-  echo "[entrypoint] Loaded auth.json from HERMES_AUTH_JSON"
+  if [ ! -f "$HERMES_HOME/auth.json" ] || [ "${FORCE_AUTH_RESET:-false}" = "true" ]; then
+    echo "$HERMES_AUTH_JSON" | base64 -d > "$HERMES_HOME/auth.json"
+    echo "[entrypoint] Wrote fresh auth.json from HERMES_AUTH_JSON"
+  else
+    echo "[entrypoint] Using existing auth.json from volume (set FORCE_AUTH_RESET=true to override)"
+  fi
 fi
 
 # ── SOUL.md placeholder ───────────────────────────────────────
@@ -89,4 +95,4 @@ echo "[entrypoint] Model: ${LLM_MODEL:-anthropic/claude-opus-4-6}"
 echo "[entrypoint] Starting gateway..."
 
 # ── Start gateway directly ────────────────────────────────────
-exec python -m gateway.run
+exec python -u -m gateway.run

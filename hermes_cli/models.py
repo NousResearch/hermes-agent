@@ -77,6 +77,27 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    # Curated model list sourced from https://models.dev (huggingface provider)
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "Qwen/Qwen3-Coder-Next",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "deepseek-ai/DeepSeek-R1-0528",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2-Instruct",
+        "moonshotai/Kimi-K2-Instruct-0905",
+        "moonshotai/Kimi-K2.5",
+        "moonshotai/Kimi-K2-Thinking",
+        "MiniMaxAI/MiniMax-M2.5",
+        "MiniMaxAI/MiniMax-M2.1",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "zai-org/GLM-5",
+        "zai-org/GLM-4.7",
+        "zai-org/GLM-4.7-Flash",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -88,6 +109,7 @@ _PROVIDER_LABELS = {
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
+    "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
 
@@ -102,6 +124,7 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "hf": "huggingface",
 }
 
 
@@ -135,7 +158,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
+        "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

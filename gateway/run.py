@@ -25,6 +25,45 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+# Fix SSL certificate loading on systems where Python doesn't find CA certs automatically
+# This is common on Nix/NixOS systems - must be set BEFORE discord is imported
+import ssl
+
+ca_bundle = None
+ca_paths = ssl.get_default_verify_paths()
+if ca_paths.cafile and os.path.exists(ca_paths.cafile):
+    ca_bundle = ca_paths.cafile
+elif ca_paths.openssl_cafile and os.path.exists(ca_paths.openssl_cafile):
+    ca_bundle = ca_paths.openssl_cafile
+
+if not ca_bundle:
+    try:
+        import certifi
+        ca_bundle = certifi.where()
+    except ImportError:
+        pass
+
+if not ca_bundle:
+    for path in [
+        "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu/Gentoo
+        "/etc/pki/tls/certs/ca-bundle.crt",  # RHEL/CentOS 7
+        "/etc/pki/tls/certs/ca-bundle.trust.crt",  # RHEL/CentOS 7
+        "/etc/ssl/ca-bundle.pem",  # SUSE/OpenSUSE
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # RHEL/CentOS 8+
+        "/etc/ca-certificates/trust-source/anchors",  # Arch
+        "/usr/share/pki/trust/anchors",  # Arch
+        "/etc/ssl/cert.pem",  # Alpine
+        "/etc/pki/tls/cert.pem",  # RHEL/Fedora
+        "/usr/local/etc/openssl@1.1/cert.pem",  # macOS Homebrew Intel
+        "/opt/homebrew/etc/openssl@1.1/cert.pem",  # macOS Homebrew ARM
+    ]:
+        if os.path.exists(path):
+            ca_bundle = path
+            break
+
+if ca_bundle and "SSL_CERT_FILE" not in os.environ:
+    os.environ["SSL_CERT_FILE"] = ca_bundle
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

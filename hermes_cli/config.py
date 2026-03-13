@@ -1034,6 +1034,20 @@ def save_env_value(key: str, value: str):
             pass
 
 
+def save_anthropic_oauth_token(value: str, save_fn=None):
+    """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
+    writer = save_fn or save_env_value
+    writer("ANTHROPIC_TOKEN", value)
+    writer("ANTHROPIC_API_KEY", "")
+
+
+def save_anthropic_api_key(value: str, save_fn=None):
+    """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
+    writer = save_fn or save_env_value
+    writer("ANTHROPIC_API_KEY", value)
+    writer("ANTHROPIC_TOKEN", "")
+
+
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
     # Check environment first
@@ -1081,7 +1095,6 @@ def show_config():
     
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
-        ("ANTHROPIC_API_KEY", "Anthropic"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
@@ -1091,6 +1104,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
+    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
+    print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
     # Model settings
     print()

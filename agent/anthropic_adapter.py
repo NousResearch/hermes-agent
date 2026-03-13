@@ -240,30 +240,25 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_API_KEY env var (regular API key)
-      2. ANTHROPIC_TOKEN env var (OAuth/setup token)
-      3. CLAUDE_CODE_OAUTH_TOKEN env var
-      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      2. CLAUDE_CODE_OAUTH_TOKEN env var
+      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
+      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
-    # 1. Regular API key
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if api_key:
-        return api_key
-
-    # 2. OAuth/setup token env var
+    # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
         return token
 
-    # 3. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
         return cc_token
 
-    # 4. Claude Code credential file
+    # 3. Claude Code credential file
     creds = read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
         logger.debug("Using Claude Code credentials (auto-detected)")
@@ -275,6 +270,12 @@ def resolve_anthropic_token() -> Optional[str]:
         if refreshed:
             return refreshed
         logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+
+    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # This remains as a compatibility fallback for pre-migration Hermes configs.
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key:
+        return api_key
 
     return None
 

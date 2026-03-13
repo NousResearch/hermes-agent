@@ -199,7 +199,7 @@ class VoiceReceiver:
         # Log first few raw packets for debugging
         self._packet_debug_count += 1
         if self._packet_debug_count <= 5:
-            logger.info(
+            logger.debug(
                 "Raw UDP packet: len=%d, first_bytes=%s",
                 len(data), data[:4].hex() if len(data) >= 4 else "short",
             )
@@ -212,7 +212,7 @@ class VoiceReceiver:
         # Payload type (byte 1 lower 7 bits) = 0x78 (120) for voice.
         if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
             if self._packet_debug_count <= 5:
-                logger.info("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
+                logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
             return
 
         first_byte = data[0]
@@ -240,7 +240,7 @@ class VoiceReceiver:
         if self._packet_debug_count <= 10:
             with self._lock:
                 known_user = self._ssrc_to_user.get(ssrc, "unknown")
-            logger.info(
+            logger.debug(
                 "RTP packet: ssrc=%d, seq=%d, user=%s, hdr=%d, ext_data=%d",
                 ssrc, seq, known_user, header_size, ext_data_len,
             )

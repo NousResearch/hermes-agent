@@ -408,7 +408,7 @@ class WebAdapter(BasePlatformAdapter):
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
 
         source = self.build_source(
-            chat_id="web",
+            chat_id=f"web_{session_id}",
             chat_name="Web Chat",
             chat_type="dm",
             user_id=session_id,
@@ -466,7 +466,7 @@ class WebAdapter(BasePlatformAdapter):
 
             # Process as voice message
             source = self.build_source(
-                chat_id="web",
+                chat_id=f"web_{session_id}",
                 chat_name="Web Chat",
                 chat_type="dm",
                 user_id=session_id,

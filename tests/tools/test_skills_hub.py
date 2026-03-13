@@ -8,6 +8,7 @@ from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
     LobeHubSource,
+    OptionalSkillSource,
     SkillMeta,
     SkillBundle,
     HubLockFile,
@@ -15,6 +16,7 @@ from tools.skills_hub import (
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
+    quarantine_bundle,
 )
 
 
@@ -438,3 +440,68 @@ class TestSkillMetaToDict:
         restored = SkillMeta(**d)
         assert restored.name == meta.name
         assert restored.trust_level == meta.trust_level
+
+
+# ---------------------------------------------------------------------------
+# Official skills / binary assets
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalSkillSourceBinaryAssets:
+    def test_fetch_preserves_binary_assets(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "mlops" / "models" / "neutts"
+        (skill_dir / "assets" / "neutts-cli" / "samples").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: neutts\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+        wav_bytes = b"RIFF\x00\x01fakewav"
+        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.wav").write_bytes(
+            wav_bytes
+        )
+        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
+            "hello\n", encoding="utf-8"
+        )
+        pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
+        pycache_dir.mkdir(parents=True)
+        (pycache_dir / "cli.cpython-312.pyc").write_bytes(b"junk")
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/mlops/models/neutts")
+
+        assert bundle is not None
+        assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
+        assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
+        assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
+
+
+class TestQuarantineBundleBinaryAssets:
+    def test_quarantine_bundle_writes_binary_files(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="neutts",
+                files={
+                    "SKILL.md": "---\nname: neutts\n---\n",
+                    "assets/neutts-cli/samples/jo.wav": b"RIFF\x00\x01fakewav",
+                },
+                source="official",
+                identifier="official/mlops/models/neutts",
+                trust_level="builtin",
+            )
+
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
+        assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"

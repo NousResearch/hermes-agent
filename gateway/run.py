@@ -1001,7 +1001,7 @@ class GatewayRunner:
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            quick_commands = self.config.get("quick_commands", {})
+            quick_commands = self.config.quick_commands
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":

@@ -155,6 +155,7 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    quick_commands: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # User-defined quick commands
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -218,6 +219,7 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "quick_commands": self.quick_commands,
         }
     
     @classmethod
@@ -258,6 +260,7 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            quick_commands=data.get("quick_commands", {}),
         )
 
 

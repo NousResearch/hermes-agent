@@ -676,12 +676,15 @@ def check_voice_requirements() -> Dict[str, Any]:
     """Check if all voice mode requirements are met.
 
     Returns:
-        Dict with ``available``, ``audio_available``, ``stt_key_set``,
+        Dict with ``available``, ``audio_available``, ``stt_available``,
         ``missing_packages``, and ``details``.
     """
-    openai_key = bool(os.getenv("VOICE_TOOLS_OPENAI_KEY"))
-    groq_key = bool(os.getenv("GROQ_API_KEY"))
-    stt_key_set = openai_key or groq_key
+    # Determine STT provider availability
+    from tools.transcription_tools import _get_provider, _load_stt_config, _HAS_FASTER_WHISPER
+    stt_config = _load_stt_config()
+    stt_provider = _get_provider(stt_config)
+    stt_available = stt_provider != "none"
+
     missing: List[str] = []
     has_audio = _audio_available()
 
@@ -691,7 +694,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     # Environment detection
     env_check = detect_audio_environment()
 
-    available = has_audio and stt_key_set and env_check["available"]
+    available = has_audio and stt_available and env_check["available"]
     details_parts = []
 
     if has_audio:
@@ -699,12 +702,17 @@ def check_voice_requirements() -> Dict[str, Any]:
     else:
         details_parts.append("Audio capture: MISSING (pip install sounddevice numpy)")
 
-    if openai_key:
-        details_parts.append("STT API key: OK (OpenAI)")
-    elif groq_key:
-        details_parts.append("STT API key: OK (Groq)")
+    if stt_provider == "local":
+        details_parts.append("STT provider: OK (local faster-whisper)")
+    elif stt_provider == "groq":
+        details_parts.append("STT provider: OK (Groq)")
+    elif stt_provider == "openai":
+        details_parts.append("STT provider: OK (OpenAI)")
     else:
-        details_parts.append("STT API key: MISSING (set GROQ_API_KEY or VOICE_TOOLS_OPENAI_KEY)")
+        details_parts.append(
+            "STT provider: MISSING (pip install faster-whisper, "
+            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
+        )
 
     for warning in env_check["warnings"]:
         details_parts.append(f"Environment: {warning}")
@@ -712,7 +720,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     return {
         "available": available,
         "audio_available": has_audio,
-        "stt_key_set": stt_key_set,
+        "stt_available": stt_available,
         "missing_packages": missing,
         "details": "\n".join(details_parts),
         "environment": env_check,

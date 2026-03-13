@@ -3555,12 +3555,12 @@ class HermesCLI:
                 "Install with: pip install sounddevice numpy\n"
                 "Or: pip install hermes-agent[voice]"
             )
-        if not reqs["stt_key_set"]:
+        if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(
-                "Voice mode requires an STT API key for transcription.\n"
-                "Set GROQ_API_KEY (free) or VOICE_TOOLS_OPENAI_KEY.\n"
-                "Groq: https://console.groq.com/keys\n"
-                "OpenAI: https://platform.openai.com/api-keys"
+                "Voice mode requires an STT provider for transcription.\n"
+                "Option 1: pip install faster-whisper  (free, local)\n"
+                "Option 2: Set GROQ_API_KEY (free tier)\n"
+                "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)"
             )
 
         # Prevent double-start from concurrent threads (atomic check-and-set)

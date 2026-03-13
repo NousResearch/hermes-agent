@@ -65,14 +65,14 @@ class TestCheckVoiceRequirements:
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
                             lambda: {"available": True, "warnings": []})
-        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
 
         from tools.voice_mode import check_voice_requirements
 
         result = check_voice_requirements()
         assert result["available"] is True
         assert result["audio_available"] is True
-        assert result["stt_key_set"] is True
+        assert result["stt_available"] is True
         assert result["missing_packages"] == []
 
     def test_missing_audio_packages(self, monkeypatch):
@@ -89,19 +89,18 @@ class TestCheckVoiceRequirements:
         assert "sounddevice" in result["missing_packages"]
         assert "numpy" in result["missing_packages"]
 
-    def test_missing_stt_key(self, monkeypatch):
+    def test_missing_stt_provider(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
                             lambda: {"available": True, "warnings": []})
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "none")
 
         from tools.voice_mode import check_voice_requirements
 
         result = check_voice_requirements()
         assert result["available"] is False
-        assert result["stt_key_set"] is False
-        assert "STT API key: MISSING" in result["details"]
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
 
 
 # ============================================================================

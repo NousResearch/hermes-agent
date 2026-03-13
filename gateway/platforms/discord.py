@@ -441,6 +441,7 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = True
+            intents.voice_states = True
             
             # Create bot
             self._client = commands.Bot(
@@ -494,7 +495,40 @@ class DiscordAdapter(BasePlatformAdapter):
                     # "all" falls through to handle_message
                 
                 await self._handle_message(message)
-            
+
+            @self._client.event
+            async def on_voice_state_update(member, before, after):
+                """Track voice channel join/leave events."""
+                # Only track channels where the bot is connected
+                bot_guild_ids = set(adapter_self._voice_clients.keys())
+                if not bot_guild_ids:
+                    return
+                guild_id = member.guild.id
+                if guild_id not in bot_guild_ids:
+                    return
+                # Ignore the bot itself
+                if member == adapter_self._client.user:
+                    return
+
+                joined = before.channel is None and after.channel is not None
+                left = before.channel is not None and after.channel is None
+                switched = (
+                    before.channel is not None
+                    and after.channel is not None
+                    and before.channel != after.channel
+                )
+
+                if joined or left or switched:
+                    logger.info(
+                        "Voice state: %s (%d) %s (guild %d)",
+                        member.display_name,
+                        member.id,
+                        "joined " + after.channel.name if joined
+                        else "left " + before.channel.name if left
+                        else f"moved {before.channel.name} -> {after.channel.name}",
+                        guild_id,
+                    )
+
             # Register slash commands
             self._register_slash_commands()
             
@@ -863,6 +897,75 @@ class DiscordAdapter(BasePlatformAdapter):
         """Check if the bot is connected to a voice channel in this guild."""
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
+
+    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Return voice channel awareness info for the given guild.
+
+        Returns None if the bot is not in a voice channel.  Otherwise
+        returns a dict with channel name, member list, count, and
+        currently-speaking user IDs (from SSRC mapping).
+        """
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return None
+
+        channel = vc.channel
+        if not channel:
+            return None
+
+        # Members currently in the voice channel (includes bot)
+        members_info = []
+        bot_user = self._client.user if self._client else None
+        for m in channel.members:
+            if bot_user and m.id == bot_user.id:
+                continue  # skip the bot itself
+            members_info.append({
+                "user_id": m.id,
+                "display_name": m.display_name,
+                "is_bot": m.bot,
+            })
+
+        # Currently speaking users (from SSRC mapping + active buffers)
+        speaking_user_ids: set = set()
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver:
+            import time as _time
+            now = _time.monotonic()
+            with receiver._lock:
+                for ssrc, last_t in receiver._last_packet_time.items():
+                    # Consider "speaking" if audio received within last 2 seconds
+                    if now - last_t < 2.0:
+                        uid = receiver._ssrc_to_user.get(ssrc)
+                        if uid:
+                            speaking_user_ids.add(uid)
+
+        # Tag speaking status on members
+        for info in members_info:
+            info["is_speaking"] = info["user_id"] in speaking_user_ids
+
+        return {
+            "channel_name": channel.name,
+            "member_count": len(members_info),
+            "members": members_info,
+            "speaking_count": len(speaking_user_ids),
+        }
+
+    def get_voice_channel_context(self, guild_id: int) -> str:
+        """Return a human-readable voice channel context string.
+
+        Suitable for injection into the system/ephemeral prompt so the
+        agent is always aware of voice channel state.
+        """
+        info = self.get_voice_channel_info(guild_id)
+        if not info:
+            return ""
+
+        parts = [f"[Voice channel: #{info['channel_name']} — {info['member_count']} participant(s)]"]
+        for m in info["members"]:
+            status = " (speaking)" if m["is_speaking"] else ""
+            parts.append(f"  - {m['display_name']}{status}")
+
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # Voice listening (Phase 2)

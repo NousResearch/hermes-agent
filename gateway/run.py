@@ -1409,6 +1409,19 @@ class GatewayRunner:
                     )
         
         # -----------------------------------------------------------------
+        # Voice channel awareness — inject current voice channel state
+        # into context so the agent knows who is in the channel and who
+        # is speaking, without needing a separate tool call.
+        # -----------------------------------------------------------------
+        if source.platform == Platform.DISCORD:
+            adapter = self.adapters.get(Platform.DISCORD)
+            guild_id = self._get_guild_id(event)
+            if guild_id and adapter and hasattr(adapter, "get_voice_channel_context"):
+                vc_context = adapter.get_voice_channel_context(guild_id)
+                if vc_context:
+                    context_prompt += f"\n\n{vc_context}"
+
+        # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
         #
         # If the user attached image(s), we run the vision tool eagerly so
@@ -2156,11 +2169,18 @@ class GatewayRunner:
             # Append voice channel info if connected
             adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event)
-            if guild_id and hasattr(adapter, "is_in_voice_channel"):
-                if adapter.is_in_voice_channel(guild_id):
-                    vc = adapter._voice_clients.get(guild_id)
-                    ch_name = vc.channel.name if vc and vc.channel else "unknown"
-                    return f"Voice mode: {labels.get(mode, mode)}\nVoice channel: {ch_name}"
+            if guild_id and hasattr(adapter, "get_voice_channel_info"):
+                info = adapter.get_voice_channel_info(guild_id)
+                if info:
+                    lines = [
+                        f"Voice mode: {labels.get(mode, mode)}",
+                        f"Voice channel: #{info['channel_name']}",
+                        f"Participants: {info['member_count']}",
+                    ]
+                    for m in info["members"]:
+                        status = " (speaking)" if m.get("is_speaking") else ""
+                        lines.append(f"  - {m['display_name']}{status}")
+                    return "\n".join(lines)
             return f"Voice mode: {labels.get(mode, mode)}"
         else:
             # Toggle: off → on, on/all → off

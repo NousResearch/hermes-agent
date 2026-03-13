@@ -1074,6 +1074,7 @@ def setup_model_provider(config: dict):
         print()
         print_header("Anthropic Authentication")
         from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.config import save_anthropic_api_key, save_anthropic_oauth_token
         pconfig = PROVIDER_REGISTRY["anthropic"]
 
         # Check ALL credential sources
@@ -1086,8 +1087,8 @@ def setup_model_provider(config: dict):
         cc_valid = bool(cc_creds and is_claude_code_token_valid(cc_creds))
 
         existing_key = (
-            get_env_value("ANTHROPIC_API_KEY")
-            or get_env_value("ANTHROPIC_TOKEN")
+            get_env_value("ANTHROPIC_TOKEN")
+            or get_env_value("ANTHROPIC_API_KEY")
             or _os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
         )
 
@@ -1127,14 +1128,14 @@ def setup_model_provider(config: dict):
                     print()
                     token = run_oauth_setup_token()
                     if token:
-                        save_env_value("ANTHROPIC_API_KEY", token)
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
                         print_success("OAuth credentials saved")
                     else:
                         # Subprocess completed but no token auto-detected
                         print()
                         token = prompt("Paste setup-token here (if displayed above)", password=True)
                         if token:
-                            save_env_value("ANTHROPIC_API_KEY", token)
+                            save_anthropic_oauth_token(token, save_fn=save_env_value)
                             print_success("Setup-token saved")
                         else:
                             print_warning("Skipped — agent won't work without credentials")
@@ -1148,7 +1149,7 @@ def setup_model_provider(config: dict):
                     print()
                     token = prompt("Setup-token (sk-ant-oat-...)", password=True)
                     if token:
-                        save_env_value("ANTHROPIC_API_KEY", token)
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
                         print_success("Setup-token saved")
                     else:
                         print_warning("Skipped — install Claude Code and re-run setup")
@@ -1158,7 +1159,7 @@ def setup_model_provider(config: dict):
                 print()
                 api_key = prompt("API key (sk-ant-...)", password=True)
                 if api_key:
-                    save_env_value("ANTHROPIC_API_KEY", api_key)
+                    save_anthropic_api_key(api_key, save_fn=save_env_value)
                     print_success("API key saved")
                 else:
                     print_warning("Skipped — agent won't work without credentials")

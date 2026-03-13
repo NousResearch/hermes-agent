@@ -246,6 +246,169 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
 
+class TestDelegateObservability(unittest.TestCase):
+    """Tests for enriched metadata returned by _run_single_child."""
+
+    def test_observability_fields_present(self):
+        """Completed child should return tool_trace, tokens, model, exit_reason."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 5000
+            mock_child.session_completion_tokens = 1200
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [
+                    {"role": "user", "content": "do something"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "web_search", "arguments": '{"query": "test"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"results": [1,2,3]}'},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
+            entry = result["results"][0]
+
+            # Core observability fields
+            self.assertEqual(entry["model"], "claude-sonnet-4-6")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertEqual(entry["tokens"]["input"], 5000)
+            self.assertEqual(entry["tokens"]["output"], 1200)
+
+            # Tool trace
+            self.assertEqual(len(entry["tool_trace"]), 1)
+            self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+            self.assertIn("args_bytes", entry["tool_trace"][0])
+            self.assertIn("result_bytes", entry["tool_trace"][0])
+            self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_tool_trace_detects_error(self):
+        """Tool results containing 'error' should be marked as error status."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "failed",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": "Error: command not found"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "error")
+
+    def test_parallel_tool_calls_paired_correctly(self):
+        """Parallel tool calls should each get their own result via tool_call_id matching."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 3000
+            mock_child.session_completion_tokens = 800
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_a", "function": {"name": "web_search", "arguments": '{"q": "a"}'}},
+                        {"id": "tc_b", "function": {"name": "web_search", "arguments": '{"q": "b"}'}},
+                        {"id": "tc_c", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}},
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_a", "content": '{"ok": true}'},
+                    {"role": "tool", "tool_call_id": "tc_b", "content": "Error: rate limited"},
+                    {"role": "tool", "tool_call_id": "tc_c", "content": "file1.txt\nfile2.txt"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+
+            # All three tool calls should have results
+            self.assertEqual(len(trace), 3)
+
+            # First: web_search → ok
+            self.assertEqual(trace[0]["tool"], "web_search")
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertIn("result_bytes", trace[0])
+
+            # Second: web_search → error
+            self.assertEqual(trace[1]["tool"], "web_search")
+            self.assertEqual(trace[1]["status"], "error")
+            self.assertIn("result_bytes", trace[1])
+
+            # Third: terminal → ok
+            self.assertEqual(trace[2]["tool"], "terminal")
+            self.assertEqual(trace[2]["status"], "ok")
+            self.assertIn("result_bytes", trace[2])
+
+    def test_exit_reason_interrupted(self):
+        """Interrupted child should report exit_reason='interrupted'."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
+            self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
+
+    def test_exit_reason_max_iterations(self):
+        """Child that didn't complete and wasn't interrupted hit max_iterations."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 50,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
+            self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:

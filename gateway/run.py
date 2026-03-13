@@ -391,6 +391,20 @@ class GatewayRunner:
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return None
 
+    def _resolve_session_reasoning_config(self, reasoning_mode: str) -> dict | None:
+        """Resolve effective provider reasoning settings for a chat session."""
+        if reasoning_mode == "off":
+            return {"enabled": False}
+
+        base = self._reasoning_config
+        if isinstance(base, dict) and base.get("enabled") is not False:
+            return dict(base)
+
+        effort = base.get("effort") if isinstance(base, dict) else None
+        if effort:
+            return {"enabled": True, "effort": effort}
+        return {"enabled": True, "effort": "medium"}
+
     @staticmethod
     def _load_background_notifications_mode() -> str:
         """Load background process notification mode from config or env var.
@@ -1269,7 +1283,7 @@ class GatewayRunner:
                 "response": (response or "")[:500],
             })
 
-            if reasoning_mode == "on" and last_reasoning:
+            if False and reasoning_mode == "__hidden__" and last_reasoning:
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
                     _reasoning_meta = {"thread_id": source.thread_id} if source.thread_id else None
@@ -1873,7 +1887,7 @@ class GatewayRunner:
             current = getattr(session_entry, "reasoning_mode", "off")
             return (
                 f"Current reasoning mode: `{current}`.\n"
-                "Use `/reasoning off`, `/reasoning on`, or `/reasoning stream`."
+                "Use `/reasoning off` to disable reasoning, `/reasoning on` to enable it privately, or `/reasoning stream` to show it live."
             )
 
         if arg not in {"off", "on", "stream"}:
@@ -1881,9 +1895,9 @@ class GatewayRunner:
 
         self.session_store.set_reasoning_mode(session_key, arg)
         labels = {
-            "off": "Reasoning hidden for this chat.",
-            "on": "Reasoning will be shown after the reply completes.",
-            "stream": "Reasoning will stream live for this chat.",
+            "off": "Reasoning disabled for this chat.",
+            "on": "Reasoning enabled and hidden for this chat.",
+            "stream": "Reasoning enabled and will stream live for this chat.",
         }
         return labels[arg]
 
@@ -2915,6 +2929,7 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
+            effective_reasoning_config = self._resolve_session_reasoning_config(_reasoning_mode)
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -2924,7 +2939,7 @@ class GatewayRunner:
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
-                reasoning_config=self._reasoning_config,
+                reasoning_config=effective_reasoning_config,
                 providers_allowed=pr.get("only"),
                 providers_ignored=pr.get("ignore"),
                 providers_order=pr.get("order"),

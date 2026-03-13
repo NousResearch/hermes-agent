@@ -610,9 +610,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if not response_text:
             fallback_labels = {
-                "off": "Reasoning hidden for this chat.",
-                "on": "Reasoning will be shown after the reply completes.",
-                "stream": "Reasoning will stream live for this chat.",
+                "off": "Reasoning disabled for this chat.",
+                "on": "Reasoning enabled and hidden for this chat.",
+                "stream": "Reasoning enabled and will stream live for this chat.",
             }
             response_text = fallback_labels.get(mode, f"Reasoning set to {mode}.")
 

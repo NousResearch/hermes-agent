@@ -241,6 +241,15 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
     },
 
+    "security": {
+        "redact_secrets": True,
+        "website_blocklist": {
+            "enabled": True,
+            "domains": [],
+            "shared_files": [],
+        },
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)

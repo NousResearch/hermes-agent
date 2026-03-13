@@ -208,6 +208,14 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "skin": "default",
         },
+        "security": {
+            "redact_secrets": True,
+            "website_blocklist": {
+                "enabled": True,
+                "domains": [],
+                "shared_files": [],
+            },
+        },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },

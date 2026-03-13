@@ -430,6 +430,8 @@ from cron import create_job, list_jobs, remove_job, get_job
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from tools.skills_tool import set_secret_capture_callback
+from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
 # Guard to prevent cleanup from running multiple times on exit
@@ -1259,6 +1261,9 @@ class HermesCLI:
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
+        self._app = None
+        self._secret_state = None
+        self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._command_running = False
         self._command_status = ""
@@ -2950,7 +2955,9 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(base_cmd, user_instruction)
+                msg = build_skill_invocation_message(
+                    base_cmd, user_instruction, task_id=self.session_id
+                )
                 if msg:
                     skill_name = _skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
@@ -3563,7 +3570,37 @@ class HermesCLI:
         self._approval_state = None
         self._approval_deadline = 0
         self._invalidate()
+        _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "deny"
+
+    def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
+        return prompt_for_secret(self, var_name, prompt, metadata)
+
+    def _submit_secret_response(self, value: str) -> None:
+        if not self._secret_state:
+            return
+        self._secret_state["response_queue"].put(value)
+        self._secret_state = None
+        self._secret_deadline = 0
+        self._invalidate()
+
+    def _cancel_secret_capture(self) -> None:
+        self._submit_secret_response("")
+
+    def _clear_secret_input_buffer(self) -> None:
+        if getattr(self, "_app", None):
+            try:
+                self._app.current_buffer.reset()
+            except Exception:
+                pass
+
+    def _clear_current_input(self) -> None:
+        if getattr(self, "_app", None):
+            try:
+                self._app.current_buffer.text = ""
+            except Exception:
+                pass
+
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -3584,6 +3621,10 @@ class HermesCLI:
         Returns:
             The agent's response, or None on error
         """
+        # Single-query and direct chat callers do not go through run(), so
+        # register secure secret capture here as well.
+        set_secret_capture_callback(self._secret_capture_callback)
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -3844,6 +3885,10 @@ class HermesCLI:
         self._command_running = False
         self._command_status = ""
 
+        # Secure secret capture state for skill setup
+        self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
+        self._secret_deadline = 0
+
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
@@ -3851,6 +3896,7 @@ class HermesCLI:
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
+        set_secret_capture_callback(self._secret_capture_callback)
         
         # Key bindings for the input area
         kb = KeyBindings()
@@ -3874,6 +3920,14 @@ class HermesCLI:
                 text = event.app.current_buffer.text
                 self._sudo_state["response_queue"].put(text)
                 self._sudo_state = None
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- Secret prompt: submit the typed secret ---
+            if self._secret_state:
+                text = event.app.current_buffer.text
+                self._submit_secret_response(text)
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -3999,7 +4053,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -4028,6 +4082,13 @@ class HermesCLI:
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel secret prompt
+            if self._secret_state:
+                self._cancel_secret_capture()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -4130,6 +4191,8 @@ class HermesCLI:
         def get_prompt():
             if cli_ref._sudo_state:
                 return [('class:sudo-prompt', '🔐 ❯ ')]
+            if cli_ref._secret_state:
+                return [('class:sudo-prompt', '🔑 ❯ ')]
             if cli_ref._approval_state:
                 return [('class:prompt-working', '⚠ ❯ ')]
             if cli_ref._clarify_freetext:
@@ -4208,7 +4271,9 @@ class HermesCLI:
         input_area.control.input_processors.append(
             ConditionalProcessor(
                 PasswordProcessor(),
-                filter=Condition(lambda: bool(cli_ref._sudo_state)),
+                filter=Condition(
+                    lambda: bool(cli_ref._sudo_state) or bool(cli_ref._secret_state)
+                ),
             )
         )
 
@@ -4228,6 +4293,8 @@ class HermesCLI:
         def _get_placeholder():
             if cli_ref._sudo_state:
                 return "type password (hidden), Enter to skip"
+            if cli_ref._secret_state:
+                return "type secret (hidden), Enter to skip"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
@@ -4254,6 +4321,13 @@ class HermesCLI:
                 remaining = max(0, int(cli_ref._sudo_deadline - _time.monotonic()))
                 return [
                     ('class:hint', '  password hidden · Enter to skip'),
+                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                ]
+
+            if cli_ref._secret_state:
+                remaining = max(0, int(cli_ref._secret_deadline - _time.monotonic()))
+                return [
+                    ('class:hint', '  secret hidden · Enter to skip'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
@@ -4286,7 +4360,7 @@ class HermesCLI:
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
             # Keep a 1-line spacer while agent runs so output doesn't push
             # right up against the top rule of the input area
@@ -4442,6 +4516,42 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._sudo_state is not None),
         )
 
+        def _get_secret_display():
+            state = cli_ref._secret_state
+            if not state:
+                return []
+
+            title = '🔑 Skill Setup Required'
+            prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
+            metadata = state.get("metadata") or {}
+            help_text = metadata.get("help")
+            body = 'Enter secret below (hidden), or press Enter to skip'
+            content_lines = [prompt, body]
+            if help_text:
+                content_lines.insert(1, str(help_text))
+            box_width = _panel_box_width(title, content_lines)
+            lines = []
+            lines.append(('class:sudo-border', '╭─ '))
+            lines.append(('class:sudo-title', title))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
+            if help_text:
+                _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', str(help_text), box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        secret_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_secret_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._secret_state is not None),
+        )
+
         # --- Dangerous command approval: display widget ---
 
         def _get_approval_display():
@@ -4541,6 +4651,7 @@ class HermesCLI:
             HSplit([
                 Window(height=0),
                 sudo_widget,
+                secret_widget,
                 approval_widget,
                 clarify_widget,
                 spinner_widget,
@@ -4707,9 +4818,10 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
-            # Unregister terminal_tool callbacks to avoid dangling references
+            # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
+            set_secret_capture_callback(None)
             # Flush + shut down Honcho async writer (drains queue before exit)
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:

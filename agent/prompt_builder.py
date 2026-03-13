@@ -154,37 +154,31 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
-    """Read the description from a SKILL.md frontmatter, capped at max_chars."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        match = re.search(
-            r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---",
-            raw, re.MULTILINE | re.DOTALL,
-        )
-        if match:
-            desc = match.group(1).strip().strip("'\"")
-            if len(desc) > max_chars:
-                desc = desc[:max_chars - 3] + "..."
-            return desc
-    except Exception as e:
-        logger.debug("Failed to read skill description from %s: %s", skill_file, e)
-    return ""
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
-
-def _skill_is_platform_compatible(skill_file: Path) -> bool:
-    """Quick check if a SKILL.md is compatible with the current OS platform.
-
-    Reads just enough to parse the ``platforms`` frontmatter field.
-    Skills without the field (the vast majority) are always compatible.
+    Returns (is_compatible, frontmatter, description). On any error, returns
+    (True, {}, "") to err on the side of showing the skill.
     """
     try:
         from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        return skill_matches_platform(frontmatter)
+
+        if not skill_matches_platform(frontmatter):
+            return False, {}, ""
+
+        desc = ""
+        raw_desc = frontmatter.get("description", "")
+        if raw_desc:
+            desc = str(raw_desc).strip().strip("'\"")
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+
+        return True, frontmatter, desc
     except Exception:
-        return True  # Err on the side of showing the skill
+        return True, {}, ""
 
 
 def _read_skill_conditions(skill_file: Path) -> dict:
@@ -252,14 +246,14 @@ def build_skills_system_prompt(
     if not skills_dir.exists():
         return ""
 
-    # Collect skills with descriptions, grouped by category
+    # Collect skills with descriptions, grouped by category.
     # Each entry: (skill_name, description)
     # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
-    # → category "mlops/training", skill "axolotl"
+    # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        # Skip skills incompatible with the current OS platform
-        if not _skill_is_platform_compatible(skill_file):
+        is_compatible, _, desc = _parse_skill_file(skill_file)
+        if not is_compatible:
             continue
         # Skip skills whose conditional activation rules exclude them
         conditions = _read_skill_conditions(skill_file)
@@ -278,7 +272,6 @@ def build_skills_system_prompt(
         else:
             category = "general"
             skill_name = skill_file.parent.name
-        desc = _read_skill_description(skill_file)
         skills_by_category.setdefault(category, []).append((skill_name, desc))
 
     if not skills_by_category:

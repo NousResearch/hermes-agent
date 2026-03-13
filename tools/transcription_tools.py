@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 # Default STT model -- cheapest and widely available
 DEFAULT_STT_MODEL = "whisper-1"
 
+# Supported STT models. This list is intentionally small; we still allow
+# custom model names but emit a warning so misconfigurations are easier to spot.
+SUPPORTED_MODELS = {
+    "whisper-1",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
+}
+
 # Supported audio formats
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg"}
 
@@ -58,6 +66,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     """
     api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY")
     if not api_key:
+        logger.error(
+            "VOICE_TOOLS_OPENAI_KEY is not set; cannot perform transcription",
+        )
         return {
             "success": False,
             "transcript": "",
@@ -106,9 +117,18 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "error": f"Failed to access file: {e}",
         }
 
-    # Use provided model, or fall back to default
+    # Use provided model, or fall back to env / default.
+    # VOICE_TOOLS_STT_MODEL lets ops override the model without code changes.
     if model is None:
-        model = DEFAULT_STT_MODEL
+        model = os.getenv("VOICE_TOOLS_STT_MODEL", DEFAULT_STT_MODEL)
+
+    if model not in SUPPORTED_MODELS:
+        # Do not fail hard here — allow custom model names but surface a
+        # clear warning so misconfigurations show up in logs/metrics.
+        logger.warning(
+            "Requested STT model %r is not in SUPPORTED_MODELS; proceeding anyway",
+            model,
+        )
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
@@ -132,6 +152,16 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "transcript": transcript_text,
         }
 
+    except ImportError as e:
+        logger.error(
+            "openai package is not available; install it to enable transcription",
+            exc_info=True,
+        )
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Transcription backend unavailable: {e}",
+        }
     except PermissionError:
         logger.error("Permission denied accessing file: %s", file_path, exc_info=True)
         return {

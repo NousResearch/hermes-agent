@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import tempfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -272,6 +273,31 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+    def _atomic_write_yaml(self, path: Path, data: dict, **dump_kwargs) -> None:
+        """Precisely and atomically write a dictionary to a YAML file, preserving permissions."""
+        import yaml
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), suffix='.tmp', prefix='.config_'
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                yaml.dump(data, f, **dump_kwargs)
+                # Ensure data is physically on disk
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Preserve file permissions if original file exists.
+            if path.exists():
+                shutil.copymode(str(path), tmp_path)
+                
+            os.replace(tmp_path, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
 
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
@@ -1793,8 +1819,7 @@ class GatewayRunner:
                 user_config["model"]["default"] = new_model
                 if provider_changed:
                     user_config["model"]["provider"] = target_provider
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                self._atomic_write_yaml(config_path, user_config, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save model change: {e}"
 
@@ -1919,8 +1944,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = ""
-                with open(config_path, "w") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                self._atomic_write_yaml(config_path, config, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
             self._ephemeral_system_prompt = ""
@@ -1933,8 +1957,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                self._atomic_write_yaml(config_path, config, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
@@ -2024,8 +2047,7 @@ class GatewayRunner:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w', encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False)
+            self._atomic_write_yaml(config_path, user_config, default_flow_style=False)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
         except Exception as e:

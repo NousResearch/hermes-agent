@@ -1229,9 +1229,12 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             # else: keep current
         elif selected_provider == "anthropic":
-            anthropic_models = [
-                "claude-sonnet-4-20250514",
-                "claude-opus-4-20250514",
+            # Try live model list first, fall back to static
+            from hermes_cli.models import provider_model_ids
+            live_models = provider_model_ids("anthropic")
+            anthropic_models = live_models if live_models else [
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
                 "claude-haiku-4-5-20251001",
             ]
             model_choices = list(anthropic_models)

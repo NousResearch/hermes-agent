@@ -69,8 +69,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
     ],
     "anthropic": [
-        "claude-sonnet-4-20250514",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
 }
@@ -242,7 +246,52 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
                     return live
         except Exception:
             pass
+    if normalized == "anthropic":
+        live = _fetch_anthropic_models()
+        if live:
+            return live
     return list(_PROVIDER_MODELS.get(normalized, []))
+
+
+def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available models from the Anthropic /v1/models endpoint.
+
+    Uses resolve_anthropic_token() to find credentials (env vars or
+    Claude Code auto-discovery).  Returns sorted model IDs or None.
+    """
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+    except ImportError:
+        return None
+
+    token = resolve_anthropic_token()
+    if not token:
+        return None
+
+    headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
+    if _is_oauth_token(token):
+        headers["Authorization"] = f"Bearer {token}"
+        headers["anthropic-beta"] = "oauth-2025-04-20"
+    else:
+        headers["x-api-key"] = token
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/models",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            models = [m["id"] for m in data.get("data", []) if m.get("id")]
+            # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
+            return sorted(models, key=lambda m: (
+                "opus" not in m,      # opus first
+                "sonnet" not in m,    # then sonnet
+                "haiku" not in m,     # then haiku
+                m,                    # alphabetical within tier
+            ))
+    except Exception:
+        return None
 
 
 def fetch_api_models(

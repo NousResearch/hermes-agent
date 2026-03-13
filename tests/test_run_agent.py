@@ -281,20 +281,21 @@ class TestMaskApiKey:
 
 class TestInit:
     def test_anthropic_base_url_accepted(self):
-        """Anthropic base URLs should be accepted (OpenAI-compatible endpoint)."""
+        """Anthropic base URLs should route to native Anthropic client."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI") as mock_openai,
+            patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
-            AIAgent(
+            agent = AIAgent(
                 api_key="test-key-1234567890",
                 base_url="https://api.anthropic.com/v1/",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
-            mock_openai.assert_called_once()
+            assert agent.api_mode == "anthropic_messages"
+            mock_anthropic.Anthropic.assert_called_once()
 
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
@@ -344,6 +345,23 @@ class TestInit:
                 skip_memory=True,
             )
             assert a._use_prompt_caching is False
+
+    def test_prompt_caching_native_anthropic(self):
+        """Native Anthropic provider should enable prompt caching."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter._anthropic_sdk"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.anthropic.com/v1/",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "anthropic_messages"
+            assert a._use_prompt_caching is True
 
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""

@@ -689,6 +689,7 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "Anthropic (Claude models — API key or Claude Code subscription)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1068,7 +1069,74 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 8:  # Anthropic
+        selected_provider = "anthropic"
+        print()
+        print_header("Anthropic Authentication")
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["anthropic"]
+
+        # Check for Claude Code credential auto-discovery
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        cc_creds = read_claude_code_credentials()
+        if cc_creds and is_claude_code_token_valid(cc_creds):
+            print_success("Found valid Claude Code credentials (~/.claude/.credentials.json)")
+            if prompt_yes_no("Use these credentials?", True):
+                print_success("Using Claude Code subscription credentials")
+            else:
+                cc_creds = None
+
+        existing_key = get_env_value("ANTHROPIC_API_KEY") or get_env_value("ANTHROPIC_TOKEN")
+
+        if not (cc_creds and is_claude_code_token_valid(cc_creds)):
+            if existing_key:
+                print_info(f"Current credentials: {existing_key[:12]}...")
+                if not prompt_yes_no("Update credentials?", False):
+                    # User wants to keep existing — skip auth prompt entirely
+                    existing_key = "KEEP"  # truthy sentinel to skip auth choice
+
+            if not existing_key and not (cc_creds and is_claude_code_token_valid(cc_creds)):
+                auth_choices = [
+                    "Claude Pro/Max subscription (setup-token)",
+                    "Anthropic API key (pay-per-token)",
+                ]
+                auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
+
+                if auth_idx == 0:
+                    print()
+                    print_info("To get a setup-token from your Claude subscription:")
+                    print_info("  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+                    print_info("  2. Run:                  claude setup-token")
+                    print_info("  3. Open the URL it prints in your browser")
+                    print_info("  4. Log in and click \"Authorize\"")
+                    print_info("  5. Paste the auth code back into Claude Code")
+                    print_info("  6. Copy the resulting sk-ant-oat01-... token")
+                    print()
+                    token = prompt("Paste setup-token here", password=True)
+                    if token:
+                        save_env_value("ANTHROPIC_API_KEY", token)
+                        print_success("Setup-token saved")
+                    else:
+                        print_warning("Skipped — agent won't work without credentials")
+                else:
+                    print()
+                    print_info("Get an API key at: https://console.anthropic.com/settings/keys")
+                    print()
+                    api_key = prompt("API key (sk-ant-api03-...)", password=True)
+                    if api_key:
+                        save_env_value("ANTHROPIC_API_KEY", api_key)
+                        print_success("API key saved")
+                    else:
+                        print_warning("Skipped — agent won't work without credentials")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("anthropic", pconfig.inference_base_url)
+        _set_model_provider(config, "anthropic", pconfig.inference_base_url)
+
+    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
@@ -1081,6 +1149,7 @@ def setup_model_provider(config: dict):
         "kimi-coding",
         "minimax",
         "minimax-cn",
+        "anthropic",
     ) and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
@@ -1174,6 +1243,79 @@ def setup_model_provider(config: dict):
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
             )
+            if is_coding_plan:
+                zai_models = ["glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            else:
+                zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            model_choices = list(zai_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(zai_models):
+                _set_default_model(config, zai_models[model_idx])
+            elif model_idx == len(zai_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    _set_default_model(config, custom)
+            # else: keep current
+        elif selected_provider == "kimi-coding":
+            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
+            model_choices = list(kimi_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(kimi_models):
+                _set_default_model(config, kimi_models[model_idx])
+            elif model_idx == len(kimi_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    _set_default_model(config, custom)
+            # else: keep current
+        elif selected_provider in ("minimax", "minimax-cn"):
+            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
+            model_choices = list(minimax_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(minimax_models):
+                _set_default_model(config, minimax_models[model_idx])
+            elif model_idx == len(minimax_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    _set_default_model(config, custom)
+            # else: keep current
+        elif selected_provider == "anthropic":
+            # Try live model list first, fall back to static
+            from hermes_cli.models import provider_model_ids
+            live_models = provider_model_ids("anthropic")
+            anthropic_models = live_models if live_models else [
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5-20251001",
+            ]
+            model_choices = list(anthropic_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(anthropic_models):
+                _set_default_model(config, anthropic_models[model_idx])
+            elif model_idx == len(anthropic_models):
+                custom = prompt("Enter model name (e.g., claude-sonnet-4-20250514)")
+                if custom:
+                    _set_default_model(config, custom)
+            # else: keep current
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

@@ -43,6 +43,7 @@ hermes setup       # Or configure everything at once
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
+| **Anthropic** | Claude models directly (Pro/Max or API key) | API key or Claude Code setup-token |
 | **OpenRouter** | 200+ models, pay-per-use | Enter your API key |
 | **Custom Endpoint** | VLLM, SGLang, any OpenAI-compatible API | Set base URL + API key |
 

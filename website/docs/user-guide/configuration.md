@@ -63,6 +63,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **Anthropic** | `hermes model` (API key, setup-token, or Claude Code auto-detect) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -76,6 +77,34 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 
 :::warning
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](#auxiliary-models) below.
+:::
+
+### Anthropic (Native)
+
+Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+
+```bash
+# With an API key (pay-per-token)
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+hermes chat --provider anthropic --model claude-sonnet-4-6
+
+# With a Claude Code setup-token (Pro/Max subscription)
+export ANTHROPIC_API_KEY=sk-ant-oat01-...  # from 'claude setup-token'
+hermes chat --provider anthropic
+
+# Auto-detect Claude Code credentials (if you have Claude Code installed)
+hermes chat --provider anthropic  # reads ~/.claude.json automatically
+```
+
+Or set it permanently:
+```yaml
+model:
+  provider: "anthropic"
+  default: "claude-sonnet-4-6"
+```
+
+:::tip Aliases
+`--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
 ### First-Class Chinese AI Providers

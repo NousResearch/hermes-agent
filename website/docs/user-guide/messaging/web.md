@@ -143,7 +143,7 @@ cloudflared tunnel --url http://localhost:8765
 |----------|---------|-------------|
 | `WEB_UI_ENABLED` | `false` | Enable the web gateway |
 | `WEB_UI_PORT` | `8765` | HTTP server port |
-| `WEB_UI_HOST` | `0.0.0.0` | Bind address (`0.0.0.0` = LAN, `127.0.0.1` = localhost) |
+| `WEB_UI_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` = LAN, `127.0.0.1` = localhost) |
 | `WEB_UI_TOKEN` | (auto) | Access token. Auto-generated if empty. |
 
 ---

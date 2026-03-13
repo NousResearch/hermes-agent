@@ -3625,7 +3625,7 @@ class AIAgent:
             if self._interrupt_requested:
                 remaining_calls = assistant_message.tool_calls[i-1:]
                 if remaining_calls:
-                    self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)")
+                    self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
                 for skipped_tc in remaining_calls:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -3849,7 +3849,7 @@ class AIAgent:
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
-                self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)")
+                self._vprint(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
                 for skipped_tc in assistant_message.tool_calls[i:]:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
@@ -4559,7 +4559,7 @@ class AIAgent:
                         sleep_end = time.time() + wait_time
                         while time.time() < sleep_end:
                             if self._interrupt_requested:
-                                self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
+                                self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
@@ -4801,7 +4801,7 @@ class AIAgent:
                     
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:
-                        self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.")
+                        self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
@@ -4993,7 +4993,7 @@ class AIAgent:
                     sleep_end = time.time() + wait_time
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
-                            self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
+                            self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {

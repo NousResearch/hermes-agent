@@ -3709,8 +3709,8 @@ class HermesCLI:
                         self._voice_start_recording()
                         if hasattr(self, '_app') and self._app:
                             self._app.invalidate()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                 threading.Thread(target=_restart_recording, daemon=True).start()
 
     def _voice_speak_response(self, text: str):

@@ -2472,14 +2472,17 @@ class GatewayRunner:
         """Handle /remote-control — start or show the web UI for remote access."""
         from gateway.config import Platform, PlatformConfig
 
+        is_dm = event.source and event.source.chat_type == "dm"
+
         # Already running?
         if Platform.WEB in self.adapters:
             adapter = self.adapters[Platform.WEB]
             local_ip = adapter._get_local_ip()
+            token_display = adapter._token if is_dm else "(hidden — use in DM to see token)"
             return (
                 f"Web UI already running.\n"
                 f"URL: http://{local_ip}:{adapter._port}\n"
-                f"Token: {adapter._token}"
+                f"Token: {token_display}"
             )
 
         # Start web adapter on the fly
@@ -2499,7 +2502,7 @@ class GatewayRunner:
 
             web_config = PlatformConfig(
                 enabled=True,
-                extra={"port": port, "host": "0.0.0.0", "token": token},
+                extra={"port": port, "host": "127.0.0.1", "token": token},
             )
             adapter = WebAdapter(web_config)
             adapter.set_message_handler(self._handle_message)
@@ -2510,10 +2513,11 @@ class GatewayRunner:
 
             self.adapters[Platform.WEB] = adapter
             local_ip = adapter._get_local_ip()
+            token_display = adapter._token if is_dm else "(hidden — use in DM to see token)"
             return (
                 f"Web UI started!\n"
                 f"URL: http://{local_ip}:{adapter._port}\n"
-                f"Token: {adapter._token}\n"
+                f"Token: {token_display}\n"
                 f"Open this URL on your phone or any device on the same network."
             )
         except Exception as e:

@@ -3345,10 +3345,10 @@ class GatewayRunner:
                     )
                 else:
                     error = result.get("error", "unknown error")
-                    if "OPENAI_API_KEY" in error or "VOICE_TOOLS_OPENAI_KEY" in error:
+                    if "No STT provider" in error or "not set" in error:
                         enriched_parts.append(
                             "[The user sent a voice message but I can't listen "
-                            "to it right now~ VOICE_TOOLS_OPENAI_KEY isn't set up yet "
+                            "to it right now~ No STT provider is configured "
                             "(';w;') Let them know!]"
                         )
                     else:

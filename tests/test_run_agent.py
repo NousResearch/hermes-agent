@@ -1564,3 +1564,142 @@ class TestSafeWriter:
         # Still just one layer
         wrapped.write("test")
         assert inner.getvalue() == "test"
+
+
+# ===================================================================
+# Anthropic adapter integration fixes
+# ===================================================================
+
+
+class TestBuildApiKwargsAnthropicMaxTokens:
+    """Bug fix: max_tokens was always None for Anthropic mode, ignoring user config."""
+
+    def test_max_tokens_passed_to_anthropic(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.max_tokens = 4096
+        agent.reasoning_config = None
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
+            agent._build_api_kwargs([{"role": "user", "content": "test"}])
+            _, kwargs = mock_build.call_args
+            if not kwargs:
+                kwargs = dict(zip(
+                    ["model", "messages", "tools", "max_tokens", "reasoning_config"],
+                    mock_build.call_args[0],
+                ))
+            assert kwargs.get("max_tokens") == 4096 or mock_build.call_args[1].get("max_tokens") == 4096
+
+    def test_max_tokens_none_when_unset(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.max_tokens = None
+        agent.reasoning_config = None
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 16384}
+            agent._build_api_kwargs([{"role": "user", "content": "test"}])
+            call_args = mock_build.call_args
+            # max_tokens should be None (let adapter use its default)
+            if call_args[1]:
+                assert call_args[1].get("max_tokens") is None
+            else:
+                assert call_args[0][3] is None
+
+
+class TestFallbackAnthropicProvider:
+    """Bug fix: _try_activate_fallback had no case for anthropic provider."""
+
+    def test_fallback_to_anthropic_sets_api_mode(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            mock_build.return_value = MagicMock()
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+
+    def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            agent._try_activate_fallback()
+
+        assert agent._use_prompt_caching is True
+
+    def test_fallback_to_openrouter_uses_openai_client(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-or-test"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "chat_completions"
+        assert agent.client is mock_client
+
+
+class TestAnthropicBaseUrlPassthrough:
+    """Bug fix: base_url was filtered with 'anthropic in base_url', blocking proxies."""
+
+    def test_custom_proxy_base_url_passed_through(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            a = AIAgent(
+                api_key="sk-ant-api03-test1234567890",
+                base_url="https://llm-proxy.company.com/v1",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            call_args = mock_build.call_args
+            # base_url should be passed through, not filtered out
+            assert call_args[0][1] == "https://llm-proxy.company.com/v1"
+
+    def test_none_base_url_passed_as_none(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            a = AIAgent(
+                api_key="sk-ant-api03-test1234567890",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            call_args = mock_build.call_args
+            # No base_url provided, should be default empty string or None
+            passed_url = call_args[0][1]
+            assert not passed_url or passed_url is None

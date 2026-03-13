@@ -3747,6 +3747,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from agent.redact import RedactingFormatter
     file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(file_handler)
+    # Also log to stdout for container environments (Railway, Docker)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    logging.getLogger().addHandler(stream_handler)
     logging.getLogger().setLevel(logging.INFO)
 
     # Separate errors-only log for easy debugging

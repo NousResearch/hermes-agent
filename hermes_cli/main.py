@@ -726,15 +726,62 @@ def cmd_configure_model_routing(args):
     from hermes_cli.config import load_config, save_config
     from hermes_cli.setup import _configure_model_profiles_interactive, _reset_model_profiles_config
 
-    config = load_config()
-    if getattr(args, "reset", False):
-        _reset_model_profiles_config(config)
-        save_config(config)
-        print("Model routing reset to defaults.")
+    # --list-backups
+    if getattr(args, "list_backups", False):
+        from hermes_cli.config_backup import list_backups, format_backup_summary
+        backups = list_backups()
+        if not backups:
+            print("No config backups found.")
+            return
+        print()
+        for i, (path, mtime) in enumerate(backups, 1):
+            summary = format_backup_summary(path)
+            print(f"  {i}. {mtime.strftime('%Y-%m-%d %H:%M:%S')}  {path.name}")
+            print(f"     {summary}")
+        print()
         return
 
+    # --restore or --restore-full
+    if getattr(args, "restore", False) or getattr(args, "restore_full", False):
+        from hermes_cli.config_backup import list_backups, restore_routing_sections, restore_full, format_backup_summary
+        from hermes_cli.setup import prompt_choice
+        full = getattr(args, "restore_full", False)
+        backups = list_backups()
+        if not backups:
+            print("No config backups found. Nothing to restore.")
+            return
+        choices = []
+        for path, mtime in backups:
+            summary = format_backup_summary(path)
+            choices.append(f"{mtime.strftime('%Y-%m-%d %H:%M:%S')}  {summary}")
+        choices.append("Cancel")
+        label = "full config" if full else "model routing"
+        idx = prompt_choice(f"Select a backup to restore {label} from:", choices, len(choices) - 1)
+        if idx is None or idx == len(choices) - 1:
+            print("Restore cancelled.")
+            return
+        backup_path = backups[idx][0]
+        if full:
+            restore_full(backup_path)
+            print(f"Full config restored from {backup_path.name}")
+        else:
+            restore_routing_sections(backup_path)
+            print(f"Model routing restored from {backup_path.name}")
+        print("A pre-restore backup was saved automatically.")
+        return
+
+    config = load_config()
+
+    # --reset (with auto-backup)
+    if getattr(args, "reset", False):
+        _reset_model_profiles_config(config)
+        save_config(config, backup_reason="reset")
+        print("Model routing reset to defaults. A backup was saved automatically.")
+        return
+
+    # Default: interactive wizard (with auto-backup)
     _configure_model_profiles_interactive(config)
-    save_config(config)
+    save_config(config, backup_reason="routing")
     print("Model routing configuration saved.")
 
 
@@ -2357,6 +2404,21 @@ For more help on a command:
         "--reset",
         action="store_true",
         help="Reset model routing profiles and routing rules to defaults"
+    )
+    routing_parser.add_argument(
+        "--restore",
+        action="store_true",
+        help="Restore model routing from a previous backup"
+    )
+    routing_parser.add_argument(
+        "--restore-full",
+        action="store_true",
+        help="Restore the entire config from a previous backup"
+    )
+    routing_parser.add_argument(
+        "--list-backups",
+        action="store_true",
+        help="List available config backups"
     )
     routing_parser.set_defaults(func=cmd_configure_model_routing)
 

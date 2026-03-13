@@ -1603,7 +1603,7 @@ def setup_model_provider(config: dict):
     if getattr(sys.stdin, "isatty", lambda: False)():
         _configure_model_profiles_interactive(config)
 
-    save_config(config)
+    save_config(config, backup_reason="model_setup")
 
 
 # =============================================================================

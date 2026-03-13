@@ -40,6 +40,49 @@ def _get_model_profiles_config() -> Dict[str, Dict[str, Any]]:
     return {}
 
 
+def get_primary_model() -> Dict[str, str]:
+    """Get the primary model configuration (model.default + provider).
+
+    Returns a dict with keys: model, provider, base_url, api_key, api_key_env.
+    Empty strings for missing fields.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    model_cfg = _get_model_config()
+    model_name = model_cfg.get("default", "")
+    provider_name = model_cfg.get("provider", "")
+
+    if not isinstance(model_name, str):
+        model_name = ""
+    if not isinstance(provider_name, str):
+        provider_name = ""
+
+    model_name = model_name.strip()
+    provider_name = provider_name.strip()
+
+    # If we have a model but no provider, try to resolve runtime
+    if model_name and not provider_name:
+        try:
+            runtime = resolve_runtime_provider(model=model_name, provider="auto")
+            return {
+                "model": model_name,
+                "provider": runtime.get("provider", ""),
+                "base_url": runtime.get("base_url", ""),
+                "api_key": runtime.get("api_key", ""),
+                "api_key_env": "",
+            }
+        except Exception:
+            pass
+
+    return {
+        "model": model_name,
+        "provider": provider_name,
+        "base_url": model_cfg.get("base_url", "") if isinstance(model_cfg.get("base_url"), str) else "",
+        "api_key": model_cfg.get("api_key", "") if isinstance(model_cfg.get("api_key"), str) else "",
+        "api_key_env": model_cfg.get("api_key_env", "") if isinstance(model_cfg.get("api_key_env"), str) else "",
+    }
+
+
 def resolve_model_profile(profile: str) -> Dict[str, str]:
     """Resolve model/provider/base_url/api_key overrides for a named profile.
 

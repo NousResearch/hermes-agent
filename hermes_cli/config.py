@@ -976,12 +976,25 @@ _COMMENTED_SECTIONS = """
 """
 
 
-def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+def save_config(config: Dict[str, Any], *, backup_reason: str = ""):
+    """Save configuration to ~/.hermes/config.yaml.
+
+    Args:
+        config: The config dict to write.
+        backup_reason: If non-empty, create a timestamped backup before writing.
+            Callers that perform destructive operations should pass a reason string.
+    """
     from utils import atomic_yaml_write
 
     ensure_hermes_home()
     config_path = get_config_path()
+
+    if backup_reason:
+        try:
+            from hermes_cli.config_backup import create_backup
+            create_backup(config_path, reason=backup_reason)
+        except Exception:
+            pass  # Don't block save on backup failure
     normalized = _normalize_max_turns_config(config)
 
     # Build optional commented-out sections for features that are off by

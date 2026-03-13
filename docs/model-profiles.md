@@ -36,13 +36,19 @@ This command is separate from `hermes model`.
 - `hermes model` remains the primary/default model selector.
 - `hermes configure-model-routing` configures context-specific routing profiles.
 
-The routing flow uses the same Hermes-style interactive picker logic and supports reset:
+The routing flow uses the same Hermes-style interactive picker logic:
 
 ```bash
-hermes configure-model-routing --reset
+hermes configure-model-routing              # interactive setup (auto-backup)
+hermes configure-model-routing --reset      # reset to defaults (auto-backup)
+hermes configure-model-routing --restore    # roll back routing sections from backup
+hermes configure-model-routing --restore-full  # roll back entire config from backup
+hermes configure-model-routing --list-backups  # show available backups
 ```
 
 Provider suggestions in that flow are filtered to providers that currently resolve with working credentials.
+
+Every config-modifying operation auto-creates a timestamped backup in `~/.hermes/config-backups/` before writing. Restores can target just model routing sections (leaving other config untouched) or the full config. Even restore creates a `pre_restore` backup, so undo is itself undoable. Auto-rotates at 10 backups.
 Model suggestions are fetched from each provider's live `/models` endpoint when available.
 
 ## Config format

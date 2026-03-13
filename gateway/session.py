@@ -776,7 +776,10 @@ class SessionStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    messages.append(json.loads(line))
+                    try:
+                        messages.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
         
         return messages
 

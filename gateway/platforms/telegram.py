@@ -620,10 +620,10 @@ class TelegramAdapter(BasePlatformAdapter):
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
         # 3) Convert markdown links – escape the display text; inside the URL
-        #    only ')' and '\' need escaping per the MarkdownV2 spec.
+        #    '(', ')', and '\\' need escaping per the MarkdownV2 spec.
         def _convert_link(m):
             display = _escape_mdv2(m.group(1))
-            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)').replace('(', '\\(')
             return _ph(f'[{display}]({url})')
 
         text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)

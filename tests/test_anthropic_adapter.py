@@ -9,6 +9,8 @@ import pytest
 
 from agent.anthropic_adapter import (
     _is_oauth_token,
+    _refresh_oauth_token,
+    _write_claude_code_credentials,
     build_anthropic_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
@@ -18,6 +20,7 @@ from agent.anthropic_adapter import (
     normalize_model_name,
     read_claude_code_credentials,
     resolve_anthropic_token,
+    run_oauth_setup_token,
 )
 
 
@@ -53,6 +56,7 @@ class TestBuildAnthropicClient:
             assert "auth_token" in kwargs
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
@@ -67,6 +71,7 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
+            assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -144,6 +149,194 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() is None
+
+    def test_falls_back_to_claude_code_oauth_token(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test-token")
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token() == "sk-ant-oat01-test-token"
+
+    def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        assert resolve_anthropic_token() == "cc-auto-token"
+
+
+class TestRefreshOauthToken:
+    def test_returns_none_without_refresh_token(self):
+        creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
+        assert _refresh_oauth_token(creds) is None
+
+    def test_successful_refresh(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        creds = {
+            "accessToken": "old-token",
+            "refreshToken": "refresh-123",
+            "expiresAt": int(time.time() * 1000) - 3600_000,
+        }
+
+        mock_response = json.dumps({
+            "access_token": "new-token-abc",
+            "refresh_token": "new-refresh-456",
+            "expires_in": 7200,
+        }).encode()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__ = MagicMock(return_value=MagicMock(
+                read=MagicMock(return_value=mock_response)
+            ))
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_ctx
+
+            result = _refresh_oauth_token(creds)
+
+        assert result == "new-token-abc"
+        # Verify credentials were written back
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        assert cred_file.exists()
+        written = json.loads(cred_file.read_text())
+        assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
+        assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
+
+    def test_failed_refresh_returns_none(self):
+        creds = {
+            "accessToken": "old",
+            "refreshToken": "refresh-123",
+            "expiresAt": 0,
+        }
+
+        with patch("urllib.request.urlopen", side_effect=Exception("network error")):
+            assert _refresh_oauth_token(creds) is None
+
+
+class TestWriteClaudeCodeCredentials:
+    def test_writes_new_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        _write_claude_code_credentials("tok", "ref", 12345)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        assert cred_file.exists()
+        data = json.loads(cred_file.read_text())
+        assert data["claudeAiOauth"]["accessToken"] == "tok"
+        assert data["claudeAiOauth"]["refreshToken"] == "ref"
+        assert data["claudeAiOauth"]["expiresAt"] == 12345
+
+    def test_preserves_existing_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_dir = tmp_path / ".claude"
+        cred_dir.mkdir()
+        cred_file = cred_dir / ".credentials.json"
+        cred_file.write_text(json.dumps({"otherField": "keep-me"}))
+        _write_claude_code_credentials("new-tok", "new-ref", 99999)
+        data = json.loads(cred_file.read_text())
+        assert data["otherField"] == "keep-me"
+        assert data["claudeAiOauth"]["accessToken"] == "new-tok"
+
+
+class TestResolveWithRefresh:
+    def test_auto_refresh_on_expired_creds(self, monkeypatch, tmp_path):
+        """When cred file has expired token + refresh token, auto-refresh is attempted."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        # Set up expired creds with a refresh token
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "expired-tok",
+                "refreshToken": "valid-refresh",
+                "expiresAt": int(time.time() * 1000) - 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        # Mock refresh to succeed
+        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+            result = resolve_anthropic_token()
+
+        assert result == "refreshed-token"
+
+
+class TestRunOauthSetupToken:
+    def test_raises_when_claude_not_installed(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):
+            run_oauth_setup_token()
+
+    def test_returns_token_from_credential_files(self, monkeypatch, tmp_path):
+        """After subprocess completes, reads credentials from Claude Code files."""
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+        # Pre-create credential files that will be found after subprocess
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "from-cred-file",
+                "refreshToken": "refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            token = run_oauth_setup_token()
+
+        assert token == "from-cred-file"
+        mock_run.assert_called_once()
+
+    def test_returns_token_from_env_var(self, monkeypatch, tmp_path):
+        """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            token = run_oauth_setup_token()
+
+        assert token == "from-env-var"
+
+    def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
+        """Returns None when subprocess completes but no credentials are found."""
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            token = run_oauth_setup_token()
+
+        assert token is None
+
+    def test_returns_none_on_keyboard_interrupt(self, monkeypatch):
+        """Returns None gracefully when user interrupts the flow."""
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+
+        with patch("subprocess.run", side_effect=KeyboardInterrupt):
+            token = run_oauth_setup_token()
+
+        assert token is None
 
 
 # ---------------------------------------------------------------------------

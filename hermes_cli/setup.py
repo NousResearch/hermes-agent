@@ -1076,65 +1076,101 @@ def setup_model_provider(config: dict):
         from hermes_cli.auth import PROVIDER_REGISTRY
         pconfig = PROVIDER_REGISTRY["anthropic"]
 
-        # Check for Claude Code credential auto-discovery
-        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        # Check ALL credential sources
+        import os as _os
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials, is_claude_code_token_valid,
+            run_oauth_setup_token,
+        )
         cc_creds = read_claude_code_credentials()
-        if cc_creds and is_claude_code_token_valid(cc_creds):
-            print_success("Found valid Claude Code credentials (~/.claude/.credentials.json)")
-            if prompt_yes_no("Use these credentials?", True):
-                print_success("Using Claude Code subscription credentials")
-            else:
-                cc_creds = None
+        cc_valid = bool(cc_creds and is_claude_code_token_valid(cc_creds))
 
-        existing_key = get_env_value("ANTHROPIC_API_KEY") or get_env_value("ANTHROPIC_TOKEN")
+        existing_key = (
+            get_env_value("ANTHROPIC_API_KEY")
+            or get_env_value("ANTHROPIC_TOKEN")
+            or _os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+        )
 
-        if not (cc_creds and is_claude_code_token_valid(cc_creds)):
+        has_creds = bool(existing_key) or cc_valid
+        needs_auth = not has_creds
+
+        if has_creds:
             if existing_key:
                 print_info(f"Current credentials: {existing_key[:12]}...")
-                if not prompt_yes_no("Update credentials?", False):
-                    # User wants to keep existing — skip auth prompt entirely
-                    existing_key = "KEEP"  # truthy sentinel to skip auth choice
+            elif cc_valid:
+                print_success("Found valid Claude Code credentials (auto-detected)")
 
-            if not existing_key and not (cc_creds and is_claude_code_token_valid(cc_creds)):
-                auth_choices = [
-                    "Claude Pro/Max subscription (setup-token)",
-                    "Anthropic API key (pay-per-token)",
-                ]
-                auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
+            auth_choices = [
+                "Use existing credentials",
+                "Reauthenticate (new OAuth login)",
+                "Cancel",
+            ]
+            choice_idx = prompt_choice("What would you like to do?", auth_choices, 0)
+            if choice_idx == 1:
+                needs_auth = True
+            elif choice_idx == 2:
+                pass  # fall through to provider config
 
-                if auth_idx == 0:
+        if needs_auth:
+            auth_choices = [
+                "Claude Pro/Max subscription (OAuth login)",
+                "Anthropic API key (pay-per-token)",
+            ]
+            auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
+
+            if auth_idx == 0:
+                # OAuth setup-token flow
+                try:
                     print()
-                    print_info("To get a setup-token from your Claude subscription:")
-                    print_info("  1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
-                    print_info("  2. Run:                  claude setup-token")
-                    print_info("  3. Open the URL it prints in your browser")
-                    print_info("  4. Log in and click \"Authorize\"")
-                    print_info("  5. Paste the auth code back into Claude Code")
-                    print_info("  6. Copy the resulting sk-ant-oat01-... token")
+                    print_info("Running 'claude setup-token' — follow the prompts below.")
+                    print_info("A browser window will open for you to authorize access.")
                     print()
-                    token = prompt("Paste setup-token here", password=True)
+                    token = run_oauth_setup_token()
+                    if token:
+                        save_env_value("ANTHROPIC_API_KEY", token)
+                        print_success("OAuth credentials saved")
+                    else:
+                        # Subprocess completed but no token auto-detected
+                        print()
+                        token = prompt("Paste setup-token here (if displayed above)", password=True)
+                        if token:
+                            save_env_value("ANTHROPIC_API_KEY", token)
+                            print_success("Setup-token saved")
+                        else:
+                            print_warning("Skipped — agent won't work without credentials")
+                except FileNotFoundError:
+                    print()
+                    print_info("The 'claude' CLI is required for OAuth login.")
+                    print()
+                    print_info("To install: npm install -g @anthropic-ai/claude-code")
+                    print_info("Then run:   claude setup-token")
+                    print_info("Or paste an existing setup-token below:")
+                    print()
+                    token = prompt("Setup-token (sk-ant-oat-...)", password=True)
                     if token:
                         save_env_value("ANTHROPIC_API_KEY", token)
                         print_success("Setup-token saved")
                     else:
-                        print_warning("Skipped — agent won't work without credentials")
+                        print_warning("Skipped — install Claude Code and re-run setup")
+            else:
+                print()
+                print_info("Get an API key at: https://console.anthropic.com/settings/keys")
+                print()
+                api_key = prompt("API key (sk-ant-...)", password=True)
+                if api_key:
+                    save_env_value("ANTHROPIC_API_KEY", api_key)
+                    print_success("API key saved")
                 else:
-                    print()
-                    print_info("Get an API key at: https://console.anthropic.com/settings/keys")
-                    print()
-                    api_key = prompt("API key (sk-ant-api03-...)", password=True)
-                    if api_key:
-                        save_env_value("ANTHROPIC_API_KEY", api_key)
-                        print_success("API key saved")
-                    else:
-                        print_warning("Skipped — agent won't work without credentials")
+                    print_warning("Skipped — agent won't work without credentials")
 
         # Clear custom endpoint vars if switching
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("anthropic", pconfig.inference_base_url)
-        _set_model_provider(config, "anthropic", pconfig.inference_base_url)
+        # Don't save base_url for Anthropic — resolve_runtime_provider()
+        # always hardcodes it. Stale base_urls contaminate other providers.
+        _update_config_for_provider("anthropic", "")
+        _set_model_provider(config, "anthropic")
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
 

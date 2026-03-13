@@ -46,7 +46,10 @@ _COMMON_BETAS = [
 ]
 
 # Additional beta headers required for OAuth/subscription auth
+# Both clawdbot and OpenCode include claude-code-20250219 alongside oauth-2025-04-20.
+# Without claude-code-20250219, Anthropic's API rejects OAuth tokens with 401.
 _OAUTH_ONLY_BETAS = [
+    "claude-code-20250219",
     "oauth-2025-04-20",
 ]
 
@@ -157,13 +160,91 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
+def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+    """Attempt to refresh an expired Claude Code OAuth token.
+
+    Uses the same token endpoint and client_id as Claude Code / OpenCode.
+    Only works for credentials that have a refresh token (from claude /login
+    or claude setup-token with OAuth flow).
+
+    Returns the new access token, or None if refresh fails.
+    """
+    import urllib.parse
+    import urllib.request
+
+    refresh_token = creds.get("refreshToken", "")
+    if not refresh_token:
+        logger.debug("No refresh token available — cannot refresh")
+        return None
+
+    # Client ID used by Claude Code's OAuth flow
+    CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+    data = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://console.anthropic.com/v1/oauth/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+            new_access = result.get("access_token", "")
+            new_refresh = result.get("refresh_token", refresh_token)
+            expires_in = result.get("expires_in", 3600)  # seconds
+
+            if new_access:
+                import time
+                new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
+                # Write refreshed credentials back to ~/.claude/.credentials.json
+                _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
+                logger.debug("Successfully refreshed Claude Code OAuth token")
+                return new_access
+    except Exception as e:
+        logger.debug("Failed to refresh Claude Code token: %s", e)
+
+    return None
+
+
+def _write_claude_code_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+    """Write refreshed credentials back to ~/.claude/.credentials.json."""
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    try:
+        # Read existing file to preserve other fields
+        existing = {}
+        if cred_path.exists():
+            existing = json.loads(cred_path.read_text(encoding="utf-8"))
+
+        existing["claudeAiOauth"] = {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at_ms,
+        }
+
+        cred_path.parent.mkdir(parents=True, exist_ok=True)
+        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        # Restrict permissions (credentials file)
+        cred_path.chmod(0o600)
+    except (OSError, IOError) as e:
+        logger.debug("Failed to write refreshed credentials: %s", e)
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
       1. ANTHROPIC_API_KEY env var (regular API key)
       2. ANTHROPIC_TOKEN env var (OAuth/setup token)
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+      3. CLAUDE_CODE_OAUTH_TOKEN env var
+      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+         — with automatic refresh if expired and a refresh token is available
 
     Returns the token string or None.
     """
@@ -177,18 +258,63 @@ def resolve_anthropic_token() -> Optional[str]:
     if token:
         return token
 
-    # Also check CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 3. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
         return cc_token
 
-    # 3. Claude Code credential file
+    # 4. Claude Code credential file
     creds = read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
         logger.debug("Using Claude Code credentials (auto-detected)")
         return creds["accessToken"]
     elif creds:
-        logger.debug("Claude Code credentials expired — run 'claude' to refresh")
+        # Token expired — attempt to refresh
+        logger.debug("Claude Code credentials expired — attempting refresh")
+        refreshed = _refresh_oauth_token(creds)
+        if refreshed:
+            return refreshed
+        logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+
+    return None
+
+
+def run_oauth_setup_token() -> Optional[str]:
+    """Run 'claude setup-token' interactively and return the resulting token.
+
+    Checks multiple sources after the subprocess completes:
+      1. Claude Code credential files (may be written by the subprocess)
+      2. CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_TOKEN env vars
+
+    Returns the token string, or None if no credentials were obtained.
+    Raises FileNotFoundError if the 'claude' CLI is not installed.
+    """
+    import shutil
+    import subprocess
+
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        raise FileNotFoundError(
+            "The 'claude' CLI is not installed. "
+            "Install it with: npm install -g @anthropic-ai/claude-code"
+        )
+
+    # Run interactively — stdin/stdout/stderr inherited so user can interact
+    try:
+        subprocess.run([claude_path, "setup-token"])
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+    # Check if credentials were saved to Claude Code's config files
+    creds = read_claude_code_credentials()
+    if creds and is_claude_code_token_valid(creds):
+        return creds["accessToken"]
+
+    # Check env vars that may have been set
+    for env_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"):
+        val = os.getenv(env_var, "").strip()
+        if val:
+            return val
 
     return None
 

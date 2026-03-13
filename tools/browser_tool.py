@@ -59,6 +59,7 @@ from pathlib import Path
 from agent.auxiliary_client import call_llm
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
+from tools.browser_providers.browser_use import BrowserUseProvider
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ def _get_extraction_model() -> Optional[str]:
 
 _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
+    "browser-use": BrowserUseProvider,
 }
 
 

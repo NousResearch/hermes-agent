@@ -203,6 +203,15 @@ TOOL_CATEGORIES = {
                 "browser_provider": "browserbase",
                 "post_setup": "browserbase",
             },
+            {
+                "name": "Browser Use",
+                "tag": "Cloud browser with remote execution",
+                "env_vars": [
+                    {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
+                ],
+                "browser_provider": "browser-use",
+                "post_setup": "browserbase",
+            },
         ],
     },
     "homeassistant": {

@@ -3,10 +3,14 @@
 Browser Tool Module
 
 This module provides browser automation tools using agent-browser CLI.  It
-supports two backends — **Browserbase** (cloud) and **local Chromium** — with
-identical agent-facing behaviour.  The backend is auto-detected: if
-``BROWSERBASE_API_KEY`` is set the cloud service is used; otherwise a local
-headless Chromium instance is launched automatically.
+supports two backends — **cloud** and **local Chromium** — with identical
+agent-facing behaviour.
+
+Cloud providers are pluggable.  Each provider lives in
+``tools/browser_providers/`` and implements ``CloudBrowserProvider``.  The
+user selects a provider via ``hermes setup`` / ``hermes tools``; the choice
+is persisted as ``config["browser"]["cloud_provider"]``.  When that key is
+unset the tool runs in local mode (headless Chromium).
 
 The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
 page representation, making it ideal for LLM agents without vision capabilities.
@@ -17,34 +21,23 @@ Features:
   ``agent-browser install`` (downloads Chromium) or
   ``agent-browser install --with-deps`` (also installs system libraries for
   Debian/Ubuntu/Docker).
-- **Cloud mode**: Browserbase cloud execution with stealth features, proxies,
-  and CAPTCHA solving.  Activated when BROWSERBASE_API_KEY is set.
+- **Cloud mode**: pluggable cloud browser execution (Browserbase, etc.)
+  selected via ``config["browser"]["cloud_provider"]``.
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
 - Task-aware content extraction using LLM summarization
 - Automatic cleanup of browser sessions
 
-Environment Variables:
-- BROWSERBASE_API_KEY: API key for Browserbase (enables cloud mode)
-- BROWSERBASE_PROJECT_ID: Project ID for Browserbase (required for cloud mode)
-- BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
-- BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
-  requires Scale Plan (default: "false")
-- BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
-  requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
-
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
-    
+
     # Navigate to a page
     result = browser_navigate("https://example.com", task_id="task_123")
-    
+
     # Get page snapshot
     snapshot = browser_snapshot(task_id="task_123")
-    
+
     # Click an element
     browser_click("@e5", task_id="task_123")
 """
@@ -64,6 +57,8 @@ import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from agent.auxiliary_client import call_llm
+from tools.browser_providers.base import CloudBrowserProvider
+from tools.browser_providers.browserbase import BrowserbaseProvider
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +86,35 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
-def _is_local_mode() -> bool:
-    """Return True when no Browserbase credentials are configured.
+# ============================================================================
+# Cloud Provider Registry
+# ============================================================================
 
-    In local mode the browser tools launch a headless Chromium instance via
-    ``agent-browser --session`` instead of connecting to a remote Browserbase
-    session via ``--cdp``.
+_PROVIDER_REGISTRY: Dict[str, type] = {
+    "browserbase": BrowserbaseProvider,
+}
+
+
+def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Return the configured cloud browser provider, or None for local mode.
+
+    Reads ``config["browser"]["cloud_provider"]``.  If unset → local mode.
+    No auto-detection — the user must explicitly select a provider via
+    ``hermes setup`` / ``hermes tools``.
     """
-    return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            provider_key = cfg.get("browser", {}).get("cloud_provider")
+            if provider_key and provider_key in _PROVIDER_REGISTRY:
+                return _PROVIDER_REGISTRY[provider_key]()
+    except Exception as e:
+        logger.debug("Could not read cloud_provider from config: %s", e)
+    return None
 
 
 def _socket_safe_tmpdir() -> str:
@@ -155,64 +171,39 @@ def _emergency_cleanup_all_sessions():
     if _cleanup_done:
         return
     _cleanup_done = True
-    
+
     if not _active_sessions:
         return
-    
+
     logger.info("Emergency cleanup: closing %s active session(s)...", len(_active_sessions))
-    
+
+    provider = _get_cloud_provider()
+
     try:
-        if _is_local_mode():
-            # Local mode: just close agent-browser sessions via CLI
-            for task_id, session_info in list(_active_sessions.items()):
-                session_name = session_info.get("session_name")
-                if session_name:
-                    try:
-                        browser_cmd = _find_agent_browser()
-                        task_socket_dir = os.path.join(
-                            _socket_safe_tmpdir(),
-                            f"agent-browser-{session_name}"
-                        )
-                        env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
-                        subprocess.run(
-                            browser_cmd.split() + ["--session", session_name, "--json", "close"],
-                            capture_output=True, timeout=5, env=env,
-                        )
-                        logger.info("Closed local session %s", session_name)
-                    except Exception as e:
-                        logger.debug("Error closing local session %s: %s", session_name, e)
-        else:
-            # Cloud mode: release Browserbase sessions via API
-            api_key = os.environ.get("BROWSERBASE_API_KEY")
-            project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
+        for task_id, session_info in list(_active_sessions.items()):
+            bb_session_id = session_info.get("bb_session_id")
+            session_name = session_info.get("session_name")
 
-            if not api_key or not project_id:
-                logger.warning("Cannot cleanup - missing BROWSERBASE credentials")
-                return
+            if bb_session_id and provider is not None:
+                # Cloud session — delegate to provider
+                provider.emergency_cleanup(bb_session_id)
+            elif session_name:
+                # Local session — close via agent-browser CLI
+                try:
+                    browser_cmd = _find_agent_browser()
+                    task_socket_dir = os.path.join(
+                        _socket_safe_tmpdir(),
+                        f"agent-browser-{session_name}"
+                    )
+                    env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+                    subprocess.run(
+                        browser_cmd.split() + ["--session", session_name, "--json", "close"],
+                        capture_output=True, timeout=5, env=env,
+                    )
+                    logger.info("Closed local session %s", session_name)
+                except Exception as e:
+                    logger.debug("Error closing local session %s: %s", session_name, e)
 
-            for task_id, session_info in list(_active_sessions.items()):
-                bb_session_id = session_info.get("bb_session_id")
-                if bb_session_id:
-                    try:
-                        response = requests.post(
-                            f"https://api.browserbase.com/v1/sessions/{bb_session_id}",
-                            headers={
-                                "X-BB-API-Key": api_key,
-                                "Content-Type": "application/json"
-                            },
-                            json={
-                                "projectId": project_id,
-                                "status": "REQUEST_RELEASE"
-                            },
-                            timeout=5  # Short timeout for cleanup
-                        )
-                        if response.status_code in (200, 201, 204):
-                            logger.info("Closed session %s", bb_session_id)
-                        else:
-                            logger.warning("Failed to close session %s: HTTP %s", bb_session_id, response.status_code)
-                    except Exception as e:
-                        logger.error("Error closing session %s: %s", bb_session_id, e)
-        
         _active_sessions.clear()
     except Exception as e:
         logger.error("Emergency cleanup error: %s", e)
@@ -488,165 +479,10 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_browserbase_session(task_id: str) -> Dict[str, str]:
-    """
-    Create a Browserbase session with stealth features.
-    
-    Browserbase Stealth Modes:
-    - Basic Stealth: ALWAYS enabled automatically. Generates random fingerprints,
-      viewports, and solves visual CAPTCHAs. No configuration needed.
-    - Advanced Stealth: Uses custom Chromium build for better bot detection avoidance.
-      Requires Scale Plan. Enable via BROWSERBASE_ADVANCED_STEALTH=true.
-    
-    Proxies are enabled by default to route traffic through residential IPs,
-    which significantly improves CAPTCHA solving rates. Can be disabled via
-    BROWSERBASE_PROXIES=false if needed.
-    
-    Args:
-        task_id: Unique identifier for the task
-        
-    Returns:
-        Dict with session_name, bb_session_id, cdp_url, and feature flags
-    """
-    import uuid
-    import sys
-    
-    config = _get_browserbase_config()
-    
-    # Check for optional settings from environment
-    # Proxies: enabled by default for better CAPTCHA solving
-    enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
-    # Advanced Stealth: requires Scale Plan, disabled by default
-    enable_advanced_stealth = os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
-    # keepAlive: enabled by default (requires paid plan) - allows reconnection after disconnects
-    enable_keep_alive = os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
-    # Custom session timeout in milliseconds (optional) - extends session beyond project default
-    custom_timeout_ms = os.environ.get("BROWSERBASE_SESSION_TIMEOUT")
-    
-    # Track which features are actually enabled for logging/debugging
-    features_enabled = {
-        "basic_stealth": True,  # Always on
-        "proxies": False,
-        "advanced_stealth": False,
-        "keep_alive": False,
-        "custom_timeout": False,
-    }
-    
-    # Build session configuration
-    # Note: Basic stealth mode is ALWAYS active - no configuration needed
-    session_config = {
-        "projectId": config["project_id"],
-    }
-    
-    # Enable keepAlive for session reconnection (default: true, requires paid plan)
-    # Allows reconnecting to the same session after network hiccups
-    if enable_keep_alive:
-        session_config["keepAlive"] = True
-    
-    # Add custom timeout if specified (in milliseconds)
-    # This extends session duration beyond project's default timeout
-    if custom_timeout_ms:
-        try:
-            timeout_val = int(custom_timeout_ms)
-            if timeout_val > 0:
-                session_config["timeout"] = timeout_val
-        except ValueError:
-            logger.warning("Invalid BROWSERBASE_SESSION_TIMEOUT value: %s", custom_timeout_ms)
-    
-    # Enable proxies for better CAPTCHA solving (default: true)
-    # Routes traffic through residential IPs for more reliable access
-    if enable_proxies:
-        session_config["proxies"] = True
-    
-    # Add advanced stealth if enabled (requires Scale Plan)
-    # Uses custom Chromium build to avoid bot detection altogether
-    if enable_advanced_stealth:
-        session_config["browserSettings"] = {
-            "advancedStealth": True,
-        }
-    
-    # Create session via Browserbase API
-    response = requests.post(
-        "https://api.browserbase.com/v1/sessions",
-        headers={
-            "Content-Type": "application/json",
-            "X-BB-API-Key": config["api_key"],
-        },
-        json=session_config,
-        timeout=30
-    )
-    
-    # Track if we fell back from paid features
-    proxies_fallback = False
-    keepalive_fallback = False
-    
-    # Handle 402 Payment Required - likely paid features not available
-    # Try to identify which feature caused the issue and retry without it
-    if response.status_code == 402:
-        # First try without keepAlive (most likely culprit for paid plan requirement)
-        if enable_keep_alive:
-            keepalive_fallback = True
-            logger.warning("keepAlive may require paid plan (402), retrying without it. "
-                          "Sessions may timeout during long operations.")
-            session_config.pop("keepAlive", None)
-            response = requests.post(
-                "https://api.browserbase.com/v1/sessions",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-BB-API-Key": config["api_key"],
-                },
-                json=session_config,
-                timeout=30
-            )
-        
-        # If still 402, try without proxies too
-        if response.status_code == 402 and enable_proxies:
-            proxies_fallback = True
-            logger.warning("Proxies unavailable (402), retrying without proxies. "
-                          "Bot detection may be less effective.")
-            session_config.pop("proxies", None)
-            response = requests.post(
-                "https://api.browserbase.com/v1/sessions",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-BB-API-Key": config["api_key"],
-                },
-                json=session_config,
-                timeout=30
-            )
-    
-    if not response.ok:
-        raise RuntimeError(f"Failed to create Browserbase session: {response.status_code} {response.text}")
-    
-    session_data = response.json()
-    session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-    
-    # Update features based on what actually succeeded
-    if enable_proxies and not proxies_fallback:
-        features_enabled["proxies"] = True
-    if enable_advanced_stealth:
-        features_enabled["advanced_stealth"] = True
-    if enable_keep_alive and not keepalive_fallback:
-        features_enabled["keep_alive"] = True
-    if custom_timeout_ms and "timeout" in session_config:
-        features_enabled["custom_timeout"] = True
-    
-    # Log session info for debugging
-    feature_str = ", ".join(k for k, v in features_enabled.items() if v)
-    logger.info("Created session %s with features: %s", session_name, feature_str)
-    
-    return {
-        "session_name": session_name,
-        "bb_session_id": session_data["id"],
-        "cdp_url": session_data["connectUrl"],
-        "features": features_enabled,
-    }
-
-
 def _create_local_session(task_id: str) -> Dict[str, str]:
     """Create a lightweight local browser session (no cloud API call).
 
-    Returns the same dict shape as ``_create_browserbase_session`` so the rest
+    Returns the same dict shape as cloud provider sessions so the rest
     of the code can treat both modes uniformly.
     """
     import uuid
@@ -690,10 +526,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    if _is_local_mode():
+    provider = _get_cloud_provider()
+    if provider is None:
         session_info = _create_local_session(task_id)
     else:
-        session_info = _create_browserbase_session(task_id)
+        session_info = provider.create_session(task_id)
     
     with _cleanup_lock:
         _active_sessions[task_id] = session_info
@@ -714,30 +551,6 @@ def _get_session_name(task_id: Optional[str] = None) -> str:
     session_info = _get_session_info(task_id)
     return session_info["session_name"]
 
-
-def _get_browserbase_config() -> Dict[str, str]:
-    """
-    Get Browserbase configuration from environment.
-    
-    Returns:
-        Dict with api_key and project_id
-        
-    Raises:
-        ValueError: If required env vars are not set
-    """
-    api_key = os.environ.get("BROWSERBASE_API_KEY")
-    project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-    
-    if not api_key or not project_id:
-        raise ValueError(
-            "BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID environment variables are required. "
-            "Get your credentials at https://browserbase.com"
-        )
-    
-    return {
-        "api_key": api_key,
-        "project_id": project_id
-    }
 
 
 def _find_agent_browser() -> str:
@@ -843,67 +656,105 @@ def _run_browser_command(
         os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
-        
+
         browser_env = {**os.environ}
         # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
         _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         if "/usr/bin" not in browser_env.get("PATH", "").split(":"):
             browser_env["PATH"] = f"{browser_env.get('PATH', '')}:{_SANE_PATH}"
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-        
-        result = subprocess.run(
-            cmd_parts,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=browser_env,
-        )
-        
+
+        # Use temp files for stdout/stderr instead of pipes.
+        # agent-browser starts a background daemon that inherits file
+        # descriptors.  With capture_output=True (pipes), the daemon keeps
+        # the pipe fds open after the CLI exits, so communicate() never
+        # sees EOF and blocks until the timeout fires.  Temp files avoid
+        # this: process.wait() returns as soon as the CLI exits regardless
+        # of what the daemon does with its inherited fds.
+        stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
+        stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
+        stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            proc = subprocess.Popen(
+                cmd_parts,
+                stdout=stdout_fd,
+                stderr=stderr_fd,
+                stdin=subprocess.DEVNULL,
+                env=browser_env,
+            )
+        finally:
+            os.close(stdout_fd)
+            os.close(stderr_fd)
+
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                           command, timeout, task_id, task_socket_dir)
+            return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+
+        with open(stdout_path, "r") as f:
+            stdout = f.read()
+        with open(stderr_path, "r") as f:
+            stderr = f.read()
+        returncode = proc.returncode
+
+        # Clean up temp files (best-effort; socket dir cleanup handles the rest)
+        for p in (stdout_path, stderr_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
         # Log stderr for diagnostics — use warning level on failure so it's visible
-        if result.stderr and result.stderr.strip():
-            level = logging.WARNING if result.returncode != 0 else logging.DEBUG
-            logger.log(level, "browser '%s' stderr: %s", command, result.stderr.strip()[:500])
-        
+        if stderr and stderr.strip():
+            level = logging.WARNING if returncode != 0 else logging.DEBUG
+            logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
+
         # Log empty output as warning — common sign of broken agent-browser
-        if not result.stdout.strip() and result.returncode == 0:
+        if not stdout.strip() and returncode == 0:
             logger.warning("browser '%s' returned empty stdout with rc=0. "
                            "cmd=%s stderr=%s",
                            command, " ".join(cmd_parts[:4]) + "...",
-                           (result.stderr or "")[:200])
+                           (stderr or "")[:200])
 
         # Parse JSON output
-        if result.stdout.strip():
+        if stdout.strip():
             try:
-                parsed = json.loads(result.stdout.strip())
+                parsed = json.loads(stdout.strip())
                 # Warn if snapshot came back empty (common sign of daemon/CDP issues)
                 if command == "snapshot" and parsed.get("success"):
                     snap_data = parsed.get("data", {})
                     if not snap_data.get("snapshot") and not snap_data.get("refs"):
                         logger.warning("snapshot returned empty content. "
                                        "Possible stale daemon or CDP connection issue. "
-                                       "returncode=%s", result.returncode)
+                                       "returncode=%s", returncode)
                 return parsed
             except json.JSONDecodeError:
                 # Non-JSON output indicates agent-browser crash or version mismatch
-                raw = result.stdout.strip()[:500]
+                raw = stdout.strip()[:500]
                 logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                               command, result.returncode, raw[:200])
+                               command, returncode, raw[:200])
                 return {
                     "success": True,
                     "data": {"raw": raw}
                 }
-        
+
         # Check for errors
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() if result.stderr else f"Command failed with code {result.returncode}"
-            logger.warning("browser '%s' failed (rc=%s): %s", command, result.returncode, error_msg[:300])
+        if returncode != 0:
+            error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
+            logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
             return {"success": False, "error": error_msg}
-        
+
         return {"success": True, "data": {}}
-        
+
     except subprocess.TimeoutExpired:
-        logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                       command, timeout, task_id, task_socket_dir)
+        # Shouldn't reach here (handled above), but kept as safety net
+        logger.warning("browser '%s' timed out after %ds (task=%s)",
+                       command, timeout, task_id)
         return {"success": False, "error": f"Command timed out after {timeout} seconds"}
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
@@ -1269,18 +1120,18 @@ def browser_close(task_id: Optional[str] = None) -> str:
     
     result = _run_browser_command(effective_task_id, "close", [])
     
-    # Close the backend session (Browserbase API in cloud mode, nothing extra in local mode)
+    # Close the backend session (cloud API in cloud mode, nothing extra in local mode)
     session_key = task_id if task_id and task_id in _active_sessions else "default"
     if session_key in _active_sessions:
         session_info = _active_sessions[session_key]
         bb_session_id = session_info.get("bb_session_id")
         if bb_session_id:
-            # Cloud mode: release the Browserbase session via API
-            try:
-                config = _get_browserbase_config()
-                _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
-            except Exception as e:
-                logger.warning("Could not close BrowserBase session: %s", e)
+            provider = _get_cloud_provider()
+            if provider is not None:
+                try:
+                    provider.close_session(bb_session_id)
+                except Exception as e:
+                    logger.warning("Could not close cloud browser session: %s", e)
         del _active_sessions[session_key]
     
     if result.get("success"):
@@ -1498,7 +1349,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
-            mode = "local" if _is_local_mode() else "cloud"
+            _cp = _get_cloud_provider()
+            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
@@ -1506,7 +1358,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         
         # Check if screenshot file was created
         if not screenshot_path.exists():
-            mode = "local" if _is_local_mode() else "cloud"
+            _cp = _get_cloud_provider()
+            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": (
@@ -1615,48 +1468,6 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def _close_browserbase_session(session_id: str, api_key: str, project_id: str) -> bool:
-    """
-    Close a Browserbase session immediately via the API.
-    
-    Uses POST /v1/sessions/{id} with status=REQUEST_RELEASE to immediately
-    terminate the session without waiting for keepAlive timeout.
-    
-    Args:
-        session_id: The Browserbase session ID
-        api_key: Browserbase API key
-        project_id: Browserbase project ID
-        
-    Returns:
-        True if session was successfully closed, False otherwise
-    """
-    try:
-        # POST to update session status to REQUEST_RELEASE
-        response = requests.post(
-            f"https://api.browserbase.com/v1/sessions/{session_id}",
-            headers={
-                "X-BB-API-Key": api_key,
-                "Content-Type": "application/json"
-            },
-            json={
-                "projectId": project_id,
-                "status": "REQUEST_RELEASE"
-            },
-            timeout=10
-        )
-        
-        if response.status_code in (200, 201, 204):
-            logger.debug("Successfully closed BrowserBase session %s", session_id)
-            return True
-        else:
-            logger.warning("Failed to close session %s: HTTP %s - %s", session_id, response.status_code, response.text[:200])
-            return False
-                
-    except Exception as e:
-        logger.error("Exception closing session %s: %s", session_id, e)
-        return False
-
-
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
     Clean up browser session for a task.
@@ -1697,15 +1508,16 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
         
-        # Cloud mode: close the Browserbase session via API
-        if bb_session_id and not _is_local_mode():
-            try:
-                config = _get_browserbase_config()
-                success = _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
-                if not success:
-                    logger.warning("Could not close BrowserBase session %s", bb_session_id)
-            except Exception as e:
-                logger.error("Exception during BrowserBase session close: %s", e)
+        # Cloud mode: close the session via provider API
+        if bb_session_id:
+            provider = _get_cloud_provider()
+            if provider is not None:
+                try:
+                    success = provider.close_session(bb_session_id)
+                    if not success:
+                        logger.warning("Could not close cloud browser session %s", bb_session_id)
+                except Exception as e:
+                    logger.error("Exception during cloud browser session close: %s", e)
         
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -1756,30 +1568,23 @@ def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
 # ============================================================================
 
 def check_browser_requirements() -> bool:
-    """
-    Check if browser tool requirements are met.
+    """Check if browser tool requirements are met.
 
-    In **local mode** (no Browserbase credentials): only the ``agent-browser``
-    CLI must be findable.
+    Always requires the ``agent-browser`` CLI.  In cloud mode (provider
+    selected via config) also requires ``provider.is_configured()`` to
+    pass — i.e. the relevant env vars must be present.
 
-    In **cloud mode** (BROWSERBASE_API_KEY set): the CLI *and* both
-    ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` must be present.
-    
     Returns:
         True if all requirements are met, False otherwise
     """
-    # The agent-browser CLI is always required
     try:
         _find_agent_browser()
     except FileNotFoundError:
         return False
 
-    # In cloud mode, also require Browserbase credentials
-    if not _is_local_mode():
-        api_key = os.environ.get("BROWSERBASE_API_KEY")
-        project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-        if not api_key or not project_id:
-            return False
+    provider = _get_cloud_provider()
+    if provider is not None and not provider.is_configured():
+        return False
 
     return True
 
@@ -1795,9 +1600,10 @@ if __name__ == "__main__":
     print("🌐 Browser Tool Module")
     print("=" * 40)
 
-    mode = "local" if _is_local_mode() else "cloud (Browserbase)"
+    _provider = _get_cloud_provider()
+    mode = "local" if _provider is None else f"cloud ({_provider.provider_name()})"
     print(f"   Mode: {mode}")
-    
+
     # Check requirements
     if check_browser_requirements():
         print("✅ All requirements met")
@@ -1808,12 +1614,9 @@ if __name__ == "__main__":
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
             print("     Install: npm install -g agent-browser && agent-browser install --with-deps")
-        if not _is_local_mode():
-            if not os.environ.get("BROWSERBASE_API_KEY"):
-                print("   - BROWSERBASE_API_KEY not set (required for cloud mode)")
-            if not os.environ.get("BROWSERBASE_PROJECT_ID"):
-                print("   - BROWSERBASE_PROJECT_ID not set (required for cloud mode)")
-            print("   Tip: unset BROWSERBASE_API_KEY to use free local mode instead")
+        if _provider is not None and not _provider.is_configured():
+            print(f"   - {_provider.provider_name()} credentials not set")
+            print("   Tip: run 'hermes tools' to reconfigure or switch to local mode")
     
     print("\n📋 Available Browser Tools:")
     for schema in BROWSER_TOOL_SCHEMAS:

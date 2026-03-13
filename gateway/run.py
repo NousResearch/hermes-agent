@@ -1446,6 +1446,11 @@ class GatewayRunner:
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
 
+            # If the agent's session_id changed during compression, update
+            # session_entry so transcript writes below go to the right session.
+            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                session_entry.session_id = agent_result["session_id"]
+
             # Prepend reasoning/thinking if display is enabled
             if getattr(self, "_show_reasoning", False) and response:
                 last_reasoning = agent_result.get("last_reasoning")
@@ -3495,6 +3500,23 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
+            # Sync session_id: the agent may have created a new session during
+            # mid-run context compression (_compress_context splits sessions).
+            # If so, update the session store entry so the NEXT message loads
+            # the compressed transcript, not the stale pre-compression one.
+            agent = agent_holder[0]
+            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent.session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent.session_id
+                    self.session_store._save()
+
+            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -3503,6 +3525,7 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": len(agent_history),
                 "last_prompt_tokens": _last_prompt_toks,
+                "session_id": effective_session_id,
             }
         
         # Start progress message sender if enabled

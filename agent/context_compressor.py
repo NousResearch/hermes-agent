@@ -288,7 +288,19 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else None
             summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+            if first_tail_role and summary_role == first_tail_role:
+                flipped = "user" if summary_role == "assistant" else "assistant"
+                head_collides = (
+                    (flipped == "assistant" and last_head_role in ("assistant", "tool"))
+                    or (flipped == "user" and last_head_role == "user")
+                )
+                if not head_collides:
+                    summary_role = flipped
+                else:
+                    summary_role = "user"
+                    summary = "[Summary of previous conversation]\n" + summary
             compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:

@@ -81,6 +81,10 @@ _DB_CONNSTR_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# Matrix user IDs: @localpart:homeserver  (e.g. @alice:example.org, @user:matrix.org)
+# Captures only the localpart and homeserver (not the @) for partial redaction
+_MATRIX_ID_RE = re.compile(r"(@)([^:\s@]+)(:[a-zA-Z0-9.\-]+(:[0-9]+)?)")
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -146,6 +150,16 @@ def redact_sensitive_text(text: str) -> str:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # Matrix user IDs (e.g., @alice:example.org → @al**:example.org)
+    def _redact_matrix_id(m):
+        at = m.group(1)
+        local = m.group(2)
+        server = m.group(3)
+        if len(local) <= 2:
+            return f"{at}{'*' * len(local)}{server}"
+        return f"{at}{local[:2]}{'*' * (len(local) - 2)}{server}"
+    text = _MATRIX_ID_RE.sub(_redact_matrix_id, text)
 
     return text
 

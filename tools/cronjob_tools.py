@@ -103,8 +103,10 @@ def schedule_cronjob(
                  - "telegram": Send to Telegram home channel
                  - "discord": Send to Discord home channel
                  - "signal": Send to Signal home channel
+                 - "matrix": Send to Matrix home channel
                  - "telegram:123456": Send to specific chat ID
                  - "signal:+15551234567": Send to specific Signal number
+                 - "matrix:!roomid:server.org": Send to specific Matrix room
     
     Returns:
         JSON with job_id, next_run time, and confirmation
@@ -218,7 +220,7 @@ Use for: reminders, periodic checks, scheduled reports, automated maintenance.""
             },
             "deliver": {
                 "type": "string",
-                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', 'signal', or 'platform:chat_id'"
+                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', 'signal', 'matrix', or 'platform:chat_id'"
             }
         },
         "required": ["prompt", "schedule"]

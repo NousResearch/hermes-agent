@@ -36,7 +36,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'matrix:!roomid:server.org'"
             },
             "message": {
                 "type": "string",
@@ -120,6 +120,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "matrix": Platform.MATRIX,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -188,6 +189,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None)
         return await _send_signal(pconfig.extra, chat_id, message)
     elif platform == Platform.EMAIL:
         return await _send_email(pconfig.extra, chat_id, message)
+    elif platform == Platform.MATRIX:
+        return await _send_matrix(pconfig, chat_id, message)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -313,6 +316,65 @@ async def _send_email(extra, chat_id, message):
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Email send failed: {e}"}
+
+
+async def _send_matrix(pconfig, chat_id, message):
+    """Send via Matrix Client-Server API (one-shot, no persistent sync needed)."""
+    try:
+        from nio import AsyncClient, AsyncClientConfig, RoomSendResponse
+    except ImportError:
+        return {"error": "matrix-nio not installed. Run: pip install matrix-nio"}
+
+    homeserver_url = pconfig.extra.get("homeserver_url", "").rstrip("/")
+    access_token = pconfig.token or ""
+    user_id = pconfig.extra.get("user_id", "")
+    verify_ssl = pconfig.extra.get("verify_ssl", True)
+
+    if not homeserver_url or not access_token:
+        return {
+            "error": (
+                "Matrix not configured "
+                "(MATRIX_HOMESERVER_URL and MATRIX_ACCESS_TOKEN required)"
+            )
+        }
+    if not user_id:
+        return {"error": "Matrix not configured (MATRIX_USER_ID required)"}
+
+    config = AsyncClientConfig(encryption_enabled=False)
+    client = AsyncClient(
+        homeserver_url, user_id, config=config, ssl=verify_ssl
+    )
+    client.access_token = access_token
+
+    try:
+        # Include HTML rendering if markdown library is available
+        msg_content: dict = {"msgtype": "m.text", "body": message}
+        try:
+            import markdown as _md
+            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = html
+        except ImportError:
+            pass
+
+        resp = await client.room_send(
+            room_id=chat_id,
+            message_type="m.room.message",
+            content=msg_content,
+            ignore_unverified_devices=True,
+        )
+        if isinstance(resp, RoomSendResponse):
+            return {
+                "success": True,
+                "platform": "matrix",
+                "chat_id": chat_id,
+                "event_id": resp.event_id,
+            }
+        return {"error": f"Matrix send failed: {resp}"}
+    except Exception as e:
+        return {"error": f"Matrix send failed: {e}"}
+    finally:
+        await client.close()
 
 
 def _check_send_message():

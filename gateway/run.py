@@ -586,6 +586,7 @@ class GatewayRunner:
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+                       "SIGNAL_ALLOWED_USERS", "MATRIX_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
@@ -793,6 +794,13 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
+        elif platform == Platform.MATRIX:
+            from gateway.platforms.matrix import MatrixAdapter, check_matrix_requirements
+            if not check_matrix_requirements():
+                logger.warning("Matrix: matrix-nio not installed or MATRIX_HOMESERVER_URL/MATRIX_ACCESS_TOKEN/MATRIX_USER_ID not configured")
+                return None
+            return MatrixAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -823,6 +831,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -831,6 +840,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2158,6 +2168,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.MATRIX: "hermes-matrix",
             }
             platform_toolsets_config = {}
             try:
@@ -2179,6 +2190,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.MATRIX: "matrix",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -3060,6 +3072,7 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.MATRIX: "hermes-matrix",
         }
         
         # Try to load platform_toolsets from config
@@ -3084,6 +3097,7 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.MATRIX: "matrix",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

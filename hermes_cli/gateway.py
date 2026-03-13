@@ -519,6 +519,45 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "matrix",
+        "label": "Matrix",
+        "emoji": "🔷",
+        "token_var": "MATRIX_ACCESS_TOKEN",
+        "setup_instructions": [
+            "1. Register a Matrix account for your bot on your homeserver:",
+            "   register_new_matrix_user -c /etc/matrix-synapse/homeserver.yaml \\",
+            "     --no-admin -u hermes -p <password>",
+            "   (adjust the path to homeserver.yaml for your setup)",
+            "2. Generate an access token (replace homeserver, username, password):",
+            "   curl -s -XPOST 'https://<homeserver>/_matrix/client/v3/login' \\",
+            "     -H 'Content-Type: application/json' \\",
+            "     -d '{\"type\":\"m.login.password\",\"user\":\"hermes\",\"password\":\"<password>\"}'",
+            "   Copy the 'access_token' value from the JSON response (starts with syt_)",
+            "3. Find your own Matrix user ID so you can add yourself to the allowlist:",
+            "   Your user ID is in the format @username:homeserver (e.g., @alice:matrix.org)",
+            "   You can confirm it via: Element → Settings → General → your Matrix ID",
+            "4. Invite the bot to any room — it will auto-accept invites from allowed users",
+            "5. For self-hosted servers with self-signed TLS certificates,",
+            "   set MATRIX_VERIFY_SSL=false (safe for private/LAN homeservers)",
+        ],
+        "vars": [
+            {"name": "MATRIX_HOMESERVER_URL", "prompt": "Homeserver URL", "password": False,
+             "help": "e.g., https://matrix.org or https://matrix.example.org:8448"},
+            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Bot access token", "password": True,
+             "help": "Generate via: curl -XPOST 'https://homeserver/_matrix/client/v3/login' "
+                     "-d '{\"type\":\"m.login.password\",\"user\":\"bot\",\"password\":\"pass\"}'"},
+            {"name": "MATRIX_USER_ID", "prompt": "Bot Matrix user ID", "password": False,
+             "help": "e.g., @hermes:matrix.org"},
+            {"name": "MATRIX_HOME_CHANNEL", "prompt": "Home room ID (optional)", "password": False,
+             "help": "e.g., !roomid:matrix.org — used as default delivery target for cron jobs"},
+            {"name": "MATRIX_ALLOWED_USERS", "prompt": "Allowed Matrix users (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "e.g., @alice:matrix.org,@bob:example.org"},
+            {"name": "MATRIX_VERIFY_SSL", "prompt": "Verify SSL (true/false, default: true)", "password": False,
+             "help": "Set to false only for private homeservers with self-signed certificates"},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -567,6 +606,14 @@ def _platform_status(platform: dict) -> str:
         if val and account:
             return "configured"
         if val or account:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "matrix":
+        homeserver = get_env_value("MATRIX_HOMESERVER_URL")
+        user_id = get_env_value("MATRIX_USER_ID")
+        if val and homeserver and user_id:
+            return "configured"
+        if val or homeserver or user_id:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "email":

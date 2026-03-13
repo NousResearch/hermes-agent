@@ -131,6 +131,16 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "matrix": (
+        "You are on Matrix, a federated, open-standard messaging protocol. "
+        "Markdown is fully supported — use it for formatting (bold, italics, "
+        "code blocks, headers, lists). You can send media files natively: "
+        "to deliver a file to the user, include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) appear as inline previews, "
+        "audio as playable voice messages, and other files as downloadable "
+        "attachments. You can also include image URLs in markdown format "
+        "![alt](url) and they will be sent as images."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

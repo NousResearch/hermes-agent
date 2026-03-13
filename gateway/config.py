@@ -29,6 +29,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    MATRIX = "matrix"
 
 
 @dataclass
@@ -167,6 +168,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
+                connected.append(platform)
+            # Matrix uses extra dict for config (homeserver_url + user_id)
+            elif platform == Platform.MATRIX and config.extra.get("homeserver_url"):
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
@@ -425,6 +429,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SIGNAL,
                 chat_id=signal_home,
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Matrix
+    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_homeserver = os.getenv("MATRIX_HOMESERVER_URL")
+    matrix_user_id = os.getenv("MATRIX_USER_ID")
+    if matrix_token and matrix_homeserver and matrix_user_id:
+        if Platform.MATRIX not in config.platforms:
+            config.platforms[Platform.MATRIX] = PlatformConfig()
+        config.platforms[Platform.MATRIX].enabled = True
+        config.platforms[Platform.MATRIX].token = matrix_token
+        config.platforms[Platform.MATRIX].extra.update({
+            "homeserver_url": matrix_homeserver.rstrip("/"),
+            "user_id": matrix_user_id,
+            "verify_ssl": os.getenv("MATRIX_VERIFY_SSL", "true").lower() not in ("false", "0", "no"),
+        })
+        matrix_home = os.getenv("MATRIX_HOME_CHANNEL")
+        if matrix_home:
+            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+                platform=Platform.MATRIX,
+                chat_id=matrix_home,
+                name=os.getenv("MATRIX_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Home Assistant

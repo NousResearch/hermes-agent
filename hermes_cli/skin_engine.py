@@ -177,14 +177,19 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#8B8682",
         },
         "colors_light": {
-            "banner_title": "#B8860B",
-            "banner_accent": "#996600",
-            "banner_text": "#5C4A00",
-            "prompt": "#5C4A00",
-            "ui_accent": "#996600",
-            "ui_label": "#0277BD",
-            "response_border": "#B8860B",
-            "session_label": "#8B6914",
+            "banner_border": "#7A5A00",
+            "banner_title": "#6B4C00",
+            "banner_accent": "#7A5500",
+            "banner_dim": "#8B7355",
+            "banner_text": "#3D2B00",
+            "prompt": "#3D2B00",
+            "ui_accent": "#7A5500",
+            "ui_label": "#01579B",
+            "ui_ok": "#1B5E20",
+            "input_rule": "#7A5A00",
+            "response_border": "#6B4C00",
+            "session_label": "#5C4300",
+            "session_border": "#8B7355",
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
@@ -220,12 +225,19 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#6E584B",
         },
         "colors_light": {
-            "banner_title": "#8B6914",
-            "banner_text": "#4A2500",
-            "prompt": "#4A2500",
-            "ui_label": "#8B6914",
-            "response_border": "#9F1C1C",
-            "session_label": "#8B6914",
+            "banner_border": "#6B1010",
+            "banner_title": "#5C4300",
+            "banner_accent": "#8B1A1A",
+            "banner_dim": "#5C4030",
+            "banner_text": "#3A1800",
+            "prompt": "#3A1800",
+            "ui_accent": "#8B1A1A",
+            "ui_label": "#5C4300",
+            "ui_ok": "#1B5E20",
+            "input_rule": "#6B1010",
+            "response_border": "#7A1515",
+            "session_label": "#5C4300",
+            "session_border": "#5C4A3A",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
@@ -292,11 +304,20 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#555555",
         },
         "colors_light": {
-            "banner_title": "#333333",
-            "banner_text": "#444444",
-            "prompt": "#333333",
-            "ui_error": "#555555",
-            "response_border": "#666666",
+            "banner_border": "#333333",
+            "banner_title": "#222222",
+            "banner_accent": "#333333",
+            "banner_dim": "#555555",
+            "banner_text": "#333333",
+            "prompt": "#222222",
+            "ui_accent": "#333333",
+            "ui_label": "#444444",
+            "ui_ok": "#444444",
+            "ui_error": "#333333",
+            "input_rule": "#333333",
+            "response_border": "#444444",
+            "session_label": "#444444",
+            "session_border": "#666666",
         },
         "spinner": {},
         "branding": {
@@ -330,13 +351,19 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#4b5563",
         },
         "colors_light": {
-            "banner_title": "#2050A0",
-            "banner_text": "#333333",
-            "prompt": "#333333",
-            "ui_accent": "#2050A0",
-            "ui_label": "#3355AA",
-            "response_border": "#4169e1",
-            "session_label": "#2050A0",
+            "banner_border": "#1A3A7A",
+            "banner_title": "#1A3570",
+            "banner_accent": "#1E4090",
+            "banner_dim": "#3B4555",
+            "banner_text": "#1A2A50",
+            "prompt": "#1A2A50",
+            "ui_accent": "#1A3570",
+            "ui_label": "#1E3A80",
+            "ui_ok": "#1B5E20",
+            "input_rule": "#1A3A7A",
+            "response_border": "#2A4FA0",
+            "session_label": "#1A3570",
+            "session_border": "#5A6070",
         },
         "spinner": {},
         "branding": {
@@ -370,13 +397,19 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#496884",
         },
         "colors_light": {
-            "banner_title": "#1A5090",
-            "banner_text": "#153C73",
-            "prompt": "#153C73",
-            "ui_accent": "#1A5090",
-            "ui_label": "#1A5090",
-            "response_border": "#2A6FB9",
-            "session_label": "#1A5090",
+            "banner_border": "#0D3060",
+            "banner_title": "#0D3060",
+            "banner_accent": "#154080",
+            "banner_dim": "#2A4565",
+            "banner_text": "#0A2850",
+            "prompt": "#0A2850",
+            "ui_accent": "#0D3060",
+            "ui_label": "#0D3060",
+            "ui_ok": "#1B5E20",
+            "input_rule": "#0D3060",
+            "response_border": "#1A5090",
+            "session_label": "#0D3060",
+            "session_border": "#3A5575",
         },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
@@ -443,15 +476,21 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#656565",
         },
         "colors_light": {
-            "banner_title": "#333333",
-            "banner_accent": "#444444",
-            "banner_text": "#4A4A4A",
-            "prompt": "#333333",
-            "ui_accent": "#444444",
-            "ui_label": "#555555",
-            "ui_error": "#444444",
-            "ui_warn": "#555555",
-            "response_border": "#656565",
+            "banner_border": "#666666",
+            "banner_title": "#222222",
+            "banner_accent": "#333333",
+            "banner_dim": "#555555",
+            "banner_text": "#333333",
+            "prompt": "#222222",
+            "ui_accent": "#333333",
+            "ui_label": "#444444",
+            "ui_ok": "#444444",
+            "ui_error": "#333333",
+            "ui_warn": "#444444",
+            "input_rule": "#666666",
+            "response_border": "#555555",
+            "session_label": "#444444",
+            "session_border": "#777777",
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
@@ -519,13 +558,19 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#6C4724",
         },
         "colors_light": {
-            "banner_title": "#8B4513",
-            "banner_text": "#5C2D00",
-            "prompt": "#5C2D00",
-            "ui_accent": "#B85A1D",
-            "ui_label": "#8B4513",
-            "response_border": "#C75B1D",
-            "session_label": "#8B4513",
+            "banner_border": "#7A3511",
+            "banner_title": "#5C2D00",
+            "banner_accent": "#8B4000",
+            "banner_dim": "#5A3A1A",
+            "banner_text": "#3A1E00",
+            "prompt": "#3A1E00",
+            "ui_accent": "#8B4000",
+            "ui_label": "#5C2D00",
+            "ui_ok": "#1B5E20",
+            "input_rule": "#7A3511",
+            "response_border": "#8B4513",
+            "session_label": "#5C2D00",
+            "session_border": "#6B5540",
         },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
@@ -682,14 +727,9 @@ def load_skin(name: str) -> SkinConfig:
 def get_theme_mode() -> str:
     """Get the resolved theme mode ("light" or "dark").
 
-    If set to "auto", detects the terminal background on first call and caches it.
-    Falls back to "dark" if detection fails.
-
-    When auto-detection succeeds, the result is persisted to
-    ``display.detected_background`` in config.yaml so subsequent startups
-    can skip the 200ms OSC 11 probe.  The cache is invalidated when the
-    user runs ``/skin theme auto`` (which clears the key) or changes
-    ``theme_mode`` explicitly.
+    If set to "auto", detects the terminal background on first call and
+    caches the result in memory for the session. Falls back to "dark" if
+    detection fails.
     """
     global _resolved_theme_mode
     if _theme_mode in ("light", "dark"):
@@ -702,12 +742,6 @@ def get_theme_mode() -> str:
             _resolved_theme_mode = result if result != "unknown" else "dark"
         except Exception:
             _resolved_theme_mode = "dark"
-        # Persist to config so next startup skips detection
-        try:
-            from hermes_cli.config import save_config_value
-            save_config_value("display.detected_background", _resolved_theme_mode)
-        except Exception:
-            pass
     return _resolved_theme_mode
 
 
@@ -750,13 +784,9 @@ def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin and theme mode from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
-
-    If ``theme_mode`` is ``auto`` and a previous detection result is cached
-    in ``display.detected_background``, the cached value is used directly
-    so we skip the OSC 11 probe (saves ~200ms on startup).
+    When ``theme_mode`` is ``auto``, detection happens lazily on the first
+    ``get_theme_mode()`` call so we always reflect the current terminal.
     """
-    global _resolved_theme_mode
-
     display = config.get("display", {})
     skin_name = display.get("skin", "default")
     if isinstance(skin_name, str) and skin_name.strip():
@@ -769,9 +799,3 @@ def init_skin_from_config(config: dict) -> None:
         set_theme_mode(theme_mode.strip())
     else:
         set_theme_mode("auto")
-
-    # Seed resolved mode from cached detection if available
-    if _theme_mode == "auto":
-        cached = display.get("detected_background")
-        if cached in ("light", "dark"):
-            _resolved_theme_mode = cached

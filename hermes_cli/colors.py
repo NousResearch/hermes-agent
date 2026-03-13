@@ -23,19 +23,44 @@ def color(text: str, *codes) -> str:
     return "".join(codes) + text + Colors.RESET
 
 
-def detect_terminal_background() -> str:
-    """Detect whether the terminal has a light or dark background.
+def _detect_via_colorfgbg() -> str:
+    """Check the COLORFGBG env var (set by some terminals like rxvt, iTerm2)."""
+    val = os.environ.get("COLORFGBG", "")
+    if ";" in val:
+        # Format: "fg;bg" where bg is a color index (0-15)
+        # 0-6 are dark colors, 7-15 are light colors
+        try:
+            bg = int(val.rsplit(";", 1)[1])
+            return "light" if bg >= 7 else "dark"
+        except (ValueError, IndexError):
+            pass
+    return "unknown"
 
-    Uses the OSC 11 escape sequence to query the terminal's background color.
-    Returns "light", "dark", or "unknown" if detection fails.
-    """
-    if sys.platform == "win32":
+
+def _detect_via_macos_appearance() -> str:
+    """Check macOS system appearance (Dark Mode vs Light Mode)."""
+    if sys.platform != "darwin":
+        return "unknown"
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=2,
+        )
+        # If the key exists and returns "Dark", system is in dark mode.
+        # If the command fails (exit code 1), the key doesn't exist = light mode.
+        if result.returncode == 0 and "dark" in result.stdout.strip().lower():
+            return "dark"
+        return "light"
+    except Exception:
         return "unknown"
 
+
+def _detect_via_osc11() -> str:
+    """Query the terminal background color via OSC 11 escape sequence."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return "unknown"
 
-    # Some terminals/environments don't support OSC queries
     term = os.environ.get("TERM", "")
     if term == "dumb" or os.environ.get("NO_COLOR"):
         return "unknown"
@@ -52,15 +77,12 @@ def detect_terminal_background() -> str:
 
     try:
         tty.setraw(fd)
-        # Send OSC 11 query: "what is the background color?"
         sys.stdout.write("\033]11;?\033\\")
         sys.stdout.flush()
 
-        # Wait for response with a short timeout
         if not select.select([sys.stdin], [], [], 0.15)[0]:
             return "unknown"
 
-        # Read response: expected format is \033]11;rgb:RRRR/GGGG/BBBB\033\\
         response = ""
         while select.select([sys.stdin], [], [], 0.05)[0]:
             ch = sys.stdin.read(1)
@@ -68,17 +90,13 @@ def detect_terminal_background() -> str:
             if ch == "\\" or len(response) > 64:
                 break
 
-        # Parse the response
-        # Format: \033]11;rgb:RRRR/GGGG/BBBB\033\\ or \033]11;rgb:RR/GG/BB\a
         if "rgb:" in response:
             rgb_part = response.split("rgb:")[1].split("\033")[0].split("\a")[0]
             components = rgb_part.split("/")
             if len(components) == 3:
-                # Take the first 2 hex digits of each component (they may be 2 or 4 digits)
                 r = int(components[0][:2], 16)
                 g = int(components[1][:2], 16)
                 b = int(components[2][:2], 16)
-                # Perceived luminance (ITU-R BT.601)
                 luminance = 0.299 * r + 0.587 * g + 0.114 * b
                 return "light" if luminance > 128 else "dark"
 
@@ -90,3 +108,33 @@ def detect_terminal_background() -> str:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
         except Exception:
             pass
+
+
+def detect_terminal_background() -> str:
+    """Detect whether the terminal has a light or dark background.
+
+    Tries multiple detection methods in order:
+    1. COLORFGBG env var (fast, set by some terminals)
+    2. OSC 11 escape sequence (most accurate, but not all terminals respond)
+    3. macOS system appearance (AppleInterfaceStyle)
+    Returns "light", "dark", or "unknown" if all methods fail.
+    """
+    if sys.platform == "win32":
+        return "unknown"
+
+    # Method 1: COLORFGBG env var
+    result = _detect_via_colorfgbg()
+    if result != "unknown":
+        return result
+
+    # Method 2: OSC 11 terminal query
+    result = _detect_via_osc11()
+    if result != "unknown":
+        return result
+
+    # Method 3: macOS system appearance
+    result = _detect_via_macos_appearance()
+    if result != "unknown":
+        return result
+
+    return "unknown"

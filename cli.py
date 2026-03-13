@@ -416,7 +416,8 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    VERSION, RELEASE_DATE,
+    _build_hermes_logo, _build_hermes_caduceus, _build_compact_banner,
     get_available_skills as _get_available_skills,
     build_welcome_banner,
 )
@@ -730,59 +731,13 @@ class ChatConsole:
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
-# ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
-HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#FFBF00]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#FFBF00]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#CD7F32]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
-
-# ASCII Art - Hermes Caduceus (compact, fits in left panel)
-HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
-[#FFBF00]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
-
-# Compact banner for smaller terminals (fallback)
-# Note: built dynamically by _build_compact_banner() to fit terminal width
-COMPACT_BANNER = """
-[bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
-[bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
-[bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
-"""
-
-
-def _build_compact_banner() -> str:
-    """Build a compact banner that fits the current terminal width."""
-    w = min(shutil.get_terminal_size().columns - 2, 64)
-    if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
-    inner = w - 2  # inside the box border
-    bar = "═" * w
-    line1 = "⚕ NOUS HERMES - AI Agent Framework"
-    line2 = "Messenger of the Digital Gods  ·  Nous Research"
-    # Truncate and pad to fit
-    line1 = line1[:inner - 2].ljust(inner - 2)
-    line2 = line2[:inner - 2].ljust(inner - 2)
-    return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
-    )
+def _skin_c(key: str, fallback: str = "") -> str:
+    """Get a skin color for Rich markup."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color(key, fallback)
+    except Exception:
+        return fallback
 
 
 def _get_available_skills() -> Dict[str, List[str]]:
@@ -860,8 +815,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Build left content: caduceus + model info
     # Resolve skin colors for the banner
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_cli.skin_engine import get_active_skin, get_theme_mode
         _bskin = get_active_skin()
+        _theme = get_theme_mode()
         _accent = _bskin.get_color("banner_accent", "#FFBF00")
         _dim = _bskin.get_color("banner_dim", "#B8860B")
         _text = _bskin.get_color("banner_text", "#FFF8DC")
@@ -875,7 +831,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
         _agent_name = "Hermes Agent"
 
-    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else _build_hermes_caduceus()
     left_lines = ["", _hero, ""]
     
     # Shorten model name for display
@@ -1004,7 +960,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else _build_hermes_logo()
         console.print(_logo)
         console.print()
     
@@ -1555,15 +1511,17 @@ class HermesCLI:
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
+            _sl_c = _skin_c("session_label", "#DAA520")
             self.console.print(
-                f"[#DAA520]↻ Resumed session [bold]{self.session_id}[/bold]"
+                f"[{_sl_c}]↻ Resumed session [bold]{self.session_id}[/bold]"
                 f"{title_part} "
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
         else:
+            _sl_c = _skin_c("session_label", "#DAA520")
             self.console.print(
-                f"[#DAA520]Session {self.session_id} found but has no "
+                f"[{_sl_c}]Session {self.session_id} found but has no "
                 f"messages. Starting fresh.[/]"
             )
             return False
@@ -1693,16 +1651,19 @@ class HermesCLI:
                 style="dim italic",
             )
 
+        _sl_c = _skin_c("session_label", "#DAA520")
+        _ok_c = _skin_c("ui_ok", "#4caf50")
+        _sb_c = _skin_c("session_border", "#8B8682")
         for i, (role, text) in enumerate(entries):
             if role == "user":
-                lines.append("  ● You: ", style="dim bold #DAA520")
+                lines.append("  ● You: ", style=f"dim bold {_sl_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             else:
-                lines.append("  ◆ Hermes: ", style="dim bold #8FBC8F")
+                lines.append("  ◆ Hermes: ", style=f"dim bold {_ok_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
@@ -1712,8 +1673,8 @@ class HermesCLI:
 
         panel = Panel(
             lines,
-            title="[dim #DAA520]Previous Conversation[/]",
-            border_style="dim #8B8682",
+            title=f"[dim {_sl_c}]Previous Conversation[/]",
+            border_style=f"dim {_sb_c}",
             padding=(0, 1),
         )
         self.console.print(panel)
@@ -1906,17 +1867,21 @@ class HermesCLI:
             api_indicator = "[red bold]●[/]"
         
         # Build status line with proper markup
+        _dim_c = _skin_c("banner_dim", "#B8860B")
+        _acc_c = _skin_c("ui_accent", "#FFBF00")
+        _lbl_c = _skin_c("ui_label", "#4dd0e1")
+        _brd_c = _skin_c("banner_border", "#CD7F32")
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {_dim_c}]·[/] [{_brd_c}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {_dim_c}]·[/] [dim]provider: {self.provider}[/]"
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {_dim_c}]·[/] [dim]auth: {self._provider_source}[/]"
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  {api_indicator} [{_acc_c}]{model_short}[/] "
+            f"[dim {_dim_c}]·[/] [bold {_lbl_c}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     
@@ -2915,7 +2880,7 @@ class HermesCLI:
                     self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
                 self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                self.console.print(f"[dim {_skin_c('banner_dim', '#B8860B')}]Type /help for available commands[/]")
         
         return True
     
@@ -4675,12 +4640,12 @@ class HermesCLI:
             _menu_bg = '#1a1a2e'
             _menu_fg = '#FFF8DC'
             _menu_sel_bg = '#333355'
-            _menu_sel_fg = '#FFD700'
+            _menu_sel_fg = _ui_accent_c
             _menu_meta_fg = '#888888'
             _dim_fg = '#555555'
 
         style = PTStyle.from_dict({
-            'input-area': '',
+            'input-area': _prompt_c if _is_light else '',
             'placeholder': f'{_dim_fg} italic',
             'prompt': _prompt_c,
             'prompt-working': '#888888 italic',

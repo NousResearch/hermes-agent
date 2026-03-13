@@ -77,6 +77,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    "deepseek": [
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ],
+    "google": [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+    ],
+    "nvidia": [
+        "nvidia/llama-3.3-nemotron-super-49b-v1",
+        "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    ],
+    "ollama": [],  # discovered live via /models endpoint
 }
 
 _PROVIDER_LABELS = {
@@ -88,6 +103,10 @@ _PROVIDER_LABELS = {
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "google": "Google Gemini",
+    "nvidia": "NVIDIA",
+    "ollama": "Ollama",
     "custom": "Custom endpoint",
 }
 
@@ -100,8 +119,13 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "github-copilot": "openai-codex",
+    "copilot": "openai-codex",
+    "gh-copilot": "openai-codex",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "gemini": "google",
+    "google-gemini": "google",
 }
 
 
@@ -209,6 +233,47 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
     # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
+
+
+def detect_provider_for_model(model_name: str, current_provider: str) -> Optional[str]:
+    """Try to auto-detect which provider serves a given model.
+
+    Checks static catalogs (fast, no network), preferring direct providers
+    over aggregators (nous, openrouter) which list models from many sources.
+    Returns the canonical provider id, or None if no match found.
+    """
+    name = (model_name or "").strip().lower()
+    if not name:
+        return None
+
+    # Aggregators list other providers' models — check them last
+    _AGGREGATORS = {"nous", "openrouter"}
+
+    direct_match = None
+    aggregator_match = None
+
+    # Check static catalogs (fast, no network)
+    for pid, models in _PROVIDER_MODELS.items():
+        if pid == current_provider:
+            continue
+        if any(name == m.lower() for m in models):
+            if pid in _AGGREGATORS:
+                aggregator_match = aggregator_match or pid
+            else:
+                direct_match = pid
+                break  # direct provider wins immediately
+
+    if direct_match:
+        return direct_match
+
+    # Check OpenRouter catalog
+    if current_provider != "openrouter" and not aggregator_match:
+        for mid, _ in OPENROUTER_MODELS:
+            if name == mid.lower():
+                aggregator_match = "openrouter"
+                break
+
+    return aggregator_match
 
 
 def normalize_provider(provider: Optional[str]) -> str:

@@ -2805,6 +2805,7 @@ class HermesCLI:
                 from hermes_cli.models import (
                     parse_model_input,
                     validate_requested_model,
+                    detect_provider_for_model,
                     _PROVIDER_LABELS,
                 )
 
@@ -2813,6 +2814,13 @@ class HermesCLI:
                 # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
                 current_provider = self.provider or self.requested_provider or "openrouter"
                 target_provider, new_model = parse_model_input(raw_input, current_provider)
+
+                # Auto-detect provider when no explicit provider:model syntax was used
+                if target_provider == current_provider:
+                    detected = detect_provider_for_model(new_model, current_provider)
+                    if detected:
+                        target_provider = detected
+
                 provider_changed = target_provider != current_provider
 
                 # If provider is changing, re-resolve credentials for the new provider

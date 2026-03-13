@@ -132,6 +132,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),
+    "anthropic": ProviderConfig(
+        id="anthropic",
+        name="Anthropic",
+        auth_type="api_key",
+        inference_base_url="https://api.anthropic.com",
+        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+    ),
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
         name="MiniMax (China)",
@@ -516,6 +523,7 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "claude": "anthropic", "claude-code": "anthropic",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -1563,7 +1571,11 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
         model_cfg = {}
 
     model_cfg["provider"] = provider_id
-    model_cfg["base_url"] = inference_base_url.rstrip("/")
+    if inference_base_url and inference_base_url.strip():
+        model_cfg["base_url"] = inference_base_url.rstrip("/")
+    else:
+        # Clear stale base_url to prevent contamination when switching providers
+        model_cfg.pop("base_url", None)
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

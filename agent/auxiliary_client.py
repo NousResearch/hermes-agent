@@ -52,11 +52,12 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.5-highspeed",
     "minimax-cn": "MiniMax-M2.5-highspeed",
+    "anthropic": "claude-haiku-4-5-20251001",
 }
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
-    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-OpenRouter-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }

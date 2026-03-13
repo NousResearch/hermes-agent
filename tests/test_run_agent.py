@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
+from honcho_integration.client import HonchoClientConfig
 from run_agent import AIAgent
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS
 
@@ -281,20 +282,21 @@ class TestMaskApiKey:
 
 class TestInit:
     def test_anthropic_base_url_accepted(self):
-        """Anthropic base URLs should be accepted (OpenAI-compatible endpoint)."""
+        """Anthropic base URLs should route to native Anthropic client."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI") as mock_openai,
+            patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
-            AIAgent(
+            agent = AIAgent(
                 api_key="test-key-1234567890",
                 base_url="https://api.anthropic.com/v1/",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
-            mock_openai.assert_called_once()
+            assert agent.api_mode == "anthropic_messages"
+            mock_anthropic.Anthropic.assert_called_once()
 
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
@@ -344,6 +346,23 @@ class TestInit:
                 skip_memory=True,
             )
             assert a._use_prompt_caching is False
+
+    def test_prompt_caching_native_anthropic(self):
+        """Native Anthropic provider should enable prompt caching."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter._anthropic_sdk"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.anthropic.com/v1/",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "anthropic_messages"
+            assert a._use_prompt_caching is True
 
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
@@ -1191,23 +1210,205 @@ class TestSystemPromptStability:
 
         assert "User prefers Python over JavaScript" in agent._cached_system_prompt
 
-    def test_honcho_prefetch_skipped_on_continuing_session(self):
-        """Honcho prefetch should not be called when conversation_history
-        is non-empty (continuing session)."""
+    def test_honcho_prefetch_runs_on_continuing_session(self):
+        """Honcho prefetch is consumed on continuing sessions via ephemeral context."""
         conversation_history = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
         ]
-
-        # The guard: `not conversation_history` is False when history exists
-        should_prefetch = not conversation_history
-        assert should_prefetch is False
+        recall_mode = "hybrid"
+        should_prefetch = bool(conversation_history) and recall_mode != "tools"
+        assert should_prefetch is True
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""
         conversation_history = []
         should_prefetch = not conversation_history
         assert should_prefetch is True
+
+
+class TestHonchoActivation:
+    def test_disabled_config_skips_honcho_init(self):
+        hcfg = HonchoClientConfig(
+            enabled=False,
+            api_key="honcho-key",
+            peer_name="user",
+            ai_peer="hermes",
+        )
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("honcho_integration.client.HonchoClientConfig.from_global_config", return_value=hcfg),
+            patch("honcho_integration.client.get_honcho_client") as mock_client,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert agent._honcho is None
+        assert agent._honcho_config is hcfg
+        mock_client.assert_not_called()
+
+    def test_injected_honcho_manager_skips_fresh_client_init(self):
+        hcfg = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            memory_mode="hybrid",
+            peer_name="user",
+            ai_peer="hermes",
+            recall_mode="hybrid",
+        )
+        manager = MagicMock()
+        manager._config = hcfg
+        manager.get_or_create.return_value = SimpleNamespace(messages=[])
+        manager.get_prefetch_context.return_value = {"representation": "Known user", "card": ""}
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("honcho_integration.client.get_honcho_client") as mock_client,
+            patch("tools.honcho_tools.set_session_context"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                honcho_session_key="gateway-session",
+                honcho_manager=manager,
+                honcho_config=hcfg,
+            )
+
+        assert agent._honcho is manager
+        manager.get_or_create.assert_called_once_with("gateway-session")
+        manager.get_prefetch_context.assert_called_once_with("gateway-session")
+        manager.set_context_result.assert_called_once_with(
+            "gateway-session",
+            {"representation": "Known user", "card": ""},
+        )
+        mock_client.assert_not_called()
+
+    def test_recall_mode_context_suppresses_honcho_tools(self):
+        hcfg = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            memory_mode="hybrid",
+            peer_name="user",
+            ai_peer="hermes",
+            recall_mode="context",
+        )
+        manager = MagicMock()
+        manager._config = hcfg
+        manager.get_or_create.return_value = SimpleNamespace(messages=[])
+        manager.get_prefetch_context.return_value = {"representation": "Known user", "card": ""}
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                side_effect=[
+                    _make_tool_defs("web_search"),
+                    _make_tool_defs(
+                        "web_search",
+                        "honcho_context",
+                        "honcho_profile",
+                        "honcho_search",
+                        "honcho_conclude",
+                    ),
+                ],
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("tools.honcho_tools.set_session_context"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                honcho_session_key="gateway-session",
+                honcho_manager=manager,
+                honcho_config=hcfg,
+            )
+
+        assert "web_search" in agent.valid_tool_names
+        assert "honcho_context" not in agent.valid_tool_names
+        assert "honcho_profile" not in agent.valid_tool_names
+        assert "honcho_search" not in agent.valid_tool_names
+        assert "honcho_conclude" not in agent.valid_tool_names
+
+    def test_inactive_honcho_strips_stale_honcho_tools(self):
+        hcfg = HonchoClientConfig(
+            enabled=False,
+            api_key="honcho-key",
+            peer_name="user",
+            ai_peer="hermes",
+        )
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search", "honcho_context")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("honcho_integration.client.HonchoClientConfig.from_global_config", return_value=hcfg),
+            patch("honcho_integration.client.get_honcho_client") as mock_client,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert agent._honcho is None
+        assert "web_search" in agent.valid_tool_names
+        assert "honcho_context" not in agent.valid_tool_names
+        mock_client.assert_not_called()
+
+
+class TestHonchoPrefetchScheduling:
+    def test_honcho_prefetch_includes_cached_dialectic(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho.pop_context_result.return_value = {}
+        agent._honcho.pop_dialectic_result.return_value = "Continue with the migration checklist."
+
+        context = agent._honcho_prefetch("what next?")
+
+        assert "Continuity synthesis" in context
+        assert "migration checklist" in context
+
+    def test_queue_honcho_prefetch_skips_tools_mode(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho_config = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            recall_mode="tools",
+        )
+
+        agent._queue_honcho_prefetch("what next?")
+
+        agent._honcho.prefetch_context.assert_not_called()
+        agent._honcho.prefetch_dialectic.assert_not_called()
+
+    def test_queue_honcho_prefetch_runs_when_context_enabled(self, agent):
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho_config = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            recall_mode="hybrid",
+        )
+
+        agent._queue_honcho_prefetch("what next?")
+
+        agent._honcho.prefetch_context.assert_called_once_with("session-key", "what next?")
+        agent._honcho.prefetch_dialectic.assert_called_once_with("session-key", "what next?")
 
 
 # ---------------------------------------------------------------------------
@@ -1363,3 +1564,142 @@ class TestSafeWriter:
         # Still just one layer
         wrapped.write("test")
         assert inner.getvalue() == "test"
+
+
+# ===================================================================
+# Anthropic adapter integration fixes
+# ===================================================================
+
+
+class TestBuildApiKwargsAnthropicMaxTokens:
+    """Bug fix: max_tokens was always None for Anthropic mode, ignoring user config."""
+
+    def test_max_tokens_passed_to_anthropic(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.max_tokens = 4096
+        agent.reasoning_config = None
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
+            agent._build_api_kwargs([{"role": "user", "content": "test"}])
+            _, kwargs = mock_build.call_args
+            if not kwargs:
+                kwargs = dict(zip(
+                    ["model", "messages", "tools", "max_tokens", "reasoning_config"],
+                    mock_build.call_args[0],
+                ))
+            assert kwargs.get("max_tokens") == 4096 or mock_build.call_args[1].get("max_tokens") == 4096
+
+    def test_max_tokens_none_when_unset(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.max_tokens = None
+        agent.reasoning_config = None
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 16384}
+            agent._build_api_kwargs([{"role": "user", "content": "test"}])
+            call_args = mock_build.call_args
+            # max_tokens should be None (let adapter use its default)
+            if call_args[1]:
+                assert call_args[1].get("max_tokens") is None
+            else:
+                assert call_args[0][3] is None
+
+
+class TestFallbackAnthropicProvider:
+    """Bug fix: _try_activate_fallback had no case for anthropic provider."""
+
+    def test_fallback_to_anthropic_sets_api_mode(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            mock_build.return_value = MagicMock()
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+
+    def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            agent._try_activate_fallback()
+
+        assert agent._use_prompt_caching is True
+
+    def test_fallback_to_openrouter_uses_openai_client(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-or-test"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "chat_completions"
+        assert agent.client is mock_client
+
+
+class TestAnthropicBaseUrlPassthrough:
+    """Bug fix: base_url was filtered with 'anthropic in base_url', blocking proxies."""
+
+    def test_custom_proxy_base_url_passed_through(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            a = AIAgent(
+                api_key="sk-ant-api03-test1234567890",
+                base_url="https://llm-proxy.company.com/v1",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            call_args = mock_build.call_args
+            # base_url should be passed through, not filtered out
+            assert call_args[0][1] == "https://llm-proxy.company.com/v1"
+
+    def test_none_base_url_passed_as_none(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            a = AIAgent(
+                api_key="sk-ant-api03-test1234567890",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            call_args = mock_build.call_args
+            # No base_url provided, should be default empty string or None
+            passed_url = call_args[0][1]
+            assert not passed_url or passed_url is None

@@ -91,6 +91,7 @@ You can always find or regenerate app-level tokens under **Settings → Basic In
 
 This step is critical — it controls what messages the bot can see.
 
+
 1. In the sidebar, go to **Features → Event Subscriptions**
 2. Toggle **Enable Events** to ON
 3. Expand **Subscribe to bot events** and add:
@@ -109,6 +110,7 @@ If the bot works in DMs but **not in channels**, you almost certainly forgot to 
 `message.channels` (for public channels) and/or `message.groups` (for private channels).
 Without these events, Slack simply never delivers channel messages to the bot.
 :::
+
 
 ---
 
@@ -199,6 +201,7 @@ This is intentional — it prevents the bot from responding to every message in 
 :::
 
 ---
+
 
 ## Home Channel
 

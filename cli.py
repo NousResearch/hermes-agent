@@ -175,7 +175,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.85,    # Compress at 85% of model's context limit
+            "threshold": 0.50,    # Compress at 50% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
         "agent": {
@@ -1099,6 +1099,7 @@ class HermesCLI:
         compact: bool = False,
         resume: str = None,
         checkpoints: bool = False,
+        pass_session_id: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1113,6 +1114,7 @@ class HermesCLI:
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
+            pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
         self.console = Console()
@@ -1194,6 +1196,7 @@ class HermesCLI:
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        self.pass_session_id = pass_session_id
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1506,11 +1509,12 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._on_reasoning if self.show_reasoning else None,
-                honcho_session_key=self.session_id,
+                honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                pass_session_id=self.pass_session_id,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -2735,6 +2739,28 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    # Re-map Honcho session key to new title
+                                    if self.agent and getattr(self.agent, '_honcho', None):
+                                        try:
+                                            hcfg = self.agent._honcho_config
+                                            new_key = (
+                                                hcfg.resolve_session_name(
+                                                    session_title=new_title,
+                                                    session_id=self.agent.session_id,
+                                                )
+                                                if hcfg else new_title
+                                            )
+                                            if new_key and new_key != self.agent._honcho_session_key:
+                                                old_key = self.agent._honcho_session_key
+                                                self.agent._honcho.get_or_create(new_key)
+                                                self.agent._honcho_session_key = new_key
+                                                from tools.honcho_tools import set_session_context
+                                                set_session_context(self.agent._honcho, new_key)
+                                                from agent.display import honcho_session_line, write_tty
+                                                write_tty(honcho_session_line(hcfg.workspace_id, new_key) + "\n")
+                                                _cprint(f"  Honcho session: {old_key} → {new_key}")
+                                        except Exception:
+                                            pass
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -3120,8 +3146,8 @@ class HermesCLI:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on" if self.show_reasoning else "off"
-            _cprint(f"  {_GOLD}Reasoning effort: {level}{_RST}")
+            display_state = "on ✓" if self.show_reasoning else "off"
+            _cprint(f"  {_GOLD}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
             _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
             return
@@ -3133,14 +3159,16 @@ class HermesCLI:
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._on_reasoning
-            _cprint(f"  {_GOLD}Reasoning display: ON{_RST}")
-            _cprint(f"  {_DIM}Model thinking will be shown during and after each response.{_RST}")
+            save_config_value("display.show_reasoning", True)
+            _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
+            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = None
-            _cprint(f"  {_GOLD}Reasoning display: OFF{_RST}")
+            save_config_value("display.show_reasoning", False)
+            _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
 
         # Effort level change
@@ -3155,9 +3183,9 @@ class HermesCLI:
         self.agent = None  # Force agent re-init with new reasoning config
 
         if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -3201,6 +3229,12 @@ class HermesCLI:
                 f"  ✅ Compressed: {original_count} → {new_count} messages "
                 f"(~{approx_tokens:,} → ~{new_tokens:,} tokens)"
             )
+            # Flush Honcho async queue so queued messages land before context resets
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.flush_all()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
 
@@ -3602,6 +3636,19 @@ class HermesCLI:
                                 continue
                             print(f"\n⚡ New message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
+                            # Debug: log to file (stdout may be devnull from redirect_stdout)
+                            try:
+                                import pathlib as _pl
+                                _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                                with open(_dbg, "a") as _f:
+                                    import time as _t
+                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                                             f"children={len(self.agent._active_children)}, "
+                                             f"parent._interrupt={self.agent._interrupt_requested}\n")
+                                    for _ci, _ch in enumerate(self.agent._active_children):
+                                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                            except Exception:
+                                pass
                             break
                     except queue.Empty:
                         pass  # Queue empty or timeout, continue waiting
@@ -3638,6 +3685,7 @@ class HermesCLI:
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
+            response_previewed = result.get("response_previewed", False) if result else False
             # Display reasoning (thinking) box if enabled and available
             if self.show_reasoning and result:
                 reasoning = result.get("last_reasoning")
@@ -3656,7 +3704,7 @@ class HermesCLI:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
-            if response:
+            if response and not response_previewed:
                 # Use a Rich Panel for the response box — adapts to terminal
                 # width at render time instead of hard-coding border length.
                 try:
@@ -3677,7 +3725,7 @@ class HermesCLI:
                     box=rich_box.HORIZONTALS,
                     padding=(1, 2),
                 ))
-            
+
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
@@ -3734,6 +3782,18 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
+
+        # One-line Honcho session indicator (TTY-only, not captured by agent)
+        try:
+            from honcho_integration.client import HonchoClientConfig
+            from agent.display import honcho_session_line, write_tty
+            hcfg = HonchoClientConfig.from_global_config()
+            if hcfg.enabled:
+                sname = hcfg.resolve_session_name(session_id=self.session_id)
+                if sname:
+                    write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")
+        except Exception:
+            pass
 
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
@@ -3818,7 +3878,17 @@ class HermesCLI:
                 selected = state["selected"]
                 choices = state["choices"]
                 if 0 <= selected < len(choices):
-                    state["response_queue"].put(choices[selected])
+                    chosen = choices[selected]
+                    if chosen == "view":
+                        # Toggle full command display without closing the prompt
+                        state["show_full"] = True
+                        # Remove the "view" option since it's been used
+                        state["choices"] = [c for c in choices if c != "view"]
+                        if state["selected"] >= len(state["choices"]):
+                            state["selected"] = len(state["choices"]) - 1
+                        event.app.invalidate()
+                        return
+                    state["response_queue"].put(chosen)
                 self._approval_state = None
                 event.app.invalidate()
                 return
@@ -3861,6 +3931,16 @@ class HermesCLI:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    # Debug: log to file when message enters interrupt queue
+                    try:
+                        import pathlib as _pl
+                        _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                        with open(_dbg, "a") as _f:
+                            import time as _t
+                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                     f"agent_running={self._agent_running}\n")
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -4366,13 +4446,18 @@ class HermesCLI:
             description = state["description"]
             choices = state["choices"]
             selected = state.get("selected", 0)
+            show_full = state.get("show_full", False)
 
-            cmd_display = command[:70] + '...' if len(command) > 70 else command
+            if show_full or len(command) <= 70:
+                cmd_display = command
+            else:
+                cmd_display = command[:70] + '...'
             choice_labels = {
                 "once": "Allow once",
                 "session": "Allow for this session",
                 "always": "Add to permanent allowlist",
                 "deny": "Deny",
+                "view": "Show full command",
             }
             preview_lines = _wrap_panel_text(description, 60)
             preview_lines.extend(_wrap_panel_text(cmd_display, 60))
@@ -4544,7 +4629,7 @@ class HermesCLI:
                     
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit
@@ -4619,6 +4704,12 @@ class HermesCLI:
             # Unregister terminal_tool callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
+            # Flush + shut down Honcho async writer (drains queue before exit)
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.shutdown()
+                except Exception:
+                    pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
@@ -4652,6 +4743,7 @@ def main(
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,
+    pass_session_id: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4757,6 +4849,7 @@ def main(
         compact=compact,
         resume=resume,
         checkpoints=checkpoints,
+        pass_session_id=pass_session_id,
     )
 
     # Inject worktree context into agent's system prompt

@@ -53,6 +53,33 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _honcho_is_configured_for_doctor() -> bool:
+    """Return True when Honcho is configured, even if this process has no active session."""
+    try:
+        from honcho_integration.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig.from_global_config()
+        return bool(cfg.enabled and cfg.api_key)
+    except Exception:
+        return False
+
+
+def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
+    """Adjust runtime-gated tool availability for doctor diagnostics."""
+    if not _honcho_is_configured_for_doctor():
+        return available, unavailable
+
+    updated_available = list(available)
+    updated_unavailable = []
+    for item in unavailable:
+        if item.get("name") == "honcho":
+            if "honcho" not in updated_available:
+                updated_available.append("honcho")
+            continue
+        updated_unavailable.append(item)
+    return updated_available, updated_unavailable
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -582,6 +609,7 @@ def run_doctor(args):
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
         
         available, unavailable = check_tool_availability()
+        available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
@@ -633,6 +661,40 @@ def run_doctor(args):
         check_ok("GitHub token configured (authenticated API access)")
     else:
         check_warn("No GITHUB_TOKEN", "(60 req/hr rate limit — set in ~/.hermes/.env for better rates)")
+
+    # =========================================================================
+    # Honcho memory
+    # =========================================================================
+    print()
+    print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from honcho_integration.client import HonchoClientConfig, GLOBAL_CONFIG_PATH
+        hcfg = HonchoClientConfig.from_global_config()
+
+        if not GLOBAL_CONFIG_PATH.exists():
+            check_warn("Honcho config not found", f"run: hermes honcho setup")
+        elif not hcfg.enabled:
+            check_info("Honcho disabled (set enabled: true in ~/.honcho/config.json to activate)")
+        elif not hcfg.api_key:
+            check_fail("Honcho API key not set", "run: hermes honcho setup")
+            issues.append("No Honcho API key — run 'hermes honcho setup'")
+        else:
+            from honcho_integration.client import get_honcho_client, reset_honcho_client
+            reset_honcho_client()
+            try:
+                get_honcho_client(hcfg)
+                check_ok(
+                    "Honcho connected",
+                    f"workspace={hcfg.workspace_id} mode={hcfg.memory_mode} freq={hcfg.write_frequency}",
+                )
+            except Exception as _e:
+                check_fail("Honcho connection failed", str(_e))
+                issues.append(f"Honcho unreachable: {_e}")
+    except ImportError:
+        check_warn("honcho-ai not installed", "pip install honcho-ai")
+    except Exception as _e:
+        check_warn("Honcho check failed", str(_e))
 
     # =========================================================================
     # Summary

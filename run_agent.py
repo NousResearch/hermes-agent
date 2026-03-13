@@ -2729,7 +2729,7 @@ class AIAgent:
             "model": self.model,
             "messages": api_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": 900.0,
+            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 900.0)),
         }
 
         if self.max_tokens is not None:

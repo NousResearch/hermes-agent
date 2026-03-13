@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
@@ -490,6 +491,33 @@ class TestConvertMessages:
         # When cache_control is present, system should be a list of blocks
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_assistant_cache_control_blocks_are_preserved(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "assistant", "content": "Hello from assistant"},
+        ])
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_blocks = result[0]["content"]
+
+        assert assistant_blocks[0]["type"] == "text"
+        assert assistant_blocks[0]["text"] == "Hello from assistant"
+        assert assistant_blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_tool_cache_control_is_preserved_on_tool_result_block(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ])
+
+        _, result = convert_messages_to_anthropic(messages)
+        tool_block = result[0]["content"][0]
+
+        assert tool_block["type"] == "tool_result"
+        assert tool_block["tool_use_id"] == "tc_1"
+        assert tool_block["content"] == "result"
+        assert tool_block["cache_control"] == {"type": "ephemeral"}
 
 
 # ---------------------------------------------------------------------------

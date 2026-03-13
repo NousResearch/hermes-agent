@@ -133,9 +133,16 @@ class TestIsClaudeCodeTokenValid:
 
 
 class TestResolveAnthropicToken:
-    def test_prefers_api_key(self, monkeypatch):
+    def test_prefers_oauth_token_over_api_key(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
+        assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
+
+    def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-api03-mykey"
 
     def test_falls_back_to_token(self, monkeypatch):

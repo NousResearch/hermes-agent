@@ -139,6 +139,12 @@ PLATFORM_HINTS = {
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
+    "http": (
+        "You are communicating via an HTTP API. The client is typically a mobile app. "
+        "You can use markdown formatting in your responses. "
+        "Keep responses conversational and natural. "
+        "Media can be sent using MEDIA:/path/to/file tags."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."

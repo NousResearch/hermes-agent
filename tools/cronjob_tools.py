@@ -105,6 +105,7 @@ def schedule_cronjob(
                  - "signal": Send to Signal home channel
                  - "telegram:123456": Send to specific chat ID
                  - "signal:+15551234567": Send to specific Signal number
+                 - "http": Send to HTTP API home channel
     
     Returns:
         JSON with job_id, next_run time, and confirmation

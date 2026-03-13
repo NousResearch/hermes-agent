@@ -1,12 +1,43 @@
 # Architecture Reference
 
+**Cross-references:**
+- Effect building blocks (value fields, noise, SDFs, particles): `effects.md`
+- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
+- Scene protocol, render_clip, SCENES table: `scenes.md`
+- Shader pipeline, feedback buffer, output encoding: `shaders.md`
+- Complete scene examples: `examples.md`
+- Input sources (audio analysis, video, TTS): `inputs.md`
+- Performance tuning, hardware detection: `optimization.md`
+- Common bugs (broadcasting, font, encoding): `troubleshooting.md`
+
 ## Grid System
+
+### Resolution Presets
+
+```python
+RESOLUTION_PRESETS = {
+    "landscape":  (1920, 1080),  # 16:9 — YouTube, default
+    "portrait":   (1080, 1920),  # 9:16 — TikTok, Reels, Stories
+    "square":     (1080, 1080),  # 1:1  — Instagram feed
+    "ultrawide":  (2560, 1080),  # 21:9 — cinematic
+    "landscape4k":(3840, 2160),  # 16:9 — 4K
+    "portrait4k": (2160, 3840),  # 9:16 — 4K portrait
+}
+
+def get_resolution(preset="landscape", custom=None):
+    """Returns (VW, VH) tuple."""
+    if custom:
+        return custom
+    return RESOLUTION_PRESETS.get(preset, RESOLUTION_PRESETS["landscape"])
+```
 
 ### Multi-Density Grids
 
-Pre-initialize multiple grid sizes. Switch per section for visual variety.
+Pre-initialize multiple grid sizes. Switch per section for visual variety. Grid dimensions auto-compute from resolution:
 
-| Key | Font Size | Grid (1920x1080) | Use |
+**Landscape (1920x1080):**
+
+| Key | Font Size | Grid (cols x rows) | Use |
 |-----|-----------|-------------------|-----|
 | xs | 8 | 400x108 | Ultra-dense data fields |
 | sm | 10 | 320x83 | Dense detail, rain, starfields |
@@ -15,7 +46,34 @@ Pre-initialize multiple grid sizes. Switch per section for visual variety.
 | xl | 24 | 137x37 | Short quotes, large titles |
 | xxl | 40 | 80x22 | Giant text, minimal |
 
-**Grid sizing for text-heavy content**: When displaying readable text (quotes, lyrics, testimonials), use 20px (`lg`) as the primary grid. This gives 160 columns -- plenty for lines up to ~50 chars centered. For very short quotes (< 60 chars, <= 3 lines), 24px (`xl`) makes them more impactful. Only init the grids you actually use -- each grid pre-rasterizes all characters which costs ~0.3-0.5s.
+**Portrait (1080x1920):**
+
+| Key | Font Size | Grid (cols x rows) | Use |
+|-----|-----------|-------------------|-----|
+| xs | 8 | 225x192 | Ultra-dense, tall data columns |
+| sm | 10 | 180x148 | Dense detail, vertical rain |
+| md | 16 | 112x100 | Default balanced |
+| lg | 20 | 90x80 | Readable text (~30 chars/line centered) |
+| xl | 24 | 75x66 | Short quotes, stacked |
+| xxl | 40 | 45x39 | Giant text, minimal |
+
+**Square (1080x1080):**
+
+| Key | Font Size | Grid (cols x rows) | Use |
+|-----|-----------|-------------------|-----|
+| sm | 10 | 180x83 | Dense detail |
+| md | 16 | 112x56 | Default balanced |
+| lg | 20 | 90x45 | Readable text |
+
+**Key differences in portrait mode:**
+- Fewer columns (90 at `lg` vs 160) — lines must be shorter or wrap
+- Many more rows (80 at `lg` vs 45) — vertical stacking is natural
+- Aspect ratio correction flips: `asp = cw / ch` still works but the visual emphasis is vertical
+- Radial effects appear as tall ellipses unless corrected
+- Vertical effects (rain, embers, fire columns) are naturally enhanced
+- Horizontal effects (spectrum bars, waveforms) need rotation or compression
+
+**Grid sizing for text in portrait**: Use `lg` (20px) for 2-3 word lines. Max comfortable line length is ~25-30 chars. For longer quotes, break aggressively into many short lines stacked vertically — portrait has vertical space to spare. `xl` (24px) works for single words or very short phrases.
 
 Grid dimensions: `cols = VW // cell_width`, `rows = VH // cell_height`.
 
@@ -59,7 +117,23 @@ FONT_PREFS_LINUX = [
     ("Noto Sans Mono", "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf"),
     ("Ubuntu Mono", "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf"),
 ]
-FONT_PREFS = FONT_PREFS_MACOS if platform.system() == "Darwin" else FONT_PREFS_LINUX
+FONT_PREFS_WINDOWS = [
+    ("Consolas", r"C:\Windows\Fonts\consola.ttf"),
+    ("Courier New", r"C:\Windows\Fonts\cour.ttf"),
+    ("Lucida Console", r"C:\Windows\Fonts\lucon.ttf"),
+    ("Cascadia Code", os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts\CascadiaCode.ttf")),
+    ("Cascadia Mono", os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts\CascadiaMono.ttf")),
+]
+
+def _get_font_prefs():
+    s = platform.system()
+    if s == "Darwin":
+        return FONT_PREFS_MACOS
+    elif s == "Windows":
+        return FONT_PREFS_WINDOWS
+    return FONT_PREFS_LINUX
+
+FONT_PREFS = _get_font_prefs()
 ```
 
 **Multi-font rendering**: use different fonts for different layers (e.g., monospace for background, a bolder variant for overlay text). Each GridLayer owns its own font:
@@ -77,8 +151,8 @@ Before initializing grids, gather all characters that need bitmap pre-rasterizat
 all_chars = set()
 for pal in [PAL_DEFAULT, PAL_DENSE, PAL_BLOCKS, PAL_RUNE, PAL_KATA,
             PAL_GREEK, PAL_MATH, PAL_DOTS, PAL_BRAILLE, PAL_STARS,
-            PAL_BINARY, PAL_MUSIC, PAL_BOX, PAL_CIRCUIT, PAL_ARROWS,
-            PAL_HERMES]:  # ... all palettes used in project
+            PAL_HALFFILL, PAL_HATCH, PAL_BINARY, PAL_MUSIC, PAL_BOX,
+            PAL_CIRCUIT, PAL_ARROWS, PAL_HERMES]:  # ... all palettes used in project
     all_chars.update(pal)
 # Add any overlay text characters
 all_chars.update("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,-:;!?/|")
@@ -87,21 +161,31 @@ all_chars.discard(" ")  # space is never rendered
 
 ### GridLayer Initialization
 
-Each grid pre-computes coordinate arrays for vectorized effect math:
+Each grid pre-computes coordinate arrays for vectorized effect math. The grid automatically adapts to any resolution (landscape, portrait, square):
 
 ```python
 class GridLayer:
-    def __init__(self, font_path, font_size):
+    def __init__(self, font_path, font_size, vw=None, vh=None):
+        """Initialize grid for any resolution.
+        vw, vh: video width/height in pixels. Defaults to global VW, VH."""
+        vw = vw or VW; vh = vh or VH
+        self.vw = vw; self.vh = vh
+
         self.font = ImageFont.truetype(font_path, font_size)
         asc, desc = self.font.getmetrics()
         bbox = self.font.getbbox("M")
         self.cw = bbox[2] - bbox[0]  # character cell width
         self.ch = asc + desc  # CRITICAL: not textbbox height
 
-        self.cols = VW // self.cw
-        self.rows = VH // self.ch
-        self.ox = (VW - self.cols * self.cw) // 2  # centering
-        self.oy = (VH - self.rows * self.ch) // 2
+        self.cols = vw // self.cw
+        self.rows = vh // self.ch
+        self.ox = (vw - self.cols * self.cw) // 2  # centering
+        self.oy = (vh - self.rows * self.ch) // 2
+
+        # Aspect ratio metadata
+        self.aspect = vw / vh  # >1 = landscape, <1 = portrait, 1 = square
+        self.is_portrait = vw < vh
+        self.is_landscape = vw > vh
 
         # Index arrays
         self.rr = np.arange(self.rows, dtype=np.float32)[:, None]
@@ -219,9 +303,11 @@ PAL_ARABIC   = " \u0627\u0628\u062a\u062b\u062c\u062d\u062e\u062f\u0630\u0631\u0
 
 #### Dot / Point Progressions
 ```python
-PAL_DOTS     = " \u22c5\u2218\u2219\u25cf\u25c9\u25ce\u25c6\u2726\u2605"                   # dot size progression
-PAL_BRAILLE  = " \u2801\u2802\u2803\u2804\u2805\u2806\u2807\u2808\u2809\u280a\u280b\u280c\u280d\u280e\u280f\u2810\u2811\u2812\u2813\u2814\u2815\u2816\u2817\u2818\u2819\u281a\u281b\u281c\u281d\u281e\u281f\u283f"  # braille patterns
-PAL_STARS    = " \u00b7\u2727\u2726\u2729\u2728\u2605\u2736\u2733\u2738"               # star progression
+PAL_DOTS     = " ⋅∘∙●◉◎◆✦★"                   # dot size progression
+PAL_BRAILLE  = " ⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠿"  # braille patterns
+PAL_STARS    = " ·✧✦✩✨★✶✳✸"               # star progression
+PAL_HALFFILL = " ◔◑◕◐◒◓◖◗◙"               # directional half-fill progression
+PAL_HATCH    = " ▣▤▥▦▧▨▩"                     # crosshatch density ramp
 ```
 
 #### Project-Specific (examples -- invent new ones per project)
@@ -353,6 +439,202 @@ def rgb_palette_map(val, mask, palette):
     return R, G, B
 ```
 
+### OKLAB Color Space (Perceptually Uniform)
+
+HSV hue is perceptually non-uniform: green occupies far more visual range than blue. OKLAB / OKLCH provide perceptually even color steps — hue increments of 0.1 look equally different regardless of starting hue. Use OKLAB for:
+- Gradient interpolation (no unwanted intermediate hues)
+- Color harmony generation (perceptually balanced palettes)
+- Smooth color transitions over time
+
+```python
+# --- sRGB <-> Linear sRGB ---
+
+def srgb_to_linear(c):
+    """Convert sRGB [0,1] to linear light. c: float32 array."""
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+def linear_to_srgb(c):
+    """Convert linear light to sRGB [0,1]."""
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(np.maximum(c, 0), 1/2.4) - 0.055)
+
+# --- Linear sRGB <-> OKLAB ---
+
+def linear_rgb_to_oklab(r, g, b):
+    """Linear sRGB to OKLAB. r,g,b: float32 arrays [0,1].
+    Returns (L, a, b) where L=[0,1], a,b=[-0.4, 0.4] approx."""
+    l_ = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    m_ = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    s_ = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    l_c = np.cbrt(l_); m_c = np.cbrt(m_); s_c = np.cbrt(s_)
+    L = 0.2104542553 * l_c + 0.7936177850 * m_c - 0.0040720468 * s_c
+    a = 1.9779984951 * l_c - 2.4285922050 * m_c + 0.4505937099 * s_c
+    b_ = 0.0259040371 * l_c + 0.7827717662 * m_c - 0.8086757660 * s_c
+    return L, a, b_
+
+def oklab_to_linear_rgb(L, a, b):
+    """OKLAB to linear sRGB. Returns (r, g, b) float32 arrays [0,1]."""
+    l_ = L + 0.3963377774 * a + 0.2158037573 * b
+    m_ = L - 0.1055613458 * a - 0.0638541728 * b
+    s_ = L - 0.0894841775 * a - 1.2914855480 * b
+    l_c = l_ ** 3; m_c = m_ ** 3; s_c = s_ ** 3
+    r = +4.0767416621 * l_c - 3.3077115913 * m_c + 0.2309699292 * s_c
+    g = -1.2684380046 * l_c + 2.6097574011 * m_c - 0.3413193965 * s_c
+    b_ = -0.0041960863 * l_c - 0.7034186147 * m_c + 1.7076147010 * s_c
+    return np.clip(r, 0, 1), np.clip(g, 0, 1), np.clip(b_, 0, 1)
+
+# --- Convenience: sRGB uint8 <-> OKLAB ---
+
+def rgb_to_oklab(R, G, B):
+    """sRGB uint8 arrays to OKLAB."""
+    r = srgb_to_linear(R.astype(np.float32) / 255.0)
+    g = srgb_to_linear(G.astype(np.float32) / 255.0)
+    b = srgb_to_linear(B.astype(np.float32) / 255.0)
+    return linear_rgb_to_oklab(r, g, b)
+
+def oklab_to_rgb(L, a, b):
+    """OKLAB to sRGB uint8 arrays."""
+    r, g, b_ = oklab_to_linear_rgb(L, a, b)
+    R = np.clip(linear_to_srgb(r) * 255, 0, 255).astype(np.uint8)
+    G = np.clip(linear_to_srgb(g) * 255, 0, 255).astype(np.uint8)
+    B = np.clip(linear_to_srgb(b_) * 255, 0, 255).astype(np.uint8)
+    return R, G, B
+
+# --- OKLCH (cylindrical form of OKLAB) ---
+
+def oklab_to_oklch(L, a, b):
+    """OKLAB to OKLCH. Returns (L, C, H) where H is in [0, 1] (normalized)."""
+    C = np.sqrt(a**2 + b**2)
+    H = (np.arctan2(b, a) / (2 * np.pi)) % 1.0
+    return L, C, H
+
+def oklch_to_oklab(L, C, H):
+    """OKLCH to OKLAB. H in [0, 1]."""
+    angle = H * 2 * np.pi
+    a = C * np.cos(angle)
+    b = C * np.sin(angle)
+    return L, a, b
+```
+
+### Gradient Interpolation (OKLAB vs HSV)
+
+Interpolating colors through OKLAB avoids the hue detours that HSV produces:
+
+```python
+def lerp_oklab(color_a, color_b, t_array):
+    """Interpolate between two sRGB colors through OKLAB.
+    color_a, color_b: (R, G, B) tuples 0-255
+    t_array: float32 array [0,1] — interpolation parameter per pixel.
+    Returns (R, G, B) uint8 arrays."""
+    La, aa, ba = rgb_to_oklab(
+        np.full_like(t_array, color_a[0], dtype=np.uint8),
+        np.full_like(t_array, color_a[1], dtype=np.uint8),
+        np.full_like(t_array, color_a[2], dtype=np.uint8))
+    Lb, ab, bb = rgb_to_oklab(
+        np.full_like(t_array, color_b[0], dtype=np.uint8),
+        np.full_like(t_array, color_b[1], dtype=np.uint8),
+        np.full_like(t_array, color_b[2], dtype=np.uint8))
+    L = La + (Lb - La) * t_array
+    a = aa + (ab - aa) * t_array
+    b = ba + (bb - ba) * t_array
+    return oklab_to_rgb(L, a, b)
+
+def lerp_oklch(color_a, color_b, t_array, short_path=True):
+    """Interpolate through OKLCH (preserves chroma, smooth hue path).
+    short_path: take the shorter arc around the hue wheel."""
+    La, aa, ba = rgb_to_oklab(
+        np.full_like(t_array, color_a[0], dtype=np.uint8),
+        np.full_like(t_array, color_a[1], dtype=np.uint8),
+        np.full_like(t_array, color_a[2], dtype=np.uint8))
+    Lb, ab, bb = rgb_to_oklab(
+        np.full_like(t_array, color_b[0], dtype=np.uint8),
+        np.full_like(t_array, color_b[1], dtype=np.uint8),
+        np.full_like(t_array, color_b[2], dtype=np.uint8))
+    L1, C1, H1 = oklab_to_oklch(La, aa, ba)
+    L2, C2, H2 = oklab_to_oklch(Lb, ab, bb)
+    # Shortest hue path
+    if short_path:
+        dh = H2 - H1
+        dh = np.where(dh > 0.5, dh - 1.0, np.where(dh < -0.5, dh + 1.0, dh))
+        H = (H1 + dh * t_array) % 1.0
+    else:
+        H = H1 + (H2 - H1) * t_array
+    L = L1 + (L2 - L1) * t_array
+    C = C1 + (C2 - C1) * t_array
+    Lout, aout, bout = oklch_to_oklab(L, C, H)
+    return oklab_to_rgb(Lout, aout, bout)
+```
+
+### Color Harmony Generation
+
+Auto-generate harmonious palettes from a seed color:
+
+```python
+def harmony_complementary(seed_rgb):
+    """Two colors: seed + opposite hue."""
+    L, a, b = rgb_to_oklab(np.array([seed_rgb[0]]), np.array([seed_rgb[1]]), np.array([seed_rgb[2]]))
+    _, C, H = oklab_to_oklch(L, a, b)
+    return [seed_rgb, _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.5) % 1.0)]
+
+def harmony_triadic(seed_rgb):
+    """Three colors: seed + two at 120-degree offsets."""
+    L, a, b = rgb_to_oklab(np.array([seed_rgb[0]]), np.array([seed_rgb[1]]), np.array([seed_rgb[2]]))
+    _, C, H = oklab_to_oklch(L, a, b)
+    return [seed_rgb,
+            _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.333) % 1.0),
+            _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.667) % 1.0)]
+
+def harmony_analogous(seed_rgb, spread=0.08, n=5):
+    """N colors spread evenly around seed hue."""
+    L, a, b = rgb_to_oklab(np.array([seed_rgb[0]]), np.array([seed_rgb[1]]), np.array([seed_rgb[2]]))
+    _, C, H = oklab_to_oklch(L, a, b)
+    offsets = np.linspace(-spread * (n-1)/2, spread * (n-1)/2, n)
+    return [_oklch_to_srgb_tuple(L[0], C[0], (H[0] + off) % 1.0) for off in offsets]
+
+def harmony_split_complementary(seed_rgb, split=0.08):
+    """Three colors: seed + two flanking the complement."""
+    L, a, b = rgb_to_oklab(np.array([seed_rgb[0]]), np.array([seed_rgb[1]]), np.array([seed_rgb[2]]))
+    _, C, H = oklab_to_oklch(L, a, b)
+    comp = (H[0] + 0.5) % 1.0
+    return [seed_rgb,
+            _oklch_to_srgb_tuple(L[0], C[0], (comp - split) % 1.0),
+            _oklch_to_srgb_tuple(L[0], C[0], (comp + split) % 1.0)]
+
+def harmony_tetradic(seed_rgb):
+    """Four colors: two complementary pairs at 90-degree offset."""
+    L, a, b = rgb_to_oklab(np.array([seed_rgb[0]]), np.array([seed_rgb[1]]), np.array([seed_rgb[2]]))
+    _, C, H = oklab_to_oklch(L, a, b)
+    return [seed_rgb,
+            _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.25) % 1.0),
+            _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.5) % 1.0),
+            _oklch_to_srgb_tuple(L[0], C[0], (H[0] + 0.75) % 1.0)]
+
+def _oklch_to_srgb_tuple(L, C, H):
+    """Helper: single OKLCH -> sRGB (R,G,B) int tuple."""
+    La = np.array([L]); Ca = np.array([C]); Ha = np.array([H])
+    Lo, ao, bo = oklch_to_oklab(La, Ca, Ha)
+    R, G, B = oklab_to_rgb(Lo, ao, bo)
+    return (int(R[0]), int(G[0]), int(B[0]))
+```
+
+### OKLAB Hue Fields
+
+Drop-in replacements for `hf_*` generators that produce perceptually uniform hue variation:
+
+```python
+def hf_oklch_angle(offset=0.0, chroma=0.12, lightness=0.7):
+    """OKLCH hue mapped to angle from center. Perceptually uniform rainbow.
+    Returns (R, G, B) uint8 color array instead of a float hue.
+    NOTE: Use with _render_vf_rgb() variant, not standard _render_vf()."""
+    def fn(g, f, t, S):
+        H = (g.angle / (2 * np.pi) + offset + t * 0.05) % 1.0
+        L = np.full_like(H, lightness)
+        C = np.full_like(H, chroma)
+        Lo, ao, bo = oklch_to_oklab(L, C, H)
+        R, G, B = oklab_to_rgb(Lo, ao, bo)
+        return mkc(R, G, B, g.rows, g.cols)
+    return fn
+```
+
 ### Compositing Helpers
 
 ```python
@@ -458,7 +740,7 @@ subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
 
 ### v2 Protocol (Current)
 
-Every scene function: `(renderer, features_dict, time_float, state_dict) -> canvas_uint8`
+Every scene function: `(r, f, t, S) -> canvas_uint8` — where `r` = Renderer, `f` = features dict, `t` = time float, `S` = persistent state dict
 
 ```python
 def fx_example(r, f, t, S):

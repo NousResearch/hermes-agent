@@ -204,7 +204,6 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
             "Requested OpenAI STT model %r is not in SUPPORTED_OPENAI_MODELS; proceeding anyway",
             model_name,
         )
-
     try:
         client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
 
@@ -267,7 +266,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", "base")
+        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         return _transcribe_local(file_path, model_name)
 
     if provider == "openai":

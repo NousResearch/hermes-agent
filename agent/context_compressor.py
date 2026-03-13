@@ -28,7 +28,7 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.85,
+        threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
         summary_target_tokens: int = 2500,
@@ -132,7 +132,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
-            summary = response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            # Handle cases where content is not a string (e.g., dict from llama.cpp)
+            if not isinstance(content, str):
+                content = str(content) if content else ""
+            summary = content.strip()
             if not summary.startswith("[CONTEXT SUMMARY]:"):
                 summary = "[CONTEXT SUMMARY]: " + summary
             return summary

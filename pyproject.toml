@@ -13,6 +13,7 @@ license = { text = "MIT" }
 dependencies = [
   # Core
   "openai",
+  "anthropic>=0.39.0",
   "python-dotenv",
   "fire",
   "httpx",
@@ -29,6 +30,7 @@ dependencies = [
   "fal-client",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts",
+  "faster-whisper>=1.0.0",
   # mini-swe-agent deps (terminal tool)
   "litellm>=1.75.5",
   "typer",
@@ -53,6 +55,13 @@ pty = [
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+rl = [
+  "atroposlib @ git+https://github.com/NousResearch/atropos.git",
+  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "wandb>=0.15.0",
+]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [
   "hermes-agent[modal]",
@@ -74,10 +83,10 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "mini_swe_runner", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["tools", "hermes_cli", "gateway", "cron", "honcho_integration"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

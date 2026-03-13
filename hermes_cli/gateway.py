@@ -623,6 +623,18 @@ def _setup_standard_platform(platform: dict):
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
+                # For Discord, strip common prefixes (user:123, <@123>, <@!123>)
+                if "DISCORD" in var["name"]:
+                    parts = []
+                    for uid in cleaned.split(","):
+                        uid = uid.strip()
+                        if uid.startswith("<@") and uid.endswith(">"):
+                            uid = uid.lstrip("<@!").rstrip(">")
+                        if uid.lower().startswith("user:"):
+                            uid = uid[5:]
+                        if uid:
+                            parts.append(uid)
+                    cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
                 print_success(f"  Saved — only these users can interact with the bot.")
                 allowed_val_set = cleaned

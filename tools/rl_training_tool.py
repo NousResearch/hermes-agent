@@ -52,11 +52,12 @@ HERMES_ROOT = Path(__file__).parent.parent
 TINKER_ATROPOS_ROOT = HERMES_ROOT / "tinker-atropos"
 ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
 CONFIGS_DIR = TINKER_ATROPOS_ROOT / "configs"
-LOGS_DIR = TINKER_ATROPOS_ROOT / "logs"
+LOGS_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "logs" / "rl_training"
 
-# Ensure logs directory exists
-LOGS_DIR.mkdir(exist_ok=True)
-
+def _ensure_logs_dir():
+    """Lazily create logs directory on first use (avoid side effects at import time)."""
+    if TINKER_ATROPOS_ROOT.exists():
+        LOGS_DIR.mkdir(exist_ok=True)
 
 # ============================================================================
 # Locked Configuration (Infrastructure Settings)
@@ -314,6 +315,8 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
     """
     run_id = run_state.run_id
     
+    _ensure_logs_dir()
+
     # Log file paths
     api_log = LOGS_DIR / f"api_{run_id}.log"
     trainer_log = LOGS_DIR / f"trainer_{run_id}.log"
@@ -1092,6 +1095,7 @@ async def rl_test_inference(
     }
     
     # Create output directory for test results
+    _ensure_logs_dir()
     test_output_dir = LOGS_DIR / "inference_tests"
     test_output_dir.mkdir(exist_ok=True)
     

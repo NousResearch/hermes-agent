@@ -250,6 +250,12 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
+
+        # Persistent Honcho managers keyed by gateway session key.
+        # This preserves write_frequency="session" semantics across short-lived
+        # per-message AIAgent instances.
+        self._honcho_managers: Dict[str, Any] = {}
+        self._honcho_configs: Dict[str, Any] = {}
         
         # Initialize session database for session_search tool support
         self._session_db = None
@@ -266,6 +272,61 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+
+    def _get_or_create_gateway_honcho(self, session_key: str):
+        """Return a persistent Honcho manager/config pair for this gateway session."""
+        if not hasattr(self, "_honcho_managers"):
+            self._honcho_managers = {}
+        if not hasattr(self, "_honcho_configs"):
+            self._honcho_configs = {}
+
+        if session_key in self._honcho_managers:
+            return self._honcho_managers[session_key], self._honcho_configs.get(session_key)
+
+        try:
+            from honcho_integration.client import HonchoClientConfig, get_honcho_client
+            from honcho_integration.session import HonchoSessionManager
+
+            hcfg = HonchoClientConfig.from_global_config()
+            if not hcfg.enabled or not hcfg.api_key:
+                return None, hcfg
+
+            client = get_honcho_client(hcfg)
+            manager = HonchoSessionManager(
+                honcho=client,
+                config=hcfg,
+                context_tokens=hcfg.context_tokens,
+            )
+            self._honcho_managers[session_key] = manager
+            self._honcho_configs[session_key] = hcfg
+            return manager, hcfg
+        except Exception as e:
+            logger.debug("Gateway Honcho init failed for %s: %s", session_key, e)
+            return None, None
+
+    def _shutdown_gateway_honcho(self, session_key: str) -> None:
+        """Flush and close the persistent Honcho manager for a gateway session."""
+        managers = getattr(self, "_honcho_managers", None)
+        configs = getattr(self, "_honcho_configs", None)
+        if managers is None or configs is None:
+            return
+
+        manager = managers.pop(session_key, None)
+        configs.pop(session_key, None)
+        if not manager:
+            return
+        try:
+            manager.shutdown()
+        except Exception as e:
+            logger.debug("Gateway Honcho shutdown failed for %s: %s", session_key, e)
+
+    def _shutdown_all_gateway_honcho(self) -> None:
+        """Flush and close all persistent Honcho managers."""
+        managers = getattr(self, "_honcho_managers", None)
+        if not managers:
+            return
+        for session_key in list(managers.keys()):
+            self._shutdown_gateway_honcho(session_key)
     
     def _flush_memories_for_session(self, old_session_id: str):
         """Prompt the agent to save memories/skills before context is lost.
@@ -324,6 +385,12 @@ class GatewayRunner:
                 conversation_history=msgs,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            # Flush any queued Honcho writes before the session is dropped
+            if getattr(tmp_agent, '_honcho', None):
+                try:
+                    tmp_agent._honcho.shutdown()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
@@ -634,6 +701,7 @@ class GatewayRunner:
                     )
                     try:
                         await self._async_flush_memories(entry.session_id)
+                        self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
@@ -656,8 +724,9 @@ class GatewayRunner:
                 logger.info("✓ %s disconnected", platform.value)
             except Exception as e:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
-        
+
         self.adapters.clear()
+        self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file
@@ -964,7 +1033,9 @@ class GatewayRunner:
                 cmd_key = f"/{command}"
                 if cmd_key in skill_cmds:
                     user_instruction = event.get_command_args().strip()
-                    msg = build_skill_invocation_message(cmd_key, user_instruction)
+                    msg = build_skill_invocation_message(
+                        cmd_key, user_instruction, task_id=session_key
+                    )
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
@@ -1054,8 +1125,14 @@ class GatewayRunner:
                 get_model_context_length,
             )
 
-            # Read model + compression config from config.yaml — same
-            # source of truth the agent itself uses.
+            # Read model + compression config from config.yaml.
+            # NOTE: hygiene threshold is intentionally HIGHER than the agent's
+            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
+            # sessions that grew too large between turns — it fires pre-agent
+            # to prevent API failures.  The agent's own compressor handles
+            # normal context management during its tool loop with accurate
+            # real token counts.  Having hygiene at 0.50 caused premature
+            # compression on every turn in long gateway sessions.
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
@@ -1073,22 +1150,18 @@ class GatewayRunner:
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default", _hyg_model)
 
-                    # Read compression settings
+                    # Read compression settings — only use enabled flag.
+                    # The threshold is intentionally separate from the agent's
+                    # compression.threshold (hygiene runs higher).
                     _comp_cfg = _hyg_data.get("compression", {})
                     if isinstance(_comp_cfg, dict):
-                        _hyg_threshold_pct = float(
-                            _comp_cfg.get("threshold", _hyg_threshold_pct)
-                        )
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in ("true", "1", "yes")
             except Exception:
                 pass
 
-            # Also check env overrides (same as run_agent.py)
-            _hyg_threshold_pct = float(
-                os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(_hyg_threshold_pct))
-            )
+            # Check env override for disabling compression entirely
             if os.getenv("CONTEXT_COMPRESSION_ENABLED", "").lower() in ("false", "0", "no"):
                 _hyg_compression_enabled = False
 
@@ -1375,6 +1448,11 @@ class GatewayRunner:
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
 
+            # If the agent's session_id changed during compression, update
+            # session_entry so transcript writes below go to the right session.
+            if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                session_entry.session_id = agent_result["session_id"]
+
             # Prepend reasoning/thinking if display is enabled
             if getattr(self, "_show_reasoning", False) and response:
                 last_reasoning = agent_result.get("last_reasoning")
@@ -1503,6 +1581,8 @@ class GatewayRunner:
                 asyncio.create_task(self._async_flush_memories(old_entry.session_id))
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
+
+        self._shutdown_gateway_honcho(session_key)
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
@@ -2435,6 +2515,8 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
+        self._shutdown_gateway_honcho(session_key)
+
         # Clear any running agent for this session key
         if session_key in self._running_agents:
             del self._running_agents[session_key]
@@ -3034,6 +3116,8 @@ class GatewayRunner:
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
+        last_progress_msg = [None]  # Track last message for dedup
+        repeat_count = [0]  # How many times the same message repeated
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
@@ -3106,6 +3190,18 @@ class GatewayRunner:
             else:
                 msg = f"{emoji} {tool_name}..."
             
+            # Dedup: collapse consecutive identical progress messages.
+            # Common with execute_code where models iterate with the same
+            # code (same boilerplate imports → identical previews).
+            if msg == last_progress_msg[0]:
+                repeat_count[0] += 1
+                # Update the last line in progress_lines with a counter
+                # via a special "dedup" queue message.
+                progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                return
+            last_progress_msg[0] = msg
+            repeat_count[0] = 0
+            
             progress_queue.put(msg)
         
         # Background task to send progress messages
@@ -3126,8 +3222,17 @@ class GatewayRunner:
 
             while True:
                 try:
-                    msg = progress_queue.get_nowait()
-                    progress_lines.append(msg)
+                    raw = progress_queue.get_nowait()
+                    
+                    # Handle dedup messages: update last line with repeat counter
+                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        _, base_msg, count = raw
+                        if progress_lines:
+                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                        msg = progress_lines[-1] if progress_lines else base_msg
+                    else:
+                        msg = raw
+                        progress_lines.append(msg)
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
@@ -3163,8 +3268,13 @@ class GatewayRunner:
                     # Drain remaining queued messages
                     while not progress_queue.empty():
                         try:
-                            msg = progress_queue.get_nowait()
-                            progress_lines.append(msg)
+                            raw = progress_queue.get_nowait()
+                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                                _, base_msg, count = raw
+                                if progress_lines:
+                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            else:
+                                progress_lines.append(raw)
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
@@ -3246,6 +3356,7 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
+            honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -3267,6 +3378,8 @@ class GatewayRunner:
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
                 honcho_session_key=session_key,
+                honcho_manager=honcho_manager,
+                honcho_config=honcho_config,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )
@@ -3389,6 +3502,23 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
+            # Sync session_id: the agent may have created a new session during
+            # mid-run context compression (_compress_context splits sessions).
+            # If so, update the session store entry so the NEXT message loads
+            # the compressed transcript, not the stale pre-compression one.
+            agent = agent_holder[0]
+            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent.session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent.session_id
+                    self.session_store._save()
+
+            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -3397,6 +3527,7 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": len(agent_history),
                 "last_prompt_tokens": _last_prompt_toks,
+                "session_id": effective_session_id,
             }
         
         # Start progress message sender if enabled

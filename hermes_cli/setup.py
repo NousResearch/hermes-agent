@@ -52,6 +52,78 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
     config["model"] = model_cfg
 
 
+# Default model lists per provider — used as fallback when the live
+# /models endpoint can't be reached.
+_DEFAULT_PROVIDER_MODELS = {
+    "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "minimax": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax-cn": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+}
+
+
+def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
+    """Model selection for API-key providers with live /models detection.
+
+    Tries the provider's /models endpoint first.  Falls back to a
+    hardcoded default list with a warning if the endpoint is unreachable.
+    Always offers a 'Custom model' escape hatch.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import get_env_value
+    from hermes_cli.models import fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    # Resolve API key and base URL for the probe
+    api_key = ""
+    for ev in pconfig.api_key_env_vars:
+        api_key = get_env_value(ev) or os.getenv(ev, "")
+        if api_key:
+            break
+    base_url_env = pconfig.base_url_env_var or ""
+    base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+
+    # Try live /models endpoint
+    live_models = fetch_api_models(api_key, base_url)
+
+    if live_models:
+        provider_models = live_models
+        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
+    else:
+        provider_models = _DEFAULT_PROVIDER_MODELS.get(provider_id, [])
+        if provider_models:
+            print_warning(
+                f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
+                f"    Use \"Custom model\" if the model you expect isn't listed."
+            )
+
+    model_choices = list(provider_models)
+    model_choices.append("Custom model")
+    model_choices.append(f"Keep current ({current_model})")
+
+    keep_idx = len(model_choices) - 1
+    model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+    if model_idx < len(provider_models):
+        _set_default_model(config, provider_models[model_idx])
+    elif model_idx == len(provider_models):
+        custom = prompt_fn("Enter model name")
+        if custom:
+            _set_default_model(config, custom)
+    else:
+        # "Keep current" selected — validate it's compatible with the new
+        # provider.  OpenRouter-formatted names (containing "/") won't work
+        # on direct-API providers and would silently break the gateway.
+        if "/" in (current_model or "") and provider_models:
+            print_warning(
+                f"Current model \"{current_model}\" looks like an OpenRouter model "
+                f"and won't work with {pconfig.name}. "
+                f"Switching to {provider_models[0]}."
+            )
+            _set_default_model(config, provider_models[0])
+
+
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
     disk_model = load_config().get("model")
     if isinstance(disk_model, dict):
@@ -627,6 +699,7 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "Anthropic (Claude models — API key or Claude Code subscription)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -889,7 +962,8 @@ def setup_model_provider(config: dict):
                 print_info(f"  URL: {detected['base_url']}")
                 if detected["id"].startswith("coding"):
                     print_info(
-                        f"  Note: Coding Plan detected — GLM-5 is not available, using {detected['model']}"
+                        f"  Note: Coding Plan endpoint detected (default model: {detected['model']}). "
+                        f"GLM-5 may still be available depending on your plan tier."
                     )
                 save_env_value("GLM_BASE_URL", zai_base_url)
             else:
@@ -903,7 +977,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url)
+        _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
 
     elif provider_idx == 5:  # Kimi / Moonshot
@@ -936,7 +1010,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
+        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
 
     elif provider_idx == 6:  # MiniMax
@@ -969,7 +1043,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url)
+        _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
 
     elif provider_idx == 7:  # MiniMax China
@@ -1002,10 +1076,114 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
+        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 8:  # Anthropic
+        selected_provider = "anthropic"
+        print()
+        print_header("Anthropic Authentication")
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.config import save_anthropic_api_key, save_anthropic_oauth_token
+        pconfig = PROVIDER_REGISTRY["anthropic"]
+
+        # Check ALL credential sources
+        import os as _os
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials, is_claude_code_token_valid,
+            run_oauth_setup_token,
+        )
+        cc_creds = read_claude_code_credentials()
+        cc_valid = bool(cc_creds and is_claude_code_token_valid(cc_creds))
+
+        existing_key = (
+            get_env_value("ANTHROPIC_TOKEN")
+            or get_env_value("ANTHROPIC_API_KEY")
+            or _os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+        )
+
+        has_creds = bool(existing_key) or cc_valid
+        needs_auth = not has_creds
+
+        if has_creds:
+            if existing_key:
+                print_info(f"Current credentials: {existing_key[:12]}...")
+            elif cc_valid:
+                print_success("Found valid Claude Code credentials (auto-detected)")
+
+            auth_choices = [
+                "Use existing credentials",
+                "Reauthenticate (new OAuth login)",
+                "Cancel",
+            ]
+            choice_idx = prompt_choice("What would you like to do?", auth_choices, 0)
+            if choice_idx == 1:
+                needs_auth = True
+            elif choice_idx == 2:
+                pass  # fall through to provider config
+
+        if needs_auth:
+            auth_choices = [
+                "Claude Pro/Max subscription (OAuth login)",
+                "Anthropic API key (pay-per-token)",
+            ]
+            auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
+
+            if auth_idx == 0:
+                # OAuth setup-token flow
+                try:
+                    print()
+                    print_info("Running 'claude setup-token' — follow the prompts below.")
+                    print_info("A browser window will open for you to authorize access.")
+                    print()
+                    token = run_oauth_setup_token()
+                    if token:
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
+                        print_success("OAuth credentials saved")
+                    else:
+                        # Subprocess completed but no token auto-detected
+                        print()
+                        token = prompt("Paste setup-token here (if displayed above)", password=True)
+                        if token:
+                            save_anthropic_oauth_token(token, save_fn=save_env_value)
+                            print_success("Setup-token saved")
+                        else:
+                            print_warning("Skipped — agent won't work without credentials")
+                except FileNotFoundError:
+                    print()
+                    print_info("The 'claude' CLI is required for OAuth login.")
+                    print()
+                    print_info("To install: npm install -g @anthropic-ai/claude-code")
+                    print_info("Then run:   claude setup-token")
+                    print_info("Or paste an existing setup-token below:")
+                    print()
+                    token = prompt("Setup-token (sk-ant-oat-...)", password=True)
+                    if token:
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
+                        print_success("Setup-token saved")
+                    else:
+                        print_warning("Skipped — install Claude Code and re-run setup")
+            else:
+                print()
+                print_info("Get an API key at: https://console.anthropic.com/settings/keys")
+                print()
+                api_key = prompt("API key (sk-ant-...)", password=True)
+                if api_key:
+                    save_anthropic_api_key(api_key, save_fn=save_env_value)
+                    print_success("API key saved")
+                else:
+                    print_warning("Skipped — agent won't work without credentials")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        # Don't save base_url for Anthropic — resolve_runtime_provider()
+        # always hardcodes it. Stale base_urls contaminate other providers.
+        _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
+        _set_model_provider(config, "anthropic")
+
+    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
@@ -1018,6 +1196,7 @@ def setup_model_provider(config: dict):
         "kimi-coding",
         "minimax",
         "minimax-cn",
+        "anthropic",
     ) and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
@@ -1106,58 +1285,31 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider == "zai":
-            # Coding Plan endpoints don't have GLM-5
-            is_coding_plan = get_env_value("GLM_BASE_URL") and "coding" in (
-                get_env_value("GLM_BASE_URL") or ""
+        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+            _setup_provider_model_selection(
+                config, selected_provider, current_model,
+                prompt_choice, prompt,
             )
-            if is_coding_plan:
-                zai_models = ["glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            else:
-                zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            model_choices = list(zai_models)
+        elif selected_provider == "anthropic":
+            # Try live model list first, fall back to static
+            from hermes_cli.models import provider_model_ids
+            live_models = provider_model_ids("anthropic")
+            anthropic_models = live_models if live_models else [
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5-20251001",
+            ]
+            model_choices = list(anthropic_models)
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")
 
             keep_idx = len(model_choices) - 1
             model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
 
-            if model_idx < len(zai_models):
-                _set_default_model(config, zai_models[model_idx])
-            elif model_idx == len(zai_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider == "kimi-coding":
-            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
-            model_choices = list(kimi_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(kimi_models):
-                _set_default_model(config, kimi_models[model_idx])
-            elif model_idx == len(kimi_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider in ("minimax", "minimax-cn"):
-            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
-            model_choices = list(minimax_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(minimax_models):
-                _set_default_model(config, minimax_models[model_idx])
-            elif model_idx == len(minimax_models):
-                custom = prompt("Enter model name")
+            if model_idx < len(anthropic_models):
+                _set_default_model(config, anthropic_models[model_idx])
+            elif model_idx == len(anthropic_models):
+                custom = prompt("Enter model name (e.g., claude-sonnet-4-20250514)")
                 if custom:
                     _set_default_model(config, custom)
             # else: keep current
@@ -1783,7 +1935,17 @@ def setup_gateway(config: dict):
                 "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
             )
             if allowed_users:
-                save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                # Clean up common prefixes (user:123, <@123>, <@!123>)
+                cleaned_ids = []
+                for uid in allowed_users.replace(" ", "").split(","):
+                    uid = uid.strip()
+                    if uid.startswith("<@") and uid.endswith(">"):
+                        uid = uid.lstrip("<@!").rstrip(">")
+                    if uid.lower().startswith("user:"):
+                        uid = uid[5:]
+                    if uid:
+                        cleaned_ids.append(uid)
+                save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                 print_success("Discord allowlist configured")
             else:
                 print_info(
@@ -1818,8 +1980,18 @@ def setup_gateway(config: dict):
                 )
                 allowed_users = prompt("Allowed user IDs (comma-separated)")
                 if allowed_users:
+                    # Clean up common prefixes (user:123, <@123>, <@!123>)
+                    cleaned_ids = []
+                    for uid in allowed_users.replace(" ", "").split(","):
+                        uid = uid.strip()
+                        if uid.startswith("<@") and uid.endswith(">"):
+                            uid = uid.lstrip("<@!").rstrip(">")
+                        if uid.lower().startswith("user:"):
+                            uid = uid[5:]
+                        if uid:
+                            cleaned_ids.append(uid)
                     save_env_value(
-                        "DISCORD_ALLOWED_USERS", allowed_users.replace(" ", "")
+                        "DISCORD_ALLOWED_USERS", ",".join(cleaned_ids)
                     )
                     print_success("Discord allowlist configured")
 

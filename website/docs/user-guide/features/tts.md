@@ -67,23 +67,48 @@ Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but sh
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
 :::
 
-## Voice Message Transcription
+## Voice Message Transcription (STT)
 
-Voice messages sent on Telegram, Discord, WhatsApp, or Slack are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
+Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
 
-| Provider | Model | Quality | Cost |
-|----------|-------|---------|------|
-| **OpenAI Whisper** | `whisper-1` (default) | Good | Low |
-| **OpenAI GPT-4o** | `gpt-4o-mini-transcribe` | Better | Medium |
-| **OpenAI GPT-4o** | `gpt-4o-transcribe` | Best | Higher |
+| Provider | Quality | Cost | API Key |
+|----------|---------|------|---------| 
+| **Local Whisper** (default) | Good | Free | None needed |
+| **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 
-Requires `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`.
+:::info Zero Config
+Local transcription works out of the box — no API key needed. The `faster-whisper` model (~150 MB for `base`) is auto-downloaded on first voice message.
+:::
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  enabled: true
-  model: "whisper-1"
+  provider: "local"           # "local" (free, faster-whisper) | "openai" (API)
+  local:
+    model: "base"             # tiny, base, small, medium, large-v3
+  openai:
+    model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
 ```
+
+### Provider Details
+
+**Local (faster-whisper)** — Runs Whisper locally via [faster-whisper](https://github.com/SYSTRAN/faster-whisper). Uses CPU by default, GPU if available. Model sizes:
+
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| `tiny` | ~75 MB | Fastest | Basic |
+| `base` | ~150 MB | Fast | Good (default) |
+| `small` | ~500 MB | Medium | Better |
+| `medium` | ~1.5 GB | Slower | Great |
+| `large-v3` | ~3 GB | Slowest | Best |
+
+**OpenAI API** — Requires `VOICE_TOOLS_OPENAI_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe`.
+
+### Fallback Behavior
+
+If your configured provider isn't available, Hermes automatically falls back:
+- **Local not installed** → Falls back to OpenAI API (if key is set)
+- **OpenAI key not set** → Falls back to local Whisper (if installed)
+- **Neither available** → Voice messages pass through with a note to the user

@@ -93,6 +93,22 @@ When set, the skill is automatically hidden from the system prompt, `skills_list
 
 See `skills/apple/` for examples of macOS-only skills.
 
+## Secure Setup on Load
+
+Use `required_environment_variables` when a skill needs an API key or token. Missing values do **not** hide the skill from discovery. Instead, Hermes prompts for them securely when the skill is loaded in the local CLI.
+
+```yaml
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+    required_for: full functionality
+```
+
+The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
+
+Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
+
 ## Skill Guidelines
 
 ### No External Dependencies

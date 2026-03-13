@@ -83,10 +83,13 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        # Handle both missing keys and explicit null values (YAML null → None)
+        at_hour = data.get("at_hour")
+        idle_minutes = data.get("idle_minutes")
         return cls(
             mode=data.get("mode", "both"),
-            at_hour=data.get("at_hour", 4),
-            idle_minutes=data.get("idle_minutes", 1440),
+            at_hour=at_hour if at_hour is not None else 4,
+            idle_minutes=idle_minutes if idle_minutes is not None else 1440,
         )
 
 
@@ -304,6 +307,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
+                    os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     except Exception:
         pass
 

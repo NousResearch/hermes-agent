@@ -51,11 +51,12 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.5-highspeed",
     "minimax-cn": "MiniMax-M2.5-highspeed",
+    "anthropic": "claude-haiku-4-5-20251001",
 }
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
-    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-OpenRouter-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
@@ -438,12 +439,37 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     )
 
 
+def _read_main_model() -> str:
+    """Read the user's configured main model from config/env.
+
+    Falls back through HERMES_MODEL → LLM_MODEL → config.yaml model.default
+    so the auxiliary client can use the same model as the main agent when no
+    dedicated auxiliary model is available.
+    """
+    from_env = os.getenv("OPENAI_MODEL") or os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL")
+    if from_env:
+        return from_env.strip()
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, str) and model_cfg.strip():
+            return model_cfg.strip()
+        if isinstance(model_cfg, dict):
+            default = model_cfg.get("default", "")
+            if isinstance(default, str) and default.strip():
+                return default.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base = os.getenv("OPENAI_BASE_URL")
     custom_key = os.getenv("OPENAI_API_KEY")
     if not custom_base or not custom_key:
         return None, None
-    model = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
@@ -574,6 +600,15 @@ def resolve_provider_client(
         client, resolved = _resolve_auto()
         if client is None:
             return None, None
+        # When auto-detection lands on a non-OpenRouter provider (e.g. a
+        # local server), an OpenRouter-formatted model override like
+        # "google/gemini-3-flash-preview" won't work.  Drop it and use
+        # the provider's own default model instead.
+        if model and "/" in model and resolved and "/" not in resolved:
+            logger.debug(
+                "Dropping OpenRouter-format model %r for non-OpenRouter "
+                "auxiliary provider (using %r instead)", model, resolved)
+            model = None
         final_model = model or resolved
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))

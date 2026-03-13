@@ -68,6 +68,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
+    "anthropic": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -78,6 +87,7 @@ _PROVIDER_LABELS = {
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
+    "anthropic": "Anthropic",
     "custom": "Custom endpoint",
 }
 
@@ -90,6 +100,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "claude": "anthropic",
+    "claude-code": "anthropic",
 }
 
 
@@ -123,7 +135,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -234,7 +246,55 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
                     return live
         except Exception:
             pass
+    if normalized == "anthropic":
+        live = _fetch_anthropic_models()
+        if live:
+            return live
     return list(_PROVIDER_MODELS.get(normalized, []))
+
+
+def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available models from the Anthropic /v1/models endpoint.
+
+    Uses resolve_anthropic_token() to find credentials (env vars or
+    Claude Code auto-discovery).  Returns sorted model IDs or None.
+    """
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+    except ImportError:
+        return None
+
+    token = resolve_anthropic_token()
+    if not token:
+        return None
+
+    headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
+    if _is_oauth_token(token):
+        headers["Authorization"] = f"Bearer {token}"
+        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS
+        headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
+    else:
+        headers["x-api-key"] = token
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/models",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            models = [m["id"] for m in data.get("data", []) if m.get("id")]
+            # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
+            return sorted(models, key=lambda m: (
+                "opus" not in m,      # opus first
+                "sonnet" not in m,    # then sonnet
+                "haiku" not in m,     # then haiku
+                m,                    # alphabetical within tier
+            ))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)
+        return None
 
 
 def fetch_api_models(
@@ -327,44 +387,35 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API responded but model is not listed
+            # API responded but model is not listed.  Accept anyway —
+            # the user may have access to models not shown in the public
+            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
+            # endpoints even though it's not in /models).  Warn but allow.
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
-                suggestion_text = "\n  Did you mean: " + ", ".join(f"`{s}`" for s in suggestions)
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Error: `{requested}` is not a valid model for this provider."
+                    f"Note: `{requested}` was not found in this provider's model listing. "
+                    f"It may still work if your plan supports it."
                     f"{suggestion_text}"
                 ),
             }
 
-    # api_models is None — couldn't reach API, fall back to catalog check
+    # api_models is None — couldn't reach API.  Accept and persist,
+    # but warn so typos don't silently break things.
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
-    known_models = provider_model_ids(normalized)
-
-    if requested in known_models:
-        return {
-            "accepted": True,
-            "persist": True,
-            "recognized": True,
-            "message": None,
-        }
-
-    # Can't validate — accept for session only
-    suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
-    suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
     return {
         "accepted": True,
-        "persist": False,
+        "persist": True,
         "recognized": False,
         "message": (
-            f"Could not validate `{requested}` against the live {provider_label} API. "
-            "Using it for this session only; config unchanged."
-            f"{suggestion_text}"
+            f"Could not reach the {provider_label} API to validate `{requested}`. "
+            f"If the service isn't down, this model may not be valid."
         ),
     }

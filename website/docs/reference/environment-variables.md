@@ -23,6 +23,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
 | `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
 | `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key or setup-token ([console.anthropic.com](https://console.anthropic.com/)) |
+| `ANTHROPIC_TOKEN` | Anthropic OAuth/setup token (alternative to `ANTHROPIC_API_KEY`) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code setup-token (same as `ANTHROPIC_TOKEN`) |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
@@ -32,7 +35,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |

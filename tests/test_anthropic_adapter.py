@@ -314,7 +314,7 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
-    def test_reasoning_config_maps_to_thinking(self):
+    def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "think hard"}],
@@ -324,7 +324,34 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["thinking"]["type"] == "enabled"
         assert kwargs["thinking"]["budget_tokens"] == 16000
+        assert kwargs["temperature"] == 1
         assert kwargs["max_tokens"] >= 16000 + 4096
+        assert "output_config" not in kwargs
+
+    def test_reasoning_config_maps_to_adaptive_thinking_for_4_6_models(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "think hard"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "high"}
+        assert "budget_tokens" not in kwargs["thinking"]
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_reasoning_config_maps_xhigh_to_max_effort_for_4_6_models(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "think harder"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "max"}
 
     def test_reasoning_disabled(self):
         kwargs = build_anthropic_kwargs(

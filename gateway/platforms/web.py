@@ -106,12 +106,16 @@ class WebAdapter(BasePlatformAdapter):
         self._running = True
         self._cleanup_task = asyncio.ensure_future(self._media_cleanup_loop())
 
-        all_ips = self._get_local_ips()
-        primary_ip = self._get_local_ip()
-        print(f"[{self.name}] Web UI: http://{primary_ip}:{self._port}")
-        for ip in all_ips:
-            if ip != primary_ip:
-                print(f"[{self.name}]   also: http://{ip}:{self._port}")
+        if self._host in ("0.0.0.0", "::"):
+            all_ips = self._get_local_ips()
+            primary_ip = self._get_local_ip()
+            print(f"[{self.name}] Web UI: http://{primary_ip}:{self._port}")
+            for ip in all_ips:
+                if ip != primary_ip:
+                    print(f"[{self.name}]   also: http://{ip}:{self._port}")
+        else:
+            print(f"[{self.name}] Web UI: http://{self._host}:{self._port}")
+            print(f"[{self.name}]   Set WEB_UI_HOST=0.0.0.0 for phone/tablet access")
         if self._token_auto_generated:
             print(f"[{self.name}] Access token (auto-generated): {self._token}")
         else:

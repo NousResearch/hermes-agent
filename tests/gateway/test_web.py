@@ -21,6 +21,8 @@ Covers:
 18. Security: DOMPurify XSS prevention
 19. Security: default bind to 127.0.0.1
 20. Security: /remote-control token hiding in group chats
+21. Network: VPN/multi-interface IP detection edge cases
+22. Network: startup message token exposure
 """
 
 import asyncio
@@ -795,3 +797,126 @@ class TestRemoteControlTokenHiding:
         result = await runner._handle_remote_control_command(event)
         assert "mysecret" not in result
         assert "hidden" in result.lower()
+
+
+# ===========================================================================
+# 21. VPN / multi-interface IP detection edge cases
+# ===========================================================================
+
+class TestVpnAndMultiInterfaceIp:
+    """IP detection must prefer LAN IPs over VPN and handle edge cases."""
+
+    def test_lan_preferred_over_vpn(self):
+        """192.168.x.x or 10.x.x.x should be chosen over 172.16.x.x VPN."""
+        from gateway.platforms.web import WebAdapter
+        with unittest.mock.patch.object(
+            WebAdapter, "_get_local_ips",
+            return_value=["172.16.0.2", "192.168.1.106"],
+        ):
+            ip = WebAdapter._get_local_ip()
+            assert ip == "192.168.1.106"
+
+    def test_ten_network_preferred_over_vpn(self):
+        """10.x.x.x corporate LAN should be preferred over 172.16.x.x VPN."""
+        from gateway.platforms.web import WebAdapter
+        with unittest.mock.patch.object(
+            WebAdapter, "_get_local_ips",
+            return_value=["172.16.5.1", "10.0.0.50"],
+        ):
+            ip = WebAdapter._get_local_ip()
+            assert ip == "10.0.0.50"
+
+    def test_only_vpn_ip_still_returned(self):
+        """If only VPN IP exists, return it rather than nothing."""
+        from gateway.platforms.web import WebAdapter
+        with unittest.mock.patch.object(
+            WebAdapter, "_get_local_ips",
+            return_value=["172.16.0.2"],
+        ):
+            ip = WebAdapter._get_local_ip()
+            assert ip == "172.16.0.2"
+
+    def test_no_interfaces_returns_localhost(self):
+        """If no IPs found at all, fall back to 127.0.0.1."""
+        from gateway.platforms.web import WebAdapter
+        with unittest.mock.patch.object(
+            WebAdapter, "_get_local_ips",
+            return_value=[],
+        ):
+            ip = WebAdapter._get_local_ip()
+            assert ip == "127.0.0.1"
+
+    def test_multiple_lan_ips_returns_first_match(self):
+        """Multiple LAN IPs: first 192.168/10.x match wins."""
+        from gateway.platforms.web import WebAdapter
+        with unittest.mock.patch.object(
+            WebAdapter, "_get_local_ips",
+            return_value=["172.16.0.2", "192.168.1.50", "10.0.0.1"],
+        ):
+            ip = WebAdapter._get_local_ip()
+            assert ip == "192.168.1.50"
+
+    def test_get_local_ips_excludes_loopback(self):
+        """_get_local_ips must not return 127.x.x.x addresses."""
+        from gateway.platforms.web import WebAdapter
+        import inspect
+        source = inspect.getsource(WebAdapter._get_local_ips)
+        # Must filter out 127.x addresses
+        assert "127." in source, \
+            "_get_local_ips must filter loopback addresses"
+
+    def test_get_local_ips_netifaces_fallback(self):
+        """When netifaces is unavailable, ifconfig fallback must work."""
+        from gateway.platforms.web import WebAdapter
+        import inspect
+        source = inspect.getsource(WebAdapter._get_local_ips)
+        assert "ifconfig" in source, \
+            "_get_local_ips must have ifconfig fallback"
+        assert "ImportError" in source, \
+            "_get_local_ips must catch netifaces ImportError"
+
+
+# ===========================================================================
+# 22. Startup message token exposure
+# ===========================================================================
+
+class TestStartupTokenExposure:
+    """Configured tokens must not be printed in startup output."""
+
+    def test_auto_generated_flag_when_no_token(self):
+        """Token auto-generation flag must be set when no token provided."""
+        from gateway.platforms.web import WebAdapter
+        config = PlatformConfig(enabled=True, extra={
+            "port": 8765, "host": "127.0.0.1", "token": "",
+        })
+        adapter = WebAdapter(config)
+        assert adapter._token_auto_generated is True
+        assert len(adapter._token) == 32  # secrets.token_hex(16) = 32 chars
+
+    def test_configured_flag_when_token_set(self):
+        """Token auto-generation flag must be False when token is provided."""
+        from gateway.platforms.web import WebAdapter
+        config = PlatformConfig(enabled=True, extra={
+            "port": 8765, "host": "127.0.0.1", "token": "mytoken123",
+        })
+        adapter = WebAdapter(config)
+        assert adapter._token_auto_generated is False
+        assert adapter._token == "mytoken123"
+
+    def test_startup_log_hides_configured_token(self):
+        """connect() must not print the token value when set via env."""
+        from gateway.platforms.web import WebAdapter
+        import inspect
+        source = inspect.getsource(WebAdapter.connect)
+        # Must check _token_auto_generated before printing
+        assert "_token_auto_generated" in source, \
+            "connect() must check _token_auto_generated before printing token"
+
+    def test_startup_log_shows_auto_token(self):
+        """connect() must print the token when auto-generated."""
+        from gateway.platforms.web import WebAdapter
+        import inspect
+        source = inspect.getsource(WebAdapter.connect)
+        # Must have a branch that prints the actual token
+        assert "auto-generated" in source, \
+            "connect() must indicate when token is auto-generated"

@@ -39,8 +39,18 @@ _OAUTH_ONLY_BETAS = [
 
 
 def _is_oauth_token(key: str) -> bool:
-    """Check if the key is an OAuth access/setup token (not a regular API key)."""
-    return key.startswith("sk-ant-oat")
+    """Check if the key is an OAuth/setup token (not a regular Console API key).
+
+    Regular API keys start with 'sk-ant-api'. Everything else (setup-tokens
+    starting with 'sk-ant-oat', managed keys, JWTs, etc.) needs Bearer auth.
+    """
+    if not key:
+        return False
+    # Regular Console API keys use x-api-key header
+    if key.startswith("sk-ant-api"):
+        return False
+    # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
+    return True
 
 
 def build_anthropic_client(api_key: str, base_url: str = None):
@@ -240,13 +250,21 @@ def convert_messages_to_anthropic(
             for tc in m.get("tool_calls", []):
                 fn = tc.get("function", {})
                 args = fn.get("arguments", "{}")
+                try:
+                    parsed_args = json.loads(args) if isinstance(args, str) else args
+                except (json.JSONDecodeError, ValueError):
+                    parsed_args = {}
                 blocks.append({
                     "type": "tool_use",
                     "id": tc.get("id", ""),
                     "name": fn.get("name", ""),
-                    "input": json.loads(args) if isinstance(args, str) else args,
+                    "input": parsed_args,
                 })
-            result.append({"role": "assistant", "content": blocks or content})
+            # Anthropic rejects empty assistant content
+            effective = blocks or content
+            if not effective or effective == "":
+                effective = [{"type": "text", "text": "(empty)"}]
+            result.append({"role": "assistant", "content": effective})
             continue
 
         if role == "tool":

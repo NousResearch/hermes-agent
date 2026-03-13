@@ -1028,7 +1028,8 @@ def setup_model_provider(config: dict):
             if existing_key:
                 print_info(f"Current credentials: {existing_key[:12]}...")
                 if not prompt_yes_no("Update credentials?", False):
-                    existing_key = None  # skip — keep existing
+                    # User wants to keep existing — skip auth prompt entirely
+                    existing_key = "KEEP"  # truthy sentinel to skip auth choice
 
             if not existing_key and not (cc_creds and is_claude_code_token_valid(cc_creds)):
                 auth_choices = [

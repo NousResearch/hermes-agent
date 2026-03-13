@@ -290,7 +290,9 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
                 "haiku" not in m,     # then haiku
                 m,                    # alphabetical within tier
             ))
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)
         return None
 
 

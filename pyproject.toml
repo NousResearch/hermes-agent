@@ -54,6 +54,13 @@ pty = [
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+rl = [
+  "atroposlib @ git+https://github.com/NousResearch/atropos.git",
+  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "wandb>=0.15.0",
+]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [
   "hermes-agent[modal]",

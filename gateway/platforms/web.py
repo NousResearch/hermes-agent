@@ -66,7 +66,9 @@ class WebAdapter(BasePlatformAdapter):
         # Config
         self._host: str = config.extra.get("host", "127.0.0.1")
         self._port: int = config.extra.get("port", 8765)
-        self._token: str = config.extra.get("token", "") or secrets.token_hex(16)
+        configured_token = config.extra.get("token", "")
+        self._token: str = configured_token or secrets.token_hex(16)
+        self._token_auto_generated: bool = not configured_token
 
         # Connected WebSocket clients: session_id -> ws
         self._clients: Dict[str, web.WebSocketResponse] = {}
@@ -110,7 +112,10 @@ class WebAdapter(BasePlatformAdapter):
         for ip in all_ips:
             if ip != primary_ip:
                 print(f"[{self.name}]   also: http://{ip}:{self._port}")
-        print(f"[{self.name}] Access token: {self._token}")
+        if self._token_auto_generated:
+            print(f"[{self.name}] Access token (auto-generated): {self._token}")
+        else:
+            print(f"[{self.name}] Access token: (set via WEB_UI_TOKEN)")
 
         return True
 

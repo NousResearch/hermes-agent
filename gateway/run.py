@@ -1057,7 +1057,7 @@ class GatewayRunner:
             # Read model + compression config from config.yaml — same
             # source of truth the agent itself uses.
             _hyg_model = "anthropic/claude-sonnet-4.6"
-            _hyg_threshold_pct = 0.85
+            _hyg_threshold_pct = 0.50
             _hyg_compression_enabled = True
             try:
                 _hyg_cfg_path = _hermes_home / "config.yaml"
@@ -3034,6 +3034,8 @@ class GatewayRunner:
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
+        last_progress_msg = [None]  # Track last message for dedup
+        repeat_count = [0]  # How many times the same message repeated
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
@@ -3106,6 +3108,18 @@ class GatewayRunner:
             else:
                 msg = f"{emoji} {tool_name}..."
             
+            # Dedup: collapse consecutive identical progress messages.
+            # Common with execute_code where models iterate with the same
+            # code (same boilerplate imports → identical previews).
+            if msg == last_progress_msg[0]:
+                repeat_count[0] += 1
+                # Update the last line in progress_lines with a counter
+                # via a special "dedup" queue message.
+                progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                return
+            last_progress_msg[0] = msg
+            repeat_count[0] = 0
+            
             progress_queue.put(msg)
         
         # Background task to send progress messages
@@ -3126,8 +3140,17 @@ class GatewayRunner:
 
             while True:
                 try:
-                    msg = progress_queue.get_nowait()
-                    progress_lines.append(msg)
+                    raw = progress_queue.get_nowait()
+                    
+                    # Handle dedup messages: update last line with repeat counter
+                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        _, base_msg, count = raw
+                        if progress_lines:
+                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                        msg = progress_lines[-1] if progress_lines else base_msg
+                    else:
+                        msg = raw
+                        progress_lines.append(msg)
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
@@ -3163,8 +3186,13 @@ class GatewayRunner:
                     # Drain remaining queued messages
                     while not progress_queue.empty():
                         try:
-                            msg = progress_queue.get_nowait()
-                            progress_lines.append(msg)
+                            raw = progress_queue.get_nowait()
+                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                                _, base_msg, count = raw
+                                if progress_lines:
+                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            else:
+                                progress_lines.append(raw)
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
@@ -3418,17 +3446,19 @@ class GatewayRunner:
         # Monitor for interrupts from the adapter (new messages arriving)
         async def monitor_for_interrupt():
             adapter = self.adapters.get(source.platform)
-            if not adapter:
+            if not adapter or not session_key:
                 return
             
-            chat_id = source.chat_id
             while True:
                 await asyncio.sleep(0.2)  # Check every 200ms
-                # Check if adapter has a pending interrupt for this session
-                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(chat_id):
+                # Check if adapter has a pending interrupt for this session.
+                # Must use session_key (build_session_key output) — NOT
+                # source.chat_id — because the adapter stores interrupt events
+                # under the full session key.
+                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
                     agent = agent_holder[0]
                     if agent:
-                        pending_event = adapter.get_pending_message(chat_id)
+                        pending_event = adapter.get_pending_message(session_key)
                         pending_text = pending_event.text if pending_event else None
                         logger.debug("Interrupt detected from adapter, signaling agent...")
                         agent.interrupt(pending_text)
@@ -3445,10 +3475,11 @@ class GatewayRunner:
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
             
-            # Get pending message from adapter if interrupted
+            # Get pending message from adapter if interrupted.
+            # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
             if result and result.get("interrupted") and adapter:
-                pending_event = adapter.get_pending_message(source.chat_id)
+                pending_event = adapter.get_pending_message(session_key) if session_key else None
                 if pending_event:
                     pending = pending_event.text
                 elif result.get("interrupt_message"):
@@ -3460,8 +3491,8 @@ class GatewayRunner:
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
                 # even makes its first API call (this was causing an infinite loop).
-                if adapter and hasattr(adapter, '_active_sessions') and source.chat_id in adapter._active_sessions:
-                    adapter._active_sessions[source.chat_id].clear()
+                if adapter and hasattr(adapter, '_active_sessions') and session_key and session_key in adapter._active_sessions:
+                    adapter._active_sessions[session_key].clear()
                 
                 # Don't send the interrupted response to the user — it's just noise
                 # like "Operation interrupted." They already know they sent a new

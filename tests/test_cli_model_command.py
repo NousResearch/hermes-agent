@@ -31,7 +31,7 @@ class TestModelCommand:
         assert cli_obj.model == "anthropic/claude-sonnet-4.5"
         save_mock.assert_called_once_with("model.default", "anthropic/claude-sonnet-4.5")
 
-    def test_invalid_model_from_api_is_rejected(self, capsys):
+    def test_unlisted_model_accepted_with_warning(self, capsys):
         cli_obj = self._make_cli()
 
         with patch("hermes_cli.models.fetch_api_models",
@@ -40,12 +40,10 @@ class TestModelCommand:
             cli_obj.process_command("/model anthropic/fake-model")
 
         output = capsys.readouterr().out
-        assert "not a valid model" in output
-        assert "Model unchanged" in output
-        assert cli_obj.model == "anthropic/claude-opus-4.6"
-        save_mock.assert_not_called()
+        assert "not found" in output or "Model changed" in output
+        assert cli_obj.model == "anthropic/fake-model"  # accepted
 
-    def test_api_unreachable_falls_back_session_only(self, capsys):
+    def test_api_unreachable_accepts_and_persists(self, capsys):
         cli_obj = self._make_cli()
 
         with patch("hermes_cli.models.fetch_api_models", return_value=None), \
@@ -53,12 +51,11 @@ class TestModelCommand:
             cli_obj.process_command("/model anthropic/claude-sonnet-next")
 
         output = capsys.readouterr().out
-        assert "session only" in output
-        assert "will revert on restart" in output
+        assert "saved to config" in output
         assert cli_obj.model == "anthropic/claude-sonnet-next"
-        save_mock.assert_not_called()
+        save_mock.assert_called_once()
 
-    def test_no_slash_model_probes_api_and_rejects(self, capsys):
+    def test_no_slash_model_accepted_with_warning(self, capsys):
         cli_obj = self._make_cli()
 
         with patch("hermes_cli.models.fetch_api_models",
@@ -67,11 +64,8 @@ class TestModelCommand:
             cli_obj.process_command("/model gpt-5.4")
 
         output = capsys.readouterr().out
-        assert "not a valid model" in output
-        assert "Model unchanged" in output
-        assert cli_obj.model == "anthropic/claude-opus-4.6"  # unchanged
-        assert cli_obj.agent is not None  # not reset
-        save_mock.assert_not_called()
+        # Model is accepted (with warning) even if not in API listing
+        assert cli_obj.model == "gpt-5.4"
 
     def test_validation_crash_falls_back_to_save(self, capsys):
         cli_obj = self._make_cli()

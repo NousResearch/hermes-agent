@@ -121,7 +121,7 @@ DEFAULT_CONFIG = {
     
     "compression": {
         "enabled": True,
-        "threshold": 0.85,
+        "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
     },
@@ -1119,7 +1119,7 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
         comp_provider = compression.get('summary_provider', 'auto')
         if comp_provider != 'auto':

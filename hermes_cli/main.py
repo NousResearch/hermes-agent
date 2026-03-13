@@ -22,6 +22,8 @@ Usage:
     hermes update              # Update to latest version
     hermes uninstall           # Uninstall Hermes Agent
     hermes sessions browse     # Interactive session picker with search
+    hermes claw migrate        # Migrate from OpenClaw to Hermes
+    hermes claw migrate --dry-run  # Preview migration without changes
 """
 
 import argparse
@@ -1525,8 +1527,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection
-    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    # Model selection — try live /models endpoint first, fall back to defaults
+    from hermes_cli.models import fetch_api_models
+    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+    live_models = fetch_api_models(api_key_for_probe, effective_base)
+
+    if live_models:
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(f"  ⚠ Could not auto-detect models from API — showing defaults.")
+            print(f"    Use \"Enter custom model name\" if you don't see your model.")
+        # else: no defaults either, will fall through to raw input
+
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
@@ -2820,6 +2835,69 @@ For more help on a command:
             print(f"Error generating insights: {e}")
 
     insights_parser.set_defaults(func=cmd_insights)
+
+    # =========================================================================
+    # claw command (OpenClaw migration)
+    # =========================================================================
+    claw_parser = subparsers.add_parser(
+        "claw",
+        help="OpenClaw migration tools",
+        description="Migrate settings, memories, skills, and API keys from OpenClaw to Hermes"
+    )
+    claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
+
+    # claw migrate
+    claw_migrate = claw_subparsers.add_parser(
+        "migrate",
+        help="Migrate from OpenClaw to Hermes",
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+    )
+    claw_migrate.add_argument(
+        "--source",
+        help="Path to OpenClaw directory (default: ~/.openclaw)"
+    )
+    claw_migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be migrated without making changes"
+    )
+    claw_migrate.add_argument(
+        "--preset",
+        choices=["user-data", "full"],
+        default="full",
+        help="Migration preset (default: full). 'user-data' excludes secrets"
+    )
+    claw_migrate.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files (default: skip conflicts)"
+    )
+    claw_migrate.add_argument(
+        "--migrate-secrets",
+        action="store_true",
+        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.)"
+    )
+    claw_migrate.add_argument(
+        "--workspace-target",
+        help="Absolute path to copy workspace instructions into"
+    )
+    claw_migrate.add_argument(
+        "--skill-conflict",
+        choices=["skip", "overwrite", "rename"],
+        default="skip",
+        help="How to handle skill name conflicts (default: skip)"
+    )
+    claw_migrate.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+
+    def cmd_claw(args):
+        from hermes_cli.claw import claw_command
+        claw_command(args)
+
+    claw_parser.set_defaults(func=cmd_claw)
 
     # =========================================================================
     # version command

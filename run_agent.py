@@ -4276,6 +4276,14 @@ class AIAgent:
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
                         args = tc.function.arguments
+                        # Normalize dict/list arguments to JSON string (llama.cpp/Ollama behavior)
+                        if isinstance(args, dict):
+                            args = json.dumps(args, ensure_ascii=False)
+                        elif isinstance(args, list):
+                            args = json.dumps(args, ensure_ascii=False)
+                        elif not isinstance(args, str):
+                            args = str(args)
+                        tc.function.arguments = args
                         # Treat empty/whitespace strings as empty object
                         if not args or not args.strip():
                             tc.function.arguments = "{}"

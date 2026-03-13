@@ -2779,12 +2779,16 @@ class AIAgent:
         identically to native function-calling responses.
         """
         content = assistant_message.content or ""
+        logging.info("[nous_parse] Content length=%d, preview=%r", len(content), content[:200])
+
         if "<tool_call>" not in content:
+            logging.info("[nous_parse] No <tool_call> tag found in content")
             return
 
         import re as _re
         _TC_RE = _re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", _re.DOTALL)
         matches = _TC_RE.findall(content)
+        logging.info("[nous_parse] Regex matched %d tool_call block(s)", len(matches))
         if not matches:
             return
 
@@ -2793,18 +2797,34 @@ class AIAgent:
         )
 
         tool_calls = []
-        for raw_json in matches:
+        for idx, raw_json in enumerate(matches):
             raw_json = raw_json.strip()
             if not raw_json:
+                logging.info("[nous_parse] Match %d: empty", idx)
                 continue
+            logging.info("[nous_parse] Match %d: %r", idx, raw_json[:200])
+            tc_data = None
             try:
                 tc_data = json.loads(raw_json)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logging.warning("[nous_parse] JSON parse failed for match %d: %s", idx, e)
+                # Fallback: try fixing single quotes → double quotes
+                try:
+                    import ast
+                    tc_data = ast.literal_eval(raw_json)
+                    logging.info("[nous_parse] ast.literal_eval succeeded for match %d", idx)
+                except Exception:
+                    logging.warning("[nous_parse] ast.literal_eval also failed for match %d", idx)
+                    continue
+            if not isinstance(tc_data, dict):
+                logging.warning("[nous_parse] Match %d: parsed to non-dict type %s", idx, type(tc_data))
                 continue
             name = tc_data.get("name", "")
             arguments = tc_data.get("arguments", {})
             if not name:
+                logging.warning("[nous_parse] Match %d: no 'name' field", idx)
                 continue
+            logging.info("[nous_parse] Match %d: tool=%s", idx, name)
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     id=f"call_{uuid.uuid4().hex[:12]}",
@@ -2818,12 +2838,18 @@ class AIAgent:
             )
 
         if not tool_calls:
+            logging.warning("[nous_parse] No valid tool calls parsed from %d match(es)", len(matches))
             return
 
+        logging.info("[nous_parse] Successfully parsed %d tool call(s)", len(tool_calls))
         # Strip tool_call XML from displayed content
         clean = _TC_RE.sub("", content).strip()
+        # Also strip any <think> blocks from displayed content
+        clean = _re.sub(r"<think>.*?</think>", "", clean, flags=_re.DOTALL).strip()
         assistant_message.content = clean if clean else None
         assistant_message.tool_calls = tool_calls
+        logging.info("[nous_parse] Set tool_calls=%d, remaining content=%r",
+                     len(tool_calls), (assistant_message.content or "")[:100])
 
     def _convert_messages_for_nous(self, api_messages: list) -> list:
         """Convert message history for Nous Portal Hermes-style tool calling.
@@ -4717,8 +4743,14 @@ class AIAgent:
                         assistant_message.content = str(raw)
 
                 # Nous Portal: parse <tool_call> tags from content
-                if "nousresearch" in self.base_url.lower() and not assistant_message.tool_calls:
+                _is_nous_url = "nousresearch" in self.base_url.lower()
+                _has_existing_tc = bool(assistant_message.tool_calls)
+                logging.info("[nous_check] base_url=%s, is_nous=%s, has_tool_calls=%s",
+                             self.base_url[:60], _is_nous_url, _has_existing_tc)
+                if _is_nous_url and not _has_existing_tc:
                     self._parse_nous_tool_calls(assistant_message)
+                    logging.info("[nous_check] After parse: tool_calls=%s",
+                                 bool(assistant_message.tool_calls))
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:

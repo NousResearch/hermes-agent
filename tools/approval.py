@@ -184,43 +184,52 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
-        print()
-        print(f"  ⚠️  DANGEROUS COMMAND: {description}")
-        print(f"      {command[:80]}{'...' if len(command) > 80 else ''}")
-        print()
-        print(f"      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
-        print()
-        sys.stdout.flush()
+        is_truncated = len(command) > 80
+        while True:
+            print()
+            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+            print(f"      {command[:80]}{'...' if is_truncated else ''}")
+            print()
+            view_hint = "  |  [v]iew full" if is_truncated else ""
+            print(f"      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny{view_hint}")
+            print()
+            sys.stdout.flush()
 
-        result = {"choice": ""}
+            result = {"choice": ""}
 
-        def get_input():
-            try:
-                result["choice"] = input("      Choice [o/s/a/D]: ").strip().lower()
-            except (EOFError, OSError):
-                result["choice"] = ""
+            def get_input():
+                try:
+                    result["choice"] = input("      Choice [o/s/a/D]: ").strip().lower()
+                except (EOFError, OSError):
+                    result["choice"] = ""
 
-        thread = threading.Thread(target=get_input, daemon=True)
-        thread.start()
-        thread.join(timeout=timeout_seconds)
+            thread = threading.Thread(target=get_input, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
 
-        if thread.is_alive():
-            print("\n      ⏱ Timeout - denying command")
-            return "deny"
+            if thread.is_alive():
+                print("\n      ⏱ Timeout - denying command")
+                return "deny"
 
-        choice = result["choice"]
-        if choice in ('o', 'once'):
-            print("      ✓ Allowed once")
-            return "once"
-        elif choice in ('s', 'session'):
-            print("      ✓ Allowed for this session")
-            return "session"
-        elif choice in ('a', 'always'):
-            print("      ✓ Added to permanent allowlist")
-            return "always"
-        else:
-            print("      ✗ Denied")
-            return "deny"
+            choice = result["choice"]
+            if choice in ('v', 'view') and is_truncated:
+                print()
+                print("      Full command:")
+                print(f"      {command}")
+                is_truncated = False  # show full on next loop iteration too
+                continue
+            if choice in ('o', 'once'):
+                print("      ✓ Allowed once")
+                return "once"
+            elif choice in ('s', 'session'):
+                print("      ✓ Allowed for this session")
+                return "session"
+            elif choice in ('a', 'always'):
+                print("      ✓ Added to permanent allowlist")
+                return "always"
+            else:
+                print("      ✗ Denied")
+                return "deny"
 
     except (EOFError, KeyboardInterrupt):
         print("\n      ✗ Cancelled")
@@ -248,6 +257,10 @@ def check_dangerous_command(command: str, env_type: str,
         {"approved": True/False, "message": str or None, ...}
     """
     if env_type in ("docker", "singularity", "modal", "daytona"):
+        return {"approved": True, "message": None}
+
+    # --yolo: bypass all approval prompts
+    if os.getenv("HERMES_YOLO_MODE"):
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -295,6 +308,6 @@ def check_dangerous_command(command: str, env_type: str,
     elif choice == "always":
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
-        save_permanent_allowlist(load_permanent_allowlist() | {pattern_key})
+        save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}

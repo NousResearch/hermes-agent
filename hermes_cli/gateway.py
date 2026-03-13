@@ -482,14 +482,19 @@ _PLATFORMS = [
         "token_var": "SLACK_BOT_TOKEN",
         "setup_instructions": [
             "1. Go to https://api.slack.com/apps → Create New App → From Scratch",
-            "2. Enable Socket Mode: App Settings → Socket Mode → Enable",
-            "3. Get Bot Token: OAuth & Permissions → Install to Workspace → copy xoxb-... token",
-            "4. Get App Token: Basic Information → App-Level Tokens → Generate",
-            "   Name it anything, add scope: connections:write → copy xapp-... token",
-            "5. Add bot scopes: OAuth & Permissions → Scopes → chat:write, im:history,",
-            "   im:read, im:write, channels:history, channels:read",
-            "6. Reinstall the app to your workspace after adding scopes",
+            "2. Enable Socket Mode: Settings → Socket Mode → Enable",
+            "   Create an App-Level Token with scope: connections:write → copy xapp-... token",
+            "3. Add Bot Token Scopes: Features → OAuth & Permissions → Scopes",
+            "   Required: chat:write, app_mentions:read, channels:history, channels:read,",
+            "   groups:history, im:history, im:read, im:write, users:read, files:write",
+            "4. Subscribe to Events: Features → Event Subscriptions → Enable",
+            "   Required events: message.im, message.channels, app_mention",
+            "   Optional: message.groups (for private channels)",
+            "   ⚠ Without message.channels the bot will ONLY work in DMs!",
+            "5. Install to Workspace: Settings → Install App → copy xoxb-... token",
+            "6. Reinstall the app after any scope or event changes",
             "7. Find your user ID: click your profile → three dots → Copy member ID",
+            "8. Invite the bot to channels: /invite @YourBot",
         ],
         "vars": [
             {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
@@ -512,6 +517,32 @@ _PLATFORMS = [
         "label": "Signal",
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
+    },
+    {
+        "key": "email",
+        "label": "Email",
+        "emoji": "📧",
+        "token_var": "EMAIL_ADDRESS",
+        "setup_instructions": [
+            "1. Use a dedicated email account for your Hermes agent",
+            "2. For Gmail: enable 2FA, then create an App Password at",
+            "   https://myaccount.google.com/apppasswords",
+            "3. For other providers: use your email password or app-specific password",
+            "4. IMAP must be enabled on your email account",
+        ],
+        "vars": [
+            {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
+             "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
+            {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
+             "help": "For Gmail, use an App Password (not your regular password)."},
+            {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,
+             "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook."},
+            {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP host", "password": False,
+             "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook."},
+            {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Only emails from these addresses will be processed."},
+        ],
     },
 ]
 
@@ -536,6 +567,15 @@ def _platform_status(platform: dict) -> str:
         if val and account:
             return "configured"
         if val or account:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "email":
+        pwd = get_env_value("EMAIL_PASSWORD")
+        imap = get_env_value("EMAIL_IMAP_HOST")
+        smtp = get_env_value("EMAIL_SMTP_HOST")
+        if all([val, pwd, imap, smtp]):
+            return "configured"
+        if any([val, pwd, imap, smtp]):
             return "partially configured"
         return "not configured"
     if val:

@@ -27,36 +27,20 @@ Usage:
     )
 """
 
+import asyncio
+import base64
 import json
 import logging
 import os
-import asyncio
 import uuid
-import base64
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Awaitable, Dict, Optional
+from urllib.parse import urlparse
 import httpx
-from openai import AsyncOpenAI
-from agent.auxiliary_client import get_vision_auxiliary_client
+from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
-
-# Resolve vision auxiliary client at module level; build an async wrapper.
-_aux_sync_client, DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
-_aux_async_client: AsyncOpenAI | None = None
-if _aux_sync_client is not None:
-    _async_kwargs = {
-        "api_key": _aux_sync_client.api_key,
-        "base_url": str(_aux_sync_client.base_url),
-    }
-    if "openrouter" in str(_aux_sync_client.base_url).lower():
-        _async_kwargs["default_headers"] = {
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-            "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "productivity,cli-agent",
-        }
-    _aux_async_client = AsyncOpenAI(**_async_kwargs)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
@@ -73,15 +57,18 @@ def _validate_image_url(url: str) -> bool:
     """
     if not url or not isinstance(url, str):
         return False
-    
-    # Check if it's a valid URL format
-    if not (url.startswith('http://') or url.startswith('https://')):
+
+    # Basic HTTP/HTTPS URL check
+    if not (url.startswith("http://") or url.startswith("https://")):
         return False
-    
-    # Check for common image extensions (optional, as URLs may not have extensions)
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
-    
-    return True  # Allow all HTTP/HTTPS URLs for flexibility
+
+    # Parse to ensure we at least have a network location; still allow URLs
+    # without file extensions (e.g. CDN endpoints that redirect to images).
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return False
+
+    return True  # Allow all well-formed HTTP/HTTPS URLs for flexibility
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -131,7 +118,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 logger.warning("Retrying in %ss...", wait_time)
                 await asyncio.sleep(wait_time)
             else:
-                logger.error("Image download failed after %s attempts: %s", max_retries, str(e)[:100])
+                logger.error(
+                    "Image download failed after %s attempts: %s",
+                    max_retries,
+                    str(e)[:100],
+                    exc_info=True,
+                )
     
     raise last_error
 
@@ -188,7 +180,7 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
-    model: str = DEFAULT_VISION_MODEL
+    model: str = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -248,14 +240,6 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         
-        # Check auxiliary vision client availability
-        if _aux_async_client is None or DEFAULT_VISION_MODEL is None:
-            return json.dumps({
-                "success": False,
-                "analysis": "Vision analysis unavailable: no auxiliary vision model configured. "
-                            "Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools."
-            }, indent=2, ensure_ascii=False)
-        
         # Determine if this is a local file path or a remote URL
         local_path = Path(image_url)
         if local_path.is_file():
@@ -311,18 +295,18 @@ async def vision_analyze_tool(
             }
         ]
         
-        logger.info("Processing image with %s...", model)
+        logger.info("Processing image with vision model...")
         
-        # Call the vision API
-        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
-        _extra = get_auxiliary_extra_body()
-        response = await _aux_async_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.1,
-            **auxiliary_max_tokens_param(2000),
-            **({} if not _extra else {"extra_body": _extra}),
-        )
+        # Call the vision API via centralized router
+        call_kwargs = {
+            "task": "vision",
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 2000,
+        }
+        if model:
+            call_kwargs["model"] = model
+        response = await async_call_llm(**call_kwargs)
         
         # Extract the analysis
         analysis = response.choices[0].message.content.strip()
@@ -347,12 +331,30 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
+        
+        # Detect vision capability errors — give the model a clear message
+        # so it can inform the user instead of a cryptic API error.
+        err_str = str(e).lower()
+        if any(hint in err_str for hint in (
+            "does not support", "not support image", "invalid_request",
+            "content_policy", "image_url", "multimodal",
+            "unrecognized request argument", "image input",
+        )):
+            analysis = (
+                f"{model} does not support vision or our request was not "
+                f"accepted by the server. Error: {e}"
+            )
+        else:
+            analysis = (
+                "There was a problem with the request and the image could not "
+                f"be analyzed. Error: {e}"
+            )
         
         # Prepare error response
         result = {
             "success": False,
-            "analysis": "There was a problem with the request and the image could not be analyzed."
+            "analysis": analysis,
         }
         
         debug_call_data["error"] = error_msg
@@ -368,12 +370,25 @@ async def vision_analyze_tool(
                 temp_image_path.unlink()
                 logger.debug("Cleaned up temporary image file")
             except Exception as cleanup_error:
-                logger.warning("Could not delete temporary file: %s", cleanup_error)
+                logger.warning(
+                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
+                )
 
 
 def check_vision_requirements() -> bool:
     """Check if an auxiliary vision model is available."""
-    return _aux_async_client is not None
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client("openrouter")
+        if client is not None:
+            return True
+        client, _ = resolve_provider_client("nous")
+        if client is not None:
+            return True
+        client, _ = resolve_provider_client("custom")
+        return client is not None
+    except Exception:
+        return False
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -401,10 +416,9 @@ if __name__ == "__main__":
         print("Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools.")
         exit(1)
     else:
-        print(f"✅ Vision model available: {DEFAULT_VISION_MODEL}")
+        print("✅ Vision model available")
     
     print("🛠️ Vision tools ready for use!")
-    print(f"🧠 Using model: {DEFAULT_VISION_MODEL}")
     
     # Show debug mode status
     if _debug.active:
@@ -464,13 +478,14 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args, **kw):
+def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
-    full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
-    model = (os.getenv("AUXILIARY_VISION_MODEL", "").strip()
-             or DEFAULT_VISION_MODEL
-             or "google/gemini-3-flash-preview")
+    full_prompt = (
+        "Fully describe and explain everything about this image, then answer the "
+        f"following question:\n\n{question}"
+    )
+    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return vision_analyze_tool(image_url, full_prompt, model)
 
 

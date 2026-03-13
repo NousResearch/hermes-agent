@@ -60,8 +60,8 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
-    # Honcho user context (gated on honcho being active via check_fn)
-    "query_user_context",
+    # Honcho memory tools (gated on honcho being active via check_fn)
+    "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -192,7 +192,7 @@ TOOLSETS = {
 
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
         "includes": []
     },
 
@@ -267,10 +267,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-email": {
+        "description": "Email bot toolset - interact with Hermes via email (IMAP/SMTP)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
     }
 }
 

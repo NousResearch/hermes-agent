@@ -4,6 +4,7 @@ Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
 can invoke skills via /skill-name commands.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -63,7 +64,11 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
-def build_skill_invocation_message(cmd_key: str, user_instruction: str = "") -> Optional[str]:
+def build_skill_invocation_message(
+    cmd_key: str,
+    user_instruction: str = "",
+    task_id: str | None = None,
+) -> Optional[str]:
     """Build the user message content for a skill slash command invocation.
 
     Args:
@@ -78,14 +83,21 @@ def build_skill_invocation_message(cmd_key: str, user_instruction: str = "") -> 
     if not skill_info:
         return None
 
-    skill_md_path = Path(skill_info["skill_md_path"])
-    skill_dir = Path(skill_info["skill_dir"])
     skill_name = skill_info["name"]
+    skill_path = skill_info["skill_dir"]
 
     try:
-        content = skill_md_path.read_text(encoding='utf-8')
+        from tools.skills_tool import SKILLS_DIR, skill_view
+
+        loaded_skill = json.loads(skill_view(skill_path, task_id=task_id))
     except Exception:
         return f"[Failed to load skill: {skill_name}]"
+
+    if not loaded_skill.get("success"):
+        return f"[Failed to load skill: {skill_name}]"
+
+    content = str(loaded_skill.get("content") or "")
+    skill_dir = Path(skill_info["skill_dir"])
 
     parts = [
         f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
@@ -93,21 +105,52 @@ def build_skill_invocation_message(cmd_key: str, user_instruction: str = "") -> 
         content.strip(),
     ]
 
+    if loaded_skill.get("setup_skipped"):
+        parts.extend(
+            [
+                "",
+                "[Skill setup note: Required environment setup was skipped. Continue loading the skill and explain any reduced functionality if it matters.]",
+            ]
+        )
+    elif loaded_skill.get("gateway_setup_hint"):
+        parts.extend(
+            [
+                "",
+                f"[Skill setup note: {loaded_skill['gateway_setup_hint']}]",
+            ]
+        )
+    elif loaded_skill.get("setup_needed") and loaded_skill.get("setup_note"):
+        parts.extend(
+            [
+                "",
+                f"[Skill setup note: {loaded_skill['setup_note']}]",
+            ]
+        )
+
     supporting = []
-    for subdir in ("references", "templates", "scripts", "assets"):
-        subdir_path = skill_dir / subdir
-        if subdir_path.exists():
-            for f in sorted(subdir_path.rglob("*")):
-                if f.is_file():
-                    rel = str(f.relative_to(skill_dir))
-                    supporting.append(rel)
+    linked_files = loaded_skill.get("linked_files") or {}
+    for entries in linked_files.values():
+        if isinstance(entries, list):
+            supporting.extend(entries)
+
+    if not supporting:
+        for subdir in ("references", "templates", "scripts", "assets"):
+            subdir_path = skill_dir / subdir
+            if subdir_path.exists():
+                for f in sorted(subdir_path.rglob("*")):
+                    if f.is_file():
+                        rel = str(f.relative_to(skill_dir))
+                        supporting.append(rel)
 
     if supporting:
+        skill_view_target = str(Path(skill_path).relative_to(SKILLS_DIR))
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
         for sf in supporting:
             parts.append(f"- {sf}")
-        parts.append(f'\nTo view any of these, use: skill_view(name="{skill_name}", file="<path>")')
+        parts.append(
+            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
+        )
 
     if user_instruction:
         parts.append("")

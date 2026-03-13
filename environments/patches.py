@@ -114,11 +114,27 @@ def _patch_swerex_modal():
         self._worker = _AsyncWorker()
         self._worker.start()
 
+        # Pre-build a modal.Image with pip fix for Modal's legacy image builder.
+        # Modal requires `python -m pip` to work during image build, but some
+        # task images (e.g., TBLite's broken-python) have intentionally broken pip.
+        # Fix: remove stale pip dist-info and reinstall via ensurepip before Modal
+        # tries to use it. This is a no-op for images where pip already works.
+        import modal as _modal
+        image_spec = self.config.image
+        if isinstance(image_spec, str):
+            image_spec = _modal.Image.from_registry(
+                image_spec,
+                setup_dockerfile_commands=[
+                    "RUN rm -rf /usr/local/lib/python*/site-packages/pip* 2>/dev/null; "
+                    "python -m ensurepip --upgrade --default-pip 2>/dev/null || true",
+                ],
+            )
+
         # Create AND start the deployment entirely on the worker's loop/thread
         # so all gRPC channels and async state are bound to that loop
         async def _create_and_start():
             deployment = ModalDeployment(
-                image=self.config.image,
+                image=image_spec,
                 startup_timeout=self.config.startup_timeout,
                 runtime_timeout=self.config.runtime_timeout,
                 deployment_timeout=self.config.deployment_timeout,

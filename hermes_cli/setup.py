@@ -1671,8 +1671,9 @@ def setup_agent_settings(config: dict):
     except ValueError:
         print_warning("Invalid number, keeping current value")
 
-    # ── Tool Progress Display ──
-    print_info("")
+    # ── Display ──
+    print_header("Display")
+
     print_info("Tool Progress Display")
     print_info("Controls how much tool activity is shown (CLI and messaging).")
     print_info("  off     — Silent, just the final response")
@@ -1690,6 +1691,37 @@ def setup_agent_settings(config: dict):
         print_success(f"Tool progress set to: {mode.lower()}")
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+
+    # ── Terminal Theme Mode ──
+    print_info("")
+    print_info("Terminal Theme")
+    print_info("Adjusts UI colors based on your terminal background.")
+    print_info("  auto  — Detect automatically (works in most terminals)")
+    print_info("  dark  — Dark terminal background (e.g. black, dark blue)")
+    print_info("  light — Light terminal background (e.g. white, cream)")
+
+    current_theme = config.get("display", {}).get("theme_mode", "auto")
+    theme = prompt("Theme mode", current_theme)
+    if theme.lower() in ("auto", "light", "dark"):
+        if "display" not in config:
+            config["display"] = {}
+        config["display"]["theme_mode"] = theme.lower()
+        save_config(config)
+        if theme.lower() == "auto":
+            # Show what auto-detection would pick
+            try:
+                from hermes_cli.colors import detect_terminal_background
+                detected = detect_terminal_background()
+                if detected != "unknown":
+                    print_success(f"Theme mode set to auto (detected: {detected})")
+                else:
+                    print_success("Theme mode set to auto (detection inconclusive, will default to dark)")
+            except Exception:
+                print_success("Theme mode set to auto")
+        else:
+            print_success(f"Theme mode set to: {theme.lower()}")
+    else:
+        print_warning(f"Unknown mode '{theme}', keeping '{current_theme}'")
 
     # ── Context Compression ──
     print_header("Context Compression")

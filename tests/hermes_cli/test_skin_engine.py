@@ -13,9 +13,13 @@ def reset_skin_state():
     from hermes_cli import skin_engine
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._theme_mode = "auto"
+    skin_engine._resolved_theme_mode = None
     yield
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._theme_mode = "auto"
+    skin_engine._resolved_theme_mode = None
 
 
 class TestSkinConfig:
@@ -134,6 +138,63 @@ class TestSkinManagement:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
+
+
+class TestThemeMode:
+    def test_set_and_get_theme_mode(self):
+        from hermes_cli.skin_engine import set_theme_mode, get_theme_mode
+        set_theme_mode("light")
+        assert get_theme_mode() == "light"
+        set_theme_mode("dark")
+        assert get_theme_mode() == "dark"
+
+    def test_auto_falls_back_to_dark_without_tty(self):
+        from hermes_cli.skin_engine import set_theme_mode, get_theme_mode
+        set_theme_mode("auto")
+        # In test environment there's no TTY, so auto should fall back to dark
+        assert get_theme_mode() == "dark"
+
+    def test_light_mode_overrides_colors(self):
+        from hermes_cli.skin_engine import load_skin, set_theme_mode
+        set_theme_mode("light")
+        skin = load_skin("default")
+        # Light mode should return the light override
+        assert skin.get_color("banner_title") == "#B8860B"
+        assert skin.get_color("prompt") == "#5C4A00"
+
+    def test_dark_mode_returns_default_colors(self):
+        from hermes_cli.skin_engine import load_skin, set_theme_mode
+        set_theme_mode("dark")
+        skin = load_skin("default")
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_color("prompt") == "#FFF8DC"
+
+    def test_light_mode_falls_back_for_unoverridden_keys(self):
+        from hermes_cli.skin_engine import load_skin, set_theme_mode
+        set_theme_mode("light")
+        skin = load_skin("default")
+        # banner_border has no light override, should return the default
+        assert skin.get_color("banner_border") == "#CD7F32"
+
+    def test_init_skin_from_config_sets_theme_mode(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_theme_mode
+        init_skin_from_config({"display": {"skin": "default", "theme_mode": "light"}})
+        assert get_theme_mode() == "light"
+
+    def test_init_skin_from_config_defaults_to_auto(self):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import init_skin_from_config
+        init_skin_from_config({})
+        assert skin_engine._theme_mode == "auto"
+
+    def test_all_builtin_skins_have_light_overrides(self):
+        from hermes_cli.skin_engine import _BUILTIN_SKINS
+        for name, data in _BUILTIN_SKINS.items():
+            assert "colors_light" in data, f"Skin '{name}' missing colors_light"
+            # Light overrides should have at least prompt and banner_title
+            light = data["colors_light"]
+            assert "prompt" in light, f"Skin '{name}' colors_light missing 'prompt'"
+            assert "banner_title" in light, f"Skin '{name}' colors_light missing 'banner_title'"
 
 
 class TestUserSkins:

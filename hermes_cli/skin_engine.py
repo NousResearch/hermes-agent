@@ -16,6 +16,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
     description: Short description        # Shown in /skin listing
 
     # Colors: hex values for Rich markup (banner, UI, response box)
+    # These are the default (dark terminal) colors.
     colors:
       banner_border: "#CD7F32"            # Panel border color
       banner_title: "#FFD700"             # Panel title text color
@@ -32,6 +33,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       response_border: "#FFD700"         # Response box border (ANSI)
       session_label: "#DAA520"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
+
+    # Light-mode color overrides (optional). Only keys that need to change.
+    # When theme_mode is "light", these replace the corresponding colors above.
+    colors_light:
+      banner_title: "#B8860B"
+      prompt: "#5C4A00"
 
     # Spinner: customize the animated spinner during API calls
     spinner:
@@ -108,6 +115,7 @@ class SkinConfig:
     name: str
     description: str = ""
     colors: Dict[str, str] = field(default_factory=dict)
+    colors_light: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
@@ -115,7 +123,14 @@ class SkinConfig:
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
     def get_color(self, key: str, fallback: str = "") -> str:
-        """Get a color value with fallback."""
+        """Get a color value with fallback, respecting the active theme mode.
+
+        If the active theme mode is "light" and a light-mode override exists
+        for this key, return it. Otherwise return the default (dark) color.
+        """
+        mode = get_theme_mode()
+        if mode == "light" and key in self.colors_light:
+            return self.colors_light[key]
         return self.colors.get(key, fallback)
 
     def get_spinner_list(self, key: str) -> List[str]:
@@ -161,6 +176,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#DAA520",
             "session_border": "#8B8682",
         },
+        "colors_light": {
+            "banner_title": "#B8860B",
+            "banner_accent": "#996600",
+            "banner_text": "#5C4A00",
+            "prompt": "#5C4A00",
+            "ui_accent": "#996600",
+            "ui_label": "#0277BD",
+            "response_border": "#B8860B",
+            "session_label": "#8B6914",
+        },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
         },
@@ -193,6 +218,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#C7A96B",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
+        },
+        "colors_light": {
+            "banner_title": "#8B6914",
+            "banner_text": "#4A2500",
+            "prompt": "#4A2500",
+            "ui_label": "#8B6914",
+            "response_border": "#9F1C1C",
+            "session_label": "#8B6914",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
@@ -258,6 +291,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#888888",
             "session_border": "#555555",
         },
+        "colors_light": {
+            "banner_title": "#333333",
+            "banner_text": "#444444",
+            "prompt": "#333333",
+            "ui_error": "#555555",
+            "response_border": "#666666",
+        },
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
@@ -289,6 +329,15 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#7eb8f6",
             "session_border": "#4b5563",
         },
+        "colors_light": {
+            "banner_title": "#2050A0",
+            "banner_text": "#333333",
+            "prompt": "#333333",
+            "ui_accent": "#2050A0",
+            "ui_label": "#3355AA",
+            "response_border": "#4169e1",
+            "session_label": "#2050A0",
+        },
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
@@ -319,6 +368,15 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#5DB8F5",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
+        },
+        "colors_light": {
+            "banner_title": "#1A5090",
+            "banner_text": "#153C73",
+            "prompt": "#153C73",
+            "ui_accent": "#1A5090",
+            "ui_label": "#1A5090",
+            "response_border": "#2A6FB9",
+            "session_label": "#1A5090",
         },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
@@ -383,6 +441,17 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#B7B7B7",
             "session_label": "#919191",
             "session_border": "#656565",
+        },
+        "colors_light": {
+            "banner_title": "#333333",
+            "banner_accent": "#444444",
+            "banner_text": "#4A4A4A",
+            "prompt": "#333333",
+            "ui_accent": "#444444",
+            "ui_label": "#555555",
+            "ui_error": "#444444",
+            "ui_warn": "#555555",
+            "response_border": "#656565",
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
@@ -449,6 +518,15 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#FFD39A",
             "session_border": "#6C4724",
         },
+        "colors_light": {
+            "banner_title": "#8B4513",
+            "banner_text": "#5C2D00",
+            "prompt": "#5C2D00",
+            "ui_accent": "#B85A1D",
+            "ui_label": "#8B4513",
+            "response_border": "#C75B1D",
+            "session_label": "#8B4513",
+        },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
             "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
@@ -502,6 +580,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+_theme_mode: str = "auto"  # "auto", "light", or "dark"
+_resolved_theme_mode: Optional[str] = None  # Cached result of auto-detection
 
 
 def _skins_dir() -> Path:
@@ -529,6 +609,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     default = _BUILTIN_SKINS["default"]
     colors = dict(default.get("colors", {}))
     colors.update(data.get("colors", {}))
+    colors_light = dict(default.get("colors_light", {}))
+    colors_light.update(data.get("colors_light", {}))
     spinner = dict(default.get("spinner", {}))
     spinner.update(data.get("spinner", {}))
     branding = dict(default.get("branding", {}))
@@ -538,6 +620,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         name=data.get("name", "unknown"),
         description=data.get("description", ""),
         colors=colors,
+        colors_light=colors_light,
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
@@ -596,6 +679,52 @@ def load_skin(name: str) -> SkinConfig:
     return _build_skin_config(_BUILTIN_SKINS["default"])
 
 
+def get_theme_mode() -> str:
+    """Get the resolved theme mode ("light" or "dark").
+
+    If set to "auto", detects the terminal background on first call and caches it.
+    Falls back to "dark" if detection fails.
+
+    When auto-detection succeeds, the result is persisted to
+    ``display.detected_background`` in config.yaml so subsequent startups
+    can skip the 200ms OSC 11 probe.  The cache is invalidated when the
+    user runs ``/skin theme auto`` (which clears the key) or changes
+    ``theme_mode`` explicitly.
+    """
+    global _resolved_theme_mode
+    if _theme_mode in ("light", "dark"):
+        return _theme_mode
+    # Auto-detect
+    if _resolved_theme_mode is None:
+        try:
+            from hermes_cli.colors import detect_terminal_background
+            result = detect_terminal_background()
+            _resolved_theme_mode = result if result != "unknown" else "dark"
+        except Exception:
+            _resolved_theme_mode = "dark"
+        # Persist to config so next startup skips detection
+        try:
+            from hermes_cli.config import save_config_value
+            save_config_value("display.detected_background", _resolved_theme_mode)
+        except Exception:
+            pass
+    return _resolved_theme_mode
+
+
+def get_theme_mode_setting() -> str:
+    """Get the raw theme_mode setting ("auto", "light", or "dark")."""
+    return _theme_mode
+
+
+def set_theme_mode(mode: str) -> None:
+    """Set the theme mode ("auto", "light", or "dark")."""
+    global _theme_mode, _resolved_theme_mode
+    if mode not in ("auto", "light", "dark"):
+        mode = "auto"
+    _theme_mode = mode
+    _resolved_theme_mode = None  # Reset cache so auto re-detects
+
+
 def get_active_skin() -> SkinConfig:
     """Get the currently active skin config (cached)."""
     global _active_skin
@@ -618,13 +747,31 @@ def get_active_skin_name() -> str:
 
 
 def init_skin_from_config(config: dict) -> None:
-    """Initialize the active skin from CLI config at startup.
+    """Initialize the active skin and theme mode from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
+
+    If ``theme_mode`` is ``auto`` and a previous detection result is cached
+    in ``display.detected_background``, the cached value is used directly
+    so we skip the OSC 11 probe (saves ~200ms on startup).
     """
+    global _resolved_theme_mode
+
     display = config.get("display", {})
     skin_name = display.get("skin", "default")
     if isinstance(skin_name, str) and skin_name.strip():
         set_active_skin(skin_name.strip())
     else:
         set_active_skin("default")
+
+    theme_mode = display.get("theme_mode", "auto")
+    if isinstance(theme_mode, str) and theme_mode.strip():
+        set_theme_mode(theme_mode.strip())
+    else:
+        set_theme_mode("auto")
+
+    # Seed resolved mode from cached detection if available
+    if _theme_mode == "auto":
+        cached = display.get("detected_background")
+        if cached in ("light", "dark"):
+            _resolved_theme_mode = cached

@@ -444,8 +444,9 @@ class WebAdapter(BasePlatformAdapter):
             f.write(audio_bytes)
 
         try:
-            from tools.transcription_tools import transcribe_audio
-            result = await asyncio.to_thread(transcribe_audio, tmp_path)
+            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
+            stt_model = get_stt_model_from_config()
+            result = await asyncio.to_thread(transcribe_audio, tmp_path, model=stt_model)
 
             if not result.get("success"):
                 await self._send_to_session(session_id, {

@@ -519,6 +519,27 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "imessage",
+        "label": "iMessage",
+        "emoji": "💬",
+        "token_var": "IMESSAGE_ENABLED",
+        "setup_instructions": [
+            "1. Ensure the imsg CLI is installed: /opt/homebrew/bin/imsg",
+            "2. Grant Full Disk Access to your terminal in System Settings",
+            "3. Set IMESSAGE_ENABLED=true in ~/.hermes/.env",
+            "4. Set IMESSAGE_ALLOWED_USERS to your phone number or email",
+        ],
+        "vars": [
+            {"name": "IMESSAGE_ENABLED", "prompt": "Enable iMessage? (true/false)", "password": False,
+             "help": "Set to 'true' to enable."},
+            {"name": "IMESSAGE_ALLOWED_USERS", "prompt": "Allowed users (phone numbers or emails, comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Phone numbers (e.g. +18175046734) or emails allowed to chat."},
+            {"name": "IMESSAGE_HOME_CHANNEL", "prompt": "Home channel chat_id (numeric, or empty)", "password": False,
+             "help": "The chat_id number for cron/notification delivery."},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -542,6 +563,23 @@ _PLATFORMS = [
             {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
              "is_allowlist": True,
              "help": "Only emails from these addresses will be processed."},
+        ],
+    },
+    {
+        "key": "os1",
+        "label": "OS1 (AgentOS)",
+        "emoji": "🖥️",
+        "token_var": "OS1_ENABLED",
+        "setup_instructions": [
+            "OS1 is the native macOS/iOS voice-first app interface.",
+            "It runs a WebSocket server on localhost (default port 9001).",
+            "No external configuration needed — OS1 is auto-enabled.",
+            "",
+            "Optional: Set OS1_PORT to change the WebSocket port.",
+        ],
+        "extra_vars": [
+            {"name": "OS1_PORT", "prompt": "WebSocket port (default 9001)", "password": False,
+             "help": "Port for the OS1 WebSocket server."},
         ],
     },
 ]

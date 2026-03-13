@@ -143,6 +143,23 @@ PLATFORM_HINTS = {
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
     ),
+    "os1": (
+        "You are speaking to your user through AgentOS, a native voice-first "
+        "macOS/iOS app. The user is likely speaking to you by voice, so prefer "
+        "conversational, spoken-word responses. Keep responses concise and natural — "
+        "avoid heavy markdown formatting, long lists, or code dumps unless explicitly "
+        "asked. You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images, audio, and documents are delivered to the app. "
+        "Your voice responses are synthesized via TTS, so write in a way that sounds "
+        "natural when read aloud."
+    ),
+    "imessage": (
+        "You are chatting via iMessage. Do NOT use markdown formatting \u2014 no bold, "
+        "no headers, no tables, no bullets, no code blocks. Use plain text only. "
+        "Keep messages concise and conversational. You can send media files natively: "
+        "include MEDIA:/absolute/path/to/file in your response. Images, audio, and "
+        "documents are delivered as iMessage attachments."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

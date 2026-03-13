@@ -793,6 +793,20 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
+        elif platform == Platform.OS1:
+            from gateway.platforms.os1 import OS1Adapter, check_os1_requirements
+            if not check_os1_requirements():
+                logger.warning("OS1: websockets package not installed. Run: pip install websockets")
+                return None
+            return OS1Adapter(config)
+
+        elif platform == Platform.IMESSAGE:
+            from gateway.platforms.imessage import IMessageAdapter, check_imessage_requirements
+            if not check_imessage_requirements():
+                logger.warning("iMessage: imsg CLI not found. Install it first.")
+                return None
+            return IMessageAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -812,6 +826,10 @@ class GatewayRunner:
         if source.platform == Platform.HOMEASSISTANT:
             return True
 
+        # OS1 runs on localhost only — always authorized.
+        if source.platform == Platform.OS1:
+            return True
+
         user_id = source.user_id
         if not user_id:
             return False
@@ -823,6 +841,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.IMESSAGE: "IMESSAGE_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -831,6 +850,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.IMESSAGE: "IMESSAGE_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2158,6 +2178,8 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.OS1: "hermes-os1",
+                Platform.IMESSAGE: "hermes-imessage",
             }
             platform_toolsets_config = {}
             try:
@@ -2179,6 +2201,8 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.OS1: "os1",
+                Platform.IMESSAGE: "imessage",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -3060,8 +3084,9 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.OS1: "hermes-os1",
         }
-        
+
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
         try:
@@ -3073,7 +3098,7 @@ class GatewayRunner:
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
         except Exception as e:
             logger.debug("Could not load platform_toolsets config: %s", e)
-        
+
         # Map platform enum to config key
         platform_config_key = {
             Platform.LOCAL: "cli",
@@ -3084,8 +3109,9 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.OS1: "os1",
         }.get(source.platform, "telegram")
-        
+
         # Use config override if present (list of toolsets), otherwise hardcoded default
         config_toolsets = platform_toolsets_config.get(platform_config_key)
         if config_toolsets and isinstance(config_toolsets, list):

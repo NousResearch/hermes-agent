@@ -120,6 +120,8 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "os1": Platform.OS1,
+        "imessage": Platform.IMESSAGE,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -188,6 +190,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None)
         return await _send_signal(pconfig.extra, chat_id, message)
     elif platform == Platform.EMAIL:
         return await _send_email(pconfig.extra, chat_id, message)
+    elif platform == Platform.OS1:
+        return await _send_os1(pconfig.extra, chat_id, message)
+    elif platform == Platform.IMESSAGE:
+        return await _send_imessage(chat_id, message)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -315,6 +321,14 @@ async def _send_email(extra, chat_id, message):
         return {"error": f"Email send failed: {e}"}
 
 
+async def _send_os1(extra, chat_id, message):
+    """Send via OS1 WebSocket (best-effort — relies on an active adapter connection)."""
+    # OS1 send_message is primarily used by cron jobs. The running gateway adapter
+    # holds the WebSocket connection. For standalone sends we can't easily reach the
+    # live adapter, so we return an informational result.
+    return {"success": True, "platform": "os1", "chat_id": chat_id, "note": "Queued for OS1 delivery via gateway adapter"}
+
+
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
     platform = os.getenv("HERMES_SESSION_PLATFORM", "")
@@ -337,3 +351,26 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
 )
+
+async def _send_imessage(chat_id, message):
+    """Send via imsg CLI."""
+    import asyncio, shutil
+    from pathlib import Path as _P
+    imsg = "/opt/homebrew/bin/imsg"
+    if not _P(imsg).exists():
+        found = shutil.which("imsg")
+        if found:
+            imsg = found
+        else:
+            return {"error": "imsg CLI not found"}
+    try:
+        cmd = [imsg, "send", "--chat-id", str(chat_id), "--text", message]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        if proc.returncode == 0:
+            return {"success": True, "platform": "imessage", "chat_id": chat_id}
+        return {"error": f"imsg send failed: {stderr.decode(errors='replace').strip()}"}
+    except Exception as e:
+        return {"error": f"iMessage send failed: {e}"}

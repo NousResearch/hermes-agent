@@ -29,6 +29,8 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    OS1 = "os1"
+    IMESSAGE = "imessage"
 
 
 @dataclass
@@ -170,6 +172,11 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # OS1 uses enabled flag only (localhost WebSocket, no external auth)
+            elif platform == Platform.OS1:
+                connected.append(platform)
+            elif platform == Platform.IMESSAGE:
                 connected.append(platform)
         return connected
     
@@ -458,6 +465,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.EMAIL,
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
+    # OS1 (AgentOS native app)
+    os1_enabled = os.getenv("OS1_ENABLED", "true").lower() in ("true", "1", "yes")
+    if os1_enabled:
+        if Platform.OS1 not in config.platforms:
+            config.platforms[Platform.OS1] = PlatformConfig()
+        config.platforms[Platform.OS1].enabled = True
+        os1_port = os.getenv("OS1_PORT", "9001")
+        try:
+            config.platforms[Platform.OS1].extra["port"] = int(os1_port)
+        except ValueError:
+            config.platforms[Platform.OS1].extra["port"] = 9001
+
+    # iMessage (local imsg CLI, no token needed)
+    imessage_enabled = os.getenv("IMESSAGE_ENABLED", "").lower() in ("true", "1", "yes")
+    if imessage_enabled:
+        if Platform.IMESSAGE not in config.platforms:
+            config.platforms[Platform.IMESSAGE] = PlatformConfig()
+        config.platforms[Platform.IMESSAGE].enabled = True
+        imessage_home = os.getenv("IMESSAGE_HOME_CHANNEL")
+        if imessage_home:
+            config.platforms[Platform.IMESSAGE].home_channel = HomeChannel(
+                platform=Platform.IMESSAGE,
+                chat_id=imessage_home,
+                name=os.getenv("IMESSAGE_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

@@ -273,10 +273,22 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-os1": {
+        "description": "OS1 (AgentOS) toolset - native voice-first macOS/iOS app interface",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-imessage": {
+        "description": "iMessage toolset - Apple iMessage via local imsg CLI",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-os1", "hermes-imessage"]
     }
 }
 

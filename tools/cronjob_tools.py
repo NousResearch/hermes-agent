@@ -218,7 +218,7 @@ Use for: reminders, periodic checks, scheduled reports, automated maintenance.""
             },
             "deliver": {
                 "type": "string",
-                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', 'signal', or 'platform:chat_id'"
+                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', 'signal', 'imessage', 'os1', or 'platform:chat_id'"
             }
         },
         "required": ["prompt", "schedule"]

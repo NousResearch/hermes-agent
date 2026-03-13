@@ -3,10 +3,13 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    SendResult,
 )
 
 
@@ -368,3 +371,68 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+# ---------------------------------------------------------------------------
+# send_image / send_animation — metadata kwarg acceptance
+# ---------------------------------------------------------------------------
+
+
+class TestSendImageMetadataKwarg:
+    """Bug: base.py _send_response_parts calls send_image(metadata=...) and
+    send_animation(metadata=...) but the base class signatures don't accept
+    a ``metadata`` parameter.  Any platform that falls back to the default
+    implementation (Discord, Slack, WhatsApp, Email) gets a TypeError."""
+
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self): return True
+            async def disconnect(self): pass
+            async def send(self, *a, **kw):
+                return SendResult(success=True, message_id="1")
+            async def get_chat_info(self, *a): return {}
+
+        from gateway.config import Platform, PlatformConfig
+        config = PlatformConfig(enabled=True, token="test")
+        return StubAdapter(config=config, platform=Platform.DISCORD)
+
+    @pytest.mark.asyncio
+    async def test_send_image_accepts_metadata_kwarg(self):
+        adapter = self._adapter()
+        result = await adapter.send_image(
+            chat_id="123",
+            image_url="https://example.com/img.png",
+            caption="test",
+            metadata={"thread_id": "456"},
+        )
+        assert result.success
+
+    @pytest.mark.asyncio
+    async def test_send_animation_accepts_metadata_kwarg(self):
+        adapter = self._adapter()
+        result = await adapter.send_animation(
+            chat_id="123",
+            animation_url="https://example.com/anim.gif",
+            caption="test",
+            metadata={"thread_id": "456"},
+        )
+        assert result.success
+
+    @pytest.mark.asyncio
+    async def test_send_image_works_without_metadata(self):
+        """Existing callers that don't pass metadata must still work."""
+        adapter = self._adapter()
+        result = await adapter.send_image(
+            chat_id="123",
+            image_url="https://example.com/img.png",
+        )
+        assert result.success
+
+    @pytest.mark.asyncio
+    async def test_send_animation_works_without_metadata(self):
+        adapter = self._adapter()
+        result = await adapter.send_animation(
+            chat_id="123",
+            animation_url="https://example.com/anim.gif",
+        )
+        assert result.success

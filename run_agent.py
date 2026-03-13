@@ -2713,10 +2713,20 @@ class AIAgent:
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
 
+        _is_openrouter = "openrouter" in self.base_url.lower()
+        _is_nous = "nousresearch" in self.base_url.lower()
+
+        # Nous Portal does not support the OpenAI `tools` parameter.
+        # Instead, inject tool definitions into the system message using
+        # Hermes-style <tools>...</tools> XML and parse <tool_call> tags
+        # from the assistant response content (see _parse_nous_tool_calls).
+        if _is_nous and self.tools:
+            api_messages = self._convert_messages_for_nous(api_messages)
+
         api_kwargs = {
             "model": self.model,
             "messages": api_messages,
-            "tools": self.tools if self.tools else None,
+            "tools": None if _is_nous else (self.tools if self.tools else None),
             "timeout": 900.0,
         }
 
@@ -2725,15 +2735,12 @@ class AIAgent:
 
         extra_body = {}
 
-        _is_openrouter = "openrouter" in self.base_url.lower()
-
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
         # specific.  Only send to OpenRouter-compatible endpoints.
         # TODO: Nous Portal will add transparent proxy support — re-enable
         # for _is_nous when their backend is updated.
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
-        _is_nous = "nousresearch" in self.base_url.lower()
 
         _is_mistral = "api.mistral.ai" in self.base_url.lower()
         if (_is_openrouter or _is_nous) and not _is_mistral:
@@ -2759,6 +2766,172 @@ class AIAgent:
             api_kwargs["extra_body"] = extra_body
 
         return api_kwargs
+
+    @staticmethod
+    def _parse_nous_tool_calls(assistant_message):
+        """Parse Hermes-style <tool_call> tags from assistant content.
+
+        When the Nous Portal provider is used, tools are injected into the
+        system message instead of the API ``tools`` parameter.  The model
+        responds with ``<tool_call>`` XML blocks in its content.  This
+        method extracts them and attaches proper ``tool_calls`` to the
+        message object so the rest of the agent loop can process them
+        identically to native function-calling responses.
+        """
+        content = assistant_message.content or ""
+        if "<tool_call>" not in content:
+            return
+
+        import re as _re
+        _TC_RE = _re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", _re.DOTALL)
+        matches = _TC_RE.findall(content)
+        if not matches:
+            return
+
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall, Function,
+        )
+
+        tool_calls = []
+        for raw_json in matches:
+            raw_json = raw_json.strip()
+            if not raw_json:
+                continue
+            try:
+                tc_data = json.loads(raw_json)
+            except json.JSONDecodeError:
+                continue
+            name = tc_data.get("name", "")
+            arguments = tc_data.get("arguments", {})
+            if not name:
+                continue
+            tool_calls.append(
+                ChatCompletionMessageToolCall(
+                    id=f"call_{uuid.uuid4().hex[:12]}",
+                    type="function",
+                    function=Function(
+                        name=name,
+                        arguments=json.dumps(arguments, ensure_ascii=False)
+                        if not isinstance(arguments, str) else arguments,
+                    ),
+                )
+            )
+
+        if not tool_calls:
+            return
+
+        # Strip tool_call XML from displayed content
+        clean = _TC_RE.sub("", content).strip()
+        assistant_message.content = clean if clean else None
+        assistant_message.tool_calls = tool_calls
+
+    def _convert_messages_for_nous(self, api_messages: list) -> list:
+        """Convert message history for Nous Portal Hermes-style tool calling.
+
+        - Injects tool definitions into the system prompt as <tools> XML.
+        - Converts assistant ``tool_calls`` back into <tool_call> content.
+        - Converts ``role: "tool"`` result messages into user messages
+          wrapped in <tool_response> XML (Nous Portal doesn't accept the
+          ``tool`` role).
+        """
+        converted = []
+        tool_system_block = (
+            "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. "
+            "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
+            "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
+            "into functions. After calling & executing the functions, you will be provided with function results within "
+            "<tool_response></tool_response> XML tags.\n\nHere are the available tools:\n"
+            f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n\n"
+            "For each function call return a JSON object with the following schema:\n"
+            '{"name": "<function-name>", "arguments": {<args-dict>}}\n'
+            "Each function call should be enclosed within <tool_call></tool_call> XML tags.\n"
+            "Example:\n<tool_call>\n"
+            '{"name": "web_search", "arguments": {"query": "latest news"}}\n'
+            "</tool_call>"
+        )
+
+        # Pending tool responses to batch into a single user message
+        pending_tool_responses = []
+
+        for msg in api_messages:
+            role = msg.get("role", "")
+
+            if role == "system":
+                new_msg = dict(msg)
+                new_msg["content"] = str(new_msg.get("content", "")) + "\n\n" + tool_system_block
+                converted.append(new_msg)
+
+            elif role == "assistant":
+                new_msg = dict(msg)
+                # Convert structured tool_calls back to <tool_call> XML in content
+                tc_list = msg.get("tool_calls")
+                if tc_list:
+                    content = str(msg.get("content", "") or "")
+                    for tc in tc_list:
+                        func = tc.get("function", tc) if isinstance(tc, dict) else tc
+                        if isinstance(func, dict):
+                            name = func.get("name", "")
+                            args_raw = func.get("arguments", "{}")
+                        else:
+                            name = getattr(func, "name", "")
+                            args_raw = getattr(func, "arguments", "{}")
+                        try:
+                            args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                        except json.JSONDecodeError:
+                            args = {}
+                        tc_json = json.dumps({"name": name, "arguments": args}, ensure_ascii=False)
+                        content += f"\n<tool_call>\n{tc_json}\n</tool_call>"
+                    new_msg["content"] = content.strip()
+                    new_msg.pop("tool_calls", None)
+                converted.append(new_msg)
+
+            elif role == "tool":
+                # Collect tool responses; will be emitted as a single user message
+                tool_call_id = msg.get("tool_call_id", "")
+                tool_name = msg.get("name", "")
+                # Look up tool name from the original messages' assistant tool_calls
+                if not tool_name and tool_call_id:
+                    for prev in reversed(api_messages):
+                        if prev.get("role") != "assistant":
+                            continue
+                        for tc in (prev.get("tool_calls") or []):
+                            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                            if tc_id == tool_call_id:
+                                func = tc.get("function", {}) if isinstance(tc, dict) else tc
+                                tool_name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
+                                break
+                        if tool_name:
+                            break
+                tool_name = tool_name or "tool"
+                tool_content = msg.get("content", "")
+                pending_tool_responses.append(
+                    f"<tool_response>\n"
+                    f'{{"name": "{tool_name}", "content": {json.dumps(tool_content, ensure_ascii=False)}}}\n'
+                    f"</tool_response>"
+                )
+
+            else:
+                # Flush any pending tool responses before the next user/other message
+                if pending_tool_responses:
+                    converted.append({
+                        "role": "user",
+                        "content": "\n".join(pending_tool_responses),
+                    })
+                    pending_tool_responses = []
+                converted.append(msg)
+
+        # Flush remaining tool responses at the end
+        if pending_tool_responses:
+            converted.append({
+                "role": "user",
+                "content": "\n".join(pending_tool_responses),
+            })
+
+        # If no system message existed, prepend one with tool definitions
+        if not converted or converted[0].get("role") != "system":
+            converted.insert(0, {"role": "system", "content": tool_system_block})
+
+        return converted
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3018,6 +3191,8 @@ class AIAgent:
                     tool_calls = _flush_msg.tool_calls
             elif hasattr(response, "choices") and response.choices:
                 assistant_message = response.choices[0].message
+                if "nousresearch" in self.base_url.lower() and not assistant_message.tool_calls:
+                    self._parse_nous_tool_calls(assistant_message)
                 if assistant_message.tool_calls:
                     tool_calls = assistant_message.tool_calls
 
@@ -4082,6 +4257,8 @@ class AIAgent:
 
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
+                            if "nousresearch" in self.base_url.lower() and not assistant_message.tool_calls:
+                                self._parse_nous_tool_calls(assistant_message)
                             if not assistant_message.tool_calls:
                                 length_continue_retries += 1
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
@@ -4517,7 +4694,7 @@ class AIAgent:
                     assistant_message, finish_reason = normalize_anthropic_response(response)
                 else:
                     assistant_message = response.choices[0].message
-                
+
                 # Normalize content to string — some OpenAI-compatible servers
                 # (llama-server, etc.) return content as a dict or list instead
                 # of a plain string, which crashes downstream .strip() calls.
@@ -4538,6 +4715,10 @@ class AIAgent:
                         assistant_message.content = "\n".join(parts)
                     else:
                         assistant_message.content = str(raw)
+
+                # Nous Portal: parse <tool_call> tags from content
+                if "nousresearch" in self.base_url.lower() and not assistant_message.tool_calls:
+                    self._parse_nous_tool_calls(assistant_message)
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:

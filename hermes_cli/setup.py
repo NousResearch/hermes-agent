@@ -758,7 +758,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url)
+        _update_config_for_provider("zai", zai_base_url, "glm-4.7")
 
     elif provider_idx == 5:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
@@ -790,7 +790,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
+        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, "kimi-k2.5")
 
     elif provider_idx == 6:  # MiniMax
         selected_provider = "minimax"
@@ -822,7 +822,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url)
+        _update_config_for_provider("minimax", pconfig.inference_base_url, "MiniMax-M2.5")
 
     elif provider_idx == 7:  # MiniMax China
         selected_provider = "minimax-cn"
@@ -854,7 +854,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
+        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, "MiniMax-M2.5")
 
     # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
 

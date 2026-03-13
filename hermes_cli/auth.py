@@ -1482,8 +1482,16 @@ def detect_external_credentials() -> List[Dict[str, Any]]:
 # CLI Commands — login / logout
 # =============================================================================
 
-def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Path:
-    """Update config.yaml and auth.json to reflect the active provider."""
+def _update_config_for_provider(provider_id: str, inference_base_url: str, default_model: str = None) -> Path:
+    """Update config.yaml and auth.json to reflect the active provider.
+    
+    Args:
+        provider_id: The provider ID (e.g., "minimax", "openai")
+        inference_base_url: The API base URL for the provider
+        default_model: Optional default model name for this provider.
+                       If not provided, the existing model is preserved (which can cause
+                       race conditions when switching providers).
+    """
     # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -1511,6 +1519,11 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
     else:
         model_cfg = {}
 
+    # If a default model is provided, use it to prevent race conditions
+    # where the gateway uses a model name from the previous provider
+    if default_model:
+        model_cfg["default"] = default_model
+    
     model_cfg["provider"] = provider_id
     model_cfg["base_url"] = inference_base_url.rstrip("/")
     config["model"] = model_cfg

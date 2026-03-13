@@ -304,6 +304,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
+                    os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     except Exception:
         pass
 

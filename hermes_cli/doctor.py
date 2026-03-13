@@ -53,6 +53,33 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _honcho_is_configured_for_doctor() -> bool:
+    """Return True when Honcho is configured, even if this process has no active session."""
+    try:
+        from honcho_integration.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig.from_global_config()
+        return bool(cfg.enabled and cfg.api_key)
+    except Exception:
+        return False
+
+
+def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
+    """Adjust runtime-gated tool availability for doctor diagnostics."""
+    if not _honcho_is_configured_for_doctor():
+        return available, unavailable
+
+    updated_available = list(available)
+    updated_unavailable = []
+    for item in unavailable:
+        if item.get("name") == "honcho":
+            if "honcho" not in updated_available:
+                updated_available.append("honcho")
+            continue
+        updated_unavailable.append(item)
+    return updated_available, updated_unavailable
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -582,6 +609,7 @@ def run_doctor(args):
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
         
         available, unavailable = check_tool_availability()
+        available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})

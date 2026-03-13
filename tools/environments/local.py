@@ -16,6 +16,52 @@ from tools.environments.base import BaseEnvironment
 # printf (no trailing newline) keeps the boundaries clean for splitting.
 _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
 
+# Hermes-internal env vars that should NOT leak into terminal subprocesses.
+# These are loaded from ~/.hermes/.env for Hermes' own LLM/provider calls
+# but can break external CLIs (e.g. codex) that also honor them.
+# See: https://github.com/NousResearch/hermes-agent/issues/1002
+#
+# Built dynamically from the provider registry so new providers are
+# automatically covered without manual blocklist maintenance.
+_HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+
+
+def _build_provider_env_blocklist() -> frozenset:
+    """Derive the blocklist from the provider registry + known extras.
+
+    Automatically picks up api_key_env_vars and base_url_env_var from
+    every registered provider, so adding a new provider to auth.py is
+    enough — no manual list to keep in sync.
+    """
+    blocked: set[str] = set()
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        for pconfig in PROVIDER_REGISTRY.values():
+            blocked.update(pconfig.api_key_env_vars)
+            if pconfig.base_url_env_var:
+                blocked.add(pconfig.base_url_env_var)
+    except ImportError:
+        pass
+
+    # Vars not in the registry but still Hermes-internal / conflict-prone
+    blocked.update({
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",         # legacy alias
+        "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "LLM_MODEL",
+    })
+    return frozenset(blocked)
+
+
+_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
 
 def _find_bash() -> str:
     """Find bash for command execution.
@@ -192,7 +238,18 @@ class LocalEnvironment(BaseEnvironment):
             # Ensure PATH always includes standard dirs — systemd services
             # and some terminal multiplexers inherit a minimal PATH.
             _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            run_env = dict(os.environ | self.env)
+            # Strip Hermes-internal provider vars so external CLIs
+            # (e.g. codex) are not silently misrouted.  Callers that
+            # truly need a blocked var can opt in by prefixing the key
+            # with _HERMES_FORCE_ in self.env (e.g. _HERMES_FORCE_OPENAI_API_KEY).
+            merged = dict(os.environ | self.env)
+            run_env = {}
+            for k, v in merged.items():
+                if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+                    real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+                    run_env[real_key] = v
+                elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+                    run_env[k] = v
             existing_path = run_env.get("PATH", "")
             if "/usr/bin" not in existing_path.split(":"):
                 run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH

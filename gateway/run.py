@@ -1300,16 +1300,13 @@ class GatewayRunner:
             
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
-            last_reasoning = (agent_result.get("last_reasoning", "") or "").strip()
-            reasoning_mode = getattr(session_entry, "reasoning_mode", "off")
-            
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
 
-            if False and reasoning_mode == "__hidden__" and last_reasoning:
+            if False:
                 _adapter = self.adapters.get(source.platform)
                 if _adapter:
                     _reasoning_meta = {"thread_id": source.thread_id} if source.thread_id else None
@@ -2857,6 +2854,8 @@ class GatewayRunner:
                         )
                         if not result.success:
                             can_edit = False
+                            await self._delete_preview_message(adapter, source, reasoning_msg_id)
+                            reasoning_msg_id = None
 
                     if reasoning_msg_id is None:
                         result = await adapter.send(
@@ -2868,7 +2867,7 @@ class GatewayRunner:
                             reasoning_msg_id = result.message_id
 
                     await asyncio.sleep(0.3)
-                    await adapter.send_typing(source.chat_id)
+                    await adapter.send_typing(source.chat_id, metadata=_reasoning_metadata)
                 except asyncio.TimeoutError:
                     continue
                 except asyncio.CancelledError:

@@ -113,18 +113,15 @@ async def test_delete_preview_message_deletes_transient_reasoning_bubble():
 @pytest.mark.asyncio
 async def test_reasoning_preview_does_not_send_duplicate_after_edit_failure():
     runner, _, _ = _make_runner()
-    sent_payloads = []
-    state = {"sent_once": False}
+    next_message_id = {"value": 1}
 
     async def _send(chat_id, content, metadata=None):
-        sent_payloads.append(content)
-        state["sent_once"] = True
-        return SimpleNamespace(success=True, message_id="preview-1")
+        message_id = f"preview-{next_message_id['value']}"
+        next_message_id["value"] += 1
+        return SimpleNamespace(success=True, message_id=message_id)
 
     async def _edit_message(chat_id, message_id, content):
-        if state["sent_once"]:
-            return SimpleNamespace(success=False, error="message is not modified")
-        return SimpleNamespace(success=True, message_id=message_id)
+        return SimpleNamespace(success=False, error="message is not modified")
 
     adapter = SimpleNamespace(
         send=AsyncMock(side_effect=_send),
@@ -148,7 +145,11 @@ async def test_reasoning_preview_does_not_send_duplicate_after_edit_failure():
         can_edit = True
         try:
             while True:
-                latest_text = await asyncio.wait_for(reasoning_queue.get(), timeout=0.01)
+                try:
+                    latest_text = await asyncio.wait_for(reasoning_queue.get(), timeout=0.01)
+                except asyncio.TimeoutError:
+                    continue
+
                 while True:
                     try:
                         latest_text = reasoning_queue.get_nowait()
@@ -164,6 +165,8 @@ async def test_reasoning_preview_does_not_send_duplicate_after_edit_failure():
                     )
                     if not result.success:
                         can_edit = False
+                        await runner._delete_preview_message(adapter, source, reasoning_msg_id)
+                        reasoning_msg_id = None
 
                 if reasoning_msg_id is None:
                     result = await adapter.send(
@@ -185,5 +188,7 @@ async def test_reasoning_preview_does_not_send_duplicate_after_edit_failure():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert adapter.send.await_count == 1
-    adapter.delete_message.assert_awaited_once_with(chat_id="456", message_id="preview-1")
+    assert adapter.send.await_count == 2
+    assert adapter.delete_message.await_count == 2
+    adapter.delete_message.assert_any_await(chat_id="456", message_id="preview-1")
+    adapter.delete_message.assert_any_await(chat_id="456", message_id="preview-2")

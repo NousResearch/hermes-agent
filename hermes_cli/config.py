@@ -265,6 +265,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    7: ["TAVILY_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -380,6 +381,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Firecrawl API key",
         "url": "https://firecrawl.dev/",
         "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "TAVILY_API_KEY": {
+        "description": "Tavily API key for Tavily-based research skills and integrations",
+        "prompt": "Tavily API key",
+        "url": "https://app.tavily.com/home",
+        "tools": ["tavily skills", "research integrations"],
         "password": True,
         "category": "tool",
     },
@@ -1114,6 +1123,7 @@ def show_config():
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("FAL_KEY", "FAL"),
     ]
@@ -1261,7 +1271,7 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'FIRECRAWL_API_KEY', 'TAVILY_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',

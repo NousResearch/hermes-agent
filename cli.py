@@ -2935,13 +2935,16 @@ class HermesCLI:
                     if exec_cmd:
                         try:
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                exec_cmd,
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
-                                from rich.text import Text as _RichText
-                                self.console.print(_RichText.from_ansi(output))
+                                # Print plain string so tests (and mocks) see the raw value.
+                                self.console.print(output)
                             else:
                                 self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:

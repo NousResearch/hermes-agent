@@ -4950,9 +4950,15 @@ class AIAgent:
                     
                     # Validate tool call arguments are valid JSON
                     # Handle empty strings as empty objects (common model quirk)
+                    # Also handle dict arguments (e.g., from llama-server/Ollama)
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
                         args = tc.function.arguments
+                        # Handle dict arguments - convert to JSON string
+                        # Some backends (llama-server, Ollama) return dict instead of string
+                        if isinstance(args, dict):
+                            tc.function.arguments = json.dumps(args)
+                            args = tc.function.arguments
                         # Treat empty/whitespace strings as empty object
                         if not args or not args.strip():
                             tc.function.arguments = "{}"

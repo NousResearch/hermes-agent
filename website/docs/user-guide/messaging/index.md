@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, or Home Assistant — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email, or Home Assistant. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home
 │                              Hermes Gateway                                   │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐│
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA ││
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt││
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘│
+│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌────────┐ ┌───────┐ ┌────┐│
+│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Matrix │ │ Email │ │ HA ││
+│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter │ │Adapter│ │Adpt││
+│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └───┬────┘ └──┬────┘ └─┬──┘│
 │       │             │           │           │         │         │        │    │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘    │
+│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┴────────┴────┘    │
 │                                     │                                         │
 │                            ┌────────▼────────┐                                │
 │                            │  Session Store  │                                │
@@ -115,6 +115,7 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
 SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
+MATRIX_ALLOWED_USERS=@alice:matrix.org,@bob:example.org
 EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 
 # Or allow
@@ -203,6 +204,7 @@ Each platform has its own toolset:
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
+| Matrix | `hermes-matrix` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
 | Home Assistant | `hermes-gateway` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
 
@@ -213,5 +215,6 @@ Each platform has its own toolset:
 - [Slack Setup](slack.md)
 - [WhatsApp Setup](whatsapp.md)
 - [Signal Setup](signal.md)
+- [Matrix Setup](matrix.md)
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)

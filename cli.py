@@ -3038,9 +3038,10 @@ class HermesCLI:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
 
+                    from rich.text import Text as _RichText
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        response,
+                        _RichText.from_ansi(response),
                         title=f"[bold]{label} (background #{task_num})[/bold]",
                         title_align="left",
                         border_style=_resp_color,
@@ -3716,9 +3717,10 @@ class HermesCLI:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
 
+                from rich.text import Text as _RichText
                 _chat_console = ChatConsole()
                 _chat_console.print(Panel(
-                    response,
+                    _RichText.from_ansi(response),
                     title=f"[bold]{label}[/bold]",
                     title_align="left",
                     border_style=_resp_color,

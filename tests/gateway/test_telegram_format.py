@@ -7,7 +7,7 @@ or corrupt user-visible content.
 
 import re
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -123,6 +123,17 @@ class TestReasoningPreviewFormatting:
             '💭 **Reasoning**\n\n*hello (world)*'
         )
         assert result == "💭 *Reasoning*\n\n_hello \\(world\\)_"
+
+
+@pytest.mark.asyncio
+async def test_edit_message_does_not_fallback_to_plain_text_on_non_parse_error(adapter):
+    adapter._bot = MagicMock()
+    adapter._bot.edit_message_text = AsyncMock(side_effect=Exception("message is not modified"))
+
+    result = await adapter.edit_message("123", "456", "💭 **Reasoning**\n\n*hello*")
+
+    assert result.success is False
+    assert adapter._bot.edit_message_text.await_count == 1
 
 
 # =========================================================================

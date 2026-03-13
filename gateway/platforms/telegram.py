@@ -299,13 +299,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
-            except Exception:
-                # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
+            except Exception as md_error:
+                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                    plain_text = _strip_mdv2(formatted)
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=plain_text,
+                        parse_mode=None,
+                    )
+                else:
+                    raise
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             return SendResult(success=False, error=str(e))

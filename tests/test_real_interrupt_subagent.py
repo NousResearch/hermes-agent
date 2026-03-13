@@ -93,8 +93,8 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                     mock_client.close = MagicMock()
                     MockOpenAI.return_value = mock_client
 
-                    # Also need to patch the system prompt builder
-                    with patch('run_agent.build_system_prompt', return_value="You are a test agent"):
+                    # Patch the instance method so it skips prompt assembly
+                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"):
                         # Signal when child starts
                         original_run = AIAgent.run_conversation
 

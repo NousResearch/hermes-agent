@@ -292,7 +292,6 @@ Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
 ---
 
 ## Important Policies
-
 ### Prompt Caching Must Not Break
 
 Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**

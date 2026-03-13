@@ -404,8 +404,14 @@ def convert_messages_to_anthropic(
         if role == "assistant":
             blocks = []
             if content:
-                text = content if isinstance(content, str) else json.dumps(content)
-                blocks.append({"type": "text", "text": text})
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict):
+                            blocks.append(dict(part))
+                        elif part is not None:
+                            blocks.append({"type": "text", "text": str(part)})
+                else:
+                    blocks.append({"type": "text", "text": str(content)})
             for tc in m.get("tool_calls", []):
                 fn = tc.get("function", {})
                 args = fn.get("arguments", "{}")
@@ -436,6 +442,8 @@ def convert_messages_to_anthropic(
                 "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),
                 "content": result_content,
             }
+            if isinstance(m.get("cache_control"), dict):
+                tool_result["cache_control"] = dict(m["cache_control"])
             # Merge consecutive tool results into one user message
             if (
                 result

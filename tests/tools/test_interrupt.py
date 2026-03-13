@@ -91,8 +91,11 @@ class TestPreToolCheck:
         agent._persist_session = MagicMock()
 
         # Import and call the method
+        import types
         from run_agent import AIAgent
-        # Bind the real method to our mock
+        # Bind the real methods to our mock so dispatch works correctly
+        agent._execute_tool_calls_sequential = types.MethodType(AIAgent._execute_tool_calls_sequential, agent)
+        agent._execute_tool_calls_concurrent = types.MethodType(AIAgent._execute_tool_calls_concurrent, agent)
         AIAgent._execute_tool_calls(agent, assistant_msg, messages, "default")
 
         # All 3 should be skipped

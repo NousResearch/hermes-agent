@@ -1509,7 +1509,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._on_reasoning if self.show_reasoning else None,
-                honcho_session_key=self.session_id,
+                honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
@@ -2739,6 +2739,28 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    # Re-map Honcho session key to new title
+                                    if self.agent and getattr(self.agent, '_honcho', None):
+                                        try:
+                                            hcfg = self.agent._honcho_config
+                                            new_key = (
+                                                hcfg.resolve_session_name(
+                                                    session_title=new_title,
+                                                    session_id=self.agent.session_id,
+                                                )
+                                                if hcfg else new_title
+                                            )
+                                            if new_key and new_key != self.agent._honcho_session_key:
+                                                old_key = self.agent._honcho_session_key
+                                                self.agent._honcho.get_or_create(new_key)
+                                                self.agent._honcho_session_key = new_key
+                                                from tools.honcho_tools import set_session_context
+                                                set_session_context(self.agent._honcho, new_key)
+                                                from agent.display import honcho_session_line, write_tty
+                                                write_tty(honcho_session_line(hcfg.workspace_id, new_key) + "\n")
+                                                _cprint(f"  Honcho session: {old_key} → {new_key}")
+                                        except Exception:
+                                            pass
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -3207,6 +3229,12 @@ class HermesCLI:
                 f"  ✅ Compressed: {original_count} → {new_count} messages "
                 f"(~{approx_tokens:,} → ~{new_tokens:,} tokens)"
             )
+            # Flush Honcho async queue so queued messages land before context resets
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.flush_all()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
 
@@ -3657,6 +3685,7 @@ class HermesCLI:
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
+            response_previewed = result.get("response_previewed", False) if result else False
             # Display reasoning (thinking) box if enabled and available
             if self.show_reasoning and result:
                 reasoning = result.get("last_reasoning")
@@ -3675,7 +3704,7 @@ class HermesCLI:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
-            if response:
+            if response and not response_previewed:
                 # Use a Rich Panel for the response box — adapts to terminal
                 # width at render time instead of hard-coding border length.
                 try:
@@ -3696,7 +3725,7 @@ class HermesCLI:
                     box=rich_box.HORIZONTALS,
                     padding=(1, 2),
                 ))
-            
+
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
@@ -3753,6 +3782,18 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
+
+        # One-line Honcho session indicator (TTY-only, not captured by agent)
+        try:
+            from honcho_integration.client import HonchoClientConfig
+            from agent.display import honcho_session_line, write_tty
+            hcfg = HonchoClientConfig.from_global_config()
+            if hcfg.enabled:
+                sname = hcfg.resolve_session_name(session_id=self.session_id)
+                if sname:
+                    write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")
+        except Exception:
+            pass
 
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
@@ -4663,6 +4704,12 @@ class HermesCLI:
             # Unregister terminal_tool callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
+            # Flush + shut down Honcho async writer (drains queue before exit)
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.shutdown()
+                except Exception:
+                    pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:

@@ -114,6 +114,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format (e.g., `+15551234567`) |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | Comma-separated group IDs, or `*` for all groups (omit to disable groups) |
+| `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
+| `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |

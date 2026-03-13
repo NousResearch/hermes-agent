@@ -122,31 +122,53 @@ Set living room lights to blue at 50% brightness
 
 ## Gateway Platform: Real-Time Events
 
-The Home Assistant gateway adapter connects via WebSocket and subscribes to `state_changed` events. When a device state changes, it's forwarded to the agent as a message.
+The Home Assistant gateway adapter connects via WebSocket and subscribes to `state_changed` events. When a device state changes and matches your filters, it's forwarded to the agent as a message.
 
 ### Event Filtering
 
-Configure which events the agent sees via platform config in the gateway:
+:::warning Required Configuration
+By default, **no events are forwarded**. You must configure at least one of `watch_domains`, `watch_entities`, or `watch_all` to receive events. Without filters, a warning is logged at startup and all state changes are silently dropped.
+:::
 
-```python
-# In platform extra config
-{
-    "watch_domains": ["climate", "binary_sensor", "alarm_control_panel"],
-    "watch_entities": ["sensor.front_door"],
-    "ignore_entities": ["sensor.uptime", "sensor.cpu_usage"],
-    "cooldown_seconds": 30
-}
+Configure which events the agent sees in `~/.hermes/config.yaml` under the Home Assistant platform's `extra` section:
+
+```yaml
+# ~/.hermes/config.yaml
+messaging:
+  platforms:
+    homeassistant:
+      extra:
+        # Watch specific domains (recommended)
+        watch_domains:
+          - climate
+          - binary_sensor
+          - alarm_control_panel
+          - light
+
+        # Watch specific entities (in addition to domains)
+        watch_entities:
+          - sensor.front_door_battery
+
+        # Ignore noisy entities
+        ignore_entities:
+          - sensor.uptime
+          - sensor.cpu_usage
+          - sensor.memory_usage
+
+        # Per-entity cooldown (seconds)
+        cooldown_seconds: 30
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `watch_domains` | *(all)* | Only watch these entity domains |
-| `watch_entities` | *(all)* | Only watch these specific entities |
-| `ignore_entities` | *(none)* | Always ignore these entities |
+| `watch_domains` | *(none)* | Only watch these entity domains (e.g., `climate`, `light`, `binary_sensor`) |
+| `watch_entities` | *(none)* | Only watch these specific entity IDs |
+| `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
+| `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters) |
 | `cooldown_seconds` | `30` | Minimum seconds between events for the same entity |
 
 :::tip
-Without any filters, the agent receives **all** state changes, which can be noisy. For practical use, set `watch_domains` to the domains you care about (e.g., `climate`, `binary_sensor`, `alarm_control_panel`).
+Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.
 :::
 
 ### Event Formatting

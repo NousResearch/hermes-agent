@@ -111,7 +111,17 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         custom = prompt_fn("Enter model name")
         if custom:
             _set_default_model(config, custom)
-    # else: keep current
+    else:
+        # "Keep current" selected — validate it's compatible with the new
+        # provider.  OpenRouter-formatted names (containing "/") won't work
+        # on direct-API providers and would silently break the gateway.
+        if "/" in (current_model or "") and provider_models:
+            print_warning(
+                f"Current model \"{current_model}\" looks like an OpenRouter model "
+                f"and won't work with {pconfig.name}. "
+                f"Switching to {provider_models[0]}."
+            )
+            _set_default_model(config, provider_models[0])
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -967,7 +977,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url)
+        _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
 
     elif provider_idx == 5:  # Kimi / Moonshot
@@ -1000,7 +1010,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
+        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
 
     elif provider_idx == 6:  # MiniMax
@@ -1033,7 +1043,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url)
+        _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
 
     elif provider_idx == 7:  # MiniMax China
@@ -1066,7 +1076,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
+        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
     elif provider_idx == 8:  # Anthropic
@@ -1074,6 +1084,7 @@ def setup_model_provider(config: dict):
         print()
         print_header("Anthropic Authentication")
         from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.config import save_anthropic_api_key, save_anthropic_oauth_token
         pconfig = PROVIDER_REGISTRY["anthropic"]
 
         # Check ALL credential sources
@@ -1086,8 +1097,8 @@ def setup_model_provider(config: dict):
         cc_valid = bool(cc_creds and is_claude_code_token_valid(cc_creds))
 
         existing_key = (
-            get_env_value("ANTHROPIC_API_KEY")
-            or get_env_value("ANTHROPIC_TOKEN")
+            get_env_value("ANTHROPIC_TOKEN")
+            or get_env_value("ANTHROPIC_API_KEY")
             or _os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
         )
 
@@ -1127,14 +1138,14 @@ def setup_model_provider(config: dict):
                     print()
                     token = run_oauth_setup_token()
                     if token:
-                        save_env_value("ANTHROPIC_API_KEY", token)
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
                         print_success("OAuth credentials saved")
                     else:
                         # Subprocess completed but no token auto-detected
                         print()
                         token = prompt("Paste setup-token here (if displayed above)", password=True)
                         if token:
-                            save_env_value("ANTHROPIC_API_KEY", token)
+                            save_anthropic_oauth_token(token, save_fn=save_env_value)
                             print_success("Setup-token saved")
                         else:
                             print_warning("Skipped — agent won't work without credentials")
@@ -1148,7 +1159,7 @@ def setup_model_provider(config: dict):
                     print()
                     token = prompt("Setup-token (sk-ant-oat-...)", password=True)
                     if token:
-                        save_env_value("ANTHROPIC_API_KEY", token)
+                        save_anthropic_oauth_token(token, save_fn=save_env_value)
                         print_success("Setup-token saved")
                     else:
                         print_warning("Skipped — install Claude Code and re-run setup")
@@ -1158,7 +1169,7 @@ def setup_model_provider(config: dict):
                 print()
                 api_key = prompt("API key (sk-ant-...)", password=True)
                 if api_key:
-                    save_env_value("ANTHROPIC_API_KEY", api_key)
+                    save_anthropic_api_key(api_key, save_fn=save_env_value)
                     print_success("API key saved")
                 else:
                     print_warning("Skipped — agent won't work without credentials")
@@ -1169,7 +1180,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         # Don't save base_url for Anthropic — resolve_runtime_provider()
         # always hardcodes it. Stale base_urls contaminate other providers.
-        _update_config_for_provider("anthropic", "")
+        _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
         _set_model_provider(config, "anthropic")
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
@@ -1924,7 +1935,17 @@ def setup_gateway(config: dict):
                 "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
             )
             if allowed_users:
-                save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                # Clean up common prefixes (user:123, <@123>, <@!123>)
+                cleaned_ids = []
+                for uid in allowed_users.replace(" ", "").split(","):
+                    uid = uid.strip()
+                    if uid.startswith("<@") and uid.endswith(">"):
+                        uid = uid.lstrip("<@!").rstrip(">")
+                    if uid.lower().startswith("user:"):
+                        uid = uid[5:]
+                    if uid:
+                        cleaned_ids.append(uid)
+                save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                 print_success("Discord allowlist configured")
             else:
                 print_info(
@@ -1959,8 +1980,18 @@ def setup_gateway(config: dict):
                 )
                 allowed_users = prompt("Allowed user IDs (comma-separated)")
                 if allowed_users:
+                    # Clean up common prefixes (user:123, <@123>, <@!123>)
+                    cleaned_ids = []
+                    for uid in allowed_users.replace(" ", "").split(","):
+                        uid = uid.strip()
+                        if uid.startswith("<@") and uid.endswith(">"):
+                            uid = uid.lstrip("<@!").rstrip(">")
+                        if uid.lower().startswith("user:"):
+                            uid = uid[5:]
+                        if uid:
+                            cleaned_ids.append(uid)
                     save_env_value(
-                        "DISCORD_ALLOWED_USERS", allowed_users.replace(" ", "")
+                        "DISCORD_ALLOWED_USERS", ",".join(cleaned_ids)
                     )
                     print_success("Discord allowlist configured")
 

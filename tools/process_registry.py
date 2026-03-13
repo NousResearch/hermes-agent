@@ -42,7 +42,7 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell
+from tools.environments.local import _find_shell, _HERMES_PROVIDER_ENV_BLOCKLIST
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -153,7 +153,9 @@ class ProcessRegistry:
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
-                pty_env = os.environ | (env_vars or {})
+                pty_env = {k: v for k, v in os.environ.items()
+                           if k not in _HERMES_PROVIDER_ENV_BLOCKLIST}
+                pty_env.update(env_vars or {})
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", command],
@@ -194,7 +196,9 @@ class ProcessRegistry:
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
-        bg_env = os.environ | (env_vars or {})
+        bg_env = {k: v for k, v in os.environ.items()
+                  if k not in _HERMES_PROVIDER_ENV_BLOCKLIST}
+        bg_env.update(env_vars or {})
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [user_shell, "-lic", command],

@@ -276,12 +276,70 @@ def _run_single_child(
         else:
             status = "failed"
 
+        # Build tool trace from conversation messages (already in memory).
+        # Uses tool_call_id to correctly pair parallel tool calls with results.
+        tool_trace: list[Dict[str, Any]] = []
+        trace_by_id: Dict[str, Dict[str, Any]] = {}
+        messages = result.get("messages") or []
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "assistant":
+                    for tc in (msg.get("tool_calls") or []):
+                        fn = tc.get("function", {})
+                        entry_t = {
+                            "tool": fn.get("name", "unknown"),
+                            "args_bytes": len(fn.get("arguments", "")),
+                        }
+                        tool_trace.append(entry_t)
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            trace_by_id[tc_id] = entry_t
+                elif msg.get("role") == "tool":
+                    content = msg.get("content", "")
+                    is_error = bool(
+                        content and "error" in content[:80].lower()
+                    )
+                    result_meta = {
+                        "result_bytes": len(content),
+                        "status": "error" if is_error else "ok",
+                    }
+                    # Match by tool_call_id for parallel calls
+                    tc_id = msg.get("tool_call_id")
+                    target = trace_by_id.get(tc_id) if tc_id else None
+                    if target is not None:
+                        target.update(result_meta)
+                    elif tool_trace:
+                        # Fallback for messages without tool_call_id
+                        tool_trace[-1].update(result_meta)
+
+        # Determine exit reason
+        if interrupted:
+            exit_reason = "interrupted"
+        elif completed:
+            exit_reason = "completed"
+        else:
+            exit_reason = "max_iterations"
+
+        # Extract token counts (safe for mock objects)
+        _input_tokens = getattr(child, "session_prompt_tokens", 0)
+        _output_tokens = getattr(child, "session_completion_tokens", 0)
+        _model = getattr(child, "model", None)
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            "model": _model if isinstance(_model, str) else None,
+            "exit_reason": exit_reason,
+            "tokens": {
+                "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
+                "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
+            },
+            "tool_trace": tool_trace,
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")

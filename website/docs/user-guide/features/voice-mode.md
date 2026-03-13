@@ -77,13 +77,18 @@ sudo apt install portaudio19-dev ffmpeg libopus0
 Add to `~/.hermes/.env`:
 
 ```bash
-# Speech-to-Text (at least one required)
-GROQ_API_KEY=your-key              # Groq Whisper — fast, free tier (recommended for most users)
-VOICE_TOOLS_OPENAI_KEY=your-key    # OpenAI Whisper — used first if both keys are set
+# Speech-to-Text — local provider needs NO key at all
+# pip install faster-whisper          # Free, runs locally, recommended
+GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
+VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
 # Text-to-Speech (optional — Edge TTS works without any key)
-ELEVENLABS_API_KEY=your-key        # ElevenLabs — premium quality
+ELEVENLABS_API_KEY=your-key           # ElevenLabs — premium quality
 ```
+
+:::tip
+If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
+:::
 
 ---
 
@@ -293,8 +298,8 @@ The bot auto-loads the codec from:
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — at least one required for voice channel listening
-GROQ_API_KEY=your-key              # Recommended (fast, free tier)
+# STT — local provider needs no key (pip install faster-whisper)
+# GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
 # TTS — optional, Edge TTS (free) is the default
 # ELEVENLABS_API_KEY=your-key      # Premium quality
@@ -329,7 +334,7 @@ When the bot joins a voice channel, it:
 
 1. **Listens** to each user's audio stream independently
 2. **Detects silence** — 1.5s of silence after at least 0.5s of speech triggers processing
-3. **Transcribes** the audio via Whisper STT (Groq or OpenAI)
+3. **Transcribes** the audio via Whisper STT (local, Groq, or OpenAI)
 4. **Processes** through the full agent pipeline (session, tools, memory)
 5. **Speaks** the reply back in the voice channel via TTS
 
@@ -371,8 +376,10 @@ voice:
 
 # Speech-to-Text
 stt:
-  enabled: true
-  model: "whisper-1"               # Or: whisper-large-v3-turbo (Groq)
+  provider: "local"                  # "local" (free) | "groq" | "openai"
+  local:
+    model: "base"                    # tiny, base, small, medium, large-v3
+  # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
@@ -390,9 +397,10 @@ tts:
 ### Environment Variables
 
 ```bash
-# Speech-to-Text providers
-GROQ_API_KEY=...                   # Groq Whisper (recommended — fast, free tier)
-VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (used first if both set)
+# Speech-to-Text providers (local needs no key)
+# pip install faster-whisper        # Free local STT — no API key needed
+GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
+VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
 
 # STT advanced overrides (optional)
 STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
@@ -411,12 +419,17 @@ DISCORD_ALLOWED_USERS=...
 
 ### STT Provider Comparison
 
-| Provider | Model | Speed | Quality | Cost |
-|----------|-------|-------|---------|------|
-| **Groq** | `whisper-large-v3-turbo` | Very fast (~0.5s) | Good | Free tier |
-| **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier |
-| **OpenAI** | `whisper-1` | Fast (~1s) | Good | Low |
-| **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Higher |
+| Provider | Model | Speed | Quality | Cost | API Key |
+|----------|-------|-------|---------|------|---------|
+| **Local** | `base` | Fast (depends on CPU/GPU) | Good | Free | No |
+| **Local** | `small` | Medium | Better | Free | No |
+| **Local** | `large-v3` | Slow | Best | Free | No |
+| **Groq** | `whisper-large-v3-turbo` | Very fast (~0.5s) | Good | Free tier | Yes |
+| **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
+| **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
+| **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+
+Provider priority (automatic fallback): **local** > **groq** > **openai**
 
 ### TTS Provider Comparison
 
@@ -455,7 +468,7 @@ The bot requires an @mention by default in server channels. Make sure you:
 
 ### Bot hears me but doesn't respond
 
-- Verify STT key is set (`GROQ_API_KEY` or `VOICE_TOOLS_OPENAI_KEY`)
+- Verify STT is available: install `faster-whisper` (no key needed) or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`
 - Check the LLM model is configured and accessible
 - Review gateway logs: `tail -f ~/.hermes/logs/gateway.log`
 

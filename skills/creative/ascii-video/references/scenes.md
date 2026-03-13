@@ -1,5 +1,15 @@
 # Scene System Reference
 
+**Cross-references:**
+- Grid system, palettes, color (HSV + OKLAB): `architecture.md`
+- Effect building blocks (value fields, noise, SDFs, particles): `effects.md`
+- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
+- Shader pipeline, feedback buffer, ShaderChain: `shaders.md`
+- Complete scene examples at every complexity level: `examples.md`
+- Input sources (audio features, video features): `inputs.md`
+- Performance tuning, portrait CLI: `optimization.md`
+- Common bugs (state leaks, frame drops): `troubleshooting.md`
+
 Scenes are the top-level creative unit. Each scene is a time-bounded segment with its own effect function, shader chain, feedback configuration, and tone-mapping gamma.
 
 ## Scene Protocol (v2)
@@ -12,12 +22,26 @@ def fx_scene_name(r, f, t, S) -> canvas:
     Args:
         r: Renderer instance — access multiple grids via r.get_grid("sm")
         f: dict of audio/video features, all values normalized to [0, 1]
-        t: time in seconds (global, not local to scene)
+        t: time in seconds — local to scene (0.0 at scene start)
         S: dict for persistent state (particles, rain columns, etc.)
 
     Returns:
         canvas: numpy uint8 array, shape (VH, VW, 3) — full pixel frame
     """
+```
+
+**Local time convention:** Scene functions receive `t` starting at 0.0 for the first frame of the scene, regardless of where the scene appears in the timeline. The render loop subtracts the scene's start time before calling the function:
+
+```python
+# In render_clip:
+t_local = fi / FPS - scene_start
+canvas = fx_fn(r, feat, t_local, S)
+```
+
+This makes scenes reorderable without modifying their code. Compute scene progress as:
+
+```python
+progress = min(t / scene_duration, 1.0)  # 0→1 over the scene
 ```
 
 This replaces the v1 protocol where scenes returned `(chars, colors)` tuples. The v2 protocol gives scenes full control over multi-grid rendering and pixel-level composition internally.

@@ -93,28 +93,29 @@ class TestGatewayQuickCommands:
         event.source.chat_id = "123"
         return event
 
-    @pytest.mark.asyncio
-    async def test_exec_command_returns_output(self):
+    def _make_runner(self, quick_commands):
+        """Create a GatewayRunner with quick_commands configured via a
+        namespace object that supports getattr (matching real GatewayConfig)."""
+        from types import SimpleNamespace
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
+        runner.config = SimpleNamespace(quick_commands=quick_commands)
         runner._running_agents = {}
         runner._pending_messages = {}
+        runner._pending_approvals = {}
         runner._is_user_authorized = MagicMock(return_value=True)
+        return runner
 
+    @pytest.mark.asyncio
+    async def test_exec_command_returns_output(self):
+        runner = self._make_runner({"limits": {"type": "exec", "command": "echo ok"}})
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
 
     @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):
-        from gateway.run import GatewayRunner
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"bad": {"type": "prompt", "command": "echo hi"}}}
-        runner._running_agents = {}
-        runner._pending_messages = {}
-        runner._is_user_authorized = MagicMock(return_value=True)
-
+        runner = self._make_runner({"bad": {"type": "prompt", "command": "echo hi"}})
         event = self._make_event("bad")
         result = await runner._handle_message(event)
         assert result is not None
@@ -122,14 +123,8 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
-        from gateway.run import GatewayRunner
         import asyncio
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
-        runner._running_agents = {}
-        runner._pending_messages = {}
-        runner._is_user_authorized = MagicMock(return_value=True)
-
+        runner = self._make_runner({"slow": {"type": "exec", "command": "sleep 100"}})
         event = self._make_event("slow")
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
             result = await runner._handle_message(event)

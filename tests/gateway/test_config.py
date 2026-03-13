@@ -67,6 +67,43 @@ class TestGetConnectedPlatforms:
         assert config.get_connected_platforms() == []
 
 
+# =========================================================================
+# Quick commands: GatewayConfig has no .get() method
+# =========================================================================
+
+
+class TestQuickCommandsAccess:
+    """GatewayConfig is a dataclass, not a dict. Accessing quick_commands
+    via config.get() raises AttributeError. The gateway must use getattr()."""
+
+    def test_config_has_no_get_method(self):
+        config = GatewayConfig()
+        assert not hasattr(config, "get"), (
+            "GatewayConfig is a dataclass and should not have a dict-like get()"
+        )
+
+    def test_getattr_returns_default_for_missing_attr(self):
+        config = GatewayConfig()
+        result = getattr(config, "quick_commands", {})
+        assert result == {}
+
+    def test_gateway_uses_getattr_not_dict_get(self):
+        """gateway/run.py must use getattr(self.config, 'quick_commands', {})
+        instead of self.config.get('quick_commands', {})."""
+        import ast
+        from pathlib import Path
+
+        run_py = Path(__file__).parent.parent.parent / "gateway" / "run.py"
+        with open(run_py) as f:
+            source = f.read()
+
+        # Must NOT contain config.get("quick_commands"
+        assert 'self.config.get("quick_commands"' not in source, (
+            "gateway/run.py still uses self.config.get() which crashes — "
+            "GatewayConfig is a dataclass, use getattr() instead"
+        )
+
+
 class TestSessionResetPolicy:
     def test_roundtrip(self):
         policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)

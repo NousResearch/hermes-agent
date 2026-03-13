@@ -27,6 +27,12 @@ from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_cli.config import get_hermes_home
 
+GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
+    "Secure secret entry is not supported over messaging. "
+    "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+)
+
+
 # ---------------------------------------------------------------------------
 # Image cache utilities
 #

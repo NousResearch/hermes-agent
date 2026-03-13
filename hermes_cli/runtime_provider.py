@@ -159,7 +159,7 @@ def resolve_runtime_provider(
         token = resolve_anthropic_token()
         if not token:
             raise AuthError(
-                "No Anthropic credentials found. Set ANTHROPIC_API_KEY, "
+                "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
         return {

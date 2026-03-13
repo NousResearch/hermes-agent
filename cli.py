@@ -2934,7 +2934,11 @@ class HermesCLI:
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
-                            self.console.print(output if output else "[dim]Command returned no output[/]")
+                            if output:
+                                from rich.text import Text as _RichText
+                                self.console.print(_RichText.from_ansi(output))
+                            else:
+                                self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
                             self.console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
@@ -3038,9 +3042,10 @@ class HermesCLI:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
 
+                    from rich.text import Text as _RichText
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        response,
+                        _RichText.from_ansi(response),
                         title=f"[bold]{label} (background #{task_num})[/bold]",
                         title_align="left",
                         border_style=_resp_color,
@@ -3716,9 +3721,10 @@ class HermesCLI:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
 
+                from rich.text import Text as _RichText
                 _chat_console = ChatConsole()
                 _chat_console.print(Panel(
-                    response,
+                    _RichText.from_ansi(response),
                     title=f"[bold]{label}[/bold]",
                     title_align="left",
                     border_style=_resp_color,

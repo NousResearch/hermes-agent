@@ -2238,3 +2238,58 @@ class TestStreamingApiCall:
 
         assert resp.choices[0].message.content == "Hello"
         assert resp.model == "gpt-4"
+
+
+# ===================================================================
+# Interrupt _vprint force=True verification
+# ===================================================================
+
+
+class TestInterruptVprintForceTrue:
+    """All interrupt _vprint calls must use force=True so they are always visible."""
+
+    def test_all_interrupt_vprint_have_force_true(self):
+        """Scan source for _vprint calls containing 'Interrupt' — each must have force=True."""
+        import inspect
+        source = inspect.getsource(AIAgent)
+        lines = source.split("\n")
+        violations = []
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if "_vprint(" in stripped and "Interrupt" in stripped:
+                if "force=True" not in stripped:
+                    violations.append(f"line {i}: {stripped}")
+        assert not violations, (
+            f"Interrupt _vprint calls missing force=True:\n"
+            + "\n".join(violations)
+        )
+
+
+# ===================================================================
+# Anthropic interrupt handler in _interruptible_api_call
+# ===================================================================
+
+
+class TestAnthropicInterruptHandler:
+    """_interruptible_api_call must handle Anthropic mode when interrupted."""
+
+    def test_interruptible_has_anthropic_branch(self):
+        """The interrupt handler must check api_mode == 'anthropic_messages'."""
+        import inspect
+        source = inspect.getsource(AIAgent._interruptible_api_call)
+        assert "anthropic_messages" in source, \
+            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
+
+    def test_interruptible_rebuilds_anthropic_client(self):
+        """After interrupting, the Anthropic client should be rebuilt."""
+        import inspect
+        source = inspect.getsource(AIAgent._interruptible_api_call)
+        assert "build_anthropic_client" in source, \
+            "_interruptible_api_call must rebuild Anthropic client after interrupt"
+
+    def test_streaming_has_anthropic_branch(self):
+        """_streaming_api_call must also handle Anthropic interrupt."""
+        import inspect
+        source = inspect.getsource(AIAgent._streaming_api_call)
+        assert "anthropic_messages" in source, \
+            "_streaming_api_call must handle Anthropic interrupt"

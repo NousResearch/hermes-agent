@@ -111,7 +111,17 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         custom = prompt_fn("Enter model name")
         if custom:
             _set_default_model(config, custom)
-    # else: keep current
+    else:
+        # "Keep current" selected — validate it's compatible with the new
+        # provider.  OpenRouter-formatted names (containing "/") won't work
+        # on direct-API providers and would silently break the gateway.
+        if "/" in (current_model or "") and provider_models:
+            print_warning(
+                f"Current model \"{current_model}\" looks like an OpenRouter model "
+                f"and won't work with {pconfig.name}. "
+                f"Switching to {provider_models[0]}."
+            )
+            _set_default_model(config, provider_models[0])
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -967,7 +977,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url)
+        _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
 
     elif provider_idx == 5:  # Kimi / Moonshot
@@ -1000,7 +1010,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
+        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
 
     elif provider_idx == 6:  # MiniMax
@@ -1033,7 +1043,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url)
+        _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
 
     elif provider_idx == 7:  # MiniMax China
@@ -1066,7 +1076,7 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
+        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
     elif provider_idx == 8:  # Anthropic
@@ -1170,7 +1180,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         # Don't save base_url for Anthropic — resolve_runtime_provider()
         # always hardcodes it. Stale base_urls contaminate other providers.
-        _update_config_for_provider("anthropic", "")
+        _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
         _set_model_provider(config, "anthropic")
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists

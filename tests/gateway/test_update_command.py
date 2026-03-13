@@ -86,8 +86,12 @@ class TestHandleUpdateCommand:
         assert "Not a git repository" in result
 
     @pytest.mark.asyncio
-    async def test_no_hermes_binary(self, tmp_path):
-        """Returns error when hermes is not on PATH."""
+    async def test_falls_back_to_module_when_not_on_path(self, tmp_path):
+        """Falls back to ``sys.executable -m hermes_cli.main`` when the
+        ``hermes`` binary is not on PATH.
+
+        See: https://github.com/NousResearch/hermes-agent/issues/1049
+        """
         runner = _make_runner()
         event = _make_event()
 
@@ -98,13 +102,30 @@ class TestHandleUpdateCommand:
         (fake_root / "gateway").mkdir()
         (fake_root / "gateway" / "run.py").touch()
         fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        with patch("gateway.run._hermes_home", tmp_path), \
+        mock_popen = MagicMock()
+
+        def which_no_hermes(x):
+            if x == "hermes":
+                return None  # hermes not on PATH
+            if x == "systemd-run":
+                return None
+            return None
+
+        with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", return_value=None):
+             patch("shutil.which", side_effect=which_no_hermes), \
+             patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        assert "not found on PATH" in result
+        # Should succeed with fallback, not fail with "not found on PATH"
+        assert "Starting Hermes update" in result
+        # The Popen command should contain the module fallback
+        call_args = mock_popen.call_args[0][0]
+        cmd_str = call_args[2] if len(call_args) > 2 else str(call_args)
+        assert "hermes_cli.main" in cmd_str
 
     @pytest.mark.asyncio
     async def test_writes_pending_marker(self, tmp_path):

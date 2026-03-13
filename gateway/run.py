@@ -2692,6 +2692,7 @@ class GatewayRunner:
         import json
         import shutil
         import subprocess
+        import sys
         from datetime import datetime
 
         project_root = Path(__file__).parent.parent.resolve()
@@ -2702,7 +2703,10 @@ class GatewayRunner:
 
         hermes_bin = shutil.which("hermes")
         if not hermes_bin:
-            return "✗ `hermes` command not found on PATH."
+            # Fallback: use the current Python interpreter with the module
+            # entrypoint.  This covers venv/pipx/module-based installs where
+            # the ``hermes`` script is not on the gateway process's PATH.
+            hermes_bin = f"{sys.executable} -m hermes_cli.main"
 
         # Write marker so the restarted gateway can notify this chat
         pending_path = _hermes_home / ".update_pending.json"

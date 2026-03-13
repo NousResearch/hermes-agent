@@ -152,7 +152,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Hugging Face",
         auth_type="api_key",
         inference_base_url="https://router.huggingface.co/v1",
-        api_key_env_vars=("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"),
+        api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
 }

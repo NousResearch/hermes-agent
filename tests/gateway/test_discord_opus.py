@@ -4,21 +4,30 @@ import inspect
 
 
 class TestOpusFindLibrary:
-    """Opus loading must use ctypes.util.find_library, not hardcoded paths."""
+    """Opus loading must try ctypes.util.find_library first, with platform fallback."""
 
-    def test_no_hardcoded_opus_path(self):
-        from gateway.platforms.discord import DiscordAdapter
-        source = inspect.getsource(DiscordAdapter.connect)
-        assert "/opt/homebrew" not in source, \
-            "Opus loading must not use hardcoded /opt/homebrew path"
-        assert "libopus.so.0" not in source, \
-            "Opus loading must not use hardcoded libopus.so.0 path"
-
-    def test_uses_find_library(self):
+    def test_uses_find_library_first(self):
+        """find_library must be the primary lookup strategy."""
         from gateway.platforms.discord import DiscordAdapter
         source = inspect.getsource(DiscordAdapter.connect)
         assert "find_library" in source, \
             "Opus loading must use ctypes.util.find_library"
+
+    def test_homebrew_fallback_is_conditional(self):
+        """Homebrew paths must only be tried when find_library returns None."""
+        from gateway.platforms.discord import DiscordAdapter
+        source = inspect.getsource(DiscordAdapter.connect)
+        # Homebrew fallback must exist
+        assert "/opt/homebrew" in source or "homebrew" in source, \
+            "Opus loading should have macOS Homebrew fallback"
+        # find_library must appear BEFORE any Homebrew path
+        fl_idx = source.index("find_library")
+        hb_idx = source.index("/opt/homebrew")
+        assert fl_idx < hb_idx, \
+            "find_library must be tried before Homebrew fallback paths"
+        # Fallback must be guarded by platform check
+        assert "sys.platform" in source or "darwin" in source, \
+            "Homebrew fallback must be guarded by macOS platform check"
 
     def test_opus_decode_error_logged(self):
         """Opus decode failure must log the error, not silently return."""

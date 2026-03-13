@@ -409,6 +409,19 @@ class DiscordAdapter(BasePlatformAdapter):
         if not discord.opus.is_loaded():
             import ctypes.util
             opus_path = ctypes.util.find_library("opus")
+            # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
+            # so fall back to known Homebrew paths if needed.
+            if not opus_path:
+                import sys
+                _homebrew_paths = (
+                    "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
+                    "/usr/local/lib/libopus.dylib",     # Intel Mac
+                )
+                if sys.platform == "darwin":
+                    for _hp in _homebrew_paths:
+                        if os.path.isfile(_hp):
+                            opus_path = _hp
+                            break
             if opus_path:
                 try:
                     discord.opus.load_opus(opus_path)

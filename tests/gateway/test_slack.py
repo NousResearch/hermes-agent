@@ -847,3 +847,102 @@ class TestReplyBroadcast:
         await adapter.send("C123", "hi", metadata={"thread_id": "parent_ts"})
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert kwargs.get("reply_broadcast") is True
+
+
+# ---------------------------------------------------------------------------
+# TestFallbackPreservesThreadContext
+# ---------------------------------------------------------------------------
+
+class TestFallbackPreservesThreadContext:
+    """Bug fix: file upload fallbacks lost thread context (metadata) when
+    calling super() without metadata, causing replies to appear outside
+    the thread."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_fallback_preserves_thread(self, adapter, tmp_path):
+        test_file = tmp_path / "photo.jpg"
+        test_file.write_bytes(b"\xff\xd8\xff\xe0")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=Exception("upload failed")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "msg_ts"}
+        )
+
+        metadata = {"thread_id": "parent_ts_123"}
+        await adapter.send_image_file(
+            chat_id="C123",
+            image_path=str(test_file),
+            caption="test image",
+            metadata=metadata,
+        )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_123"
+
+    @pytest.mark.asyncio
+    async def test_send_video_fallback_preserves_thread(self, adapter, tmp_path):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=Exception("upload failed")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "msg_ts"}
+        )
+
+        metadata = {"thread_id": "parent_ts_456"}
+        await adapter.send_video(
+            chat_id="C123",
+            video_path=str(test_file),
+            metadata=metadata,
+        )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_456"
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_preserves_thread(self, adapter, tmp_path):
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=Exception("upload failed")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "msg_ts"}
+        )
+
+        metadata = {"thread_id": "parent_ts_789"}
+        await adapter.send_document(
+            chat_id="C123",
+            file_path=str(test_file),
+            caption="report",
+            metadata=metadata,
+        )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_789"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_fallback_includes_caption(self, adapter, tmp_path):
+        test_file = tmp_path / "photo.jpg"
+        test_file.write_bytes(b"\xff\xd8\xff\xe0")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=Exception("upload failed")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "msg_ts"}
+        )
+
+        await adapter.send_image_file(
+            chat_id="C123",
+            image_path=str(test_file),
+            caption="important screenshot",
+        )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "important screenshot" in call_kwargs["text"]

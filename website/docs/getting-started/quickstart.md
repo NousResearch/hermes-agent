@@ -29,18 +29,21 @@ source ~/.bashrc   # or source ~/.zshrc
 
 ## 2. Set Up a Provider
 
-The installer runs the setup wizard automatically. If you skipped it, run:
+The installer configures your LLM provider automatically. To change it later, use one of these commands:
 
 ```bash
-hermes setup
+hermes model       # Choose your LLM provider and model
+hermes tools       # Configure which tools are enabled
+hermes setup       # Or configure everything at once
 ```
 
-This walks you through selecting an inference provider:
+`hermes model` walks you through selecting an inference provider:
 
 | Provider | What it is | How to set up |
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
+| **Anthropic** | Claude models directly (Pro/Max or API key) | API key or Claude Code setup-token |
 | **OpenRouter** | 200+ models, pay-per-use | Enter your API key |
 | **Custom Endpoint** | VLLM, SGLang, any OpenAI-compatible API | Set base URL + API key |
 
@@ -160,9 +163,9 @@ mcp_servers:
 | Command | Description |
 |---------|-------------|
 | `hermes` | Start chatting |
-| `hermes setup` | Configure providers and settings |
-| `hermes model` | Switch provider or model |
+| `hermes model` | Choose your LLM provider and model |
 | `hermes tools` | Configure which tools are enabled per platform |
+| `hermes setup` | Full setup wizard (configures everything at once) |
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest version |
 | `hermes gateway` | Start the messaging gateway |

@@ -23,6 +23,7 @@ import stat
 import base64
 import hashlib
 import subprocess
+import threading
 import time
 import uuid
 import webbrowser
@@ -44,6 +45,10 @@ try:
     import fcntl
 except Exception:
     fcntl = None
+try:
+    import msvcrt
+except Exception:
+    msvcrt = None
 
 # =============================================================================
 # Constants
@@ -126,6 +131,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimax.io/v1",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "anthropic": ProviderConfig(
+        id="anthropic",
+        name="Anthropic",
+        auth_type="api_key",
+        inference_base_url="https://api.anthropic.com",
+        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
@@ -299,31 +311,64 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
+_auth_lock_holder = threading.local()
+
 @contextmanager
 def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes."""
+    """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
+    # Reentrant: if this thread already holds the lock, just yield.
+    if getattr(_auth_lock_holder, "depth", 0) > 0:
+        _auth_lock_holder.depth += 1
+        try:
+            yield
+        finally:
+            _auth_lock_holder.depth -= 1
+        return
+
     lock_path = _auth_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with lock_path.open("a+") as lock_file:
-        if fcntl is None:
+    if fcntl is None and msvcrt is None:
+        _auth_lock_holder.depth = 1
+        try:
             yield
-            return
+        finally:
+            _auth_lock_holder.depth = 0
+        return
 
+    # On Windows, msvcrt.locking needs the file to have content and the
+    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
         deadline = time.time() + max(1.0, timeout_seconds)
         while True:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                 break
-            except BlockingIOError:
+            except (BlockingIOError, OSError, PermissionError):
                 if time.time() >= deadline:
                     raise TimeoutError("Timed out waiting for auth store lock")
                 time.sleep(0.05)
 
+        _auth_lock_holder.depth = 1
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            _auth_lock_holder.depth = 0
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
@@ -478,6 +523,7 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "claude": "anthropic", "claude-code": "anthropic",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -1056,6 +1102,19 @@ def fetch_nous_models(
                 continue
             model_ids.append(mid)
 
+    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
+    # users who want the best model should see opus first).
+    def _model_priority(mid: str) -> tuple:
+        low = mid.lower()
+        if "opus" in low:
+            return (0, mid)
+        if "pro" in low and "sonnet" not in low:
+            return (1, mid)
+        if "sonnet" in low:
+            return (3, mid)
+        return (2, mid)
+
+    model_ids.sort(key=_model_priority)
     return list(dict.fromkeys(model_ids))
 
 
@@ -1512,7 +1571,11 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
         model_cfg = {}
 
     model_cfg["provider"] = provider_id
-    model_cfg["base_url"] = inference_base_url.rstrip("/")
+    if inference_base_url and inference_base_url.strip():
+        model_cfg["base_url"] = inference_base_url.rstrip("/")
+    else:
+        # Clear stale base_url to prevent contamination when switching providers
+        model_cfg.pop("base_url", None)
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -1620,17 +1683,20 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
 
 
 def _save_model_choice(model_id: str) -> None:
-    """Save the selected model to config.yaml and .env."""
-    from hermes_cli.config import save_config, load_config, save_env_value
+    """Save the selected model to config.yaml (single source of truth).
+
+    The model is stored in config.yaml only — NOT in .env.  This avoids
+    conflicts in multi-agent setups where env vars would stomp each other.
+    """
+    from hermes_cli.config import save_config, load_config
 
     config = load_config()
-    # Handle both string and dict model formats
+    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
-        config["model"] = model_id
+        config["model"] = {"default": model_id}
     save_config(config)
-    save_env_value("LLM_MODEL", model_id)
 
 
 def login_command(args) -> None:

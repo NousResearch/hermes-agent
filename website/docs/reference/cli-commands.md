@@ -24,6 +24,7 @@ These are commands you run from your shell.
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
 | `hermes chat --verbose` | Enable verbose/debug output |
 | `hermes --worktree` / `-w` | Start in an isolated git worktree (for parallel agents) |
+| `hermes --checkpoints` | Enable filesystem checkpoints before destructive file operations |
 
 ### Provider & Model Management
 
@@ -37,7 +38,7 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
-| `hermes setup` | Full setup wizard (provider, terminal, messaging) |
+| `hermes setup` | Full setup wizard — configures provider, model, terminal, and messaging all at once |
 | `hermes config` | View current configuration |
 | `hermes config edit` | Open config.yaml in your editor |
 | `hermes config set KEY VAL` | Set a specific value |
@@ -146,6 +147,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set custom system prompt |
 | `/personality [name]` | Set a predefined personality |
+| `/reasoning [arg]` | Manage reasoning effort and display. Args: effort level (`none`, `low`, `medium`, `high`, `xhigh`) or display toggle (`show`, `hide`). No args shows current state. |
 
 ### Conversation
 
@@ -202,6 +204,8 @@ These work in messaging platforms (Telegram, Discord, Slack, WhatsApp) but not t
 | `/sethome` | Set this chat as the home channel |
 | `/status` | Show session info |
 | `/reload-mcp` | Reload MCP servers from config |
+| `/rollback` | List filesystem checkpoints for the current directory |
+| `/rollback <N>` | Restore files to checkpoint #N |
 | `/update` | Update Hermes Agent to the latest version |
 
 ---

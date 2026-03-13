@@ -5,8 +5,8 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
 import json
+import logging
 import os
-import random
 import sys
 import threading
 import time
@@ -15,13 +15,63 @@ import time
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
+logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# Skin-aware helpers (lazy import to avoid circular deps)
+# =========================================================================
+
+def _get_skin():
+    """Get the active skin config, or None if not available."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin()
+    except Exception:
+        return None
+
+
+def get_skin_faces(key: str, default: list) -> list:
+    """Get spinner face list from active skin, falling back to default."""
+    skin = _get_skin()
+    if skin:
+        faces = skin.get_spinner_list(key)
+        if faces:
+            return faces
+    return default
+
+
+def get_skin_verbs() -> list:
+    """Get thinking verbs from active skin."""
+    skin = _get_skin()
+    if skin:
+        verbs = skin.get_spinner_list("thinking_verbs")
+        if verbs:
+            return verbs
+    return KawaiiSpinner.THINKING_VERBS
+
+
+def get_skin_tool_prefix() -> str:
+    """Get tool output prefix character from active skin."""
+    skin = _get_skin()
+    if skin:
+        return skin.tool_prefix
+    return "┊"
+
 
 # =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
+def _oneline(text: str) -> str:
+    """Collapse whitespace (including newlines) to single spaces."""
+    return " ".join(text.split())
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
     """Build a short preview of a tool call's primary argument for display."""
+    if not args:
+        return None
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
@@ -44,7 +94,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         if sid:
             parts.append(sid[:16])
         if data:
-            parts.append(f'"{data[:20]}"')
+            parts.append(f'"{_oneline(data[:20])}"')
         if timeout_val and action == "wait":
             parts.append(f"{timeout_val}s")
         return " ".join(parts) if parts else None
@@ -60,24 +110,24 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
             return f"planning {len(todos_arg)} task(s)"
 
     if tool_name == "session_search":
-        query = args.get("query", "")
+        query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
         if action == "add":
-            content = args.get("content", "")
+            content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{args.get('old_text', '')[:20]}\""
+            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
         elif action == "remove":
-            return f"-{target}: \"{args.get('old_text', '')[:20]}\""
+            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
         return action
 
     if tool_name == "send_message":
         target = args.get("target", "?")
-        msg = args.get("message", "")
+        msg = _oneline(args.get("message", ""))
         if len(msg) > 20:
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
@@ -111,7 +161,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
     if isinstance(value, list):
         value = value[0] if value else ""
 
-    preview = str(value).strip()
+    preview = _oneline(str(value))
     if not preview:
         return None
     if len(preview) > max_len:
@@ -163,6 +213,7 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        self._last_flush_time = 0.0  # Rate-limit flushes for patch_stdout compat
         # Capture stdout NOW, before any redirect_stdout(devnull) from
         # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
@@ -177,15 +228,34 @@ class KawaiiSpinner:
             pass
 
     def _animate(self):
+        # Cache skin wings at start (avoid per-frame imports)
+        skin = _get_skin()
+        wings = skin.get_spinner_wings() if skin else []
+
         while self.running:
             if os.getenv("HERMES_SPINNER_PAUSE"):
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
-            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+            if wings:
+                left, right = wings[self.frame_idx % len(wings)]
+                line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
+            else:
+                line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
-            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
+            # Rate-limit flush() calls to avoid spinner spam under
+            # prompt_toolkit's patch_stdout.  Each flush() pushes a queue
+            # item that may trigger a separate run_in_terminal() call; if
+            # items are processed one-at-a-time the \r overwrite is lost
+            # and every frame appears on its own line.  By flushing at
+            # most every 0.4s we guarantee multiple \r-frames are batched
+            # into a single write, so the terminal collapses them correctly.
+            now = time.time()
+            should_flush = (now - self._last_flush_time) >= 0.4
+            self._write(f"\r{line}{' ' * pad}", end='', flush=should_flush)
+            if should_flush:
+                self._last_flush_time = now
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -300,7 +370,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
         except (json.JSONDecodeError, TypeError, AttributeError):
-            pass
+            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
@@ -310,7 +380,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
         except (json.JSONDecodeError, TypeError, AttributeError):
-            pass
+            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()
@@ -332,6 +402,7 @@ def get_cute_tool_message(
     """
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
+    skin_prefix = get_skin_tool_prefix()
 
     def _trunc(s, n=40):
         s = str(s)
@@ -342,7 +413,9 @@ def get_cute_tool_message(
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
-        """Append failure suffix when the tool failed."""
+        """Apply skin tool prefix and failure suffix."""
+        if skin_prefix != "┊":
+            line = line.replace("┊", skin_prefix, 1)
         if not is_failure:
             return line
         return f"{line}{failure_suffix}"
@@ -467,3 +540,46 @@ def get_cute_tool_message(
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+
+
+# =========================================================================
+# Honcho session line (one-liner with clickable OSC 8 hyperlink)
+# =========================================================================
+
+_DIM = "\033[2m"
+_SKY_BLUE = "\033[38;5;117m"
+_ANSI_RESET = "\033[0m"
+
+
+def honcho_session_url(workspace: str, session_name: str) -> str:
+    """Build a Honcho app URL for a session."""
+    from urllib.parse import quote
+    return (
+        f"https://app.honcho.dev/explore"
+        f"?workspace={quote(workspace, safe='')}"
+        f"&view=sessions"
+        f"&session={quote(session_name, safe='')}"
+    )
+
+
+def _osc8_link(url: str, text: str) -> str:
+    """OSC 8 terminal hyperlink (clickable in iTerm2, Ghostty, WezTerm, etc.)."""
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def honcho_session_line(workspace: str, session_name: str) -> str:
+    """One-line session indicator: `Honcho session: <clickable name>`."""
+    url = honcho_session_url(workspace, session_name)
+    linked_name = _osc8_link(url, f"{_SKY_BLUE}{session_name}{_ANSI_RESET}")
+    return f"{_DIM}Honcho session:{_ANSI_RESET} {linked_name}"
+
+
+def write_tty(text: str) -> None:
+    """Write directly to /dev/tty, bypassing stdout capture."""
+    try:
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        os.write(fd, text.encode("utf-8"))
+        os.close(fd)
+    except OSError:
+        sys.stdout.write(text)
+        sys.stdout.flush()

@@ -1,6 +1,7 @@
 """Shared fixtures for the hermes-agent test suite."""
 
 import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -48,3 +49,21 @@ def mock_config():
         "memory": {"memory_enabled": False, "user_profile_enabled": False},
         "command_allowlist": [],
     }
+
+
+# ── Global test timeout ─────────────────────────────────────────────────────
+# Kill any individual test that takes longer than 30 seconds.
+# Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
+# entire test suite.
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError("Test exceeded 30 second timeout")
+
+@pytest.fixture(autouse=True)
+def _enforce_test_timeout():
+    """Kill any individual test that takes longer than 30 seconds."""
+    old = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(30)
+    yield
+    signal.alarm(0)
+    signal.signal(signal.SIGALRM, old)

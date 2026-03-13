@@ -46,20 +46,26 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | Scope | Purpose |
 |-------|---------|
 | `chat:write` | Send messages as the bot |
-| `app_mentions:read` | Respond when @mentioned in channels |
+| `app_mentions:read` | Detect when @mentioned in channels |
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
+| `groups:history` | Read messages in private channels the bot is invited to |
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
 | `users:read` | Look up user information |
+| `files:write` | Upload files (images, audio, documents) |
+
+:::caution Missing scopes = missing features
+Without `channels:history` and `groups:history`, the bot **will not receive messages in channels** —
+it will only work in DMs. These are the most commonly missed scopes.
+:::
 
 **Optional scopes:**
 
 | Scope | Purpose |
 |-------|---------|
-| `groups:history` | Read messages in private channels the bot is invited to |
-| `files:write` | Upload files (audio, images) |
+| `groups:read` | List and get info about private channels |
 
 ---
 
@@ -83,22 +89,28 @@ You can always find or regenerate app-level tokens under **Settings → Basic In
 
 ## Step 4: Subscribe to Events
 
+This step is critical — it controls what messages the bot can see.
+
+
 1. In the sidebar, go to **Features → Event Subscriptions**
 2. Toggle **Enable Events** to ON
 3. Expand **Subscribe to bot events** and add:
 
-| Event | Purpose |
-|-------|---------|
-| `app_mention` | Bot responds when @mentioned in any channel |
-| `message.im` | Bot responds to direct messages |
-
-**Optional event:**
-
-| Event | Purpose |
-|-------|---------|
-| `message.channels` | Bot sees all messages in public channels it's added to |
+| Event | Required? | Purpose |
+|-------|-----------|---------|
+| `message.im` | **Yes** | Bot receives direct messages |
+| `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
+| `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
+| `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
 
 4. Click **Save Changes** at the bottom of the page
+
+:::danger Missing event subscriptions is the #1 setup issue
+If the bot works in DMs but **not in channels**, you almost certainly forgot to add
+`message.channels` (for public channels) and/or `message.groups` (for private channels).
+Without these events, Slack simply never delivers channel messages to the bot.
+:::
+
 
 ---
 
@@ -111,8 +123,8 @@ You can always find or regenerate app-level tokens under **Settings → Basic In
 5. **Copy this token** — this is your `SLACK_BOT_TOKEN`
 
 :::tip
-If you change scopes later, you'll need to **reinstall the app** for the new scopes to take effect.
-The Install App page will show a banner prompting you to do so.
+If you change scopes or event subscriptions later, you **must reinstall the app** for the changes
+to take effect. The Install App page will show a banner prompting you to do so.
 :::
 
 ---
@@ -139,7 +151,7 @@ Add the following to your `~/.hermes/.env` file:
 ```bash
 # Required
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-SLACK_APP_TOKEN=xapp-your-app-level-token-here
+SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
 
 # Optional
@@ -160,6 +172,36 @@ hermes gateway install      # Install as a system service
 ```
 
 ---
+
+## Step 8: Invite the Bot to Channels
+
+After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
+
+```
+/invite @Hermes Agent
+```
+
+The bot will **not** automatically join channels. You must invite it to each channel individually.
+
+---
+
+## How the Bot Responds
+
+Understanding how Hermes behaves in different contexts:
+
+| Context | Behavior |
+|---------|----------|
+| **DMs** | Bot responds to every message — no @mention needed |
+| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`) |
+| **Threads** | Bot replies in threads when the triggering message is in a thread |
+
+:::tip
+In channels, always @mention the bot. Simply typing a message without mentioning it will be ignored.
+This is intentional — it prevents the bot from responding to every message in busy channels.
+:::
+
+---
+
 
 ## Home Channel
 
@@ -192,11 +234,27 @@ Hermes supports voice on Slack:
 | Problem | Solution |
 |---------|----------|
 | Bot doesn't respond to DMs | Verify `message.im` is in your event subscriptions and the app is reinstalled |
-| Bot doesn't respond to @mentions | Verify `app_mention` is in your event subscriptions |
+| Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
+| Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
+| Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
 | "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
 | Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
+| Changed scopes/events but nothing changed | You **must reinstall** the app to your workspace after any scope or event subscription change |
+
+### Quick Checklist
+
+If the bot isn't working in channels, verify **all** of the following:
+
+1. ✅ `message.channels` event is subscribed (for public channels)
+2. ✅ `message.groups` event is subscribed (for private channels)
+3. ✅ `app_mention` event is subscribed
+4. ✅ `channels:history` scope is added (for public channels)
+5. ✅ `groups:history` scope is added (for private channels)
+6. ✅ App was **reinstalled** after adding scopes/events
+7. ✅ Bot was **invited** to the channel (`/invite @Hermes Agent`)
+8. ✅ You are **@mentioning** the bot in your message
 
 ---
 

@@ -189,16 +189,14 @@ class TestSessionSearch:
             {"role": "assistant", "content": "hi there"},
         ]
 
-        # Mock the summarizer to return a simple summary
-        import tools.session_search_tool as sst
-        original_client = sst._async_aux_client
-        sst._async_aux_client = None  # Disable summarizer → returns None
-
-        result = json.loads(session_search(
-            query="test", db=mock_db, current_session_id=current_sid,
-        ))
-
-        sst._async_aux_client = original_client
+        # Mock async_call_llm to raise RuntimeError → summarizer returns None
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(
+                query="test", db=mock_db, current_session_id=current_sid,
+            ))
 
         assert result["success"] is True
         # Current session should be skipped, only other_sid should appear

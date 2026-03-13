@@ -1828,8 +1828,8 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1847,13 +1847,13 @@ class TestSamplingCallbackText:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
-        ):
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ) as mock_call:
             params = _make_sampling_params(system_prompt="Be helpful")
             asyncio.run(self.handler(None, params))
 
-        call_args = fake_client.chat.completions.create.call_args
+        call_args = mock_call.call_args
         messages = call_args.kwargs["messages"]
         assert messages[0] == {"role": "system", "content": "Be helpful"}
 
@@ -1865,8 +1865,8 @@ class TestSamplingCallbackText:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1889,8 +1889,8 @@ class TestSamplingCallbackToolUse:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             result = asyncio.run(self.handler(None, params))
@@ -1916,8 +1916,8 @@ class TestSamplingCallbackToolUse:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(self.handler(None, _make_sampling_params()))
 
@@ -1939,8 +1939,8 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             params = _make_sampling_params()
             # Round 1, 2: allowed
@@ -1956,24 +1956,26 @@ class TestToolLoopGovernance:
     def test_text_response_resets_counter(self):
         """A text response resets the tool loop counter."""
         handler = SamplingHandler("tl2", {"max_tool_rounds": 1})
-        fake_client = MagicMock()
+
+        # Use a list to hold the current response, so the side_effect can
+        # pick up changes between calls.
+        responses = [_make_llm_tool_response()]
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=lambda **kw: responses[0],
         ):
             # Tool response (round 1 of 1 allowed)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
             r1 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r1, CreateMessageResultWithTools)
 
             # Text response resets counter
-            fake_client.chat.completions.create.return_value = _make_llm_response()
+            responses[0] = _make_llm_response()
             r2 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r2, CreateMessageResult)
 
             # Tool response again (should succeed since counter was reset)
-            fake_client.chat.completions.create.return_value = _make_llm_tool_response()
+            responses[0] = _make_llm_tool_response()
             r3 = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(r3, CreateMessageResultWithTools)
 
@@ -1984,8 +1986,8 @@ class TestToolLoopGovernance:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2003,8 +2005,8 @@ class TestSamplingErrors:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             # First call succeeds
             r1 = asyncio.run(handler(None, _make_sampling_params()))
@@ -2017,20 +2019,16 @@ class TestSamplingErrors:
 
     def test_timeout_error(self):
         handler = SamplingHandler("to", {"timeout": 0.05})
-        fake_client = MagicMock()
 
         def slow_call(**kwargs):
             import threading
-            # Use an event to ensure the thread truly blocks long enough
             evt = threading.Event()
             evt.wait(5)  # blocks for up to 5 seconds (cancelled by timeout)
             return _make_llm_response()
 
-        fake_client.chat.completions.create.side_effect = slow_call
-
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            side_effect=slow_call,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2041,13 +2039,71 @@ class TestSamplingErrors:
         handler = SamplingHandler("np", {})
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, None),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
-            assert "No LLM provider" in result.message
             assert handler.metrics["errors"] == 1
+
+    def test_empty_choices_returns_error(self):
+        """LLM returning choices=[] is handled gracefully, not IndexError."""
+        handler = SamplingHandler("ec", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[],
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
+
+    def test_none_choices_returns_error(self):
+        """LLM returning choices=None is handled gracefully, not TypeError."""
+        handler = SamplingHandler("nc", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=None,
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
+
+    def test_missing_choices_attr_returns_error(self):
+        """LLM response without choices attribute is handled gracefully."""
+        handler = SamplingHandler("mc", {})
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = SimpleNamespace(
+            model="test-model",
+            usage=SimpleNamespace(total_tokens=0),
+        )
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
+        ):
+            result = asyncio.run(handler(None, _make_sampling_params()))
+
+        assert isinstance(result, ErrorData)
+        assert "empty response" in result.message.lower()
+        assert handler.metrics["errors"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2061,19 +2117,19 @@ class TestModelWhitelist:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "test-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, CreateMessageResult)
 
     def test_disallowed_model_rejected(self):
-        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"]})
+        handler = SamplingHandler("wl2", {"allowed_models": ["gpt-4o"], "model": "test-model"})
         fake_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "gpt-3.5-turbo"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, ErrorData)
@@ -2086,8 +2142,8 @@ class TestModelWhitelist:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "any-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
             assert isinstance(result, CreateMessageResult)
@@ -2107,8 +2163,8 @@ class TestMalformedToolCallArgs:
         )
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2135,8 +2191,8 @@ class TestMalformedToolCallArgs:
         fake_client.chat.completions.create.return_value = response
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             result = asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2155,8 +2211,8 @@ class TestMetricsTracking:
         fake_client.chat.completions.create.return_value = _make_llm_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2170,8 +2226,8 @@ class TestMetricsTracking:
         fake_client.chat.completions.create.return_value = _make_llm_tool_response()
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(fake_client, "default-model"),
+            "agent.auxiliary_client.call_llm",
+            return_value=fake_client.chat.completions.create.return_value,
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2182,8 +2238,8 @@ class TestMetricsTracking:
         handler = SamplingHandler("met3", {})
 
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, None),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             asyncio.run(handler(None, _make_sampling_params()))
 
@@ -2267,3 +2323,127 @@ class TestMCPServerTaskSamplingIntegration:
         kwargs = server._sampling.session_kwargs()
         assert "sampling_callback" in kwargs
         assert "sampling_capabilities" in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Discovery failed_count tracking
+# ---------------------------------------------------------------------------
+
+class TestDiscoveryFailedCount:
+    """Verify discover_mcp_tools() correctly tracks failed server connections."""
+
+    def test_failed_server_increments_failed_count(self):
+        """When _discover_and_register_server raises, failed_count increments."""
+        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+
+        fake_config = {
+            "good_server": {"command": "npx", "args": ["good"]},
+            "bad_server": {"command": "npx", "args": ["bad"]},
+        }
+
+        async def fake_register(name, cfg):
+            if name == "bad_server":
+                raise ConnectionError("Connection refused")
+            # Simulate successful registration
+            from tools.mcp_tool import MCPServerTask
+            server = MCPServerTask(name)
+            server.session = MagicMock()
+            server._tools = [_make_mcp_tool("tool_a")]
+            _servers[name] = server
+            return [f"mcp_{name}_tool_a"]
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_good_server_tool_a"]):
+            _ensure_mcp_loop()
+
+            # Capture the logger to verify failed_count in summary
+            with patch("tools.mcp_tool.logger") as mock_logger:
+                discover_mcp_tools()
+
+                # Find the summary info call
+                info_calls = [
+                    str(call)
+                    for call in mock_logger.info.call_args_list
+                    if "failed" in str(call).lower() or "MCP:" in str(call)
+                ]
+                # The summary should mention the failure
+                assert any("1 failed" in str(c) for c in info_calls), (
+                    f"Summary should report 1 failed server, got: {info_calls}"
+                )
+
+        _servers.pop("good_server", None)
+        _servers.pop("bad_server", None)
+
+    def test_all_servers_fail_still_prints_summary(self):
+        """When all servers fail, a summary with failure count is still printed."""
+        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+
+        fake_config = {
+            "srv1": {"command": "npx", "args": ["a"]},
+            "srv2": {"command": "npx", "args": ["b"]},
+        }
+
+        async def always_fail(name, cfg):
+            raise ConnectionError(f"Server {name} refused")
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=always_fail), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            _ensure_mcp_loop()
+
+            with patch("tools.mcp_tool.logger") as mock_logger:
+                discover_mcp_tools()
+
+                # Summary must be printed even when all servers fail
+                info_calls = [str(call) for call in mock_logger.info.call_args_list]
+                assert any("2 failed" in str(c) for c in info_calls), (
+                    f"Summary should report 2 failed servers, got: {info_calls}"
+                )
+
+        _servers.pop("srv1", None)
+        _servers.pop("srv2", None)
+
+    def test_ok_servers_excludes_failures(self):
+        """ok_servers count correctly excludes failed servers."""
+        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+
+        fake_config = {
+            "ok1": {"command": "npx", "args": ["ok1"]},
+            "ok2": {"command": "npx", "args": ["ok2"]},
+            "fail1": {"command": "npx", "args": ["fail"]},
+        }
+
+        async def selective_register(name, cfg):
+            if name == "fail1":
+                raise ConnectionError("Refused")
+            from tools.mcp_tool import MCPServerTask
+            server = MCPServerTask(name)
+            server.session = MagicMock()
+            server._tools = [_make_mcp_tool("t")]
+            _servers[name] = server
+            return [f"mcp_{name}_t"]
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=selective_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp_ok1_t", "mcp_ok2_t"]):
+            _ensure_mcp_loop()
+
+            with patch("tools.mcp_tool.logger") as mock_logger:
+                discover_mcp_tools()
+
+                info_calls = [str(call) for call in mock_logger.info.call_args_list]
+                # Should say "2 server(s)" not "3 server(s)"
+                assert any("2 server" in str(c) for c in info_calls), (
+                    f"Summary should report 2 ok servers, got: {info_calls}"
+                )
+                assert any("1 failed" in str(c) for c in info_calls), (
+                    f"Summary should report 1 failed, got: {info_calls}"
+                )
+
+        _servers.pop("ok1", None)
+        _servers.pop("ok2", None)
+        _servers.pop("fail1", None)

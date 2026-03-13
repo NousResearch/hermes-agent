@@ -66,9 +66,14 @@ def _resolve_openrouter_runtime(
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
 
+    # When the user explicitly requested the openrouter provider, skip
+    # OPENAI_BASE_URL — it typically points to a custom / non-OpenRouter
+    # endpoint and would prevent switching back to OpenRouter (#874).
+    skip_openai_base = requested_norm == "openrouter"
+
     base_url = (
         (explicit_base_url or "").strip()
-        or env_openai_base_url
+        or ("" if skip_openai_base else env_openai_base_url)
         or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
@@ -145,6 +150,24 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "hermes-auth-store"),
             "last_refresh": creds.get("last_refresh"),
+            "requested_provider": requested_provider,
+        }
+
+    # Anthropic (native Messages API)
+    if provider == "anthropic":
+        from agent.anthropic_adapter import resolve_anthropic_token
+        token = resolve_anthropic_token()
+        if not token:
+            raise AuthError(
+                "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                "run 'claude setup-token', or authenticate with 'claude /login'."
+            )
+        return {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": token,
+            "source": "env",
             "requested_provider": requested_provider,
         }
 

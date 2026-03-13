@@ -45,7 +45,7 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, returning {platform, chat_id, chat_name} or None."""
+    """Extract origin info from a job, preserving any extra routing metadata."""
     origin = job.get("origin")
     if not origin:
         return None
@@ -69,6 +69,8 @@ def _deliver_result(job: dict, content: str) -> None:
     if deliver == "local":
         return
 
+    thread_id = None
+
     # Resolve target platform + chat_id
     if deliver == "origin":
         if not origin:
@@ -76,6 +78,7 @@ def _deliver_result(job: dict, content: str) -> None:
             return
         platform_name = origin["platform"]
         chat_id = origin["chat_id"]
+        thread_id = origin.get("thread_id")
     elif ":" in deliver:
         platform_name, chat_id = deliver.split(":", 1)
     else:
@@ -83,6 +86,7 @@ def _deliver_result(job: dict, content: str) -> None:
         platform_name = deliver
         if origin and origin.get("platform") == platform_name:
             chat_id = origin["chat_id"]
+            thread_id = origin.get("thread_id")
         else:
             # Fall back to home channel
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
@@ -99,6 +103,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "email": Platform.EMAIL,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
@@ -118,13 +123,13 @@ def _deliver_result(job: dict, content: str) -> None:
 
     # Run the async send in a fresh event loop (safe from any thread)
     try:
-        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content))
+        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
     except RuntimeError:
         # asyncio.run() fails if there's already a running loop in this thread;
         # spin up a new thread to avoid that.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, content))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -137,9 +142,9 @@ def _deliver_result(job: dict, content: str) -> None:
         # Mirror the delivered content into the target's gateway session
         try:
             from gateway.mirror import mirror_to_session
-            mirror_to_session(platform_name, chat_id, content, source_label="cron")
-        except Exception:
-            pass
+            mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
+        except Exception as e:
+            logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
@@ -175,7 +180,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -190,8 +195,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     model = _model_cfg
                 elif isinstance(_model_cfg, dict):
                     model = _model_cfg.get("default", model)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Reasoning config from env or config.yaml
         reasoning_config = None
@@ -219,7 +224,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         prefill_messages = _json.load(_pf)
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
-                except Exception:
+                except Exception as e:
+                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
         # Max iterations

@@ -25,7 +25,8 @@ class TestHonchoClientConfigDefaults:
         assert config.environment == "production"
         assert config.enabled is False
         assert config.save_messages is True
-        assert config.session_strategy == "per-directory"
+        assert config.session_strategy == "per-session"
+        assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.linked_hosts == []
         assert config.sessions == {}
@@ -134,6 +135,41 @@ class TestFromGlobalConfig:
         assert config.workspace_id == "root-ws"
         assert config.ai_peer == "root-ai"
 
+    def test_session_strategy_default_from_global_config(self, tmp_path):
+        """from_global_config with no sessionStrategy should match dataclass default."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.session_strategy == "per-session"
+
+    def test_context_tokens_host_block_wins(self, tmp_path):
+        """Host block contextTokens should override root."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "contextTokens": 1000,
+            "hosts": {"hermes": {"contextTokens": 2000}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.context_tokens == 2000
+
+    def test_recall_mode_from_config(self, tmp_path):
+        """recallMode is read from config, host block wins."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "recallMode": "tools",
+            "hosts": {"hermes": {"recallMode": "context"}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.recall_mode == "context"
+
+    def test_recall_mode_default(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key"}))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.recall_mode == "hybrid"
+
     def test_corrupt_config_falls_back_to_env(self, tmp_path):
         config_file = tmp_path / "config.json"
         config_file.write_text("not valid json{{{")
@@ -176,6 +212,40 @@ class TestResolveSessionName:
         result = config.resolve_session_name()
         # Should use os.getcwd() basename
         assert result == Path.cwd().name
+
+    def test_per_repo_uses_git_root(self):
+        config = HonchoClientConfig(session_strategy="per-repo")
+        with patch.object(
+            HonchoClientConfig, "_git_repo_name", return_value="hermes-agent"
+        ):
+            result = config.resolve_session_name("/home/user/hermes-agent/subdir")
+        assert result == "hermes-agent"
+
+    def test_per_repo_with_peer_prefix(self):
+        config = HonchoClientConfig(
+            session_strategy="per-repo", peer_name="eri", session_peer_prefix=True
+        )
+        with patch.object(
+            HonchoClientConfig, "_git_repo_name", return_value="groudon"
+        ):
+            result = config.resolve_session_name("/home/user/groudon/src")
+        assert result == "eri-groudon"
+
+    def test_per_repo_falls_back_to_dirname_outside_git(self):
+        config = HonchoClientConfig(session_strategy="per-repo")
+        with patch.object(
+            HonchoClientConfig, "_git_repo_name", return_value=None
+        ):
+            result = config.resolve_session_name("/home/user/not-a-repo")
+        assert result == "not-a-repo"
+
+    def test_per_repo_manual_override_still_wins(self):
+        config = HonchoClientConfig(
+            session_strategy="per-repo",
+            sessions={"/home/user/proj": "custom-session"},
+        )
+        result = config.resolve_session_name("/home/user/proj")
+        assert result == "custom-session"
 
 
 class TestGetLinkedWorkspaces:

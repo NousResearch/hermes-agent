@@ -407,14 +407,16 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing builtins from hub-installed."""
+    """List installed skills, distinguishing hub, builtin, and local skills."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
 
     c = console or _console
     ensure_hub_dirs()
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
+    builtin_names = set(_read_manifest())
 
     all_skills = _find_all_skills()
 
@@ -424,30 +426,42 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
 
+    hub_count = 0
+    builtin_count = 0
+    local_count = 0
+
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         category = skill.get("category", "")
         hub_entry = hub_installed.get(name)
 
         if hub_entry:
+            source_type = "hub"
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
-        else:
+            hub_count += 1
+        elif name in builtin_names:
+            source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"
+            builtin_count += 1
+        else:
+            source_type = "local"
+            source_display = "local"
+            trust = "local"
+            local_count += 1
 
-        if source_filter == "hub" and not hub_entry:
-            continue
-        if source_filter == "builtin" and hub_entry:
+        if source_filter != "all" and source_filter != source_type:
             continue
 
-        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(trust, "dim")
+        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
         table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]")
 
     c.print(table)
-    c.print(f"[dim]{len(hub_installed)} hub-installed, "
-            f"{len(all_skills) - len(hub_installed)} builtin[/]\n")
+    c.print(
+        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
+    )
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1014,7 +1028,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin] List installed skills\n"
+        "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"

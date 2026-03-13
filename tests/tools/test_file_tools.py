@@ -242,6 +242,11 @@ class TestPatchHints:
 class TestSearchHints:
     """Search tool should hint when results are truncated."""
 
+    def setup_method(self):
+        """Clear read/search tracker between tests to avoid cross-test state."""
+        from tools.file_tools import clear_read_tracker
+        clear_read_tracker()
+
     @patch("tools.file_tools._get_file_ops")
     def test_truncated_results_hint(self, mock_get):
         mock_ops = MagicMock()

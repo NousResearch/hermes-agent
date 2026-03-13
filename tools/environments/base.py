@@ -59,8 +59,16 @@ class BaseEnvironment(ABC):
     # Shared helpers (eliminate duplication across backends)
     # ------------------------------------------------------------------
 
-    def _prepare_command(self, command: str) -> str:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        """Transform sudo commands if SUDO_PASSWORD is available.
+
+        Returns:
+            (transformed_command, sudo_stdin) — see _transform_sudo_command
+            for the full contract.  Callers that drive a subprocess directly
+            should prepend sudo_stdin (when not None) to any stdin_data they
+            pass to Popen.  Callers that embed stdin via heredoc (modal,
+            daytona) handle sudo_stdin in their own execute() method.
+        """
         from tools.terminal_tool import _transform_sudo_command
         return _transform_sudo_command(command)
 

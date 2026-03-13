@@ -456,17 +456,13 @@ class SamplingHandler:
         # Resolve model
         model = self._resolve_model(getattr(params, "modelPreferences", None))
 
-        # Get auxiliary LLM client
-        from agent.auxiliary_client import get_text_auxiliary_client
-        client, default_model = get_text_auxiliary_client()
-        if client is None:
-            self.metrics["errors"] += 1
-            return self._error("No LLM provider available for sampling")
+        # Get auxiliary LLM client via centralized router
+        from agent.auxiliary_client import call_llm
 
-        resolved_model = model or default_model
+        # Model whitelist check (we need to resolve model before calling)
+        resolved_model = model or self.model_override or ""
 
-        # Model whitelist check
-        if self.allowed_models and resolved_model not in self.allowed_models:
+        if self.allowed_models and resolved_model and resolved_model not in self.allowed_models:
             logger.warning(
                 "MCP server '%s' requested model '%s' not in allowed_models",
                 self.server_name, resolved_model,
@@ -484,20 +480,15 @@ class SamplingHandler:
 
         # Build LLM call kwargs
         max_tokens = min(params.maxTokens, self.max_tokens_cap)
-        call_kwargs: dict = {
-            "model": resolved_model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-        }
+        call_temperature = None
         if hasattr(params, "temperature") and params.temperature is not None:
-            call_kwargs["temperature"] = params.temperature
-        if stop := getattr(params, "stopSequences", None):
-            call_kwargs["stop"] = stop
+            call_temperature = params.temperature
 
         # Forward server-provided tools
+        call_tools = None
         server_tools = getattr(params, "tools", None)
         if server_tools:
-            call_kwargs["tools"] = [
+            call_tools = [
                 {
                     "type": "function",
                     "function": {
@@ -508,9 +499,6 @@ class SamplingHandler:
                 }
                 for t in server_tools
             ]
-            if tool_choice := getattr(params, "toolChoice", None):
-                mode = getattr(tool_choice, "mode", "auto")
-                call_kwargs["tool_choice"] = {"auto": "auto", "required": "required", "none": "none"}.get(mode, "auto")
 
         logger.log(
             self.audit_level,
@@ -520,7 +508,15 @@ class SamplingHandler:
 
         # Offload sync LLM call to thread (non-blocking)
         def _sync_call():
-            return client.chat.completions.create(**call_kwargs)
+            return call_llm(
+                task="mcp",
+                model=resolved_model or None,
+                messages=messages,
+                temperature=call_temperature,
+                max_tokens=max_tokens,
+                tools=call_tools,
+                timeout=self.timeout,
+            )
 
         try:
             response = await asyncio.wait_for(
@@ -536,6 +532,14 @@ class SamplingHandler:
             self.metrics["errors"] += 1
             return self._error(
                 f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
+            )
+
+        # Guard against empty choices (content filtering, provider errors)
+        if not getattr(response, "choices", None):
+            self.metrics["errors"] += 1
+            return self._error(
+                f"LLM returned empty response (no choices) for server "
+                f"'{self.server_name}'"
             )
 
         # Track metrics
@@ -1323,29 +1327,23 @@ def discover_mcp_tools() -> List[str]:
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
-        transport_desc = cfg.get("url", f'{cfg.get("command", "?")} {" ".join(cfg.get("args", [])[:2])}')
-        try:
-            registered = await _discover_and_register_server(name, cfg)
-            transport_type = "HTTP" if "url" in cfg else "stdio"
-            return registered
-        except Exception as exc:
-            logger.warning(
-                "Failed to connect to MCP server '%s': %s",
-                name, exc,
-            )
-            return []
+        return await _discover_and_register_server(name, cfg)
 
     async def _discover_all():
         nonlocal failed_count
+        server_names = list(new_servers.keys())
         # Connect to all servers in PARALLEL
         results = await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
             return_exceptions=True,
         )
-        for result in results:
+        for name, result in zip(server_names, results):
             if isinstance(result, Exception):
                 failed_count += 1
-                logger.warning("MCP discovery error: %s", result)
+                logger.warning(
+                    "Failed to connect to MCP server '%s': %s",
+                    name, result,
+                )
             elif isinstance(result, list):
                 all_tools.extend(result)
             else:

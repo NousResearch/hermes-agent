@@ -1135,9 +1135,15 @@ class AIAgent:
                         except (json.JSONDecodeError, AttributeError):
                             pass  # Keep as string if not valid JSON
                         
+                        tool_index = len(tool_responses)
+                        tool_name = (
+                            msg["tool_calls"][tool_index]["function"]["name"]
+                            if tool_index < len(msg["tool_calls"])
+                            else "unknown"
+                        )
                         tool_response += json.dumps({
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
-                            "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] if len(tool_responses) < len(msg["tool_calls"]) else "unknown",
+                            "name": tool_name,
                             "content": tool_content
                         }, ensure_ascii=False)
                         tool_response += "\n</tool_response>"

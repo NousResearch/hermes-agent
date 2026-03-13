@@ -138,8 +138,8 @@ echo "db_password: {{ op://app-prod/db/password }}" | op inject
 ### Run a command with secret env var
 
 ```bash
-export OPENAI_API_KEY="op://app-prod/openai/api key"
-op run -- sh -c '[ -n "$OPENAI_API_KEY" ] && echo "OPENAI_API_KEY is set" || echo "OPENAI_API_KEY missing"'
+export DB_PASSWORD="op://app-prod/db/password"
+op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_PASSWORD missing"'
 ```
 
 ## Guardrails

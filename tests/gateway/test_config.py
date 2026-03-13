@@ -1,5 +1,9 @@
 """Tests for gateway configuration management."""
 
+import ast
+import json
+from pathlib import Path
+
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
@@ -101,3 +105,53 @@ class TestGatewayConfigRoundtrip:
         assert Platform.TELEGRAM in restored.platforms
         assert restored.platforms[Platform.TELEGRAM].token == "tok"
         assert restored.reset_triggers == ["/new"]
+
+
+# =========================================================================
+# Config bridging (gateway/run.py module-level yaml->env bridge)
+# =========================================================================
+
+
+class TestConfigBridgeJsonImport:
+    """json.dumps is called at module level in gateway/run.py for list config
+    values (e.g. docker_volumes). json must be imported at module scope."""
+
+    def test_json_imported_at_module_level(self):
+        run_py = Path(__file__).parent.parent.parent / "gateway" / "run.py"
+        with open(run_py) as f:
+            tree = ast.parse(f.read())
+
+        json_imported = False
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "json":
+                        json_imported = True
+            elif isinstance(node, ast.ImportFrom) and node.module == "json":
+                json_imported = True
+
+        assert json_imported, (
+            "json must be imported at module level in gateway/run.py — "
+            "line 85 calls json.dumps() during config bridging"
+        )
+
+    def test_list_config_value_serialized_to_json(self):
+        terminal_cfg = {"docker_volumes": ["/home:/workspace", "/data:/data"]}
+        env_map = {"docker_volumes": "TERMINAL_DOCKER_VOLUMES"}
+
+        result_env = {}
+        for cfg_key, env_var in env_map.items():
+            if cfg_key in terminal_cfg:
+                val = terminal_cfg[cfg_key]
+                if isinstance(val, list):
+                    result_env[env_var] = json.dumps(val)
+                else:
+                    result_env[env_var] = str(val)
+
+        assert result_env["TERMINAL_DOCKER_VOLUMES"] == json.dumps(
+            ["/home:/workspace", "/data:/data"]
+        )
+        assert json.loads(result_env["TERMINAL_DOCKER_VOLUMES"]) == [
+            "/home:/workspace",
+            "/data:/data",
+        ]

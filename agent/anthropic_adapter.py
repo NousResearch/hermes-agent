@@ -25,6 +25,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+ADAPTIVE_EFFORT_MAP = {
+    "xhigh": "max",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "minimal": "low",
+}
+
+
+def _supports_adaptive_thinking(model: str) -> bool:
+    """Return True for Claude 4.6 models that support adaptive thinking."""
+    return any(v in model for v in ("4-6", "4.6"))
+
 
 # Beta headers for enhanced features (sent with ALL auth types)
 _COMMON_BETAS = [
@@ -398,20 +411,23 @@ def build_anthropic_kwargs(
             # Specific tool name
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
-    # Map reasoning_config to Anthropic's thinking parameter
-    # Newer models (4.6+) prefer "adaptive" thinking; older models use "enabled"
+    # Map reasoning_config to Anthropic's thinking parameter.
+    # Claude 4.6 models use adaptive thinking + output_config.effort.
+    # Older models use manual thinking with budget_tokens.
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False:
-            effort = reasoning_config.get("effort", "medium")
+            effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
-            # Use adaptive thinking for 4.5+ models (they deprecate type=enabled)
-            if any(v in model for v in ("4-6", "4-5", "4.6", "4.5")):
-                kwargs["thinking"] = {"type": "adaptive", "budget_tokens": budget}
+            if _supports_adaptive_thinking(model):
+                kwargs["thinking"] = {"type": "adaptive"}
+                kwargs["output_config"] = {
+                    "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+                }
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
-            kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+                kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs
 

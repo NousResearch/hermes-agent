@@ -147,23 +147,70 @@ TOOL_CATEGORIES = {
     },
     "web": {
         "name": "Web Search & Extract",
-        "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need Firecrawl.",
+        "setup_note": "Firecrawl stays the default, but you can switch search and extract to cheaper providers.",
         "icon": "🔍",
-        "providers": [
+        "search_providers": [
             {
                 "name": "Firecrawl Cloud",
-                "tag": "Recommended - hosted service",
+                "tag": "Default - hosted service",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
+                "config_updates": {"web.search.provider": "firecrawl"},
             },
             {
                 "name": "Firecrawl Self-Hosted",
-                "tag": "Free - run your own instance",
+                "tag": "Default - run your own instance",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
+                "config_updates": {"web.search.provider": "firecrawl"},
+            },
+            {
+                "name": "Brave Search",
+                "tag": "API alternative",
+                "env_vars": [
+                    {"key": "BRAVE_API_KEY", "prompt": "Brave Search API key", "url": "https://api.search.brave.com/"},
+                ],
+                "config_updates": {"web.search.provider": "brave"},
+            },
+            {
+                "name": "SearXNG",
+                "tag": "Self-hosted metasearch",
+                "env_vars": [
+                    {"key": "SEARXNG_URL", "prompt": "SearXNG instance URL"},
+                ],
+                "config_updates": {"web.search.provider": "searxng"},
+            },
+            {
+                "name": "DuckDuckGo",
+                "tag": "Free via ddgs",
+                "env_vars": [],
+                "config_updates": {"web.search.provider": "duckduckgo"},
+            },
+        ],
+        "extract_providers": [
+            {
+                "name": "Firecrawl Cloud",
+                "tag": "Default - hosted service",
+                "env_vars": [
+                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                ],
+                "config_updates": {"web.extract.provider": "firecrawl"},
+            },
+            {
+                "name": "Firecrawl Self-Hosted",
+                "tag": "Default - run your own instance",
+                "env_vars": [
+                    {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
+                ],
+                "config_updates": {"web.extract.provider": "firecrawl"},
+            },
+            {
+                "name": "Trafilatura",
+                "tag": "Free static-page extraction",
+                "env_vars": [],
+                "config_updates": {"web.extract.provider": "trafilatura"},
             },
         ],
     },
@@ -347,6 +394,23 @@ def _toolset_has_keys(ts_key: str) -> bool:
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
+        if ts_key == "web":
+            config = load_config()
+            search_provider = config.get("web", {}).get("search", {}).get("provider", "firecrawl")
+            extract_provider = config.get("web", {}).get("extract", {}).get("provider", "firecrawl")
+
+            search_ok = (
+                search_provider == "duckduckgo"
+                or (search_provider == "firecrawl" and (get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL")))
+                or (search_provider == "brave" and get_env_value("BRAVE_API_KEY"))
+                or (search_provider == "searxng" and get_env_value("SEARXNG_URL"))
+            )
+            extract_ok = (
+                extract_provider == "trafilatura"
+                or (extract_provider == "firecrawl" and (get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL")))
+            )
+            return bool(search_ok and extract_ok)
+
         for provider in cat["providers"]:
             env_vars = provider.get("env_vars", [])
             if not env_vars:
@@ -580,8 +644,93 @@ def _configure_toolset(ts_key: str, config: dict):
         _configure_simple_requirements(ts_key)
 
 
+def _apply_config_updates(config: dict, updates: dict):
+    """Apply dotted config updates to the in-memory config dict."""
+    for dotted_key, value in (updates or {}).items():
+        parts = dotted_key.split(".")
+        current = config
+        for part in parts[:-1]:
+            if part not in current or not isinstance(current.get(part), dict):
+                current[part] = {}
+            current = current[part]
+        current[parts[-1]] = value
+
+
+def _provider_matches_updates(provider: dict, config: dict) -> bool:
+    """Check whether a provider matches current config state."""
+    updates = provider.get("config_updates", {})
+    if not updates:
+        return False
+    for dotted_key, expected in updates.items():
+        current = config
+        for part in dotted_key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return False
+            current = current[part]
+        if current != expected:
+            return False
+    return True
+
+
+def _provider_choice_label(provider: dict, config: dict) -> str:
+    """Render a provider label with configured state."""
+    tag = f" ({provider['tag']})" if provider.get("tag") else ""
+    configured = ""
+    env_vars = provider.get("env_vars", [])
+
+    if provider.get("tts_provider") and config.get("tts", {}).get("provider") == provider["tts_provider"]:
+        configured = " [active]"
+    elif provider.get("config_updates") and _provider_matches_updates(provider, config):
+        configured = " [active]"
+    elif env_vars and all(get_env_value(v["key"]) for v in env_vars):
+        configured = " [configured]"
+
+    return f"{provider['name']}{tag}{configured}"
+
+
+def _provider_default_idx(providers: list, config: dict) -> int:
+    """Pick the default menu index for the current provider."""
+    for i, provider in enumerate(providers):
+        if provider.get("tts_provider") and config.get("tts", {}).get("provider") == provider["tts_provider"]:
+            return i
+        if provider.get("config_updates") and _provider_matches_updates(provider, config):
+            return i
+        env_vars = provider.get("env_vars", [])
+        if env_vars and all(get_env_value(v["key"]) for v in env_vars):
+            return i
+    return 0
+
+
+def _configure_web_tool(config: dict, reconfigure: bool = False):
+    """Configure search and extract providers for the web toolset."""
+    cat = TOOL_CATEGORIES["web"]
+    print()
+    print(color(f"  --- {cat.get('icon', '')} {cat['name']} ---", Colors.CYAN))
+    if cat.get("setup_note"):
+        _print_info(f"  {cat['setup_note']}")
+    print()
+
+    search_providers = cat["search_providers"]
+    search_choices = [_provider_choice_label(provider, config) for provider in search_providers]
+    search_default = _provider_default_idx(search_providers, config)
+    search_idx = _prompt_choice("  Select search provider:", search_choices, search_default)
+    _reconfigure_provider(search_providers[search_idx], config) if reconfigure else _configure_provider(search_providers[search_idx], config)
+
+    print()
+
+    extract_providers = cat["extract_providers"]
+    extract_choices = [_provider_choice_label(provider, config) for provider in extract_providers]
+    extract_default = _provider_default_idx(extract_providers, config)
+    extract_idx = _prompt_choice("  Select extract provider:", extract_choices, extract_default)
+    _reconfigure_provider(extract_providers[extract_idx], config) if reconfigure else _configure_provider(extract_providers[extract_idx], config)
+
+
 def _configure_tool_category(ts_key: str, cat: dict, config: dict):
     """Configure a tool category with provider selection."""
+    if ts_key == "web":
+        _configure_web_tool(config, reconfigure=False)
+        return
+
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = cat["providers"]
@@ -662,6 +811,8 @@ def _configure_provider(provider: dict, config: dict):
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+    if provider.get("config_updates"):
+        _apply_config_updates(config, provider["config_updates"])
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -762,6 +913,10 @@ def _reconfigure_tool(config: dict):
 
 def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
     """Reconfigure a tool category - provider selection + API key update."""
+    if ts_key == "web":
+        _configure_web_tool(config, reconfigure=True)
+        return
+
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = cat["providers"]
@@ -811,6 +966,10 @@ def _reconfigure_provider(provider: dict, config: dict):
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
+    if provider.get("config_updates"):
+        _apply_config_updates(config, provider["config_updates"])
+        for dotted_key, value in provider["config_updates"].items():
+            _print_success(f"  {dotted_key} set to: {value}")
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")

@@ -89,6 +89,17 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
     
+    "web": {
+        "search": {
+            "provider": "firecrawl",  # firecrawl | brave | searxng | duckduckgo
+            "brave_api_key": "",
+            "searxng_url": "",
+        },
+        "extract": {
+            "provider": "firecrawl",  # firecrawl | trafilatura
+        },
+    },
+    
     "compression": {
         "enabled": True,
         "threshold": 0.85,
@@ -178,7 +189,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 5,
+    "_config_version": 6,
 }
 
 # =============================================================================
@@ -192,6 +203,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    6: ["BRAVE_API_KEY", "SEARXNG_URL"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -309,6 +321,22 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+    },
+    "BRAVE_API_KEY": {
+        "description": "Brave Search API key for web search",
+        "prompt": "Brave Search API key",
+        "url": "https://api.search.brave.com/",
+        "tools": ["web_search"],
+        "password": True,
+        "category": "tool",
+    },
+    "SEARXNG_URL": {
+        "description": "SearXNG instance URL for self-hosted web search",
+        "prompt": "SearXNG instance URL",
+        "url": None,
+        "tools": ["web_search"],
+        "password": False,
+        "category": "tool",
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
@@ -627,6 +655,33 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
 
+    # ── Version 5 → 6: add web provider config ──
+    if current_ver < 6:
+        config = load_config()
+        raw_config = {}
+        config_path = get_config_path()
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    raw_config = yaml.safe_load(f) or {}
+            except Exception:
+                raw_config = {}
+        if "web" not in raw_config:
+            config["web"] = {
+                "search": {
+                    "provider": "firecrawl",
+                    "brave_api_key": "",
+                    "searxng_url": "",
+                },
+                "extract": {
+                    "provider": "firecrawl",
+                },
+            }
+            results["config_added"].append("web")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added web provider configuration to config.yaml")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -935,6 +990,7 @@ def show_config():
         ("ANTHROPIC_API_KEY", "Anthropic"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("BRAVE_API_KEY", "Brave"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("FAL_KEY", "FAL"),
     ]
@@ -975,6 +1031,15 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+
+    # Web
+    print()
+    print(color("◆ Web", Colors.CYAN, Colors.BOLD))
+    web_cfg = config.get("web", {})
+    search_cfg = web_cfg.get("search", {})
+    extract_cfg = web_cfg.get("extract", {})
+    print(f"  Search:       {search_cfg.get('provider', 'firecrawl')}")
+    print(f"  Extract:      {extract_cfg.get('provider', 'firecrawl')}")
     
     # Timezone
     print()
@@ -1092,7 +1157,8 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BRAVE_API_KEY', 'SEARXNG_URL',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',

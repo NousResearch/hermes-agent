@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+from importlib import import_module
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
@@ -94,6 +95,320 @@ DEFAULT_SUMMARIZER_MODEL = (
 )
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge override into base."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _get_web_config() -> Dict[str, Any]:
+    """Load web provider config from config.yaml, falling back to env vars."""
+    config = {
+        "search": {
+            "provider": "firecrawl",
+            "brave_api_key": "",
+            "searxng_url": "",
+        },
+        "extract": {
+            "provider": "firecrawl",
+        },
+    }
+
+    try:
+        from hermes_cli.config import load_config
+        loaded = load_config().get("web", {})
+        if isinstance(loaded, dict):
+            config = _deep_merge_dict(config, loaded)
+    except Exception:
+        pass
+
+    search_cfg = config.setdefault("search", {})
+    extract_cfg = config.setdefault("extract", {})
+
+    search_cfg["provider"] = str(search_cfg.get("provider", "firecrawl") or "firecrawl").strip().lower()
+    extract_cfg["provider"] = str(extract_cfg.get("provider", "firecrawl") or "firecrawl").strip().lower()
+
+    if not search_cfg.get("brave_api_key"):
+        search_cfg["brave_api_key"] = os.getenv("BRAVE_API_KEY", "").strip()
+    if not search_cfg.get("searxng_url"):
+        search_cfg["searxng_url"] = os.getenv("SEARXNG_URL", "").strip()
+
+    return config
+
+
+def _import_optional_dependency(module_name: str):
+    """Import an optional dependency with a helpful error."""
+    try:
+        return import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            f"Optional dependency '{module_name}' is not installed."
+        ) from exc
+
+
+def _run_sync(coro):
+    """Run an async coroutine from sync code."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def _normalize_search_result(
+    title: Any,
+    url: Any,
+    description: Any,
+    position: int,
+) -> Dict[str, Any]:
+    """Normalize provider-specific search results into Hermes shape."""
+    return {
+        "title": str(title or "").strip(),
+        "url": str(url or "").strip(),
+        "description": str(description or "").strip(),
+        "position": position,
+    }
+
+
+def _normalize_search_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop empty URLs and ensure sequential result positions."""
+    normalized = []
+    for result in results:
+        url = str(result.get("url", "") or "").strip()
+        if not url:
+            continue
+        normalized.append(
+            _normalize_search_result(
+                result.get("title", ""),
+                url,
+                result.get("description", ""),
+                len(normalized) + 1,
+            )
+        )
+    return normalized
+
+
+def _get_firecrawl_search_results(response: Any) -> List[Dict[str, Any]]:
+    """Convert Firecrawl search response objects into plain dicts."""
+    web_results: List[Dict[str, Any]] = []
+    if hasattr(response, "web"):
+        for result in response.web or []:
+            if hasattr(result, "model_dump"):
+                web_results.append(result.model_dump())
+            elif hasattr(result, "__dict__"):
+                web_results.append(result.__dict__)
+            elif isinstance(result, dict):
+                web_results.append(result)
+    elif hasattr(response, "model_dump"):
+        response_dict = response.model_dump()
+        if response_dict.get("web"):
+            web_results = response_dict["web"]
+    elif isinstance(response, dict) and response.get("web"):
+        web_results = response["web"]
+    return _normalize_search_results(web_results)
+
+
+def _search_firecrawl(query: str, limit: int) -> List[Dict[str, Any]]:
+    response = _get_firecrawl_client().search(query=query, limit=limit)
+    return _get_firecrawl_search_results(response)
+
+
+async def _search_brave_async(query: str, limit: int, api_key: str) -> List[Dict[str, Any]]:
+    brave_module = _import_optional_dependency("brave_search_python_client")
+    client = brave_module.BraveSearch(api_key=api_key)
+    response = await client.web(brave_module.WebSearchRequest(q=query, count=limit))
+    raw_results = []
+    if getattr(response, "web", None) and getattr(response.web, "results", None):
+        raw_results = [
+            _normalize_search_result(
+                getattr(result, "title", ""),
+                getattr(result, "url", ""),
+                getattr(result, "description", ""),
+                idx,
+            )
+            for idx, result in enumerate(response.web.results, start=1)
+        ]
+    return _normalize_search_results(raw_results)
+
+
+def _search_brave(query: str, limit: int, api_key: str) -> List[Dict[str, Any]]:
+    return _run_sync(_search_brave_async(query, limit, api_key))
+
+
+def _search_searxng(query: str, limit: int, base_url: str) -> List[Dict[str, Any]]:
+    searxng = _import_optional_dependency("pyserxng")
+    client = searxng.LocalSearXNGClient(base_url)
+    try:
+        results = client.search(query)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    raw_results = []
+    for idx, result in enumerate(getattr(results, "results", [])[:limit], start=1):
+        raw_results.append(
+            _normalize_search_result(
+                getattr(result, "title", ""),
+                getattr(result, "url", ""),
+                getattr(result, "content", ""),
+                idx,
+            )
+        )
+    return _normalize_search_results(raw_results)
+
+
+def _search_duckduckgo(query: str, limit: int) -> List[Dict[str, Any]]:
+    ddgs_module = _import_optional_dependency("ddgs")
+    raw_results = ddgs_module.DDGS().text(query, max_results=limit)
+    normalized = []
+    for idx, result in enumerate(raw_results or [], start=1):
+        normalized.append(
+            _normalize_search_result(
+                result.get("title", ""),
+                result.get("href", "") or result.get("url", ""),
+                result.get("body", "") or result.get("description", ""),
+                idx,
+            )
+        )
+    return _normalize_search_results(normalized)
+
+
+def _extract_title_from_html(content: str) -> str:
+    """Best-effort title extraction for Trafilatura fallback."""
+    match = re.search(r"<title[^>]*>(.*?)</title>", content or "", flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    title = re.sub(r"\s+", " ", match.group(1)).strip()
+    return title
+
+
+def _get_firecrawl_formats(format: Optional[str]) -> List[str]:
+    if format == "markdown":
+        return ["markdown"]
+    if format == "html":
+        return ["html"]
+    return ["markdown", "html"]
+
+
+def _extract_single_firecrawl(url: str, format: Optional[str]) -> Dict[str, Any]:
+    formats = _get_firecrawl_formats(format)
+    scrape_result = _get_firecrawl_client().scrape(url=url, formats=formats)
+
+    metadata: Dict[str, Any] = {}
+    content_markdown = None
+    content_html = None
+
+    if hasattr(scrape_result, "model_dump"):
+        result_dict = scrape_result.model_dump()
+        content_markdown = result_dict.get("markdown")
+        content_html = result_dict.get("html")
+        metadata = result_dict.get("metadata", {})
+    elif hasattr(scrape_result, "__dict__"):
+        content_markdown = getattr(scrape_result, "markdown", None)
+        content_html = getattr(scrape_result, "html", None)
+        metadata_obj = getattr(scrape_result, "metadata", {})
+        if hasattr(metadata_obj, "model_dump"):
+            metadata = metadata_obj.model_dump()
+        elif hasattr(metadata_obj, "__dict__"):
+            metadata = metadata_obj.__dict__
+        elif isinstance(metadata_obj, dict):
+            metadata = metadata_obj
+    elif isinstance(scrape_result, dict):
+        content_markdown = scrape_result.get("markdown")
+        content_html = scrape_result.get("html")
+        metadata = scrape_result.get("metadata", {})
+
+    if not isinstance(metadata, dict):
+        if hasattr(metadata, "model_dump"):
+            metadata = metadata.model_dump()
+        elif hasattr(metadata, "__dict__"):
+            metadata = metadata.__dict__
+        else:
+            metadata = {}
+
+    title = metadata.get("title", "")
+    chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+    return {
+        "url": metadata.get("sourceURL", url),
+        "title": title,
+        "content": chosen_content,
+        "raw_content": chosen_content,
+        "metadata": metadata,
+    }
+
+
+def _extract_single_trafilatura(url: str) -> Dict[str, Any]:
+    trafilatura = _import_optional_dependency("trafilatura")
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        raise ValueError("Unable to fetch content with trafilatura")
+
+    content = trafilatura.extract(
+        downloaded,
+        output_format="markdown",
+        include_links=True,
+        include_formatting=True,
+    ) or ""
+
+    return {
+        "url": url,
+        "title": _extract_title_from_html(downloaded),
+        "content": content,
+        "raw_content": content,
+        "metadata": {},
+    }
+
+
+def _is_firecrawl_available() -> bool:
+    return bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
+
+
+def _is_brave_available(web_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    web_cfg = web_cfg or _get_web_config()
+    return bool(web_cfg.get("search", {}).get("brave_api_key"))
+
+
+def _is_searxng_available(web_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    web_cfg = web_cfg or _get_web_config()
+    return bool(web_cfg.get("search", {}).get("searxng_url"))
+
+
+def _is_duckduckgo_available() -> bool:
+    try:
+        _import_optional_dependency("ddgs")
+        return True
+    except ImportError:
+        return False
+
+
+def _is_trafilatura_available() -> bool:
+    try:
+        _import_optional_dependency("trafilatura")
+        return True
+    except ImportError:
+        return False
+
+
+def _get_search_provider(web_cfg: Optional[Dict[str, Any]] = None) -> str:
+    web_cfg = web_cfg or _get_web_config()
+    return web_cfg.get("search", {}).get("provider", "firecrawl")
+
+
+def _get_extract_provider(web_cfg: Optional[Dict[str, Any]] = None) -> str:
+    web_cfg = web_cfg or _get_web_config()
+    return web_cfg.get("extract", {}).get("provider", "firecrawl")
 
 
 async def process_content_with_llm(
@@ -442,6 +757,28 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+def _search_with_provider(query: str, limit: int) -> tuple[str, List[Dict[str, Any]]]:
+    """Dispatch search requests to the configured provider."""
+    web_cfg = _get_web_config()
+    provider = _get_search_provider(web_cfg)
+
+    if provider == "firecrawl":
+        return provider, _search_firecrawl(query, limit)
+    if provider == "brave":
+        api_key = web_cfg.get("search", {}).get("brave_api_key", "")
+        if not api_key:
+            raise ValueError("BRAVE_API_KEY is not configured")
+        return provider, _search_brave(query, limit, api_key)
+    if provider == "searxng":
+        base_url = web_cfg.get("search", {}).get("searxng_url", "")
+        if not base_url:
+            raise ValueError("SEARXNG_URL is not configured")
+        return provider, _search_searxng(query, limit, base_url)
+    if provider == "duckduckgo":
+        return provider, _search_duckduckgo(query, limit)
+    raise ValueError(f"Unsupported web search provider: {provider}")
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -481,6 +818,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             "query": query,
             "limit": limit
         },
+        "provider": None,
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
@@ -493,43 +831,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return json.dumps({"error": "Interrupted", "success": False})
 
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-        
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
-        
-        # The response is a SearchData object with web, news, and images attributes
-        # When not scraping, the results are directly in these attributes
-        web_results = []
-        
-        # Check if response has web attribute (SearchData object)
-        if hasattr(response, 'web'):
-            # Response is a SearchData object with web attribute
-            if response.web:
-                # Convert each SearchResultWeb object to dict
-                for result in response.web:
-                    if hasattr(result, 'model_dump'):
-                        # Pydantic model - use model_dump
-                        web_results.append(result.model_dump())
-                    elif hasattr(result, '__dict__'):
-                        # Regular object - use __dict__
-                        web_results.append(result.__dict__)
-                    elif isinstance(result, dict):
-                        # Already a dict
-                        web_results.append(result)
-        elif hasattr(response, 'model_dump'):
-            # Response has model_dump method - use it to get dict
-            response_dict = response.model_dump()
-            if 'web' in response_dict and response_dict['web']:
-                web_results = response_dict['web']
-        elif isinstance(response, dict):
-            # Response is already a dictionary
-            if 'web' in response and response['web']:
-                web_results = response['web']
-        
+
+        provider, web_results = _search_with_provider(query, limit)
+        debug_call_data["provider"] = provider
         results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
+        logger.info("Found %d search results using %s", results_count, provider)
         
         # Build response with just search metadata (URLs, titles, descriptions)
         response_data = {
@@ -562,6 +868,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         _debug.save()
         
         return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+
+def _extract_single_url_with_provider(url: str, format: Optional[str]) -> tuple[str, Dict[str, Any]]:
+    """Dispatch extraction requests to the configured provider."""
+    web_cfg = _get_web_config()
+    provider = _get_extract_provider(web_cfg)
+
+    if provider == "firecrawl":
+        return provider, _extract_single_firecrawl(url, format)
+    if provider == "trafilatura":
+        return provider, _extract_single_trafilatura(url)
+    raise ValueError(f"Unsupported web extract provider: {provider}")
 
 
 async def web_extract_tool(
@@ -599,6 +917,7 @@ async def web_extract_tool(
             "model": model,
             "min_length": min_length
         },
+        "provider": None,
         "error": None,
         "pages_extracted": 0,
         "pages_processed_with_llm": 0,
@@ -609,17 +928,9 @@ async def web_extract_tool(
     }
     
     try:
-        logger.info("Extracting content from %d URL(s)", len(urls))
-        
-        # Determine requested formats for Firecrawl v2
-        formats: List[str] = []
-        if format == "markdown":
-            formats = ["markdown"]
-        elif format == "html":
-            formats = ["html"]
-        else:
-            # Default: request markdown for LLM-readiness and include html as backup
-            formats = ["markdown", "html"]
+        provider = _get_extract_provider()
+        debug_call_data["provider"] = provider
+        logger.info("Extracting content from %d URL(s) using %s", len(urls), provider)
         
         # Always use individual scraping for simplicity and reliability
         # Batch scraping adds complexity without much benefit for small numbers of URLs
@@ -633,68 +944,8 @@ async def web_extract_tool(
 
             try:
                 logger.info("Scraping: %s", url)
-                scrape_result = _get_firecrawl_client().scrape(
-                    url=url,
-                    formats=formats
-                )
-                
-                # Process the result - properly handle object serialization
-                metadata = {}
-                title = ""
-                content_markdown = None
-                content_html = None
-                
-                # Extract data from the scrape result
-                if hasattr(scrape_result, 'model_dump'):
-                    # Pydantic model - use model_dump to get dict
-                    result_dict = scrape_result.model_dump()
-                    content_markdown = result_dict.get('markdown')
-                    content_html = result_dict.get('html')
-                    metadata = result_dict.get('metadata', {})
-                elif hasattr(scrape_result, '__dict__'):
-                    # Regular object with attributes
-                    content_markdown = getattr(scrape_result, 'markdown', None)
-                    content_html = getattr(scrape_result, 'html', None)
-                    
-                    # Handle metadata - convert to dict if it's an object
-                    metadata_obj = getattr(scrape_result, 'metadata', {})
-                    if hasattr(metadata_obj, 'model_dump'):
-                        metadata = metadata_obj.model_dump()
-                    elif hasattr(metadata_obj, '__dict__'):
-                        metadata = metadata_obj.__dict__
-                    elif isinstance(metadata_obj, dict):
-                        metadata = metadata_obj
-                    else:
-                        metadata = {}
-                elif isinstance(scrape_result, dict):
-                    # Already a dictionary
-                    content_markdown = scrape_result.get('markdown')
-                    content_html = scrape_result.get('html')
-                    metadata = scrape_result.get('metadata', {})
-                
-                # Ensure metadata is a dict (not an object)
-                if not isinstance(metadata, dict):
-                    if hasattr(metadata, 'model_dump'):
-                        metadata = metadata.model_dump()
-                    elif hasattr(metadata, '__dict__'):
-                        metadata = metadata.__dict__
-                    else:
-                        metadata = {}
-                
-                # Get title from metadata
-                title = metadata.get("title", "")
-                
-                # Choose content based on requested format
-                chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-                
-                results.append({
-                    "url": metadata.get("sourceURL", url),
-                    "title": title,
-                    "content": chosen_content,
-                    "raw_content": chosen_content,
-                    "metadata": metadata  # Now guaranteed to be a dict
-                })
-                
+                _, extracted = _extract_single_url_with_provider(url, format)
+                results.append(extracted)
             except Exception as scrape_err:
                 logger.debug("Scrape failed for %s: %s", url, scrape_err)
                 results.append({
@@ -1125,15 +1376,39 @@ async def web_crawl_tool(
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
-# Convenience function to check if API key is available
+# Convenience function to check if configured providers are available
 def check_firecrawl_api_key() -> bool:
     """
-    Check if the Firecrawl API key is available in environment variables.
+    Backward-compatible Firecrawl availability check.
     
     Returns:
-        bool: True if API key is set, False otherwise
+        bool: True if Firecrawl is configured, False otherwise
     """
-    return bool(os.getenv("FIRECRAWL_API_KEY"))
+    return _is_firecrawl_available()
+
+
+def check_web_search_available() -> bool:
+    """Check whether the configured search provider is usable."""
+    provider = _get_search_provider()
+    if provider == "firecrawl":
+        return _is_firecrawl_available()
+    if provider == "brave":
+        return _is_brave_available()
+    if provider == "searxng":
+        return _is_searxng_available()
+    if provider == "duckduckgo":
+        return _is_duckduckgo_available()
+    return False
+
+
+def check_web_extract_available() -> bool:
+    """Check whether the configured extract provider is usable."""
+    provider = _get_extract_provider()
+    if provider == "firecrawl":
+        return _is_firecrawl_available()
+    if provider == "trafilatura":
+        return _is_trafilatura_available()
+    return False
 
 
 def check_auxiliary_model() -> bool:
@@ -1271,8 +1546,8 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
-    check_fn=check_firecrawl_api_key,
-    requires_env=["FIRECRAWL_API_KEY"],
+    check_fn=check_web_search_available,
+    requires_env=[],
 )
 registry.register(
     name="web_extract",
@@ -1280,7 +1555,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_firecrawl_api_key,
-    requires_env=["FIRECRAWL_API_KEY"],
+    check_fn=check_web_extract_available,
+    requires_env=[],
     is_async=True,
 )

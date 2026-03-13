@@ -26,7 +26,11 @@ dependencies = [
   "prompt_toolkit",
   # Tools
   "firecrawl-py",
+  "brave-search-python-client",
+  "ddgs",
   "fal-client",
+  "pyserxng",
+  "trafilatura",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts",
   # mini-swe-agent deps (terminal tool)

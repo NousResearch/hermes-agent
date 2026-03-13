@@ -394,7 +394,7 @@ def _gateway_setup_hint() -> str:
 
         return GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
     except Exception:
-        return "Secure secret entry is not available. Run `hermes setup` or update ~/.hermes/.env locally."
+        return "Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
 
 
 def _build_setup_note(

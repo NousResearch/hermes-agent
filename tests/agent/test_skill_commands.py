@@ -192,7 +192,7 @@ Generate some audio.
                 msg = build_skill_invocation_message("/test-skill", "do stuff")
 
         assert msg is not None
-        assert "hermes setup" in msg.lower()
+        assert "local cli" in msg.lower()
 
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")

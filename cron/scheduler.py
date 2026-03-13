@@ -198,6 +198,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
+        try:
+            from hermes_cli.runtime_provider import resolve_model_for_profile
+            model = resolve_model_for_profile("chat", model)
+        except Exception:
+            pass
+
         # Reasoning config from env or config.yaml
         reasoning_config = None
         effort = os.getenv("HERMES_REASONING_EFFORT", "")

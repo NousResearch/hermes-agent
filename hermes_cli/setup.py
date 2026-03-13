@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,271 @@ def _sync_model_from_disk(config: Dict[str, Any]) -> None:
         config["model"] = model_cfg
     elif isinstance(disk_model, str) and disk_model.strip():
         _set_default_model(config, disk_model.strip())
+
+
+def _blank_profile_entry() -> Dict[str, str]:
+    return {"model": "", "provider": "", "base_url": "", "api_key_env": "", "api_key": ""}
+
+
+def _ensure_model_profiles_config(config: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    """Ensure model_profiles exists with canonical profile keys while preserving custom ones."""
+    profiles = config.get("model_profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+
+    normalized: Dict[str, Dict[str, str]] = {}
+    for name, entry in profiles.items():
+        if not isinstance(name, str):
+            continue
+        key = name.strip().lower()
+        if not key:
+            continue
+        if not isinstance(entry, dict):
+            entry = {}
+        normalized[key] = {
+            "model": str(entry.get("model", "") or "").strip(),
+            "provider": str(entry.get("provider", "") or "").strip(),
+            "base_url": str(entry.get("base_url", "") or "").strip(),
+            "api_key_env": str(entry.get("api_key_env", "") or "").strip(),
+            "api_key": str(entry.get("api_key", "") or "").strip(),
+        }
+
+    for name in ("chat", "coding", "planning", "research", "delegation"):
+        normalized.setdefault(name, _blank_profile_entry())
+
+    config["model_profiles"] = normalized
+    return normalized
+
+
+def _ordered_model_profile_names(profiles: Dict[str, Dict[str, str]]) -> List[str]:
+    canonical = ["chat", "coding", "planning", "research", "delegation"]
+    extras = sorted(name for name in profiles.keys() if name not in canonical)
+    return canonical + extras
+
+
+def _reset_model_profiles_config(config: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    config["model_profiles"] = {}
+    config["model_routing"] = {"rules": []}
+    return _ensure_model_profiles_config(config)
+
+
+def _discover_working_profile_providers() -> Tuple[List[Tuple[str, dict]], List[str]]:
+    """Return providers that currently resolve with working credentials.
+
+    Returns:
+        ([(provider_id, runtime_dict), ...], errors)
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    candidates = [
+        "openrouter",
+        "openai-codex",
+        "nous",
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "anthropic",
+        "custom",
+    ]
+
+    working: List[Tuple[str, dict]] = []
+    errors: List[str] = []
+    for provider_id in candidates:
+        if provider_id == "custom" and not os.getenv("OPENAI_BASE_URL", "").strip():
+            continue
+        try:
+            runtime = resolve_runtime_provider(requested=provider_id)
+            if runtime.get("api_key") and runtime.get("base_url"):
+                working.append((provider_id, runtime))
+        except Exception as exc:
+            errors.append(f"{provider_id}: {exc}")
+    return working, errors
+
+
+def _live_model_suggestions_for_runtime(runtime: dict) -> List[str]:
+    """Fetch live /models for an already-resolved runtime credential bundle."""
+    from hermes_cli.models import fetch_api_models
+
+    api_key = str(runtime.get("api_key", "") or "")
+    base_url = str(runtime.get("base_url", "") or "")
+    if not api_key or not base_url:
+        return []
+
+    models = fetch_api_models(api_key, base_url)
+    if not models:
+        return []
+    # keep UI usable
+    return sorted(list(dict.fromkeys(models)))[:40]
+
+
+def _configure_model_profiles_interactive(config: Dict[str, Any], allow_custom_profiles: bool = True) -> None:
+    """Interactive wizard for per-category model routing profiles."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.runtime_provider import get_primary_model
+
+    # Show primary model info
+    primary = get_primary_model()
+    primary_model = primary.get("model", "")
+    primary_provider = primary.get("provider", "")
+    
+    if primary_model:
+        provider_label = {pid: p.name for pid, p in PROVIDER_REGISTRY.items()}
+        provider_label["openrouter"] = "OpenRouter"
+        provider_label["custom"] = "Custom endpoint"
+        
+        primary_provider_label = provider_label.get(primary_provider, primary_provider)
+        print_info(f"Current primary model: {primary_model} ({primary_provider_label})")
+        print_info("Routing profiles inherit the primary model unless customized:")
+        for profile in ["chat", "coding", "planning", "research"]:
+            print_info(f"  • {profile}: {primary_model} ({primary_provider_label})")
+        print()
+
+    if not prompt_yes_no("Configure model routing profiles now?", False):
+        return
+
+    profiles = _ensure_model_profiles_config(config)
+    working, _errors = _discover_working_profile_providers()
+
+    if not working:
+        print_warning("No working providers detected for model routing right now.")
+        print_info("Finish provider login first, then run `hermes configure-model-routing` again.")
+        return
+
+    provider_label = {pid: p.name for pid, p in PROVIDER_REGISTRY.items()}
+    provider_label["openrouter"] = "OpenRouter"
+    provider_label["custom"] = "Custom endpoint"
+
+    ordered_profiles = _ordered_model_profile_names(profiles)
+    for profile_name in ordered_profiles:
+        print()
+        print_header(f"Model Profile: {profile_name}")
+
+        current = profiles.get(profile_name, {})
+        current_model = current.get("model", "")
+        current_provider = current.get("provider", "")
+        
+        # Show effective configuration (including primary model inheritance)
+        effective_model = current_model or primary_model
+        effective_provider = current_provider or primary_provider
+        effective_provider_label = provider_label.get(effective_provider, effective_provider)
+        
+        if current_model:
+            print_info(f"Current: model={current_model} provider={current_provider or 'inherit'}")
+        else:
+            print_info(f"Current: inherits primary model -> {effective_model} ({effective_provider_label})")
+
+        if not prompt_yes_no(f"Configure {profile_name} profile?", profile_name == "chat"):
+            continue
+
+        choices = [f"Inherit primary model ({primary_model})"]
+        working_ids: List[str] = []
+        for pid, runtime in working:
+            lbl = provider_label.get(pid, pid)
+            choices.append(f"{lbl} ({runtime.get('base_url', '')})")
+            working_ids.append(pid)
+        choices.append("Custom endpoint (manual)")
+
+        selection = prompt_choice("Select provider for this profile:", choices, 0)
+
+        if selection == 0:
+            # Explicitly set to primary model (not empty)
+            profiles[profile_name] = {
+                "model": primary_model,
+                "provider": primary_provider,
+                "base_url": primary.get("base_url", ""),
+                "api_key_env": primary.get("api_key_env", ""),
+                "api_key": primary.get("api_key", ""),
+            }
+            print_success(f"{profile_name} explicitly set to primary model: {primary_model}")
+            continue
+
+        if selection == len(choices) - 1:
+            print_info("Base URL: the OpenAI-compatible /v1 endpoint for this provider.")
+            base_url = prompt("  Base URL (OpenAI-compatible /v1 endpoint)", current.get("base_url", ""))
+            print_info("API key env var: the name Hermes will use in ~/.hermes/.env to store/read the secret.")
+            api_key_env = prompt("  API key env var name (optional)", current.get("api_key_env", ""))
+            api_key_default = current.get("api_key", "")
+            print_info("API key: if you type one here, Hermes will save it to ~/.hermes/.env — never config.yaml.")
+            api_key = prompt("  API key (optional, leave blank to use env var)", password=True) or api_key_default
+            api_key_env = str(api_key_env or "").strip()
+            api_key = str(api_key or "").strip()
+            if api_key and not api_key_env:
+                print_warning("Env var name is mandatory if you enter an API key here — otherwise routing may break. Leaving the key unsaved.")
+                resolved_key = ""
+            elif api_key and api_key_env:
+                save_env_value(api_key_env, api_key)
+                resolved_key = api_key
+            else:
+                resolved_key = (os.getenv(api_key_env, "") if api_key_env else "") or api_key_default
+
+            suggestions = []
+            if base_url and resolved_key:
+                suggestions = _live_model_suggestions_for_runtime(
+                    {"api_key": resolved_key, "base_url": base_url}
+                )
+
+            if suggestions:
+                model_choices = suggestions + ["Custom model"]
+                m_idx = prompt_choice("Select model:", model_choices, 0)
+                if m_idx < len(suggestions):
+                    model_name = suggestions[m_idx]
+                else:
+                    model_name = prompt("  Enter model name", current_model)
+            else:
+                print_warning("Could not fetch live models from this endpoint — enter model manually.")
+                model_name = prompt("  Enter model name", current_model)
+
+            profiles[profile_name] = {
+                "model": str(model_name or "").strip(),
+                "provider": "custom",
+                "base_url": str(base_url or "").strip(),
+                "api_key_env": api_key_env,
+                "api_key": "",
+            }
+            print_success(f"Saved {profile_name} custom profile")
+            continue
+
+        provider_id = working_ids[selection - 1]
+        runtime = dict(working[selection - 1][1])
+        suggestions = _live_model_suggestions_for_runtime(runtime)
+
+        if suggestions:
+            model_choices = suggestions + ["Custom model", f"Keep current ({current_model or 'unset'})"]
+            default_idx = len(model_choices) - 1
+            if current_model in suggestions:
+                default_idx = suggestions.index(current_model)
+            m_idx = prompt_choice("Select model:", model_choices, default_idx)
+            if m_idx < len(suggestions):
+                model_name = suggestions[m_idx]
+            elif m_idx == len(suggestions):
+                model_name = prompt("  Enter model name", current_model)
+            else:
+                model_name = current_model
+        else:
+            print_warning(
+                "Could not fetch live model list for this provider right now — enter model manually."
+            )
+            model_name = prompt("  Enter model name", current_model)
+
+        profiles[profile_name] = {
+            "model": str(model_name or "").strip(),
+            "provider": provider_id,
+            "base_url": "",
+            "api_key_env": "",
+            "api_key": "",
+        }
+        print_success(f"Saved {profile_name} profile -> {provider_id}:{model_name}")
+
+    if allow_custom_profiles and prompt_yes_no("Add a custom routing profile category?", False):
+        custom_name = prompt("  Profile name (e.g. ops, fast, cheap, vision)").strip().lower()
+        if custom_name:
+            if custom_name in profiles:
+                print_warning(f"Profile '{custom_name}' already exists.")
+            else:
+                profiles[custom_name] = _blank_profile_entry()
+                print_success(f"Added custom profile category: {custom_name}")
+                print_info("Run `hermes configure-model-routing` again to configure it.")
 
 
 # Import config helpers
@@ -1333,7 +1598,12 @@ def setup_model_provider(config: dict):
             )
             print_success(f"Model set to: {_display}")
 
-    save_config(config)
+    # Optional per-category onboarding (no manual config file editing needed)
+    # Skip in non-interactive contexts (tests/automation) where stdin isn't a TTY.
+    if getattr(sys.stdin, "isatty", lambda: False)():
+        _configure_model_profiles_interactive(config)
+
+    save_config(config, backup_reason="model_setup")
 
 
 # =============================================================================

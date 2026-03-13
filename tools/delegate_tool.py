@@ -78,6 +78,89 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _infer_model_profile(toolsets: Optional[List[str]], goal: Optional[str] = None) -> str:
+    """Infer best-fit profile from requested toolsets/task intent.
+
+    First applies any user-configured ordered routing rules from config.yaml.
+    Falls back to simple built-in heuristics if no rule matches.
+    """
+    normalized = {str(t).strip().lower() for t in (toolsets or []) if str(t).strip()}
+    goal_text = (goal or "").strip().lower()
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        routing = config.get("model_routing", {}) if isinstance(config, dict) else {}
+        rules = routing.get("rules", []) if isinstance(routing, dict) else []
+        if isinstance(rules, list):
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                profile = str(rule.get("profile", "") or "").strip().lower()
+                if not profile:
+                    continue
+                toolset_any = {str(t).strip().lower() for t in rule.get("if_toolsets_any", []) if str(t).strip()}
+                goal_matches = [str(t).strip().lower() for t in rule.get("if_goal_matches", []) if str(t).strip()]
+                if toolset_any and not (toolset_any & normalized):
+                    continue
+                if goal_matches and not any(token in goal_text for token in goal_matches):
+                    continue
+                if toolset_any or goal_matches:
+                    return profile
+    except Exception:
+        pass
+
+    if {"terminal", "file"} & normalized:
+        return "coding"
+    if "web" in normalized or "browser" in normalized:
+        return "research"
+    if any(token in goal_text for token in ("plan", "roadmap", "spec", "design")):
+        return "planning"
+    return "planning"
+
+
+def _resolve_profile_credentials(profile_name: str) -> dict:
+    """Resolve credentials/model for a named model profile."""
+    from hermes_cli.runtime_provider import resolve_model_profile, resolve_runtime_provider
+
+    profile_cfg = resolve_model_profile(profile_name)
+    configured_model = profile_cfg.get("model") or None
+    configured_provider = profile_cfg.get("provider") or None
+    configured_base_url = profile_cfg.get("base_url") or None
+    configured_api_key = profile_cfg.get("api_key") or None
+
+    if not (configured_provider or configured_base_url or configured_api_key):
+        return {
+            "model": configured_model,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "profile": profile_name,
+        }
+
+    runtime = resolve_runtime_provider(
+        requested=configured_provider,
+        explicit_api_key=configured_api_key,
+        explicit_base_url=configured_base_url,
+    )
+    api_key = runtime.get("api_key", "")
+    if not api_key:
+        raise ValueError(
+            f"Model profile '{profile_name}' resolved but has no API key. "
+            f"Set profile api_key/api_key_env or provider credentials."
+        )
+
+    return {
+        "model": configured_model,
+        "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_key": api_key,
+        "api_mode": runtime.get("api_mode"),
+        "profile": profile_name,
+    }
+
+
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -315,6 +398,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model_profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -344,21 +428,11 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return json.dumps({"error": str(exc)})
-
     # Normalize to task list
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "model_profile": model_profile}]
     else:
         return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
 
@@ -370,21 +444,76 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return json.dumps({"error": f"Task {i} is missing a 'goal'."})
 
+    # Base legacy delegation credentials (provider/model overrides in
+    # delegation.*). If unset, this resolves to inherit-parent behavior.
+    try:
+        base_creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    legacy_override_active = bool((cfg.get("model") or "").strip() or (cfg.get("provider") or "").strip())
+
+    # Build task specs with per-task credential/model routing.
+    prepared_tasks = []
+    default_profile = (cfg.get("model_profile") or "").strip() or None
+    model_profiles_cfg = cfg.get("model_profiles", {}) if isinstance(cfg.get("model_profiles"), dict) else {}
+
+    def _profile_has_explicit_config(name: Optional[str]) -> bool:
+        key = (name or "").strip().lower()
+        if not key:
+            return False
+        raw = model_profiles_cfg.get(key, {})
+        if not isinstance(raw, dict):
+            return False
+        return any(str(raw.get(field, "") or "").strip() for field in ("model", "provider", "base_url", "api_key_env", "api_key"))
+
+    for i, task in enumerate(task_list):
+        task_toolsets = task.get("toolsets") or toolsets
+        requested_profile = (
+            (task.get("model_profile") if isinstance(task, dict) else None)
+            or model_profile
+            or default_profile
+        )
+        inferred_profile = requested_profile or _infer_model_profile(task_toolsets, task.get("goal"))
+
+        creds = dict(base_creds)
+        profile_used = None
+
+        if not legacy_override_active and (requested_profile or _profile_has_explicit_config(inferred_profile)):
+            try:
+                profile_creds = _resolve_profile_credentials(inferred_profile)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)})
+            for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+                if profile_creds.get(key) is not None:
+                    creds[key] = profile_creds.get(key)
+            profile_used = profile_creds.get("profile")
+
+        prepared_tasks.append({
+            "task_index": i,
+            "goal": task["goal"],
+            "context": task.get("context"),
+            "toolsets": task_toolsets,
+            "creds": creds,
+            "profile": profile_used,
+        })
+
     overall_start = time.monotonic()
     results = []
 
-    n_tasks = len(task_list)
+    n_tasks = len(prepared_tasks)
     # Track goal labels for progress display (truncated for readability)
-    task_labels = [t["goal"][:40] for t in task_list]
+    task_labels = [t["goal"][:40] for t in prepared_tasks]
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
-        t = task_list[0]
+        t = prepared_tasks[0]
+        creds = t["creds"]
         result = _run_single_child(
             task_index=0,
             goal=t["goal"],
             context=t.get("context"),
-            toolsets=t.get("toolsets") or toolsets,
+            toolsets=t.get("toolsets"),
             model=creds["model"],
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
@@ -407,13 +536,14 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
-            for i, t in enumerate(task_list):
+            for i, t in enumerate(prepared_tasks):
+                creds = t["creds"]
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
                     goal=t["goal"],
                     context=t.get("context"),
-                    toolsets=t.get("toolsets") or toolsets,
+                    toolsets=t.get("toolsets"),
                     model=creds["model"],
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
@@ -533,26 +663,38 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation + model profile config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Returns a flat dict with delegation keys (max_iterations/model/provider/
+    model_profile) plus model_profiles map.
     """
+    full = {}
     try:
         from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        if isinstance(CLI_CONFIG, dict) and CLI_CONFIG:
+            full = CLI_CONFIG
     except Exception:
         pass
-    try:
-        from hermes_cli.config import load_config
-        full = load_config()
-        return full.get("delegation", {})
-    except Exception:
-        return {}
+    if not full:
+        try:
+            from hermes_cli.config import load_config
+            full = load_config()
+        except Exception:
+            full = {}
+
+    if not isinstance(full, dict):
+        full = {}
+
+    delegation = full.get("delegation", {})
+    if not isinstance(delegation, dict):
+        delegation = {}
+    model_profiles = full.get("model_profiles", {})
+    if not isinstance(model_profiles, dict):
+        model_profiles = {}
+
+    merged = dict(delegation)
+    merged["model_profiles"] = model_profiles
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +758,13 @@ DELEGATE_TASK_SCHEMA = {
                     "full-stack tasks."
                 ),
             },
+            "model_profile": {
+                "type": "string",
+                "description": (
+                    "Optional model profile to use for this delegated task. "
+                    "Examples: 'coding', 'planning', 'research'."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -627,6 +776,10 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
+                        },
+                        "model_profile": {
+                            "type": "string",
+                            "description": "Model profile for this specific task",
                         },
                     },
                     "required": ["goal"],
@@ -664,6 +817,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model_profile=args.get("model_profile"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
 )

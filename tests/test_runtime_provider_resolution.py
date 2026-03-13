@@ -181,3 +181,36 @@ def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})
     assert rp.resolve_requested_provider("openrouter") == "openrouter"
+
+
+def test_resolve_model_profile_reads_api_key_env(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_profiles_config",
+        lambda: {
+            "coding": {
+                "model": "openai/gpt-5-codex",
+                "provider": "openrouter",
+                "base_url": "http://localhost:11434/v1",
+                "api_key_env": "OLLAMA_API_KEY",
+            }
+        },
+    )
+    monkeypatch.setenv("OLLAMA_API_KEY", "local-key")
+
+    profile = rp.resolve_model_profile("coding")
+
+    assert profile["model"] == "openai/gpt-5-codex"
+    assert profile["provider"] == "openrouter"
+    assert profile["base_url"] == "http://localhost:11434/v1"
+    assert profile["api_key"] == "local-key"
+
+
+def test_resolve_model_for_profile_falls_back_when_empty(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_model_profile", lambda _name: {"model": ""})
+    assert rp.resolve_model_for_profile("chat", "anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+
+
+def test_resolve_model_for_profile_returns_override(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_model_profile", lambda _name: {"model": "openai/gpt-5-mini"})
+    assert rp.resolve_model_for_profile("chat", "anthropic/claude-sonnet-4") == "openai/gpt-5-mini"

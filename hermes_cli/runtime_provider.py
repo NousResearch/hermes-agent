@@ -28,6 +28,96 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+def _get_model_profiles_config() -> Dict[str, Dict[str, Any]]:
+    config = load_config()
+    profiles = config.get("model_profiles")
+    if isinstance(profiles, dict):
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for name, value in profiles.items():
+            if isinstance(name, str) and isinstance(value, dict):
+                normalized[name.strip().lower()] = dict(value)
+        return normalized
+    return {}
+
+
+def get_primary_model() -> Dict[str, str]:
+    """Get the primary model configuration (model.default + provider).
+
+    Returns a dict with keys: model, provider, base_url, api_key, api_key_env.
+    Empty strings for missing fields.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    model_cfg = _get_model_config()
+    model_name = model_cfg.get("default", "")
+    provider_name = model_cfg.get("provider", "")
+
+    if not isinstance(model_name, str):
+        model_name = ""
+    if not isinstance(provider_name, str):
+        provider_name = ""
+
+    model_name = model_name.strip()
+    provider_name = provider_name.strip()
+
+    # If we have a model but no provider, try to resolve runtime
+    if model_name and not provider_name:
+        try:
+            runtime = resolve_runtime_provider(model=model_name, provider="auto")
+            return {
+                "model": model_name,
+                "provider": runtime.get("provider", ""),
+                "base_url": runtime.get("base_url", ""),
+                "api_key": runtime.get("api_key", ""),
+                "api_key_env": "",
+            }
+        except Exception:
+            pass
+
+    return {
+        "model": model_name,
+        "provider": provider_name,
+        "base_url": model_cfg.get("base_url", "") if isinstance(model_cfg.get("base_url"), str) else "",
+        "api_key": model_cfg.get("api_key", "") if isinstance(model_cfg.get("api_key"), str) else "",
+        "api_key_env": model_cfg.get("api_key_env", "") if isinstance(model_cfg.get("api_key_env"), str) else "",
+    }
+
+
+def resolve_model_profile(profile: str) -> Dict[str, str]:
+    """Resolve model/provider/base_url/api_key overrides for a named profile.
+
+    Returns empty strings for missing fields so callers can cleanly apply
+    fallback precedence.
+    """
+    key = (profile or "").strip().lower()
+    if not key:
+        return {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "api_key_env": "",
+        }
+
+    profiles = _get_model_profiles_config()
+    raw = profiles.get(key, {})
+    if not isinstance(raw, dict):
+        raw = {}
+
+    api_key_env = str(raw.get("api_key_env", "") or "").strip()
+    api_key = str(raw.get("api_key", "") or "").strip()
+    if (not api_key) and api_key_env:
+        api_key = os.getenv(api_key_env, "").strip()
+
+    return {
+        "model": str(raw.get("model", "") or "").strip(),
+        "provider": str(raw.get("provider", "") or "").strip().lower(),
+        "base_url": str(raw.get("base_url", "") or "").strip(),
+        "api_key": api_key,
+        "api_key_env": api_key_env,
+    }
+
+
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
     """Resolve provider request from explicit arg, env, then config."""
     if requested and requested.strip():
@@ -191,6 +281,13 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def resolve_model_for_profile(profile: str, fallback_model: str) -> str:
+    """Return profile model override when configured, else fallback."""
+    profile_cfg = resolve_model_profile(profile)
+    profile_model = profile_cfg.get("model", "")
+    return profile_model or fallback_model
 
 
 def format_runtime_provider_error(error: Exception) -> str:

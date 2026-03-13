@@ -24,6 +24,7 @@ from tools.delegate_tool import (
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
+    _infer_model_profile,
 )
 
 
@@ -58,6 +59,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("model_profile", props)
         self.assertEqual(props["tasks"]["maxItems"], 3)
 
 
@@ -91,6 +93,33 @@ class TestStripBlockedTools(unittest.TestCase):
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
+
+
+class TestModelProfileInference(unittest.TestCase):
+    def test_coding_profile_for_terminal_or_file(self):
+        self.assertEqual(_infer_model_profile(["terminal"]), "coding")
+        self.assertEqual(_infer_model_profile(["file", "web"]), "coding")
+
+    def test_research_profile_for_web_browser(self):
+        self.assertEqual(_infer_model_profile(["web"]), "research")
+        self.assertEqual(_infer_model_profile(["browser"]), "research")
+
+    def test_planning_profile_by_default(self):
+        self.assertEqual(_infer_model_profile([]), "planning")
+        self.assertEqual(_infer_model_profile(["memory"], goal="write a roadmap"), "planning")
+
+    @patch("hermes_cli.config.load_config")
+    def test_configurable_rules_override_builtin_heuristics(self, mock_load_config):
+        mock_load_config.return_value = {
+            "model_routing": {
+                "rules": [
+                    {"if_toolsets_any": ["terminal"], "profile": "ops"},
+                    {"if_goal_matches": ["test"], "profile": "qa"},
+                ]
+            }
+        }
+        self.assertEqual(_infer_model_profile(["terminal"]), "ops")
+        self.assertEqual(_infer_model_profile(["memory"], goal="test the release flow"), "qa")
 
 
 class TestDelegateTask(unittest.TestCase):
@@ -536,6 +565,86 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_profile_credentials")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_inferred_profile_used_for_coding_task(self, mock_base_creds, mock_profile_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+            "model_profile": "",
+            "model_profiles": {"coding": {"model": "openai/gpt-5-codex", "provider": "openrouter"}},
+        }
+        mock_base_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profile_creds.return_value = {
+            "model": "openai/gpt-5-codex",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-coding",
+            "api_mode": "chat_completions",
+            "profile": "coding",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Refactor module", toolsets=["terminal", "file"], parent_agent=parent)
+
+            mock_profile_creds.assert_called_once_with("coding")
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "openai/gpt-5-codex")
+            self.assertEqual(kwargs["provider"], "openrouter")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_profile_credentials")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_model_profile_overrides_inference(self, mock_base_creds, mock_profile_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": "", "model_profile": ""}
+        mock_base_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profile_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-plan",
+            "api_mode": "chat_completions",
+            "profile": "planning",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Summarize architecture",
+                toolsets=["terminal", "file"],
+                model_profile="planning",
+                parent_agent=parent,
+            )
+
+            mock_profile_creds.assert_called_once_with("planning")
 
 
 if __name__ == "__main__":

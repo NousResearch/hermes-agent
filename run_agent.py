@@ -4239,13 +4239,24 @@ class AIAgent:
                     ):
                         anthropic_auth_retry_attempted = True
                         # Try re-reading Claude Code credentials (they may have been refreshed)
-                        from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+                        from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client, _is_oauth_token
                         new_token = resolve_anthropic_token()
                         if new_token and new_token != self._anthropic_api_key:
                             self._anthropic_api_key = new_token
                             self._anthropic_client = build_anthropic_client(new_token)
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
+                        # Credential refresh didn't help — show diagnostic info
+                        key = self._anthropic_api_key
+                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
+                        print(f"{self.log_prefix}🔐 Anthropic 401 — authentication failed.")
+                        print(f"{self.log_prefix}   Auth method: {auth_method}")
+                        print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
+                        print(f"{self.log_prefix}   Troubleshooting:")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.hermes/.env (stale key overrides Claude Code auto-detect)")
+                        print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
+                        print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
+                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time

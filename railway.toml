@@ -1,9 +1,5 @@
 # ──────────────────────────────────────────────────────────────
-# Hermes Agent – Railway Template Configuration
-#
-# The container exposes:
-#   • Web config UI  → $PORT (Railway sets this automatically)
-#   • Gateway process → managed internally by the web UI
+# Hermes Agent – Railway Configuration (Gateway only)
 # ──────────────────────────────────────────────────────────────
 
 [build]
@@ -11,93 +7,47 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Entrypoint starts uvicorn; no override needed here.
 restartPolicyType = "always"
 sleepApplication = false
-healthcheckPath = "/"
-healthcheckTimeout = 30
 
-# ── Environment variable definitions ─────────
-# These appear as prompts in the Railway template UI.
-# Required vars are marked; optional ones have defaults.
-
-[[deploy.envVars]]
-name = "LLM_MODEL"
-description = "Default LLM model via OpenRouter (e.g. anthropic/claude-opus-4-6, openai/gpt-4o)"
-defaultValue = "anthropic/claude-opus-4-6"
+# ── Environment variable definitions ─────────────────────────
 
 [[deploy.envVars]]
 name = "OPENROUTER_API_KEY"
-description = "OpenRouter API key – required for the agent to call any LLM. Get one at openrouter.ai"
-
-[[deploy.envVars]]
-name = "TERMINAL_ENV"
-description = "Terminal backend: local | docker | ssh | modal | singularity"
-defaultValue = "local"
-
-# ── Telegram ─────────────────────────────────
-[[deploy.envVars]]
-name = "TELEGRAM_BOT_TOKEN"
-description = "Telegram bot token from @BotFather (leave empty to disable Telegram)"
-
-[[deploy.envVars]]
-name = "TELEGRAM_HOME_CHANNEL"
-description = "Your Telegram chat/channel ID where Hermes sends notifications"
-
-# ── Discord ───────────────────────────────────
-[[deploy.envVars]]
-name = "DISCORD_BOT_TOKEN"
-description = "Discord bot token from discord.com/developers (leave empty to disable Discord)"
-
-[[deploy.envVars]]
-name = "DISCORD_HOME_CHANNEL"
-description = "Discord channel ID for Hermes notifications"
-
-# ── Slack ─────────────────────────────────────
-[[deploy.envVars]]
-name = "SLACK_BOT_TOKEN"
-description = "Slack Bot User OAuth Token (xoxb-...) – leave empty to disable Slack"
-
-[[deploy.envVars]]
-name = "SLACK_APP_TOKEN"
-description = "Slack App-Level Token for Socket Mode (xapp-...) – required when Slack is enabled"
-
-# ── Tool API keys (all optional) ──────────────
-[[deploy.envVars]]
-name = "FIRECRAWL_API_KEY"
-description = "Firecrawl API key for web scraping & search (firecrawl.dev)"
+description = "OpenRouter API key (openrouter.ai) — use this OR NOUS_API_KEY"
 
 [[deploy.envVars]]
 name = "NOUS_API_KEY"
-description = "Nous Portal API key for vision & multi-model reasoning"
+description = "Nous Portal API key (portal.nousresearch.com) — use this OR OPENROUTER_API_KEY"
 
 [[deploy.envVars]]
-name = "FAL_KEY"
-description = "fal.ai API key for image generation"
+name = "LLM_MODEL"
+description = "Model to use (e.g. anthropic/claude-opus-4-6, Hermes-4-70B)"
+defaultValue = "anthropic/claude-opus-4-6"
 
 [[deploy.envVars]]
-name = "GITHUB_TOKEN"
-description = "GitHub Personal Access Token for the Skills Hub feature"
+name = "HERMES_INFERENCE_PROVIDER"
+description = "Provider override: auto | openrouter | nous-api (auto-detected if not set)"
+defaultValue = "auto"
 
 [[deploy.envVars]]
-name = "BROWSERBASE_API_KEY"
-description = "Browserbase API key for cloud browser execution (optional)"
+name = "TELEGRAM_BOT_TOKEN"
+description = "Telegram bot token from @BotFather"
 
 [[deploy.envVars]]
-name = "BROWSERBASE_PROJECT_ID"
-description = "Browserbase project ID (required when Browserbase is enabled)"
+name = "TELEGRAM_HOME_CHANNEL"
+description = "Your Telegram user ID (from @userinfobot)"
+
+[[deploy.envVars]]
+name = "TELEGRAM_ALLOWED_USERS"
+description = "Comma-separated Telegram user IDs allowed to use the bot"
+
+[[deploy.envVars]]
+name = "TERMINAL_ENV"
+description = "Terminal backend: local | docker"
+defaultValue = "local"
 
 [[deploy.envVars]]
 name = "GATEWAY_ALLOW_ALL_USERS"
-description = "Set to true to allow any user to chat with Hermes (default: false – allowlist only)"
+description = "Set to true to allow any Telegram user (not recommended)"
 defaultValue = "false"
-
-[[deploy.envVars]]
-name = "CONTEXT_COMPRESSION_ENABLED"
-description = "Auto-compress long conversations to save context (true/false)"
-defaultValue = "true"
-
-[[deploy.envVars]]
-name = "HERMES_HUMAN_DELAY_MODE"
-description = "Response pacing style: off | natural | custom"
-defaultValue = "off"

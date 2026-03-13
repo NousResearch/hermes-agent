@@ -1,8 +1,5 @@
 # ──────────────────────────────────────────────────────────
-# Hermes Agent – Railway Deployment Image
-# Runs:
-#   • FastAPI config UI on $PORT (default 8080)  ← primary process
-#   • gateway.run as a managed child process      ← started by FastAPI
+# Hermes Agent – Railway Deployment (Gateway only, no web UI)
 # ──────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
@@ -20,14 +17,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 WORKDIR /app
 COPY . .
 
-# ── Git submodules (mini-swe-agent, tinker-atropos) ────────
+# ── Git submodules ──────────────────────────────────────────
 RUN git submodule update --init --recursive 2>/dev/null || true
 
-# ── Python: hermes + web UI deps ───────────────────────────
+# ── Python deps ─────────────────────────────────────────────
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -e ".[all]" 2>/dev/null \
-    || pip install --no-cache-dir -e . \
-    && pip install --no-cache-dir "fastapi>=0.111" "uvicorn[standard]>=0.29" "httpx>=0.27" pyyaml
+    || pip install --no-cache-dir -e .
 
 # ── Node deps (browser automation) ─────────────────────────
 RUN if [ -f package.json ]; then npm install --omit=dev; fi

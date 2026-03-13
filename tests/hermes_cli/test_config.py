@@ -6,14 +6,15 @@ from unittest.mock import patch, MagicMock
 
 import yaml
 
-import yaml
-
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
     ensure_hermes_home,
     load_config,
+    load_env,
     save_config,
+    save_env_value,
+    save_env_value_secure,
 )
 
 
@@ -92,6 +93,43 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+
+class TestSaveEnvValueSecure:
+    def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+            captured = capsys.readouterr()
+            assert captured.out == ""
+            assert captured.err == ""
+
+            env_values = load_env()
+            assert env_values["TENOR_API_KEY"] == "sk-test-secret"
+
+    def test_secure_save_returns_metadata_only(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = save_env_value_secure("GITHUB_TOKEN", "ghp_test_secret")
+            assert result == {
+                "success": True,
+                "stored_as": "GITHUB_TOKEN",
+                "validated": False,
+            }
+            assert "secret" not in str(result).lower()
+
+    def test_save_env_value_updates_process_environment(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TENOR_API_KEY", None)
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+            assert os.environ["TENOR_API_KEY"] == "sk-test-secret"
+
+    def test_save_env_value_hardens_file_permissions_on_posix(self, tmp_path):
+        if os.name == "nt":
+            return
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+            env_mode = (tmp_path / ".env").stat().st_mode & 0o777
+            assert env_mode == 0o600
 
 
 class TestSaveConfigAtomicity:

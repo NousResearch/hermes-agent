@@ -271,7 +271,8 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
     headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
     if _is_oauth_token(token):
         headers["Authorization"] = f"Bearer {token}"
-        headers["anthropic-beta"] = "oauth-2025-04-20"
+        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS
+        headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
 

@@ -1571,7 +1571,11 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
         model_cfg = {}
 
     model_cfg["provider"] = provider_id
-    model_cfg["base_url"] = inference_base_url.rstrip("/")
+    if inference_base_url and inference_base_url.strip():
+        model_cfg["base_url"] = inference_base_url.rstrip("/")
+    else:
+        # Clear stale base_url to prevent contamination when switching providers
+        model_cfg.pop("base_url", None)
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

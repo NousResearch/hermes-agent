@@ -1590,8 +1590,67 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print("No change.")
 
 
+def _run_anthropic_oauth_flow(save_env_value):
+    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
+    from agent.anthropic_adapter import run_oauth_setup_token
+
+    try:
+        print()
+        print("  Running 'claude setup-token' — follow the prompts below.")
+        print("  A browser window will open for you to authorize access.")
+        print()
+        token = run_oauth_setup_token()
+        if token:
+            save_env_value("ANTHROPIC_API_KEY", token)
+            print("  ✓ OAuth credentials saved.")
+            return True
+
+        # Subprocess completed but no token auto-detected — ask user to paste
+        print()
+        print("  If the setup-token was displayed above, paste it here:")
+        print()
+        try:
+            manual_token = input("  Paste setup-token (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if manual_token:
+            save_env_value("ANTHROPIC_API_KEY", manual_token)
+            print("  ✓ Setup-token saved.")
+            return True
+
+        print("  ⚠ Could not detect saved credentials.")
+        return False
+
+    except FileNotFoundError:
+        # Claude CLI not installed — guide user through manual setup
+        print()
+        print("  The 'claude' CLI is required for OAuth login.")
+        print()
+        print("  To install and authenticate:")
+        print()
+        print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+        print("    2. Run:                  claude setup-token")
+        print("    3. Follow the browser prompts to authorize")
+        print("    4. Re-run:               hermes model")
+        print()
+        print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+        print()
+        try:
+            token = input("  Setup-token (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if token:
+            save_env_value("ANTHROPIC_API_KEY", token)
+            print("  ✓ Setup-token saved.")
+            return True
+        print("  Cancelled — install Claude Code and try again.")
+        return False
+
+
 def _model_flow_anthropic(config, current_model=""):
-    """Flow for Anthropic provider — setup-token, API key, or Claude Code creds."""
+    """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     import os
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
@@ -1602,12 +1661,13 @@ def _model_flow_anthropic(config, current_model=""):
 
     pconfig = PROVIDER_REGISTRY["anthropic"]
 
-    # Check for existing credentials
+    # Check ALL credential sources
     existing_key = (
         get_env_value("ANTHROPIC_API_KEY")
         or os.getenv("ANTHROPIC_API_KEY", "")
         or get_env_value("ANTHROPIC_TOKEN")
         or os.getenv("ANTHROPIC_TOKEN", "")
+        or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
     )
     cc_available = False
     try:
@@ -1618,27 +1678,37 @@ def _model_flow_anthropic(config, current_model=""):
     except Exception:
         pass
 
-    if existing_key:
-        print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+    has_creds = bool(existing_key) or cc_available
+    needs_auth = not has_creds
+
+    if has_creds:
+        # Show what we found
+        if existing_key:
+            print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+        elif cc_available:
+            print("  Claude Code credentials: ✓ (auto-detected)")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
         print()
         try:
-            update = input("Update credentials? [y/N]: ").strip().lower()
+            choice = input("  Choice [1/2/3]: ").strip()
         except (KeyboardInterrupt, EOFError):
-            update = ""
-        if update != "y":
-            pass  # skip to model selection
-        else:
-            existing_key = ""  # fall through to auth choice below
-    elif cc_available:
-        print("  Claude Code credentials: ✓ (auto-detected)")
-        print()
-    
-    if not existing_key and not cc_available:
-        # No credentials — show auth method choice
+            choice = "1"
+
+        if choice == "2":
+            needs_auth = True
+        elif choice == "3":
+            return
+        # choice == "1" or default: use existing, proceed to model selection
+
+    if needs_auth:
+        # Show auth method choice
         print()
         print("  Choose authentication method:")
         print()
-        print("    1. Claude Pro/Max subscription (setup-token)")
+        print("    1. Claude Pro/Max subscription (OAuth login)")
         print("    2. Anthropic API key (pay-per-token)")
         print("    3. Cancel")
         print()
@@ -1649,33 +1719,15 @@ def _model_flow_anthropic(config, current_model=""):
             return
 
         if choice == "1":
-            print()
-            print("  To get a setup-token from your Claude subscription:")
-            print()
-            print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
-            print("    2. Run:                  claude setup-token")
-            print("    3. Open the URL it prints in your browser")
-            print("    4. Log in and click \"Authorize\"")
-            print("    5. Paste the auth code back into Claude Code")
-            print("    6. Copy the resulting sk-ant-oat01-... token")
-            print()
-            try:
-                token = input("  Paste setup-token here: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
+            if not _run_anthropic_oauth_flow(save_env_value):
                 return
-            if not token:
-                print("  Cancelled.")
-                return
-            save_env_value("ANTHROPIC_API_KEY", token)
-            print("  ✓ Setup-token saved.")
 
         elif choice == "2":
             print()
             print("  Get an API key at: https://console.anthropic.com/settings/keys")
             print()
             try:
-                api_key = input("  API key (sk-ant-api03-...): ").strip()
+                api_key = input("  API key (sk-ant-...): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -1708,14 +1760,17 @@ def _model_flow_anthropic(config, current_model=""):
 
         _save_model_choice(selected)
 
-        # Update config with provider
+        # Update config with provider — clear base_url since
+        # resolve_runtime_provider() always hardcodes Anthropic's URL.
+        # Leaving a stale base_url in config can contaminate other
+        # providers if the user switches without running 'hermes model'.
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
             model = {"default": model} if model else {}
             cfg["model"] = model
         model["provider"] = "anthropic"
-        model["base_url"] = pconfig.inference_base_url
+        model.pop("base_url", None)
         save_config(cfg)
         deactivate_provider()
 

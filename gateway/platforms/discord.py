@@ -14,6 +14,8 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
+VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -608,6 +610,36 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+        @tree.command(name="thread", description="Create a new Discord thread here")
+        @discord.app_commands.describe(
+            name="Thread name",
+            message="Optional starter message",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
+        )
+        async def slash_thread(
+            interaction: discord.Interaction,
+            name: str,
+            message: str = "",
+            auto_archive_duration: int = 1440,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+
+        @tree.command(name="channel", description="Create a new Discord channel in this server")
+        @discord.app_commands.describe(
+            name="Channel name",
+            topic="Optional channel topic",
+            nsfw="Mark the channel as NSFW",
+        )
+        async def slash_channel(
+            interaction: discord.Interaction,
+            name: str,
+            topic: str = "",
+            nsfw: bool = False,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            await self._handle_channel_create_slash(interaction, name, topic, nsfw)
+
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
@@ -710,6 +742,215 @@ class DiscordAdapter(BasePlatformAdapter):
                 await interaction.followup.send("Update initiated~", ephemeral=True)
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
+
+    async def _handle_thread_create_slash(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        message: str = "",
+        auto_archive_duration: int = 1440,
+    ) -> None:
+        """Create a Discord thread natively from a slash command."""
+        result = await self._create_thread_from_interaction(
+            interaction,
+            name=name,
+            message=message,
+            auto_archive_duration=auto_archive_duration,
+        )
+
+        if result.get("success"):
+            thread_id = result.get("thread_id")
+            thread_name = result.get("thread_name") or name
+            if thread_id:
+                await interaction.followup.send(
+                    f"Created thread **{thread_name}**: <#{thread_id}>",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"Created thread **{thread_name}**.",
+                    ephemeral=True,
+                )
+            return
+
+        error = result.get("error", "unknown error")
+        await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
+
+    async def _handle_channel_create_slash(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        topic: str = "",
+        nsfw: bool = False,
+    ) -> None:
+        """Create a Discord channel natively from a slash command."""
+        result = await self._create_channel_from_interaction(
+            interaction,
+            name=name,
+            topic=topic,
+            nsfw=nsfw,
+        )
+
+        if result.get("success"):
+            channel_id = result.get("channel_id")
+            channel_name = result.get("channel_name") or name
+            if channel_id:
+                await interaction.followup.send(
+                    f"Created channel **#{channel_name}**: <#{channel_id}>",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"Created channel **#{channel_name}**.",
+                    ephemeral=True,
+                )
+            return
+
+        error = result.get("error", "unknown error")
+        await interaction.followup.send(f"Failed to create channel: {error}", ephemeral=True)
+
+    async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
+        """Return the interaction channel, fetching it if the payload is partial."""
+        channel = getattr(interaction, "channel", None)
+        if channel is not None:
+            return channel
+        if not self._client:
+            return None
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id is None:
+            return None
+        channel = self._client.get_channel(int(channel_id))
+        if channel is not None:
+            return channel
+        try:
+            return await self._client.fetch_channel(int(channel_id))
+        except Exception:
+            return None
+
+    def _thread_parent_channel(self, channel: Any) -> Any:
+        """Use the parent text channel when invoked from a thread."""
+        return getattr(channel, "parent", None) or channel
+
+    def _thread_reason(self, interaction: discord.Interaction) -> str:
+        display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
+        return f"Requested by {display_name} via /thread"
+
+    def _channel_reason(self, interaction: discord.Interaction) -> str:
+        display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
+        return f"Requested by {display_name} via /channel"
+
+    async def _create_thread_from_interaction(
+        self,
+        interaction: discord.Interaction,
+        *,
+        name: str,
+        message: str = "",
+        auto_archive_duration: int = 1440,
+    ) -> Dict[str, Any]:
+        """Create a thread in the current Discord channel without going through an agent tool."""
+        name = (name or "").strip()
+        if not name:
+            return {"error": "Thread name is required."}
+
+        if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
+            return {"error": f"auto_archive_duration must be one of: {allowed}."}
+
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None:
+            return {"error": "Could not resolve the current Discord channel."}
+        if isinstance(channel, discord.DMChannel):
+            return {"error": "Discord threads can only be created inside server text channels, not DMs."}
+
+        parent_channel = self._thread_parent_channel(channel)
+        if parent_channel is None:
+            return {"error": "Could not determine a parent text channel for the new thread."}
+
+        reason = self._thread_reason(interaction)
+        starter_message = (message or "").strip()
+
+        try:
+            thread = await parent_channel.create_thread(
+                name=name,
+                auto_archive_duration=auto_archive_duration,
+                reason=reason,
+            )
+            if starter_message:
+                await thread.send(starter_message)
+            return {
+                "success": True,
+                "thread_id": str(thread.id),
+                "thread_name": getattr(thread, "name", None) or name,
+            }
+        except Exception as direct_error:
+            try:
+                seed_content = starter_message or f"🧵 Thread created by Hermes: **{name}**"
+                seed_message = await parent_channel.send(seed_content)
+                thread = await seed_message.create_thread(
+                    name=name,
+                    auto_archive_duration=auto_archive_duration,
+                    reason=reason,
+                )
+                return {
+                    "success": True,
+                    "thread_id": str(thread.id),
+                    "thread_name": getattr(thread, "name", None) or name,
+                    "starter_message_id": str(getattr(seed_message, "id", "")) or None,
+                }
+            except Exception as fallback_error:
+                return {
+                    "error": (
+                        "Discord rejected direct thread creation and Hermes could not create a starter message either. "
+                        f"Direct error: {direct_error}. Fallback error: {fallback_error}"
+                    )
+                }
+
+    async def _create_channel_from_interaction(
+        self,
+        interaction: discord.Interaction,
+        *,
+        name: str,
+        topic: str = "",
+        nsfw: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a text channel in the current guild without going through an agent tool."""
+        name = (name or "").strip()
+        if not name:
+            return {"error": "Channel name is required."}
+
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None:
+            return {"error": "Could not resolve the current Discord channel."}
+        if isinstance(channel, discord.DMChannel):
+            return {"error": "Discord channels can only be created inside servers, not DMs."}
+
+        base_channel = self._thread_parent_channel(channel)
+        guild = getattr(base_channel, "guild", None) or getattr(channel, "guild", None)
+        if guild is None:
+            return {"error": "Could not determine which Discord server should own the new channel."}
+
+        kwargs = {
+            "name": name,
+            "nsfw": nsfw,
+            "reason": self._channel_reason(interaction),
+        }
+        topic = (topic or "").strip()
+        if topic:
+            kwargs["topic"] = topic
+        category = getattr(base_channel, "category", None)
+        if category is not None:
+            kwargs["category"] = category
+
+        try:
+            created = await guild.create_text_channel(**kwargs)
+        except Exception as e:
+            return {"error": str(e)}
+
+        return {
+            "success": True,
+            "channel_id": str(created.id),
+            "channel_name": getattr(created, "name", None) or name,
+        }
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""

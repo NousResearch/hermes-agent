@@ -358,6 +358,17 @@ class TestNormalizeModelName:
     def test_leaves_bare_name(self):
         assert normalize_model_name("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
 
+    def test_converts_dots_to_hyphens(self):
+        """OpenRouter uses dots (4.6), Anthropic uses hyphens (4-6)."""
+        assert normalize_model_name("anthropic/claude-opus-4.6") == "claude-opus-4-6"
+        assert normalize_model_name("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
+        assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
+
+    def test_already_hyphenated_unchanged(self):
+        """Names already in Anthropic format should pass through."""
+        assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
+        assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

@@ -438,7 +438,7 @@ class AIAgent:
                 from agent.anthropic_adapter import resolve_anthropic_token
                 effective_key = resolve_anthropic_token() or ""
             self._anthropic_api_key = effective_key
-            self._anthropic_client = build_anthropic_client(effective_key, base_url if base_url and "anthropic" in base_url else None)
+            self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
             self._client_kwargs = {}
@@ -2330,14 +2330,10 @@ class AIAgent:
             fb_api_mode = "chat_completions"
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
+            elif fb_provider == "anthropic":
+                fb_api_mode = "anthropic_messages"
             fb_base_url = str(fb_client.base_url)
 
-            # Swap client and config in-place
-            self.client = fb_client
-            self._client_kwargs = {
-                "api_key": fb_client.api_key,
-                "base_url": fb_base_url,
-            }
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider
@@ -2345,10 +2341,27 @@ class AIAgent:
             self.api_mode = fb_api_mode
             self._fallback_activated = True
 
+            if fb_api_mode == "anthropic_messages":
+                # Build native Anthropic client instead of using OpenAI client
+                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+                effective_key = fb_client.api_key or resolve_anthropic_token() or ""
+                self._anthropic_api_key = effective_key
+                self._anthropic_client = build_anthropic_client(effective_key)
+                self.client = None
+                self._client_kwargs = {}
+            else:
+                # Swap OpenAI client and config in-place
+                self.client = fb_client
+                self._client_kwargs = {
+                    "api_key": fb_client.api_key,
+                    "base_url": fb_base_url,
+                }
+
             # Re-evaluate prompt caching for the new provider/model
+            is_native_anthropic = fb_api_mode == "anthropic_messages"
             self._use_prompt_caching = (
-                "openrouter" in fb_base_url.lower()
-                and "claude" in fb_model.lower()
+                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
+                or is_native_anthropic
             )
 
             print(
@@ -2374,7 +2387,7 @@ class AIAgent:
                 model=self.model,
                 messages=api_messages,
                 tools=self.tools,
-                max_tokens=None,
+                max_tokens=self.max_tokens,
                 reasoning_config=self.reasoning_config,
             )
 

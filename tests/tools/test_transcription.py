@@ -28,6 +28,7 @@ class TestGetProvider:
 
     def test_local_fallback_to_openai(self, monkeypatch):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider

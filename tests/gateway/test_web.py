@@ -438,11 +438,14 @@ class TestTranscriptionGroqFallback:
         assert "not found" in result.get("error", "").lower()
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_no_key_returns_error(self):
+    def test_no_key_returns_error(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio data")
         from tools.transcription_tools import transcribe_audio
-        result = transcribe_audio("/nonexistent/audio.mp3")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            result = transcribe_audio(str(audio_file))
         assert result["success"] is False
-        assert "not set" in result.get("error", "").lower() or "GROQ" in result.get("error", "")
+        assert "no stt provider" in result.get("error", "").lower()
 
 
 # ===========================================================================

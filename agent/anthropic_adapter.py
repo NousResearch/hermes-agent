@@ -7,7 +7,7 @@ adapter — all provider-specific logic is isolated here.
 Auth supports:
   - Regular API keys (sk-ant-api*) → x-api-key header
   - OAuth setup-tokens (sk-ant-oat*) → Bearer auth + beta header
-  - Claude Code credentials (~/.claude/.credentials.json) → Bearer auth
+  - Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json) → Bearer auth
 """
 
 import json
@@ -150,7 +150,7 @@ def resolve_anthropic_token() -> Optional[str]:
     Priority:
       1. ANTHROPIC_API_KEY env var (regular API key)
       2. ANTHROPIC_TOKEN env var (OAuth/setup token)
-      3. Claude Code credentials (~/.claude/.credentials.json)
+      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
 
     Returns the token string or None.
     """
@@ -172,7 +172,7 @@ def resolve_anthropic_token() -> Optional[str]:
     # 3. Claude Code credential file
     creds = read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
-        logger.debug("Using Claude Code credentials from ~/.claude/.credentials.json")
+        logger.debug("Using Claude Code credentials (auto-detected)")
         return creds["accessToken"]
     elif creds:
         logger.debug("Claude Code credentials expired — run 'claude' to refresh")
@@ -188,11 +188,25 @@ def resolve_anthropic_token() -> Optional[str]:
 def normalize_model_name(model: str) -> str:
     """Normalize a model name for the Anthropic API.
 
-    - Strips 'anthropic/' prefix (OpenRouter format)
+    - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
     """
-    if model.startswith("anthropic/"):
+    lower = model.lower()
+    if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
     return model
+
+
+def _sanitize_tool_id(tool_id: str) -> str:
+    """Sanitize a tool call ID for the Anthropic API.
+
+    Anthropic requires IDs matching [a-zA-Z0-9_-]. Replace invalid
+    characters with underscores and ensure non-empty.
+    """
+    import re
+    if not tool_id:
+        return "tool_0"
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
+    return sanitized or "tool_0"
 
 
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
@@ -256,7 +270,7 @@ def convert_messages_to_anthropic(
                     parsed_args = {}
                 blocks.append({
                     "type": "tool_use",
-                    "id": tc.get("id", ""),
+                    "id": _sanitize_tool_id(tc.get("id", "")),
                     "name": fn.get("name", ""),
                     "input": parsed_args,
                 })
@@ -268,10 +282,14 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "tool":
+            # Sanitize tool_use_id and ensure non-empty content
+            result_content = content if isinstance(content, str) else json.dumps(content)
+            if not result_content:
+                result_content = "(no output)"
             tool_result = {
                 "type": "tool_result",
-                "tool_use_id": m.get("tool_call_id", ""),
-                "content": content if isinstance(content, str) else json.dumps(content),
+                "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),
+                "content": result_content,
             }
             # Merge consecutive tool results into one user message
             if (
@@ -391,6 +409,8 @@ def build_anthropic_kwargs(
                 kwargs["thinking"] = {"type": "adaptive", "budget_tokens": budget}
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Anthropic requires temperature=1 when thinking is enabled on older models
+                kwargs["temperature"] = 1
             kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs

@@ -1243,56 +1243,6 @@ def setup_model_provider(config: dict):
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
             )
-            if is_coding_plan:
-                zai_models = ["glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            else:
-                zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
-            model_choices = list(zai_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(zai_models):
-                _set_default_model(config, zai_models[model_idx])
-            elif model_idx == len(zai_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider == "kimi-coding":
-            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
-            model_choices = list(kimi_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(kimi_models):
-                _set_default_model(config, kimi_models[model_idx])
-            elif model_idx == len(kimi_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
-        elif selected_provider in ("minimax", "minimax-cn"):
-            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
-            model_choices = list(minimax_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(minimax_models):
-                _set_default_model(config, minimax_models[model_idx])
-            elif model_idx == len(minimax_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
         elif selected_provider == "anthropic":
             # Try live model list first, fall back to static
             from hermes_cli.models import provider_model_ids

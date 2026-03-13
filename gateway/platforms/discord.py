@@ -892,7 +892,9 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),
-            user_name=message.author.display_name,
+            # Use canonical Discord username (not mutable server nickname)
+            # for authorization fallback matching.
+            user_name=message.author.name,
             thread_id=thread_id,
             chat_topic=chat_topic,
         )

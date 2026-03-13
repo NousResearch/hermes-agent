@@ -852,17 +852,31 @@ class GatewayRunner:
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
         # Check if user is in any allowlist
-        allowed_ids = set()
+        allowed_entries = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            allowed_entries.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
         if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+            allowed_entries.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
-        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
+        # First pass: ID-based matching
+        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison.
         check_ids = {user_id}
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
-        return bool(check_ids & allowed_ids)
+        if check_ids & allowed_entries:
+            return True
+
+        # Second pass: username-based matching (case-insensitive).
+        # This supports configs like DISCORD_ALLOWED_USERS=alice,bob without
+        # requiring member-intent username->ID resolution to succeed first.
+        user_name = (source.user_name or "").strip()
+        if user_name:
+            normalized_user_name = user_name.lower().lstrip("@")
+            normalized_entries = {entry.lower().lstrip("@") for entry in allowed_entries}
+            if normalized_user_name in normalized_entries:
+                return True
+
+        return False
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """

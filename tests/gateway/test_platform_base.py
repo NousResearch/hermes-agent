@@ -14,7 +14,7 @@ from gateway.platforms.base import (
 class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-        assert "hermes setup" in message.lower()
+        assert "local cli" in message.lower()
         assert "~/.hermes/.env" in message
 
 

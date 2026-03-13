@@ -511,7 +511,7 @@ class TestSkillViewSecureSetupOnLoad:
         result = json.loads(raw)
         assert result["success"] is True
         assert called["value"] is False
-        assert "hermes setup" in result["gateway_setup_hint"].lower()
+        assert "local cli" in result["gateway_setup_hint"].lower()
         assert result["content"].startswith("---")
 
 
@@ -845,7 +845,7 @@ class TestSkillViewPrerequisites:
                 raw = skill_view("backend-unknown")
         result = json.loads(raw)
         assert result["success"] is True
-        assert "hermes setup" in result["gateway_setup_hint"].lower()
+        assert "local cli" in result["gateway_setup_hint"].lower()
         assert result["setup_needed"] is True
 
     @pytest.mark.parametrize(

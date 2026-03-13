@@ -83,10 +83,30 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        """
+        Create SessionResetPolicy from dictionary configuration.
+        
+        Handles both missing keys and explicit null values correctly.
+        Python's dict.get() only returns default when key is missing,
+        not when key exists with None/null value — so we check explicitly.
+        """
+        # Handle None values explicitly — data.get() returns None if key exists with null
+        at_hour = data.get("at_hour")
+        if at_hour is None:
+            at_hour = 4
+        
+        idle_minutes = data.get("idle_minutes")
+        if idle_minutes is None:
+            idle_minutes = 1440
+        
+        mode = data.get("mode")
+        if mode is None:
+            mode = "both"
+        
         return cls(
-            mode=data.get("mode", "both"),
-            at_hour=data.get("at_hour", 4),
-            idle_minutes=data.get("idle_minutes", 1440),
+            mode=mode,
+            at_hour=at_hour,
+            idle_minutes=idle_minutes,
         )
 
 

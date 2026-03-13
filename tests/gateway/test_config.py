@@ -82,6 +82,48 @@ class TestSessionResetPolicy:
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
 
+    def test_explicit_null_values_use_defaults(self):
+        """
+        Regression test for issue #1119: explicit null values in config.yaml
+        should use defaults, not None.
+        
+        Python's dict.get() returns None when key exists with null value,
+        which differs from when the key is missing entirely.
+        """
+        # Simulate YAML with explicit null values
+        data = {
+            "mode": None,
+            "at_hour": None,
+            "idle_minutes": None,
+        }
+        policy = SessionResetPolicy.from_dict(data)
+        
+        # Should use defaults, not None
+        assert policy.mode == "both"
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 1440
+
+    def test_partial_null_values(self):
+        """Partial null values should default while preserving set values."""
+        data = {
+            "mode": "idle",
+            "at_hour": None,  # null
+            "idle_minutes": 60,  # set
+        }
+        policy = SessionResetPolicy.from_dict(data)
+        
+        assert policy.mode == "idle"
+        assert policy.at_hour == 4  # defaulted
+        assert policy.idle_minutes == 60  # preserved
+
+    def test_empty_dict_uses_defaults(self):
+        """Empty dict (missing keys) should use all defaults."""
+        policy = SessionResetPolicy.from_dict({})
+        
+        assert policy.mode == "both"
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 1440
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):

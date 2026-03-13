@@ -37,6 +37,7 @@ class DeliveryTarget:
     """
     platform: Platform
     chat_id: Optional[str] = None  # None means use home channel
+    thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
     
@@ -58,6 +59,7 @@ class DeliveryTarget:
                 return cls(
                     platform=origin.platform,
                     chat_id=origin.chat_id,
+                    thread_id=origin.thread_id,
                     is_origin=True,
                 )
             else:
@@ -150,7 +152,7 @@ class DeliveryRouter:
                     continue
             
             # Deduplicate
-            key = (target.platform, target.chat_id)
+            key = (target.platform, target.chat_id, target.thread_id)
             if key not in seen_platforms:
                 seen_platforms.add(key)
                 targets.append(target)
@@ -285,7 +287,10 @@ class DeliveryRouter:
                 + f"\n\n... [truncated, full output saved to {saved_path}]"
             )
         
-        return await adapter.send(target.chat_id, content, metadata=metadata)
+        send_metadata = dict(metadata or {})
+        if target.thread_id and "thread_id" not in send_metadata:
+            send_metadata["thread_id"] = target.thread_id
+        return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
 
 
 def parse_deliver_spec(

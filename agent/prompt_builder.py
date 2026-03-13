@@ -131,6 +131,14 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "email": (
+        "You are communicating via email. Write clear, well-structured responses "
+        "suitable for email. Use plain text formatting (no markdown). "
+        "Keep responses concise but complete. You can send file attachments — "
+        "include MEDIA:/absolute/path/to/file in your response. The subject line "
+        "is preserved for threading. Do not include greetings or sign-offs unless "
+        "contextually appropriate."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
@@ -146,40 +154,85 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
-    """Read the description from a SKILL.md frontmatter, capped at max_chars."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        match = re.search(
-            r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---",
-            raw, re.MULTILINE | re.DOTALL,
-        )
-        if match:
-            desc = match.group(1).strip().strip("'\"")
-            if len(desc) > max_chars:
-                desc = desc[:max_chars - 3] + "..."
-            return desc
-    except Exception:
-        pass
-    return ""
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
-
-def _skill_is_platform_compatible(skill_file: Path) -> bool:
-    """Quick check if a SKILL.md is compatible with the current OS platform.
-
-    Reads just enough to parse the ``platforms`` frontmatter field.
-    Skills without the field (the vast majority) are always compatible.
+    Returns (is_compatible, frontmatter, description). On any error, returns
+    (True, {}, "") to err on the side of showing the skill.
     """
     try:
         from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        return skill_matches_platform(frontmatter)
+
+        if not skill_matches_platform(frontmatter):
+            return False, {}, ""
+
+        desc = ""
+        raw_desc = frontmatter.get("description", "")
+        if raw_desc:
+            desc = str(raw_desc).strip().strip("'\"")
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+
+        return True, frontmatter, desc
     except Exception:
-        return True  # Err on the side of showing the skill
+        return True, {}, ""
 
 
-def build_skills_system_prompt() -> str:
+def _read_skill_conditions(skill_file: Path) -> dict:
+    """Extract conditional activation fields from SKILL.md frontmatter."""
+    try:
+        from tools.skills_tool import _parse_frontmatter
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        hermes = frontmatter.get("metadata", {}).get("hermes", {})
+        return {
+            "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes.get("requires_toolsets", []),
+            "fallback_for_tools": hermes.get("fallback_for_tools", []),
+            "requires_tools": hermes.get("requires_tools", []),
+        }
+    except Exception:
+        return {}
+
+
+def _skill_should_show(
+    conditions: dict,
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+) -> bool:
+    """Return False if the skill's conditional activation rules exclude it."""
+    if available_tools is None and available_toolsets is None:
+        return True  # No filtering info — show everything (backward compat)
+
+    at = available_tools or set()
+    ats = available_toolsets or set()
+
+    # fallback_for: hide when the primary tool/toolset IS available
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if ts in ats:
+            return False
+    for t in conditions.get("fallback_for_tools", []):
+        if t in at:
+            return False
+
+    # requires: hide when a required tool/toolset is NOT available
+    for ts in conditions.get("requires_toolsets", []):
+        if ts not in ats:
+            return False
+    for t in conditions.get("requires_tools", []):
+        if t not in at:
+            return False
+
+    return True
+
+
+def build_skills_system_prompt(
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> str:
     """Build a compact skill index for the system prompt.
 
     Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
@@ -193,14 +246,18 @@ def build_skills_system_prompt() -> str:
     if not skills_dir.exists():
         return ""
 
-    # Collect skills with descriptions, grouped by category
+    # Collect skills with descriptions, grouped by category.
     # Each entry: (skill_name, description)
     # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
-    # → category "mlops/training", skill "axolotl"
+    # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        # Skip skills incompatible with the current OS platform
-        if not _skill_is_platform_compatible(skill_file):
+        is_compatible, _, desc = _parse_skill_file(skill_file)
+        if not is_compatible:
+            continue
+        # Skip skills whose conditional activation rules exclude them
+        conditions = _read_skill_conditions(skill_file)
+        if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
@@ -215,7 +272,6 @@ def build_skills_system_prompt() -> str:
         else:
             category = "general"
             skill_name = skill_file.parent.name
-        desc = _read_skill_description(skill_file)
         skills_by_category.setdefault(category, []).append((skill_name, desc))
 
     if not skills_by_category:

@@ -11,6 +11,7 @@ model:
   
   # Inference provider selection:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
+  #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
   #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
@@ -402,11 +403,13 @@ agent:
 #     discord: [web, vision, skills, todo]
 #
 # If not set, defaults are:
-#   cli:      hermes-cli      (everything + cronjob management)
-#   telegram: hermes-telegram  (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
-#   discord:  hermes-discord   (same as telegram)
-#   whatsapp: hermes-whatsapp  (same as telegram)
-#   slack:    hermes-slack     (same as telegram)
+#   cli:           hermes-cli            (everything + cronjob management)
+#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   discord:       hermes-discord        (same as telegram)
+#   whatsapp:      hermes-whatsapp       (same as telegram)
+#   slack:         hermes-slack          (same as telegram)
+#   signal:        hermes-signal         (same as telegram)
+#   homeassistant: hermes-homeassistant  (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -414,6 +417,8 @@ platform_toolsets:
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
+  signal: [hermes-signal]
+  homeassistant: [hermes-homeassistant]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -621,6 +626,10 @@ code_execution:
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+  # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
+  # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
+  #                                           # Resolves full credentials (base_url, api_key) automatically.
+  #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
@@ -651,7 +660,63 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Background process notifications (gateway/messaging only).
+  # Controls how chatty the process watcher is when you use
+  # terminal(background=true, check_interval=...) from Telegram/Discord/etc.
+  #   off:     No watcher messages at all
+  #   result:  Only the final completion message
+  #   error:   Only the final message when exit code != 0
+  #   all:     Running output updates + final message (default)
+  background_process_notifications: all
+
+
   # Play terminal bell when agent finishes a response.
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
   bell_on_complete: false
+
+  # Show model reasoning/thinking before each response.
+  # When enabled, a dim box shows the model's thought process above the response.
+  # Toggle at runtime with /reasoning show or /reasoning hide.
+  show_reasoning: false
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Skin / Theme
+  # ───────────────────────────────────────────────────────────────────────────
+  # Customize CLI visual appearance — banner colors, spinner faces, tool prefix,
+  # response box label, and branding text. Change at runtime with /skin <name>.
+  #
+  # Built-in skins:
+  #   default  — Classic Hermes gold/kawaii
+  #   ares     — Crimson/bronze war-god theme with spinner wings
+  #   mono     — Clean grayscale monochrome
+  #   slate    — Cool blue developer-focused
+  #
+  # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
+  # Schema (all fields optional, missing values inherit from default):
+  #
+  #   name: my-theme
+  #   description: Short description
+  #   colors:
+  #     banner_border: "#HEX"    # Panel border
+  #     banner_title: "#HEX"     # Panel title
+  #     banner_accent: "#HEX"    # Section headers (Available Tools, etc.)
+  #     banner_dim: "#HEX"       # Dim/muted text
+  #     banner_text: "#HEX"      # Body text (tool names, skill names)
+  #     ui_accent: "#HEX"        # UI accent color
+  #     response_border: "#HEX"  # Response box border color
+  #   spinner:
+  #     waiting_faces: ["(⚔)", "(⛨)"]       # Faces shown while waiting
+  #     thinking_faces: ["(⚔)", "(⌁)"]      # Faces shown while thinking
+  #     thinking_verbs: ["forging", "plotting"]  # Verbs for spinner messages
+  #     wings:                                # Optional left/right spinner decorations
+  #       - ["⟪⚔", "⚔⟫"]
+  #       - ["⟪▲", "▲⟫"]
+  #   branding:
+  #     agent_name: "My Agent"               # Banner title and branding
+  #     welcome: "Welcome message"           # Shown at CLI startup
+  #     response_label: " ⚔ Agent "         # Response box header label
+  #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
+  #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
+  #
+  skin: default

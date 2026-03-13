@@ -1098,7 +1098,7 @@ Please see the ocifs docs.
 
 The path should start with https://.
 
-This must be publically accessible.
+This must be publicly accessible.
 
 Now that you know how to load datasets, you can learn more on how to load your specific dataset format into your target output format dataset formats docs.
 

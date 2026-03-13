@@ -77,7 +77,6 @@ def show_status(args):
     
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
-        "Anthropic": "ANTHROPIC_API_KEY", 
         "OpenAI": "OPENAI_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
@@ -97,6 +96,14 @@ def show_status(args):
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
+
+    anthropic_value = (
+        get_env_value("ANTHROPIC_TOKEN")
+        or get_env_value("ANTHROPIC_API_KEY")
+        or ""
+    )
+    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
     # Auth Providers (OAuth)
@@ -208,6 +215,7 @@ def show_status(args):
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -263,7 +271,7 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            with open(jobs_file) as f:
+            with open(jobs_file, encoding="utf-8") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
@@ -283,7 +291,7 @@ def show_status(args):
     if sessions_file.exists():
         import json
         try:
-            with open(sessions_file) as f:
+            with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)
                 print(f"  Active:       {len(data)} session(s)")
         except Exception:

@@ -241,6 +241,9 @@ class SessionEntry:
     output_tokens: int = 0
     total_tokens: int = 0
     
+    # Last API-reported prompt tokens (for accurate compression pre-check)
+    last_prompt_tokens: int = 0
+    
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
@@ -257,6 +260,7 @@ class SessionEntry:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+            "last_prompt_tokens": self.last_prompt_tokens,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -272,8 +276,8 @@ class SessionEntry:
         if data.get("platform"):
             try:
                 platform = Platform(data["platform"])
-            except ValueError:
-                pass
+            except ValueError as e:
+                logger.debug("Unknown platform value %r: %s", data["platform"], e)
         
         return cls(
             session_key=data["session_key"],
@@ -287,6 +291,7 @@ class SessionEntry:
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
+            last_prompt_tokens=data.get("last_prompt_tokens", 0),
         )
 
 
@@ -294,13 +299,26 @@ def build_session_key(source: SessionSource) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
-    WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+
+    DM rules:
+      - WhatsApp DMs include chat_id (multi-user support).
+      - Other DMs include thread_id when present (e.g. Slack threaded DMs),
+        so each DM thread gets its own session while top-level DMs share one.
+      - Without thread_id or chat_id, all DMs share a single session.
+
+    Group/channel rules:
+      - thread_id differentiates threads within a channel.
+      - Without thread_id, all messages in a channel share one session.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
+        if source.thread_id:
+            return f"agent:main:{platform}:dm:{source.thread_id}"
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+    if source.thread_id:
+        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
     return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
 
 
@@ -353,12 +371,26 @@ class SessionStore:
     
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
+        import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
-        
+
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, sessions_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError as e:
+                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
+            raise
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
@@ -536,7 +568,8 @@ class SessionStore:
         self, 
         session_key: str,
         input_tokens: int = 0,
-        output_tokens: int = 0
+        output_tokens: int = 0,
+        last_prompt_tokens: int = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -546,6 +579,8 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            if last_prompt_tokens is not None:
+                entry.last_prompt_tokens = last_prompt_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()
             
@@ -663,10 +698,17 @@ class SessionStore:
         """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL)."""
-        # Write to SQLite
-        if self._db:
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Append a message to a session's transcript (SQLite + legacy JSONL).
+
+        Args:
+            skip_db: When True, only write to JSONL and skip the SQLite write.
+                     Used when the agent already persisted messages to SQLite
+                     via its own _flush_messages_to_session_db(), preventing
+                     the duplicate-write bug (#860).
+        """
+        # Write to SQLite (unless the agent already handled it)
+        if self._db and not skip_db:
             try:
                 self._db.append_message(
                     session_id=session_id,

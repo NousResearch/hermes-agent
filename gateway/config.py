@@ -28,6 +28,7 @@ class Platform(Enum):
     SLACK = "slack"
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
+    EMAIL = "email"
 
 
 @dataclass
@@ -167,6 +168,9 @@ class GatewayConfig:
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
                 connected.append(platform)
+            # Email uses extra dict for config (address + imap_host + smtp_host)
+            elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -270,7 +274,7 @@ def load_gateway_config() -> GatewayConfig:
     gateway_config_path = Path.home() / ".hermes" / "gateway.json"
     if gateway_config_path.exists():
         try:
-            with open(gateway_config_path, "r") as f:
+            with open(gateway_config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 config = GatewayConfig.from_dict(data)
         except Exception as e:
@@ -283,11 +287,23 @@ def load_gateway_config() -> GatewayConfig:
         import yaml
         config_yaml_path = Path.home() / ".hermes" / "config.yaml"
         if config_yaml_path.exists():
-            with open(config_yaml_path) as f:
+            with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge discord settings from config.yaml to env vars
+            # (env vars take precedence — only set if not already defined)
+            discord_cfg = yaml_cfg.get("discord", {})
+            if isinstance(discord_cfg, dict):
+                if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
+                    os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                frc = discord_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     except Exception:
         pass
 
@@ -420,6 +436,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
+    # Email
+    email_addr = os.getenv("EMAIL_ADDRESS")
+    email_pwd = os.getenv("EMAIL_PASSWORD")
+    email_imap = os.getenv("EMAIL_IMAP_HOST")
+    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    if all([email_addr, email_pwd, email_imap, email_smtp]):
+        if Platform.EMAIL not in config.platforms:
+            config.platforms[Platform.EMAIL] = PlatformConfig()
+        config.platforms[Platform.EMAIL].enabled = True
+        config.platforms[Platform.EMAIL].extra.update({
+            "address": email_addr,
+            "imap_host": email_imap,
+            "smtp_host": email_smtp,
+        })
+        email_home = os.getenv("EMAIL_HOME_ADDRESS")
+        if email_home:
+            config.platforms[Platform.EMAIL].home_channel = HomeChannel(
+                platform=Platform.EMAIL,
+                chat_id=email_home,
+                name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:
@@ -441,5 +479,5 @@ def save_gateway_config(config: GatewayConfig) -> None:
     gateway_config_path = Path.home() / ".hermes" / "gateway.json"
     gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with open(gateway_config_path, "w") as f:
+    with open(gateway_config_path, "w", encoding="utf-8") as f:
         json.dump(config.to_dict(), f, indent=2)

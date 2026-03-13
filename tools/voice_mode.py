@@ -400,7 +400,10 @@ class AudioRecorder:
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()
-        t.join(timeout=timeout)
+        # Poll in short intervals so Ctrl+C is not blocked
+        deadline = __import__("time").monotonic() + timeout
+        while t.is_alive() and __import__("time").monotonic() < deadline:
+            t.join(timeout=0.1)
         if t.is_alive():
             logger.warning("Audio stream close timed out after %.1fs — forcing ahead", timeout)
 
@@ -465,7 +468,8 @@ class AudioRecorder:
             self._recording = False
             self._frames = []
             self._on_silence_stop = None
-            self._close_stream_with_timeout()
+        # Close stream OUTSIDE the lock to avoid deadlock with audio callback
+        self._close_stream_with_timeout()
         logger.info("AudioRecorder shut down")
 
     # -- private helpers -----------------------------------------------------

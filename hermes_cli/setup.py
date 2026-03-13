@@ -1935,7 +1935,17 @@ def setup_gateway(config: dict):
                 "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
             )
             if allowed_users:
-                save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                # Clean up common prefixes (user:123, <@123>, <@!123>)
+                cleaned_ids = []
+                for uid in allowed_users.replace(" ", "").split(","):
+                    uid = uid.strip()
+                    if uid.startswith("<@") and uid.endswith(">"):
+                        uid = uid.lstrip("<@!").rstrip(">")
+                    if uid.lower().startswith("user:"):
+                        uid = uid[5:]
+                    if uid:
+                        cleaned_ids.append(uid)
+                save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                 print_success("Discord allowlist configured")
             else:
                 print_info(
@@ -1970,8 +1980,18 @@ def setup_gateway(config: dict):
                 )
                 allowed_users = prompt("Allowed user IDs (comma-separated)")
                 if allowed_users:
+                    # Clean up common prefixes (user:123, <@123>, <@!123>)
+                    cleaned_ids = []
+                    for uid in allowed_users.replace(" ", "").split(","):
+                        uid = uid.strip()
+                        if uid.startswith("<@") and uid.endswith(">"):
+                            uid = uid.lstrip("<@!").rstrip(">")
+                        if uid.lower().startswith("user:"):
+                            uid = uid[5:]
+                        if uid:
+                            cleaned_ids.append(uid)
                     save_env_value(
-                        "DISCORD_ALLOWED_USERS", allowed_users.replace(" ", "")
+                        "DISCORD_ALLOWED_USERS", ",".join(cleaned_ids)
                     )
                     print_success("Discord allowlist configured")
 

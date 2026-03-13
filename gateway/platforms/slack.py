@@ -66,7 +66,7 @@ class SlackAdapter(BasePlatformAdapter):
       - Typing indicators (not natively supported by Slack bots)
     """
 
-    MAX_MESSAGE_LENGTH = 3900  # Slack hard limit is 4000 but leave room for mrkdwn
+    MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -216,12 +216,32 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Slack doesn't support typing indicators for bot users.
+        """Show a typing/status indicator using assistant.threads.setStatus.
 
-        The reactions system (👀 on receipt, ✅ on completion) serves as
-        the visual feedback mechanism instead.
+        Displays "is thinking..." next to the bot name in a thread.
+        Requires the assistant:write or chat:write scope.
+        Auto-clears when the bot sends a reply to the thread.
         """
-        pass
+        if not self._app:
+            return
+
+        thread_ts = None
+        if metadata:
+            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+
+        if not thread_ts:
+            return  # Can only set status in a thread context
+
+        try:
+            await self._app.client.assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="is thinking...",
+            )
+        except Exception as e:
+            # Silently ignore — may lack assistant:write scope or not be
+            # in an assistant-enabled context. Falls back to reactions.
+            logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
 
     def _resolve_thread_ts(
         self,

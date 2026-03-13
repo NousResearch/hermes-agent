@@ -14,7 +14,9 @@ This module provides:
 
 import os
 import platform
+import re
 import stat
+import sys
 import subprocess
 import sys
 import tempfile
@@ -22,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 import yaml
 
@@ -984,6 +987,9 @@ def load_env() -> Dict[str, str]:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    value = value.replace("\n", "").replace("\r", "")
     ensure_hermes_home()
     env_path = get_env_path()
     
@@ -1026,6 +1032,8 @@ def save_env_value(key: str, value: str):
         raise
     _secure_file(env_path)
 
+    os.environ[key] = value
+
     # Restrict .env permissions to owner-only (contains API keys)
     if not _IS_WINDOWS:
         try:
@@ -1046,6 +1054,16 @@ def save_anthropic_api_key(value: str, save_fn=None):
     writer = save_fn or save_env_value
     writer("ANTHROPIC_API_KEY", value)
     writer("ANTHROPIC_TOKEN", "")
+
+
+def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
+    save_env_value(key, value)
+    return {
+        "success": True,
+        "stored_as": key,
+        "validated": False,
+    }
+
 
 
 def get_env_value(key: str) -> Optional[str]:
@@ -1075,7 +1093,6 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    env_vars = load_env()
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -1231,7 +1248,7 @@ def edit_config():
                 break
     
     if not editor:
-        print(f"No editor found. Config file is at:")
+        print("No editor found. Config file is at:")
         print(f"  {config_path}")
         return
     
@@ -1436,7 +1453,7 @@ def config_command(args):
         if missing_config:
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
-            print(f"    Run 'hermes config migrate' to add them")
+            print("    Run 'hermes config migrate' to add them")
         
         print()
     

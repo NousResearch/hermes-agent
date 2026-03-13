@@ -533,6 +533,49 @@ class TestMessageRouting:
 
 
 # ---------------------------------------------------------------------------
+# TestSendTyping — assistant.threads.setStatus
+# ---------------------------------------------------------------------------
+
+
+class TestSendTyping:
+    """Test typing indicator via assistant.threads.setStatus."""
+
+    @pytest.mark.asyncio
+    async def test_sets_status_in_thread(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+
+    @pytest.mark.asyncio
+    async def test_noop_without_thread(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123")
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_scope_gracefully(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=Exception("missing_scope")
+        )
+        # Should not raise
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
+
+    @pytest.mark.asyncio
+    async def test_uses_thread_ts_fallback(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_ts": "fallback_ts"})
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="fallback_ts",
+            status="is thinking...",
+        )
+
+
+# ---------------------------------------------------------------------------
 # TestFormatMessage — Markdown → mrkdwn conversion
 # ---------------------------------------------------------------------------
 
@@ -760,7 +803,7 @@ class TestMessageSplitting:
     @pytest.mark.asyncio
     async def test_long_message_split_into_chunks(self, adapter):
         """Messages over MAX_MESSAGE_LENGTH should be split."""
-        long_text = "x" * 5000
+        long_text = "x" * 45000  # Over Slack's 40k API limit
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "ts1"}
         )

@@ -416,7 +416,8 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    VERSION, RELEASE_DATE,
+    _build_hermes_logo, _build_hermes_caduceus, _build_compact_banner,
     get_available_skills as _get_available_skills,
     build_welcome_banner,
 )
@@ -730,59 +731,13 @@ class ChatConsole:
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
-# ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
-HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#FFBF00]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#FFBF00]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#CD7F32]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
-
-# ASCII Art - Hermes Caduceus (compact, fits in left panel)
-HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
-[#FFBF00]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
-
-# Compact banner for smaller terminals (fallback)
-# Note: built dynamically by _build_compact_banner() to fit terminal width
-COMPACT_BANNER = """
-[bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
-[bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
-[bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
-"""
-
-
-def _build_compact_banner() -> str:
-    """Build a compact banner that fits the current terminal width."""
-    w = min(shutil.get_terminal_size().columns - 2, 64)
-    if w < 30:
-        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
-    inner = w - 2  # inside the box border
-    bar = "═" * w
-    line1 = "⚕ NOUS HERMES - AI Agent Framework"
-    line2 = "Messenger of the Digital Gods  ·  Nous Research"
-    # Truncate and pad to fit
-    line1 = line1[:inner - 2].ljust(inner - 2)
-    line2 = line2[:inner - 2].ljust(inner - 2)
-    return (
-        f"\n[bold #FFD700]╔{bar}╗[/]\n"
-        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
-        f"[bold #FFD700]╚{bar}╝[/]\n"
-    )
+def _skin_c(key: str, fallback: str = "") -> str:
+    """Get a skin color for Rich markup."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color(key, fallback)
+    except Exception:
+        return fallback
 
 
 def _get_available_skills() -> Dict[str, List[str]]:
@@ -860,8 +815,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Build left content: caduceus + model info
     # Resolve skin colors for the banner
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_cli.skin_engine import get_active_skin, get_theme_mode
         _bskin = get_active_skin()
+        _theme = get_theme_mode()
         _accent = _bskin.get_color("banner_accent", "#FFBF00")
         _dim = _bskin.get_color("banner_dim", "#B8860B")
         _text = _bskin.get_color("banner_text", "#FFF8DC")
@@ -875,7 +831,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
         _agent_name = "Hermes Agent"
 
-    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else _build_hermes_caduceus()
     left_lines = ["", _hero, ""]
     
     # Shorten model name for display
@@ -1004,7 +960,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else _build_hermes_logo()
         console.print(_logo)
         console.print()
     
@@ -1021,60 +977,8 @@ from agent.skill_commands import scan_skill_commands, get_skill_commands, build_
 _skill_commands = scan_skill_commands()
 
 
-def save_config_value(key_path: str, value: any) -> bool:
-    """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
-    
-    Args:
-        key_path: Dot-separated path like "agent.system_prompt"
-        value: Value to save
-    
-    Returns:
-        True if successful, False otherwise
-    """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = Path.home() / '.hermes' / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
-    
-    try:
-        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Load existing config
-        if config_path.exists():
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f) or {}
-        else:
-            config = {}
-        
-        # Navigate to the key and set value
-        keys = key_path.split('.')
-        current = config
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        current[keys[-1]] = value
-        
-        # Save back
-        with open(config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
-        try:
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        
-        return True
-    except Exception as e:
-        logger.error("Failed to save config: %s", e)
-        return False
+# Re-export from canonical location in hermes_cli.config
+from hermes_cli.config import save_config_value
 
 
 # ============================================================================
@@ -1607,15 +1511,17 @@ class HermesCLI:
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
+            _sl_c = _skin_c("session_label", "#DAA520")
             self.console.print(
-                f"[#DAA520]↻ Resumed session [bold]{self.session_id}[/bold]"
+                f"[{_sl_c}]↻ Resumed session [bold]{self.session_id}[/bold]"
                 f"{title_part} "
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
         else:
+            _sl_c = _skin_c("session_label", "#DAA520")
             self.console.print(
-                f"[#DAA520]Session {self.session_id} found but has no "
+                f"[{_sl_c}]Session {self.session_id} found but has no "
                 f"messages. Starting fresh.[/]"
             )
             return False
@@ -1745,16 +1651,19 @@ class HermesCLI:
                 style="dim italic",
             )
 
+        _sl_c = _skin_c("session_label", "#DAA520")
+        _ok_c = _skin_c("ui_ok", "#4caf50")
+        _sb_c = _skin_c("session_border", "#8B8682")
         for i, (role, text) in enumerate(entries):
             if role == "user":
-                lines.append("  ● You: ", style="dim bold #DAA520")
+                lines.append("  ● You: ", style=f"dim bold {_sl_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             else:
-                lines.append("  ◆ Hermes: ", style="dim bold #8FBC8F")
+                lines.append("  ◆ Hermes: ", style=f"dim bold {_ok_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
@@ -1764,8 +1673,8 @@ class HermesCLI:
 
         panel = Panel(
             lines,
-            title="[dim #DAA520]Previous Conversation[/]",
-            border_style="dim #8B8682",
+            title=f"[dim {_sl_c}]Previous Conversation[/]",
+            border_style=f"dim {_sb_c}",
             padding=(0, 1),
         )
         self.console.print(panel)
@@ -1958,17 +1867,21 @@ class HermesCLI:
             api_indicator = "[red bold]●[/]"
         
         # Build status line with proper markup
+        _dim_c = _skin_c("banner_dim", "#B8860B")
+        _acc_c = _skin_c("ui_accent", "#FFBF00")
+        _lbl_c = _skin_c("ui_label", "#4dd0e1")
+        _brd_c = _skin_c("banner_border", "#CD7F32")
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {_dim_c}]·[/] [{_brd_c}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {_dim_c}]·[/] [dim]provider: {self.provider}[/]"
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {_dim_c}]·[/] [dim]auth: {self._provider_source}[/]"
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  {api_indicator} [{_acc_c}]{model_short}[/] "
+            f"[dim {_dim_c}]·[/] [bold {_lbl_c}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     
@@ -2967,7 +2880,7 @@ class HermesCLI:
                     self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
                 self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                self.console.print(f"[dim {_skin_c('banner_dim', '#B8860B')}]Type /help for available commands[/]")
         
         return True
     
@@ -3080,29 +2993,57 @@ class HermesCLI:
         thread.start()
 
     def _handle_skin_command(self, cmd: str):
-        """Handle /skin [name] — show or change the display skin."""
+        """Handle /skin [name] — show or change the display skin or theme mode."""
         try:
-            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+            from hermes_cli.skin_engine import (
+                list_skins, set_active_skin, get_active_skin_name,
+                get_theme_mode, set_theme_mode, get_theme_mode_setting,
+            )
         except ImportError:
             print("Skin engine not available.")
             return
 
         parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            # Show current skin and list available
+        arg = parts[1].strip().lower() if len(parts) >= 2 and parts[1].strip() else ""
+
+        # /skin theme light|dark|auto — change theme mode
+        if arg.startswith("theme"):
+            theme_arg = arg[len("theme"):].strip()
+            if theme_arg not in ("light", "dark", "auto"):
+                print(f"  Usage: /skin theme light|dark|auto")
+                return
+            set_theme_mode(theme_arg)
+            save_config_value("display.theme_mode", theme_arg)
+            if theme_arg == "auto":
+                detected = get_theme_mode()
+                print(f"  Theme mode: auto (detected: {detected})")
+            else:
+                print(f"  Theme mode: {theme_arg}")
+            print("  Note: colors will update on next session start.")
+            return
+
+        if not arg:
+            # Show current skin, theme mode, and list available
             current = get_active_skin_name()
+            theme = get_theme_mode()
+            theme_setting = get_theme_mode_setting()
             skins = list_skins()
             print(f"\n  Current skin: {current}")
+            if theme_setting == "auto":
+                print(f"  Theme mode:  auto (detected: {theme})")
+            else:
+                print(f"  Theme mode:  {theme}")
             print(f"  Available skins:")
             for s in skins:
                 marker = " ●" if s["name"] == current else "  "
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
-            print(f"\n  Usage: /skin <name>")
+            print(f"\n  Usage: /skin <name>              — change skin")
+            print(f"         /skin theme light|dark|auto — change theme mode")
             print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
             return
 
-        new_skin = parts[1].strip().lower()
+        new_skin = arg
         available = {s["name"] for s in list_skins()}
         if new_skin not in available:
             print(f"  Unknown skin: {new_skin}")
@@ -4665,41 +4606,79 @@ class HermesCLI:
         )
         
         # Style for the application
+        # Colors are pulled from the active skin, which respects the theme_mode
+        # setting (auto/light/dark). Body text colors (input-area, sudo-text, etc.)
+        # are left empty so the terminal's default foreground is used — this ensures
+        # readability on both light and dark backgrounds.
+        try:
+            from hermes_cli.skin_engine import get_active_skin, get_theme_mode
+            _skin = get_active_skin()
+            _is_light = get_theme_mode() == "light"
+        except Exception:
+            _skin = None
+            _is_light = False
+
+        def _sc(key, fallback=""):
+            return _skin.get_color(key, fallback) if _skin else fallback
+
+        _prompt_c = _sc("prompt", "#FFD700")
+        _input_rule_c = _sc("input_rule", "#CD7F32")
+        _ui_warn_c = _sc("ui_warn", "#ffa726")
+        _ui_error_c = _sc("ui_error", "#ef5350")
+        _ui_label_c = _sc("ui_label", "#87CEEB")
+        _ui_accent_c = _sc("ui_accent", "#FFD700")
+
+        # Completion menu colors need light/dark variants
+        if _is_light:
+            _menu_bg = '#e8e8e8'
+            _menu_fg = '#333333'
+            _menu_sel_bg = '#c0c0e0'
+            _menu_sel_fg = _ui_accent_c
+            _menu_meta_fg = '#666666'
+            _dim_fg = '#888888'
+        else:
+            _menu_bg = '#1a1a2e'
+            _menu_fg = '#FFF8DC'
+            _menu_sel_bg = '#333355'
+            _menu_sel_fg = _ui_accent_c
+            _menu_meta_fg = '#888888'
+            _dim_fg = '#555555'
+
         style = PTStyle.from_dict({
-            'input-area': '#FFF8DC',
-            'placeholder': '#555555 italic',
-            'prompt': '#FFF8DC',
+            'input-area': _prompt_c if _is_light else '',
+            'placeholder': f'{_dim_fg} italic',
+            'prompt': _prompt_c,
             'prompt-working': '#888888 italic',
-            'hint': '#555555 italic',
-            # Bronze horizontal rules around the input area
-            'input-rule': '#CD7F32',
+            'hint': f'{_dim_fg} italic',
+            # Accent rules around the input area
+            'input-rule': _input_rule_c,
             # Clipboard image attachment badges
-            'image-badge': '#87CEEB bold',
-            'completion-menu': 'bg:#1a1a2e #FFF8DC',
-            'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
-            'completion-menu.completion.current': 'bg:#333355 #FFD700',
-            'completion-menu.meta.completion': 'bg:#1a1a2e #888888',
-            'completion-menu.meta.completion.current': 'bg:#333355 #FFBF00',
+            'image-badge': f'{_ui_label_c} bold',
+            'completion-menu': f'bg:{_menu_bg} {_menu_fg}',
+            'completion-menu.completion': f'bg:{_menu_bg} {_menu_fg}',
+            'completion-menu.completion.current': f'bg:{_menu_sel_bg} {_menu_sel_fg}',
+            'completion-menu.meta.completion': f'bg:{_menu_bg} {_menu_meta_fg}',
+            'completion-menu.meta.completion.current': f'bg:{_menu_sel_bg} {_menu_sel_fg}',
             # Clarify question panel
-            'clarify-border': '#CD7F32',
-            'clarify-title': '#FFD700 bold',
-            'clarify-question': '#FFF8DC bold',
-            'clarify-choice': '#AAAAAA',
-            'clarify-selected': '#FFD700 bold',
-            'clarify-active-other': '#FFD700 italic',
-            'clarify-countdown': '#CD7F32',
+            'clarify-border': _input_rule_c,
+            'clarify-title': f'{_ui_accent_c} bold',
+            'clarify-question': 'bold',
+            'clarify-choice': _dim_fg,
+            'clarify-selected': f'{_ui_accent_c} bold',
+            'clarify-active-other': f'{_ui_accent_c} italic',
+            'clarify-countdown': _input_rule_c,
             # Sudo password panel
-            'sudo-prompt': '#FF6B6B bold',
-            'sudo-border': '#CD7F32',
-            'sudo-title': '#FF6B6B bold',
-            'sudo-text': '#FFF8DC',
+            'sudo-prompt': f'{_ui_error_c} bold',
+            'sudo-border': _input_rule_c,
+            'sudo-title': f'{_ui_error_c} bold',
+            'sudo-text': '',
             # Dangerous command approval panel
-            'approval-border': '#CD7F32',
-            'approval-title': '#FF8C00 bold',
-            'approval-desc': '#FFF8DC bold',
-            'approval-cmd': '#AAAAAA italic',
-            'approval-choice': '#AAAAAA',
-            'approval-selected': '#FFD700 bold',
+            'approval-border': _input_rule_c,
+            'approval-title': f'{_ui_warn_c} bold',
+            'approval-desc': 'bold',
+            'approval-cmd': f'{_dim_fg} italic',
+            'approval-choice': _dim_fg,
+            'approval-selected': f'{_ui_accent_c} bold',
         })
         
         # Create the application

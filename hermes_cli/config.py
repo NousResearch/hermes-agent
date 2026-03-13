@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import logging
 import os
 import platform
 import re
@@ -22,6 +23,8 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -173,6 +176,7 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "skin": "default",
+        "theme_mode": "auto",  # "auto" (detect), "light", or "dark"
     },
     
     # Text-to-speech configuration
@@ -938,6 +942,55 @@ _COMMENTED_SECTIONS = """
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
 """
+
+
+def save_config_value(key_path: str, value: any) -> bool:
+    """Save a value to the active config file at the specified key path.
+
+    Respects the same lookup order as load_cli_config():
+    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
+    2. ./cli-config.yaml (project config - fallback)
+
+    Args:
+        key_path: Dot-separated path like "agent.system_prompt"
+        value: Value to save
+
+    Returns:
+        True if successful, False otherwise
+    """
+    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    project_config_path = Path(__file__).parent.parent / 'cli-config.yaml'
+    config_path = user_config_path if user_config_path.exists() else project_config_path
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+        else:
+            config = {}
+
+        keys = key_path.split('.')
+        current = config
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+        try:
+            os.chmod(config_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+
+        return True
+    except Exception as e:
+        logger.error("Failed to save config: %s", e)
+        return False
 
 
 def save_config(config: Dict[str, Any]):

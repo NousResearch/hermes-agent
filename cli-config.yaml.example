@@ -705,6 +705,9 @@ display:
   #     banner_text: "#HEX"      # Body text (tool names, skill names)
   #     ui_accent: "#HEX"        # UI accent color
   #     response_border: "#HEX"  # Response box border color
+  #   colors_light:               # Optional light-terminal overrides
+  #     banner_title: "#HEX"
+  #     prompt: "#HEX"
   #   spinner:
   #     waiting_faces: ["(⚔)", "(⛨)"]       # Faces shown while waiting
   #     thinking_faces: ["(⚔)", "(⌁)"]      # Faces shown while thinking
@@ -718,5 +721,11 @@ display:
   #     response_label: " ⚔ Agent "         # Response box header label
   #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
+  # Theme mode for terminal-aware colors.
+  #   auto  — Detect terminal background automatically and pick light/dark colors
+  #   dark  — Force dark-terminal colors
+  #   light — Force light-terminal colors
+  theme_mode: auto
+
   #
   skin: default

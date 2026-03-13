@@ -11,6 +11,8 @@ import time
 _IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
+from tools.environments.persistent_shell import PersistentShellMixin
+from tools.interrupt import is_interrupted
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
@@ -162,6 +164,25 @@ def _clean_shell_noise(output: str) -> str:
     return result
 
 
+_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def _make_run_env(env: dict) -> dict:
+    """Build a run environment with a sane PATH and provider-var stripping."""
+    merged = dict(os.environ | env)
+    run_env = {}
+    for k, v in merged.items():
+        if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            run_env[real_key] = v
+        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            run_env[k] = v
+    existing_path = run_env.get("PATH", "")
+    if "/usr/bin" not in existing_path.split(":"):
+        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    return run_env
+
+
 def _extract_fenced_output(raw: str) -> str:
     """Extract real command output from between fence markers.
 
@@ -186,7 +207,7 @@ def _extract_fenced_output(raw: str) -> str:
     return raw[start:last]
 
 
-class LocalEnvironment(BaseEnvironment):
+class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     """Run commands directly on the host machine.
 
     Features:
@@ -195,24 +216,72 @@ class LocalEnvironment(BaseEnvironment):
     - stdin_data support for piping content (bypasses ARG_MAX limits)
     - sudo -S transform via SUDO_PASSWORD env var
     - Uses interactive login shell so full user env is available
+    - Optional persistent shell mode (cwd/env vars survive across calls)
     """
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
+                 persistent: bool = False):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self.persistent = persistent
+        if self.persistent:
+            self._init_persistent_shell()
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        from tools.terminal_tool import _interrupt_event
+    # ------------------------------------------------------------------
+    # PersistentShellMixin: backend-specific implementations
+    # ------------------------------------------------------------------
 
+    @property
+    def _temp_prefix(self) -> str:
+        return f"/tmp/hermes-local-{self._session_id}"
+
+    def _spawn_shell_process(self) -> subprocess.Popen:
+        user_shell = _find_bash()
+        run_env = _make_run_env(self.env)
+        return subprocess.Popen(
+            [user_shell, "-l"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=run_env,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
+        )
+
+    def _read_temp_files(self, *paths: str) -> list[str]:
+        """Read local files directly."""
+        results = []
+        for path in paths:
+            try:
+                with open(path) as f:
+                    results.append(f.read())
+            except OSError:
+                results.append("")
+        return results
+
+    def _kill_shell_children(self):
+        """Kill children of the persistent shell via pkill -P."""
+        if self._shell_pid is None:
+            return
+        try:
+            subprocess.run(
+                ["pkill", "-P", str(self._shell_pid)],
+                capture_output=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+            pass
+
+    # ------------------------------------------------------------------
+    # One-shot execution (original behavior)
+    # ------------------------------------------------------------------
+
+    def _execute_oneshot(self, command: str, cwd: str = "", *,
+                         timeout: int | None = None,
+                         stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
         exec_command, sudo_stdin = self._prepare_command(command)
 
         # Merge the sudo password (if any) with caller-supplied stdin_data.
-        # sudo -S reads exactly one line (the password) then passes the rest
-        # of stdin to the child, so prepending is safe even when stdin_data
-        # is also present.
         if sudo_stdin is not None and stdin_data is not None:
             effective_stdin = sudo_stdin + stdin_data
         elif sudo_stdin is not None:
@@ -221,13 +290,7 @@ class LocalEnvironment(BaseEnvironment):
             effective_stdin = stdin_data
 
         try:
-            # The fence wrapper uses bash syntax (semicolons, $?, printf).
-            # Always use bash for the wrapper — NOT $SHELL which could be
-            # fish, zsh, or another shell with incompatible syntax.
-            # The -lic flags source rc files so tools like nvm/pyenv work.
             user_shell = _find_bash()
-            # Wrap with output fences so we can later extract the real
-            # command output and discard shell init/exit noise.
             fenced_cmd = (
                 f"printf '{_OUTPUT_FENCE}';"
                 f" {exec_command};"
@@ -235,24 +298,7 @@ class LocalEnvironment(BaseEnvironment):
                 f" printf '{_OUTPUT_FENCE}';"
                 f" exit $__hermes_rc"
             )
-            # Ensure PATH always includes standard dirs — systemd services
-            # and some terminal multiplexers inherit a minimal PATH.
-            _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            # Strip Hermes-internal provider vars so external CLIs
-            # (e.g. codex) are not silently misrouted.  Callers that
-            # truly need a blocked var can opt in by prefixing the key
-            # with _HERMES_FORCE_ in self.env (e.g. _HERMES_FORCE_OPENAI_API_KEY).
-            merged = dict(os.environ | self.env)
-            run_env = {}
-            for k, v in merged.items():
-                if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
-                    real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-                    run_env[real_key] = v
-                elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
-                    run_env[k] = v
-            existing_path = run_env.get("PATH", "")
-            if "/usr/bin" not in existing_path.split(":"):
-                run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+            run_env = _make_run_env(self.env)
 
             proc = subprocess.Popen(
                 [user_shell, "-lic", fenced_cmd],
@@ -295,7 +341,7 @@ class LocalEnvironment(BaseEnvironment):
             deadline = time.monotonic() + effective_timeout
 
             while proc.poll() is None:
-                if _interrupt_event.is_set():
+                if is_interrupted():
                     try:
                         if _IS_WINDOWS:
                             proc.terminate()
@@ -332,5 +378,21 @@ class LocalEnvironment(BaseEnvironment):
         except Exception as e:
             return {"output": f"Execution error: {str(e)}", "returncode": 1}
 
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def execute(self, command: str, cwd: str = "", *,
+                timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
+        if self.persistent:
+            return self._execute_persistent(
+                command, cwd, timeout=timeout, stdin_data=stdin_data,
+            )
+        return self._execute_oneshot(
+            command, cwd, timeout=timeout, stdin_data=stdin_data,
+        )
+
     def cleanup(self):
-        pass
+        if self.persistent:
+            self._cleanup_persistent_shell()

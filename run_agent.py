@@ -3553,6 +3553,7 @@ class AIAgent:
             compression_attempts = 0
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
+            anthropic_auth_retry_attempted = False
             nous_auth_retry_attempted = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -3892,7 +3893,9 @@ class AIAgent:
                         self.api_mode == "anthropic_messages"
                         and status_code == 401
                         and hasattr(self, '_anthropic_api_key')
+                        and not anthropic_auth_retry_attempted
                     ):
+                        anthropic_auth_retry_attempted = True
                         # Try re-reading Claude Code credentials (they may have been refreshed)
                         from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
                         new_token = resolve_anthropic_token()

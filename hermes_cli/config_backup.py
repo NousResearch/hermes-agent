@@ -54,7 +54,7 @@ def create_backup(config_path: Path, reason: str = "") -> Optional[Path]:
         backup_path = backup_dir / name
         counter += 1
 
-    shutil.copy2(config_path, backup_path)
+    shutil.copy(config_path, backup_path)
     _secure_file(backup_path)
     prune_backups()
     return backup_path

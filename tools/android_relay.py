@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Optional
 
@@ -198,12 +199,91 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     logger.info("Relay server cleaned up")
 
 
+# ── Rate limiting for WebSocket auth ─────────────────────────────────────────
+
+_AUTH_MAX_ATTEMPTS = 5        # max failed attempts before blocking
+_AUTH_WINDOW_SECONDS = 60     # sliding window for counting failures
+_AUTH_BLOCK_SECONDS = 300     # how long to block an IP (5 minutes)
+_AUTH_CLEANUP_INTERVAL = 120  # seconds between cleanup sweeps
+
+# {ip: [timestamp, timestamp, ...]} — tracks failed auth attempt times per IP
+_auth_failures: dict[str, list[float]] = {}
+# {ip: unblock_timestamp} — IPs currently blocked
+_auth_blocked: dict[str, float] = {}
+_auth_lock = threading.Lock()
+_auth_last_cleanup: float = 0.0
+
+
+def _auth_cleanup() -> None:
+    """Remove expired entries from the failure and block dicts."""
+    global _auth_last_cleanup
+    now = time.monotonic()
+    if now - _auth_last_cleanup < _AUTH_CLEANUP_INTERVAL:
+        return
+    _auth_last_cleanup = now
+
+    # Remove expired blocks
+    expired_blocks = [ip for ip, until in _auth_blocked.items() if now >= until]
+    for ip in expired_blocks:
+        del _auth_blocked[ip]
+
+    # Remove stale failure windows
+    cutoff = now - _AUTH_WINDOW_SECONDS
+    stale = []
+    for ip, timestamps in _auth_failures.items():
+        _auth_failures[ip] = [t for t in timestamps if t > cutoff]
+        if not _auth_failures[ip]:
+            stale.append(ip)
+    for ip in stale:
+        del _auth_failures[ip]
+
+
+def _auth_is_blocked(ip: str) -> bool:
+    """Check whether *ip* is currently blocked. Also triggers periodic cleanup."""
+    now = time.monotonic()
+    with _auth_lock:
+        _auth_cleanup()
+        until = _auth_blocked.get(ip)
+        if until is not None:
+            if now < until:
+                return True
+            # Block expired — remove it
+            del _auth_blocked[ip]
+    return False
+
+
+def _auth_record_failure(ip: str) -> None:
+    """Record a failed auth attempt for *ip*; block if threshold reached."""
+    now = time.monotonic()
+    with _auth_lock:
+        timestamps = _auth_failures.setdefault(ip, [])
+        timestamps.append(now)
+        # Prune timestamps outside the window
+        cutoff = now - _AUTH_WINDOW_SECONDS
+        _auth_failures[ip] = [t for t in timestamps if t > cutoff]
+
+        if len(_auth_failures[ip]) >= _AUTH_MAX_ATTEMPTS:
+            _auth_blocked[ip] = now + _AUTH_BLOCK_SECONDS
+            _auth_failures.pop(ip, None)
+            logger.warning(
+                "IP %s blocked for %ds after %d failed auth attempts",
+                ip, _AUTH_BLOCK_SECONDS, _AUTH_MAX_ATTEMPTS,
+            )
+
+
 # ── WebSocket handler (phone side) ───────────────────────────────────────────
 
 async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketResponse:
+    # Rate limiting — check before token validation
+    remote_ip = request.remote or "unknown"
+    if _auth_is_blocked(remote_ip):
+        logger.warning("Auth attempt from blocked IP %s — returning 429", remote_ip)
+        raise web.HTTPTooManyRequests(text="Too many failed authentication attempts. Try again later.")
+
     token = request.query.get("token", "")
     if token.upper() != state.pairing_code.upper():
-        logger.warning("Phone WS rejected — bad token (got %s)", token)
+        _auth_record_failure(remote_ip)
+        logger.warning("Phone WS rejected — bad token (got %s) from %s", token, remote_ip)
         raise web.HTTPForbidden(text="Invalid pairing code")
 
     ws = web.WebSocketResponse(heartbeat=15.0)

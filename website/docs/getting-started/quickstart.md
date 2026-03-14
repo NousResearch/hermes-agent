@@ -141,9 +141,17 @@ The agent will set up a cron job that runs automatically via the gateway.
 
 ```bash
 hermes skills search kubernetes
+hermes skills search react --source skills-sh
+hermes skills search https://mintlify.com/docs --source well-known
 hermes skills install openai/skills/k8s
 hermes skills install official/security/1password
+hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 ```
+
+Tips:
+- Use `--source skills-sh` to search the public `skills.sh` directory.
+- Use `--source well-known` with a docs/site URL to discover skills from `/.well-known/skills/index.json`.
+- Use `--force` only after reviewing a third-party skill. It can override non-dangerous policy blocks, but not a `dangerous` scan verdict.
 
 Or use the `/skills` slash command inside chat.
 

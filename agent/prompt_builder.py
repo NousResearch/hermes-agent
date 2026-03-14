@@ -346,7 +346,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     """Discover and load context files for the system prompt.
 
     Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    SOUL.md (cwd then ~/.hermes/ fallback). Each capped at 20,000 chars.
+    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -414,29 +414,21 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
         sections.append(cursorrules_content)
 
-    # SOUL.md (cwd first, then ~/.hermes/ fallback)
-    soul_path = None
-    for name in ["SOUL.md", "soul.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            soul_path = candidate
-            break
-    if not soul_path:
-        global_soul = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
-        if global_soul.exists():
-            soul_path = global_soul
+    # SOUL.md from HERMES_HOME only
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    if soul_path:
+    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    if soul_path.exists():
         try:
             content = soul_path.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, "SOUL.md")
                 content = _truncate_content(content, "SOUL.md")
-                sections.append(
-                    f"## SOUL.md\n\nIf SOUL.md is present, embody its persona and tone. "
-                    f"Avoid stiff, generic replies; follow its guidance unless higher-priority "
-                    f"instructions override it.\n\n{content}"
-                )
+                sections.append(content)
         except Exception as e:
             logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
 

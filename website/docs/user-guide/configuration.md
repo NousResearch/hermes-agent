@@ -826,18 +826,24 @@ clarify:
 
 ## Context Files (SOUL.md, AGENTS.md)
 
-Drop these files in your project directory and the agent automatically picks them up:
+Hermes uses two different context scopes:
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Project-specific instructions, coding conventions |
-| `SOUL.md` | Persona definition — the agent embodies this personality |
-| `.cursorrules` | Cursor IDE rules (also detected) |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) |
+| File | Purpose | Scope |
+|------|---------|-------|
+| `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
+| `SOUL.md` | Default persona for this Hermes instance | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
+| `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
 
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
-- **SOUL.md** checks cwd first, then `~/.hermes/SOUL.md` as a global fallback.
-- All context files are capped at 20,000 characters with smart truncation.
+- **SOUL.md** is now global to the Hermes instance and is loaded only from `HERMES_HOME`.
+- Hermes automatically seeds a default `SOUL.md` if one does not already exist.
+- An empty `SOUL.md` contributes nothing to the system prompt.
+- All loaded context files are capped at 20,000 characters with smart truncation.
+
+See also:
+- [Personality & SOUL.md](/docs/user-guide/features/personality)
+- [Context Files](/docs/user-guide/features/context-files)
 
 ## Working Directory
 

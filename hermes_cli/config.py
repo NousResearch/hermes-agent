@@ -29,6 +29,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 import yaml
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
@@ -68,6 +69,15 @@ def _secure_file(path):
         pass
 
 
+def _ensure_default_soul_md(home: Path) -> None:
+    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    soul_path = home / "SOUL.md"
+    if soul_path.exists():
+        return
+    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    _secure_file(soul_path)
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
@@ -77,6 +87,7 @@ def ensure_hermes_home():
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
+    _ensure_default_soul_md(home)
 
 
 # =============================================================================
@@ -810,7 +821,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Saved {name}")
                     print()
             else:
-                print("  Set later with: hermes config set KEY VALUE")
+                print("  Set later with: hermes config set <key> <value>")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
@@ -879,6 +890,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
+    ensure_hermes_home()
     config_path = get_config_path()
     
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -1253,7 +1265,7 @@ def show_config():
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
-    print(color("  hermes config set KEY VALUE", Colors.DIM))
+    print(color("  hermes config set <key> <value>", Colors.DIM))
     print(color("  hermes setup           # Run setup wizard", Colors.DIM))
     print()
 
@@ -1379,7 +1391,7 @@ def config_command(args):
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
         if not key or not value:
-            print("Usage: hermes config set KEY VALUE")
+            print("Usage: hermes config set <key> <value>")
             print()
             print("Examples:")
             print("  hermes config set model anthropic/claude-sonnet-4")
@@ -1494,7 +1506,7 @@ def config_command(args):
         print("Available commands:")
         print("  hermes config           Show current configuration")
         print("  hermes config edit      Open config in editor")
-        print("  hermes config set K V   Set a config value")
+        print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")

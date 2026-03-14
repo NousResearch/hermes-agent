@@ -53,3 +53,7 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store

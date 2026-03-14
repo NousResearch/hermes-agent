@@ -1,0 +1,101 @@
+{
+  "description": "Google News category structure for US region. Scraped 2026-03-13.",
+  "last_scraped": "2026-03-13",
+  "region": "US",
+  "structure": "Categories have subcategory tabs (client-side, content loads dynamically)",
+  "following_note": "Following (news.google.com/my/library) is NOT a category - it's a personal feed of topics you follow, requires sign-in",
+  "for_you_note": "For You is personalized feed, requires sign-in, not a browsable category",
+  "categories": {
+    "homepage": {
+      "label": "Home",
+      "type": "homepage",
+      "description": "Top stories and breaking news across all topics",
+      "has_url": true,
+      "subcategories": []
+    },
+    "us": {
+      "id": "CAAqIggKIhxDQkFTRHdvSkwyMHZNRGxqTjNjd0VnSmxiaWdBUAE",
+      "label": "U.S.",
+      "type": "national",
+      "description": "US national news",
+      "has_url": true,
+      "subcategories": []
+    },
+    "world": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB",
+      "label": "World",
+      "type": "international",
+      "description": "International news",
+      "has_url": true,
+      "subcategories": []
+    },
+    "business": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB",
+      "label": "Business",
+      "type": "topic",
+      "description": "Business, finance, markets, economy, startups",
+      "has_url": true,
+      "subcategories": ["Latest", "Economy", "Markets", "Jobs", "Personal finance", "Entrepreneurship"]
+    },
+    "technology": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB",
+      "label": "Technology",
+      "type": "topic",
+      "description": "Tech products, AI, software, hardware, startups",
+      "has_url": true,
+      "subcategories": ["Latest", "Mobile", "Gadgets", "Internet", "Virtual reality", "Artificial intelligence", "Computing"]
+    },
+    "entertainment": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtVnVHZ0pWVXlnQVAB",
+      "label": "Entertainment",
+      "type": "topic",
+      "description": "Movies, TV, music, celebrities, pop culture",
+      "has_url": true,
+      "subcategories": ["Latest", "Movies", "Music", "TV", "Books", "Arts & design", "Celebrities"]
+    },
+    "sports": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB",
+      "label": "Sports",
+      "type": "topic",
+      "description": "All sports, leagues, scores",
+      "has_url": true,
+      "subcategories": ["Latest", "NFL", "NBA", "MLB", "NHL", "NCAA Football", "NCAA Basketball", "Soccer", "NASCAR", "Golf", "Tennis", "WNBA"]
+    },
+    "science": {
+      "id": "CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp0Y1RjU0FtVnVHZ0pWVXlnQVAB",
+      "label": "Science",
+      "type": "topic",
+      "description": "Scientific research, discoveries, space",
+      "has_url": true,
+      "subcategories": ["Latest", "Environment", "Space", "Physics", "Genetics", "Wildlife"]
+    },
+    "health": {
+      "id": "CAAqIQgKIhtDQkFTRGdvSUwyMHZNR3QwTlRFU0FtVnVLQUFQAQ",
+      "label": "Health",
+      "type": "topic",
+      "description": "Medical research, healthcare, wellness",
+      "has_url": true,
+      "subcategories": ["Latest", "Medication", "Health care", "Mental health", "Nutrition", "Fitness"]
+    },
+    "local": {
+      "id": "CAAqHAgKIhZDQklTQ2pvSWJHOWpZV3hmZGpJb0FBUAE",
+      "label": "Local",
+      "type": "geographic",
+      "description": "Local news based on location",
+      "has_url": true,
+      "subcategories": []
+    }
+  },
+  "subcategory_notes": [
+    "Subcategory tabs are CLIENT-SIDE - content loads dynamically when clicked",
+    "No separate URLs for subcategories - they filter content within parent category page",
+    "To get subcategory-specific content, browser interaction (click tab) is required",
+    "Subcategories exist for: Business (6), Technology (7), Entertainment (7), Sports (12), Science (6), Health (6)",
+    "U.S., World, and Local have NO subcategory tabs"
+  ],
+  "other_ids_in_html": {
+    "full_coverage": "23 IDs - Dynamic pages for specific breaking stories",
+    "author_pages": "15 IDs - Journalist/commentator profiles",
+    "other": "13 IDs - Various sub-topics, not persistent navigation"
+  }
+}

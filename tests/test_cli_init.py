@@ -95,6 +95,17 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestSingleQueryState:
+    def test_voice_and_interrupt_state_initialized_before_run(self):
+        """Single-query mode calls chat() without going through run()."""
+        cli = _make_cli()
+        assert cli._voice_tts is False
+        assert cli._voice_mode is False
+        assert cli._voice_tts_done.is_set()
+        assert hasattr(cli, "_interrupt_queue")
+        assert hasattr(cli, "_pending_input")
+
+
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
         cli = _make_cli()

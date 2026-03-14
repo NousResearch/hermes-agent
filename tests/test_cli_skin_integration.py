@@ -14,6 +14,9 @@ def _make_cli_stub():
     cli._clarify_freetext = False
     cli._command_running = False
     cli._agent_running = False
+    cli._voice_recording = False
+    cli._voice_processing = False
+    cli._voice_mode = False
     cli._command_spinner_frame = lambda: "⟳"
     cli._tui_style_base = {
         "prompt": "#fff",

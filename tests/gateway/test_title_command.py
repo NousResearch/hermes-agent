@@ -31,6 +31,7 @@ def _make_runner(session_db=None):
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner._voice_mode = {}
     runner._session_db = session_db
 
     # Mock session_store that returns a session entry with a known session_id

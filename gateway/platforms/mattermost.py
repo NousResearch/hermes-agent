@@ -90,6 +90,12 @@ class MattermostAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
 
+        # Reply mode: "thread" to nest replies, "off" for flat messages.
+        self._reply_mode: str = (
+            config.extra.get("reply_mode", "")
+            or os.getenv("MATTERMOST_REPLY_MODE", "off")
+        ).lower()
+
         # Dedup cache: post_id → timestamp (prevent reprocessing)
         self._seen_posts: Dict[str, float] = {}
         self._SEEN_MAX = 2000
@@ -247,7 +253,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to:
+            if reply_to and self._reply_mode == "thread":
                 payload["root_id"] = reply_to
 
             data = await self._api_post("posts", payload)
@@ -404,7 +410,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to:
+        if reply_to and self._reply_mode == "thread":
             payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)
@@ -442,7 +448,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to:
+        if reply_to and self._reply_mode == "thread":
             payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)

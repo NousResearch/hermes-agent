@@ -617,8 +617,9 @@ _PLATFORMS = [
             "   (System Console → Integrations → Bot Accounts must be enabled)",
             "2. Give it a username (e.g. hermes) and copy the bot token",
             "3. Works with any self-hosted Mattermost instance — enter your server URL",
-            "4. To find your user ID: click your avatar → Profile → copy the ID",
-            "   (or run: curl -H 'Authorization: Bearer <token>' https://your-mm/api/v4/users/me)",
+            "4. To find your user ID: click your avatar (top-left) → Profile",
+            "   Your user ID is displayed there — click it to copy.",
+            "   ⚠ This is NOT your username — it's a 26-character alphanumeric ID.",
             "5. To get a channel ID: click the channel name → View Info → copy the ID",
         ],
         "vars": [
@@ -631,6 +632,8 @@ _PLATFORMS = [
              "help": "Your Mattermost user ID from step 4 above."},
             {"name": "MATTERMOST_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "Channel ID where Hermes delivers cron results and notifications."},
+            {"name": "MATTERMOST_REPLY_MODE", "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)", "password": False,
+             "help": "off = flat channel messages, thread = replies nest under your message."},
         ],
     },
     {

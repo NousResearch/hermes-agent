@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -176,6 +177,21 @@ def print_error(text: str):
     print(color(f"✗ {text}", Colors.RED))
 
 
+def _terminal_columns(default: int = 120) -> int:
+    """Best-effort terminal width detection for menu rendering."""
+    try:
+        return max(40, shutil.get_terminal_size(fallback=(default, 24)).columns)
+    except Exception:
+        return default
+
+
+def _truncate_menu_text(text: str, max_width: int) -> str:
+    """Prevent wrapped menu entries, which can glitch simple_term_menu redraws."""
+    if max_width <= 5 or len(text) <= max_width:
+        return text
+    return text[: max_width - 1] + "…"
+
+
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     if default:
@@ -218,6 +234,9 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             flags=re.UNICODE,
         )
         menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
+        # Keep entries on one line; wrapped entries can visually corrupt redraw.
+        max_item_width = _terminal_columns() - 6
+        menu_choices = [_truncate_menu_text(c, max_item_width) for c in menu_choices]
 
         print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
 
@@ -330,6 +349,9 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
             flags=re.UNICODE,
         )
         menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
+        # Keep entries on one line; wrapped entries can visually corrupt redraw.
+        max_item_width = _terminal_columns() - 6
+        menu_items = [_truncate_menu_text(i, max_item_width) for i in menu_items]
 
         # Map pre-selected indices to the actual menu entry strings
         preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
@@ -691,17 +713,30 @@ def setup_model_provider(config: dict):
     else:
         keep_label = None  # No provider configured — don't show "Keep current"
 
+    from hermes_cli.local_provider import detect_hardware
+
+    hw = detect_hardware()
+    local_available = hw is not None
+
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription — OAuth)",
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
+    ]
+    if local_available:
+        provider_choices.append(
+            f"Local (Apple Silicon) — run models on this Mac ({hw['chip']}, {hw['ram_gb']}GB)"
+        )
+    else:
+        provider_choices.append("Local (Apple Silicon) — requires Apple Silicon Mac")
+    provider_choices.extend([
         "Z.AI / GLM (Zhipu AI models)",
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
-    ]
+    ])
     if keep_label:
         provider_choices.append(keep_label)
 
@@ -920,7 +955,162 @@ def setup_model_provider(config: dict):
 
         print_success("Custom endpoint configured")
 
-    elif provider_idx == 4:  # Z.AI / GLM
+    elif provider_idx == 4:  # Local (Apple Silicon)
+        if not local_available:
+            print_error("Local provider requires an Apple Silicon Mac (M1/M2/M3/M4).")
+            print_info("Choose a different provider.")
+            selected_provider = None
+        else:
+            selected_provider = "local"
+            print()
+            print_header("Local (Apple Silicon)")
+            print_info(f"Chip: {hw['chip']}  RAM: {hw['ram_gb']}GB")
+            print()
+
+            from hermes_cli.local_provider import (
+                recommend_models,
+                check_mlx_lm_installed,
+                install_mlx_lm,
+                start_server,
+                installed_model_ids,
+                list_cached_model_ids,
+                DEFAULT_PORT,
+            )
+
+            recommended = recommend_models(hw["ram_gb"])
+            if not recommended:
+                print_error("Not enough RAM for any recommended model.")
+                print_info("You need at least 8GB RAM for the smallest model.")
+                selected_provider = None
+            else:
+                recommended_ids = [m["id"] for m in recommended]
+                installed_recommended = installed_model_ids(recommended_ids)
+                installed_all = set(list_cached_model_ids())
+                installed_extra = sorted(installed_all - set(recommended_ids))
+                installed_any = installed_recommended | set(installed_extra)
+                if installed_any:
+                    print_info(
+                        f"Detected {len(installed_any)} installed model(s) in local cache."
+                    )
+
+                model_entries = list(recommended)
+                for mid in installed_extra:
+                    model_entries.append(
+                        {
+                            "id": mid,
+                            "name": mid,
+                            "description": "Installed local model (not in recommendations)",
+                            "min_ram_gb": 0,
+                        }
+                    )
+
+                model_choices = []
+                for idx, m in enumerate(model_entries):
+                    tags = []
+                    if idx == 0:
+                        tags.append("recommended")
+                    if m["id"] in installed_any:
+                        tags.append("installed")
+                    tag_text = f" [{' | '.join(tags)}]" if tags else ""
+                    if m["id"] in installed_extra:
+                        model_choices.append(f"{m['name']} — {m['description']}{tag_text}")
+                    else:
+                        model_choices.append(
+                            f"{m['name']} — {m['description']}{tag_text} (needs {m['min_ram_gb']}GB+ RAM)"
+                        )
+                model_choices.append("Custom MLX model (enter HuggingFace ID)")
+
+                default_model_idx = next(
+                    (i for i, m in enumerate(model_entries) if m["id"] in installed_any),
+                    0,
+                )
+                model_idx = prompt_choice(
+                    "Select a model to run locally:", model_choices, default_model_idx
+                )
+
+                if model_idx < len(model_entries):
+                    local_model_id = model_entries[model_idx]["id"]
+                else:
+                    local_model_id = prompt("  HuggingFace model ID (e.g. mlx-community/...)")
+                    if not local_model_id:
+                        print_warning("No model specified.")
+                        selected_provider = None
+
+                if selected_provider == "local" and local_model_id:
+                    if not check_mlx_lm_installed():
+                        print()
+                        print_warning("mlx-lm is not installed (required for local inference).")
+                        if prompt_yes_no("Install mlx-lm now?", True):
+                            print_info("Installing mlx-lm (this may take a minute)...")
+                            if install_mlx_lm():
+                                print_success("mlx-lm installed")
+                            else:
+                                print_error("Failed to install mlx-lm.")
+                                print_info("Try manually: pip install mlx-lm")
+                                selected_provider = None
+                        else:
+                            print_warning("Skipped — local provider won't work without mlx-lm.")
+                            selected_provider = None
+
+                if selected_provider == "local" and local_model_id:
+                    port = DEFAULT_PORT
+                    print()
+                    print_info(f"Starting local server with {local_model_id}...")
+                    print_info("(First run downloads the model — this may take a few minutes)")
+                    print()
+
+                    try:
+                        result = start_server(local_model_id, port)
+                        if result["reused"]:
+                            print_success(f"Server already running (pid {result['pid']})")
+                        else:
+                            print_success(f"Server started (pid {result['pid']}) on port {port}")
+                    except (RuntimeError, TimeoutError) as exc:
+                        print_error(f"Failed to start server: {exc}")
+                        print_info("You can start it manually later with: hermes local start")
+                        selected_provider = None
+
+                if selected_provider == "local" and local_model_id:
+                    base_url = f"http://localhost:{port}/v1"
+                    _set_model_provider(config, "local", base_url)
+                    _set_default_model(config, local_model_id)
+                    config["local"] = {
+                        "model_id": local_model_id,
+                        "port": port,
+                        "auto_start": True,
+                    }
+                    save_env_value("LLM_MODEL", local_model_id)
+
+                    import yaml
+
+                    config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+                    try:
+                        disk_cfg = {}
+                        if config_path.exists():
+                            disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+                        model_section = disk_cfg.get("model", {})
+                        if isinstance(model_section, str):
+                            model_section = {"default": model_section}
+                        model_section["provider"] = "local"
+                        model_section["base_url"] = base_url
+                        model_section["default"] = local_model_id
+                        disk_cfg["model"] = model_section
+                        disk_cfg["local"] = {
+                            "model_id": local_model_id,
+                            "port": port,
+                            "auto_start": True,
+                        }
+                        config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+                    except Exception as e:
+                        logger.debug("Could not save local config: %s", e)
+
+                    if existing_custom:
+                        save_env_value("OPENAI_BASE_URL", "")
+                        save_env_value("OPENAI_API_KEY", "")
+
+                    print_success(f"Local provider configured: {local_model_id}")
+
+    elif provider_idx == 5:  # Z.AI / GLM
         selected_provider = "zai"
         print()
         print_header("Z.AI / GLM API Key")
@@ -981,7 +1171,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
 
-    elif provider_idx == 5:  # Kimi / Moonshot
+    elif provider_idx == 6:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
         print()
         print_header("Kimi / Moonshot API Key")
@@ -1014,7 +1204,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
 
-    elif provider_idx == 6:  # MiniMax
+    elif provider_idx == 7:  # MiniMax
         selected_provider = "minimax"
         print()
         print_header("MiniMax API Key")
@@ -1047,7 +1237,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
 
-    elif provider_idx == 7:  # MiniMax China
+    elif provider_idx == 8:  # MiniMax China
         selected_provider = "minimax-cn"
         print()
         print_header("MiniMax China API Key")
@@ -1080,7 +1270,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
 
-    elif provider_idx == 8:  # Anthropic
+    elif provider_idx == 9:  # Anthropic
         selected_provider = "anthropic"
         print()
         print_header("Anthropic Authentication")
@@ -1184,7 +1374,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
         _set_model_provider(config, "anthropic")
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 10 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
@@ -1193,6 +1383,7 @@ def setup_model_provider(config: dict):
         "nous",
         "openai-codex",
         "custom",
+        "local",
         "zai",
         "kimi-coding",
         "minimax",
@@ -1217,7 +1408,7 @@ def setup_model_provider(config: dict):
             )
 
     # ── Model Selection (adapts based on provider) ──
-    if selected_provider != "custom":  # Custom already prompted for model name
+    if selected_provider not in ("custom", "local"):  # These already prompted for model
         print_header("Default Model")
 
         _raw_model = config.get("model", "anthropic/claude-opus-4.6")

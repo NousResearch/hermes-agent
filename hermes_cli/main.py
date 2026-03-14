@@ -528,6 +528,12 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_local(args):
+    """Local MLX server management commands."""
+    from hermes_cli.local_provider import local_command
+    local_command(args)
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     import os
@@ -765,6 +771,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "local": "Local (Apple Silicon)",
         "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
@@ -784,6 +791,7 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("local", "Local (Apple Silicon)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -849,6 +857,8 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
+    elif selected_provider == "local":
+        _model_flow_local(config, current_model)
     elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider == "remove-custom":
@@ -1074,6 +1084,112 @@ def _model_flow_openai_codex(config, current_model=""):
         print("No change.")
 
 
+def _model_flow_local(config, current_model=""):
+    """Local Apple Silicon provider: pick model, ensure server, and activate."""
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+    from hermes_cli.local_provider import (
+        DEFAULT_PORT,
+        check_mlx_lm_installed,
+        detect_hardware,
+        install_mlx_lm,
+        recommend_models,
+        installed_model_ids,
+        list_cached_model_ids,
+        start_server,
+    )
+
+    hw = detect_hardware()
+    if hw is None:
+        print("Local provider requires an Apple Silicon Mac (M1/M2/M3/M4).")
+        return
+
+    recommended = recommend_models(hw["ram_gb"])
+    if not recommended:
+        print("No compatible local models found for this hardware.")
+        print("At least 8GB RAM is recommended for the smallest models.")
+        return
+
+    print(f"Hardware detected: {hw['chip']} / {hw['ram_gb']}GB")
+    print()
+
+    recommended_ids = [m["id"] for m in recommended]
+    installed_recommended = installed_model_ids(recommended_ids)
+    installed_all = set(list_cached_model_ids())
+    installed_extra = sorted(installed_all - set(recommended_ids))
+
+    selectable_model_ids = recommended_ids + installed_extra
+
+    if installed_recommended or installed_extra:
+        print("Installed models detected:")
+        for mid in recommended_ids:
+            if mid in installed_recommended:
+                print(f"  - {mid}")
+        for mid in installed_extra:
+            print(f"  - {mid} (not in recommendations)")
+        print()
+
+    print(f"Recommended for this hardware: {recommended_ids[0]}")
+    print()
+
+    selected = _prompt_model_selection(selectable_model_ids, current_model=current_model)
+    if not selected:
+        print("No change.")
+        return
+
+    if not check_mlx_lm_installed():
+        try:
+            install = input("mlx-lm is not installed. Install now? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            print("Cancelled.")
+            return
+        if install in ("", "y", "yes"):
+            print("Installing mlx-lm...")
+            if not install_mlx_lm():
+                print("Failed to install mlx-lm. Try: pip install mlx-lm")
+                return
+            print("mlx-lm installed.")
+        else:
+            print("Cancelled.")
+            return
+
+    print(f"Starting local server with {selected}...")
+    print("(first run may download model weights)")
+    try:
+        result = start_server(selected, DEFAULT_PORT)
+    except (RuntimeError, TimeoutError) as exc:
+        print(f"Failed to start local server: {exc}")
+        print("You can start it manually later with: hermes local start")
+        return
+
+    if result.get("reused"):
+        print(f"Local server already running (pid {result['pid']}).")
+    else:
+        print(f"Local server started (pid {result['pid']}) on port {DEFAULT_PORT}.")
+
+    if get_env_value("OPENAI_BASE_URL"):
+        save_env_value("OPENAI_BASE_URL", "")
+        save_env_value("OPENAI_API_KEY", "")
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "local"
+    model["base_url"] = f"http://localhost:{DEFAULT_PORT}/v1"
+    cfg["local"] = {
+        "model_id": selected,
+        "port": DEFAULT_PORT,
+        "auto_start": True,
+    }
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via Local Apple Silicon)")
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
@@ -2147,7 +2263,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "sessions", "insights", "version", "update", "uninstall",
+        "sessions", "insights", "version", "update", "uninstall", "local",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2370,7 +2486,24 @@ For more help on a command:
     gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
     gateway_parser.set_defaults(func=cmd_gateway)
-    
+
+    # =========================================================================
+    # local command
+    # =========================================================================
+    local_parser = subparsers.add_parser(
+        "local",
+        help="Local MLX server management",
+        description="Manage the local MLX inference server (Apple Silicon)",
+    )
+    local_subparsers = local_parser.add_subparsers(dest="local_command")
+
+    local_subparsers.add_parser("status", help="Show local server status")
+    local_subparsers.add_parser("start", help="Start local server")
+    local_subparsers.add_parser("stop", help="Stop local server")
+    local_subparsers.add_parser("models", help="List recommended models for your hardware")
+
+    local_parser.set_defaults(func=cmd_local)
+
     # =========================================================================
     # setup command
     # =========================================================================

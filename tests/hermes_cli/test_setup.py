@@ -1,7 +1,7 @@
 import json
 
 from hermes_cli.auth import _update_config_for_provider, get_active_provider
-from hermes_cli.config import load_config, save_config
+from hermes_cli.config import load_config, save_config, get_env_value
 from hermes_cli.setup import setup_model_provider
 
 
@@ -42,7 +42,7 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
         "hermes_cli.auth.resolve_nous_runtime_credentials",
         lambda *args, **kwargs: {
             "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
+            "api_key": "nous-test-key",
         },
     )
     monkeypatch.setattr(
@@ -142,3 +142,104 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
     assert reloaded["model"]["provider"] == "openai-codex"
     assert reloaded["model"]["default"] == "gpt-5.2-codex"
     assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_local_setup_updates_llm_model_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+    config = load_config()
+
+    prompt_choices = iter([4, 0])  # provider=local, model=first recommended
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_choice",
+        lambda *args, **kwargs: next(prompt_choices),
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: True)
+
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.detect_hardware",
+        lambda: {"chip": "Apple M4", "ram_gb": 64.0},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.recommend_models",
+        lambda ram_gb: [
+            {
+                "id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "name": "Qwen 2.5 Coder 7B (4-bit)",
+                "description": "Good coding, fast",
+                "min_ram_gb": 8,
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.local_provider.installed_model_ids", lambda mids: set())
+    monkeypatch.setattr("hermes_cli.local_provider.list_cached_model_ids", lambda limit=200: [])
+    monkeypatch.setattr("hermes_cli.local_provider.check_mlx_lm_installed", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.start_server",
+        lambda model_id, port: {"pid": 1234, "reused": True},
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "local"
+    assert reloaded["model"]["default"] == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    assert reloaded["local"]["model_id"] == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    assert reloaded["local"]["port"] == 8899
+    assert reloaded["local"]["auto_start"] is True
+    assert get_env_value("LLM_MODEL") == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+
+
+def test_local_setup_allows_selecting_cached_non_recommended_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+    config = load_config()
+
+    # provider=local, model index=1 (cached non-recommended model)
+    prompt_choices = iter([4, 1])
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_choice",
+        lambda *args, **kwargs: next(prompt_choices),
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: True)
+
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.detect_hardware",
+        lambda: {"chip": "Apple M4", "ram_gb": 64.0},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.recommend_models",
+        lambda ram_gb: [
+            {
+                "id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "name": "Qwen 2.5 Coder 7B (4-bit)",
+                "description": "Good coding, fast",
+                "min_ram_gb": 8,
+            }
+        ],
+    )
+    monkeypatch.setattr("hermes_cli.local_provider.installed_model_ids", lambda mids: set())
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.list_cached_model_ids",
+        lambda limit=200: ["mlx-community/My-Custom-Model-4bit"],
+    )
+    monkeypatch.setattr("hermes_cli.local_provider.check_mlx_lm_installed", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.start_server",
+        lambda model_id, port: {"pid": 1234, "reused": True},
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert reloaded["model"]["provider"] == "local"
+    assert reloaded["model"]["default"] == "mlx-community/My-Custom-Model-4bit"
+    assert reloaded["local"]["model_id"] == "mlx-community/My-Custom-Model-4bit"
+    assert get_env_value("LLM_MODEL") == "mlx-community/My-Custom-Model-4bit"

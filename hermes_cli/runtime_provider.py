@@ -33,14 +33,16 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if requested and requested.strip():
         return requested.strip().lower()
 
-    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
-    if env_provider:
-        return env_provider
-
     model_cfg = _get_model_config()
     cfg_provider = model_cfg.get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
+
+    # Prefer the persisted config selection over any stale shell/.env
+    # provider override so chat uses the endpoint the user last saved.
+    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+    if env_provider:
+        return env_provider
 
     return "auto"
 

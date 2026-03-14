@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from multiprocessing import Lock
+from threading import Lock
 from unittest.mock import patch, MagicMock
 
 import pytest

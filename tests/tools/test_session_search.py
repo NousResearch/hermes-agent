@@ -9,7 +9,19 @@ from tools.session_search_tool import (
     _format_conversation,
     _truncate_around_matches,
     MAX_SESSION_CHARS,
+    SESSION_SEARCH_SCHEMA,
 )
+
+
+# =========================================================================
+# Tool schema guidance
+# =========================================================================
+
+class TestSessionSearchSchema:
+    def test_keeps_cross_session_recall_guidance_without_current_session_nudge(self):
+        description = SESSION_SEARCH_SCHEMA["description"]
+        assert "past conversations" in description
+        assert "recent turns of the current session" not in description
 
 
 # =========================================================================

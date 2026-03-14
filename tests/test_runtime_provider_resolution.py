@@ -181,3 +181,10 @@ def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})
     assert rp.resolve_requested_provider("openrouter") == "openrouter"
+    assert rp.resolve_requested_provider() == "openai-codex"
+
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    assert rp.resolve_requested_provider() == "nous"
+
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    assert rp.resolve_requested_provider() == "auto"

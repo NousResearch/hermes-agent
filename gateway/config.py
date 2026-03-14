@@ -308,6 +308,16 @@ def load_gateway_config() -> GatewayConfig:
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
 
+            # Bridge quick commands from config.yaml into gateway runtime config.
+            # config.yaml is the user-facing config source, so when present it
+            # should override gateway.json for this setting.
+            qc = yaml_cfg.get("quick_commands")
+            if qc is not None:
+                if isinstance(qc, dict):
+                    config.quick_commands = qc
+                else:
+                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
             discord_cfg = yaml_cfg.get("discord", {})

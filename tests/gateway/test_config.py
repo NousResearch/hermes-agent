@@ -6,6 +6,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    load_gateway_config,
 )
 
 
@@ -89,15 +90,49 @@ class TestGatewayConfigRoundtrip:
             platforms={
                 Platform.TELEGRAM: PlatformConfig(
                     enabled=True,
-                    token="tok",
+                    token="tok_123",
                     home_channel=HomeChannel(Platform.TELEGRAM, "123", "Home"),
                 ),
             },
             reset_triggers=["/new"],
+            quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
 
         assert Platform.TELEGRAM in restored.platforms
-        assert restored.platforms[Platform.TELEGRAM].token == "tok"
+        assert restored.platforms[Platform.TELEGRAM].token == "tok_123"
         assert restored.reset_triggers == ["/new"]
+        assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+
+class TestLoadGatewayConfig:
+    def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "quick_commands:\n"
+            "  limits:\n"
+            "    type: exec\n"
+            "    command: echo ok\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("quick_commands: not-a-mapping\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.quick_commands == {}

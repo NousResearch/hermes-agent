@@ -153,6 +153,36 @@ class TestScheduleCronjob:
         assert job["provider"] == "custom"
         assert job["base_url"] == "http://127.0.0.1:4000/v1"
 
+    def test_thread_id_captured_in_origin(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "42")
+        import cron.jobs as _jobs
+        created = json.loads(schedule_cronjob(
+            prompt="Thread test",
+            schedule="every 1h",
+            deliver="origin",
+        ))
+        assert created["success"] is True
+        job_id = created["job_id"]
+        job = _jobs.get_job(job_id)
+        assert job["origin"]["thread_id"] == "42"
+
+    def test_thread_id_absent_when_not_set(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+        import cron.jobs as _jobs
+        created = json.loads(schedule_cronjob(
+            prompt="No thread test",
+            schedule="every 1h",
+            deliver="origin",
+        ))
+        assert created["success"] is True
+        job_id = created["job_id"]
+        job = _jobs.get_job(job_id)
+        assert job["origin"].get("thread_id") is None
+
 
 # =========================================================================
 # list_cronjobs

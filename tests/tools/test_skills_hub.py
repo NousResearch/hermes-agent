@@ -211,6 +211,79 @@ class TestSkillsShSource:
         assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
         assert mock_list_skills.called
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_uses_detail_page_to_resolve_alias_skill(self, mock_inspect, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
+        resolved = SkillMeta(
+            name="react",
+            description="React renderer",
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+            repo="vercel-labs/json-render",
+            path="skills/react",
+        )
+        mock_inspect.side_effect = lambda identifier: resolved if identifier == resolved.identifier else None
+        mock_list_skills.return_value = [resolved]
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <h1>json-render-react</h1>
+                <code>$ npx skills add https://github.com/vercel-labs/json-render --skill json-render-react</code>
+                <div class="prose"><h1>@json-render/react</h1><p>React renderer.</p></div>
+            ''',
+        )
+
+        meta = self._source().inspect("skills-sh/vercel-labs/json-render/json-render-react")
+
+        assert meta is not None
+        assert meta.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
+        assert meta.path == "skills/react"
+        assert mock_get.called
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_uses_detail_page_to_resolve_alias_skill(self, mock_fetch, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
+        resolved_meta = SkillMeta(
+            name="react",
+            description="React renderer",
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+            repo="vercel-labs/json-render",
+            path="skills/react",
+        )
+        resolved_bundle = SkillBundle(
+            name="react",
+            files={"SKILL.md": "# react"},
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+        )
+        mock_fetch.side_effect = lambda identifier: resolved_bundle if identifier == resolved_bundle.identifier else None
+        mock_list_skills.return_value = [resolved_meta]
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <h1>json-render-react</h1>
+                <code>$ npx skills add https://github.com/vercel-labs/json-render --skill json-render-react</code>
+                <div class="prose"><h1>@json-render/react</h1><p>React renderer.</p></div>
+            ''',
+        )
+
+        bundle = self._source().fetch("skills-sh/vercel-labs/json-render/json-render-react")
+
+        assert bundle is not None
+        assert bundle.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
+        assert bundle.files["SKILL.md"] == "# react"
+        assert mock_get.called
+
 
 class TestCreateSourceRouter:
     def test_includes_skills_sh_source(self):

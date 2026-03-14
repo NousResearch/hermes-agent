@@ -92,10 +92,17 @@ def _run_git(
     shadow_repo: Path,
     working_dir: str,
     timeout: int = _GIT_TIMEOUT,
+    allowed_returncodes: Optional[Set[int]] = None,
 ) -> tuple:
-    """Run a git command against the shadow repo.  Returns (ok, stdout, stderr)."""
+    """Run a git command against the shadow repo.  Returns (ok, stdout, stderr).
+
+    ``allowed_returncodes`` suppresses error logging for known/expected non-zero
+    exits while preserving the normal ``ok = (returncode == 0)`` contract.
+    Example: ``git diff --cached --quiet`` returns 1 when changes exist.
+    """
     env = _git_env(shadow_repo, working_dir)
     cmd = ["git"] + list(args)
+    allowed_returncodes = allowed_returncodes or set()
     try:
         result = subprocess.run(
             cmd,
@@ -108,7 +115,7 @@ def _run_git(
         ok = result.returncode == 0
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-        if not ok:
+        if not ok and result.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
                 " ".join(cmd), result.returncode, stderr,
@@ -381,7 +388,10 @@ class CheckpointManager:
 
         # Check if there's anything to commit
         ok_diff, diff_out, _ = _run_git(
-            ["diff", "--cached", "--quiet"], shadow, working_dir,
+            ["diff", "--cached", "--quiet"],
+            shadow,
+            working_dir,
+            allowed_returncodes={1},
         )
         if ok_diff:
             # No changes to commit

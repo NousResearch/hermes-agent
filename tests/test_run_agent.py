@@ -1800,12 +1800,13 @@ class TestSafeWriter:
             sys.stdout = original
 
     def test_installed_in_run_conversation(self, agent):
-        """run_conversation installs _SafeWriter on sys.stdout."""
+        """run_conversation installs _SafeWriter on stdio."""
         import sys
         from run_agent import _SafeWriter
         resp = _mock_response(content="Done", finish_reason="stop")
         agent.client.chat.completions.create.return_value = resp
-        original = sys.stdout
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
         try:
             with (
                 patch.object(agent, "_persist_session"),
@@ -1814,6 +1815,41 @@ class TestSafeWriter:
             ):
                 agent.run_conversation("test")
             assert isinstance(sys.stdout, _SafeWriter)
+            assert isinstance(sys.stderr, _SafeWriter)
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+    def test_installed_before_init_time_honcho_error_prints(self):
+        """AIAgent.__init__ wraps stdout before Honcho fallback prints can fire."""
+        import sys
+        from run_agent import _SafeWriter
+
+        broken = MagicMock()
+        broken.write.side_effect = OSError(5, "Input/output error")
+        broken.flush.side_effect = OSError(5, "Input/output error")
+
+        original = sys.stdout
+        sys.stdout = broken
+        try:
+            hcfg = HonchoClientConfig(enabled=True, api_key="test-honcho-key")
+            with (
+                patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+                patch("run_agent.check_toolset_requirements", return_value={}),
+                patch("run_agent.OpenAI"),
+                patch("hermes_cli.config.load_config", return_value={"memory": {}}),
+                patch("honcho_integration.client.HonchoClientConfig.from_global_config", return_value=hcfg),
+                patch("honcho_integration.client.get_honcho_client", side_effect=RuntimeError("boom")),
+            ):
+                agent = AIAgent(
+                    api_key="test-k...7890",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=False,
+                )
+
+            assert isinstance(sys.stdout, _SafeWriter)
+            assert agent._honcho is None
         finally:
             sys.stdout = original
 

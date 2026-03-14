@@ -247,10 +247,10 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _read_temp_files(self, *paths: str) -> list[str]:
         results = []
         for path in paths:
-            try:
+            if os.path.exists(path):
                 with open(path) as f:
                     results.append(f.read())
-            except OSError:
+            else:
                 results.append("")
         return results
 
@@ -262,15 +262,13 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                 ["pkill", "-P", str(self._shell_pid)],
                 capture_output=True, timeout=5,
             )
-        except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
-            try:
+            if os.path.exists(f):
                 os.remove(f)
-            except OSError:
-                pass
 
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
@@ -286,106 +284,87 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         else:
             effective_stdin = stdin_data
 
-        try:
-            user_shell = _find_bash()
-            fenced_cmd = (
-                f"printf '{_OUTPUT_FENCE}';"
-                f" {exec_command};"
-                f" __hermes_rc=$?;"
-                f" printf '{_OUTPUT_FENCE}';"
-                f" exit $__hermes_rc"
-            )
-            run_env = _make_run_env(self.env)
+        user_shell = _find_bash()
+        fenced_cmd = (
+            f"printf '{_OUTPUT_FENCE}';"
+            f" {exec_command};"
+            f" __hermes_rc=$?;"
+            f" printf '{_OUTPUT_FENCE}';"
+            f" exit $__hermes_rc"
+        )
+        run_env = _make_run_env(self.env)
 
-            proc = subprocess.Popen(
-                [user_shell, "-lic", fenced_cmd],
-                text=True,
-                cwd=work_dir,
-                env=run_env,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
-            )
-
-            if effective_stdin is not None:
-                def _write_stdin():
-                    try:
-                        proc.stdin.write(effective_stdin)
-                        proc.stdin.close()
-                    except (BrokenPipeError, OSError):
-                        pass
-                threading.Thread(target=_write_stdin, daemon=True).start()
-
-            _output_chunks: list[str] = []
-
-            def _drain_stdout():
-                try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
-                except ValueError:
-                    pass
-                finally:
-                    try:
-                        proc.stdout.close()
-                    except Exception:
-                        pass
-
-            reader = threading.Thread(target=_drain_stdout, daemon=True)
-            reader.start()
-            deadline = time.monotonic() + effective_timeout
-
-            while proc.poll() is None:
-                if is_interrupted():
-                    try:
-                        if _IS_WINDOWS:
-                            proc.terminate()
-                        else:
-                            pgid = os.getpgid(proc.pid)
-                            os.killpg(pgid, signal.SIGTERM)
-                            try:
-                                proc.wait(timeout=1.0)
-                            except subprocess.TimeoutExpired:
-                                os.killpg(pgid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return {
-                        "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
-                        "returncode": 130,
-                    }
-                if time.monotonic() > deadline:
-                    try:
-                        if _IS_WINDOWS:
-                            proc.terminate()
-                        else:
-                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return self._timeout_result(effective_timeout)
-                time.sleep(0.2)
-
-            reader.join(timeout=5)
-            output = _extract_fenced_output("".join(_output_chunks))
-            return {"output": output, "returncode": proc.returncode}
-
-        except Exception as e:
-            return {"output": f"Execution error: {str(e)}", "returncode": 1}
-
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        if self.persistent:
-            return self._execute_persistent(
-                command, cwd, timeout=timeout, stdin_data=stdin_data,
-            )
-        return self._execute_oneshot(
-            command, cwd, timeout=timeout, stdin_data=stdin_data,
+        proc = subprocess.Popen(
+            [user_shell, "-lic", fenced_cmd],
+            text=True,
+            cwd=work_dir,
+            env=run_env,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
-    def cleanup(self):
-        if self.persistent:
-            self._cleanup_persistent_shell()
+        if effective_stdin is not None:
+            def _write_stdin():
+                try:
+                    proc.stdin.write(effective_stdin)
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            threading.Thread(target=_write_stdin, daemon=True).start()
+
+        _output_chunks: list[str] = []
+
+        def _drain_stdout():
+            try:
+                for line in proc.stdout:
+                    _output_chunks.append(line)
+            except ValueError:
+                pass
+            finally:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+
+        reader = threading.Thread(target=_drain_stdout, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + effective_timeout
+
+        while proc.poll() is None:
+            if is_interrupted():
+                try:
+                    if _IS_WINDOWS:
+                        proc.terminate()
+                    else:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                reader.join(timeout=2)
+                return {
+                    "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
+                    "returncode": 130,
+                }
+            if time.monotonic() > deadline:
+                try:
+                    if _IS_WINDOWS:
+                        proc.terminate()
+                    else:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                reader.join(timeout=2)
+                return self._timeout_result(effective_timeout)
+            time.sleep(0.2)
+
+        reader.join(timeout=5)
+        output = _extract_fenced_output("".join(_output_chunks))
+        return {"output": output, "returncode": proc.returncode}

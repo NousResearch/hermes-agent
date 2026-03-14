@@ -130,11 +130,11 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             pass
 
     def _cleanup_temp_files(self):
+        cmd = self._build_ssh_command()
+        cmd.append(f"rm -f {self._temp_prefix}-*")
         try:
-            cmd = self._build_ssh_command()
-            cmd.append(f"rm -f {self._temp_prefix}-*")
             subprocess.run(cmd, capture_output=True, timeout=5)
-        except (OSError, subprocess.SubprocessError):
+        except (subprocess.TimeoutExpired, OSError):
             pass
 
     def _execute_oneshot(self, command: str, cwd: str = "", *,
@@ -155,74 +155,58 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         cmd = self._build_ssh_command()
         cmd.append(wrapped)
 
-        try:
-            kwargs = self._build_run_kwargs(timeout, effective_stdin)
-            kwargs.pop("timeout", None)
-            _output_chunks = []
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
-                text=True,
-            )
-
-            if effective_stdin:
-                try:
-                    proc.stdin.write(effective_stdin)
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-            def _drain():
-                try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
-                except Exception:
-                    pass
-
-            reader = threading.Thread(target=_drain, daemon=True)
-            reader.start()
-            deadline = time.monotonic() + effective_timeout
-
-            while proc.poll() is None:
-                if is_interrupted():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return {
-                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
-                        "returncode": 130,
-                    }
-                if time.monotonic() > deadline:
-                    proc.kill()
-                    reader.join(timeout=2)
-                    return self._timeout_result(effective_timeout)
-                time.sleep(0.2)
-
-            reader.join(timeout=5)
-            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
-
-        except Exception as e:
-            return {"output": f"SSH execution error: {str(e)}", "returncode": 1}
-
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        if self.persistent:
-            return self._execute_persistent(
-                command, cwd, timeout=timeout, stdin_data=stdin_data
-            )
-        return self._execute_oneshot(
-            command, cwd, timeout=timeout, stdin_data=stdin_data
+        kwargs = self._build_run_kwargs(timeout, effective_stdin)
+        kwargs.pop("timeout", None)
+        _output_chunks = []
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
+            text=True,
         )
 
+        if effective_stdin:
+            try:
+                proc.stdin.write(effective_stdin)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        def _drain():
+            try:
+                for line in proc.stdout:
+                    _output_chunks.append(line)
+            except Exception:
+                pass
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + effective_timeout
+
+        while proc.poll() is None:
+            if is_interrupted():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                reader.join(timeout=2)
+                return {
+                    "output": "".join(_output_chunks) + "\n[Command interrupted]",
+                    "returncode": 130,
+                }
+            if time.monotonic() > deadline:
+                proc.kill()
+                reader.join(timeout=2)
+                return self._timeout_result(effective_timeout)
+            time.sleep(0.2)
+
+        reader.join(timeout=5)
+        return {"output": "".join(_output_chunks), "returncode": proc.returncode}
+
     def cleanup(self):
-        if self.persistent:
-            self._cleanup_persistent_shell()
+        super().cleanup()
         if self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",

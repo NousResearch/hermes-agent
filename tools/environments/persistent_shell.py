@@ -17,8 +17,10 @@ class PersistentShellMixin:
     """Mixin that adds persistent shell capability to any BaseEnvironment.
 
     Subclasses must implement ``_spawn_shell_process()``, ``_read_temp_files()``,
-    ``_kill_shell_children()``, and ``_execute_oneshot()`` (stdin fallback).
+    ``_kill_shell_children()``, ``_execute_oneshot()``, and ``_cleanup_temp_files()``.
     """
+
+    persistent: bool
 
     @abstractmethod
     def _spawn_shell_process(self) -> subprocess.Popen: ...
@@ -43,15 +45,16 @@ class PersistentShellMixin:
     def _temp_prefix(self) -> str:
         return f"/tmp/hermes-persistent-{self._session_id}"
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def _init_persistent_shell(self):
         self._shell_lock = threading.Lock()
-        self._session_id: str = ""
         self._shell_proc: subprocess.Popen | None = None
         self._shell_alive: bool = False
         self._shell_pid: int | None = None
-        self._start_persistent_shell()
 
-    def _start_persistent_shell(self):
         self._session_id = uuid.uuid4().hex[:12]
         p = self._temp_prefix
         self._pshell_stdout = f"{p}-stdout"
@@ -98,6 +101,52 @@ class PersistentShellMixin:
         if reported_cwd:
             self.cwd = reported_cwd
 
+    def _cleanup_persistent_shell(self):
+        if self._shell_proc is None:
+            return
+
+        if self._session_id:
+            self._cleanup_temp_files()
+
+        try:
+            self._shell_proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._shell_proc.terminate()
+            self._shell_proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self._shell_proc.kill()
+
+        self._shell_alive = False
+        self._shell_proc = None
+
+        if hasattr(self, "_drain_thread") and self._drain_thread.is_alive():
+            self._drain_thread.join(timeout=1.0)
+
+    # ------------------------------------------------------------------
+    # execute() / cleanup() — shared dispatcher, subclasses inherit
+    # ------------------------------------------------------------------
+
+    def execute(self, command: str, cwd: str = "", *,
+                timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
+        if self.persistent:
+            return self._execute_persistent(
+                command, cwd, timeout=timeout, stdin_data=stdin_data,
+            )
+        return self._execute_oneshot(
+            command, cwd, timeout=timeout, stdin_data=stdin_data,
+        )
+
+    def cleanup(self):
+        if self.persistent:
+            self._cleanup_persistent_shell()
+
+    # ------------------------------------------------------------------
+    # Shell I/O
+    # ------------------------------------------------------------------
+
     def _drain_shell_output(self):
         try:
             for _ in self._shell_proc.stdout:
@@ -130,12 +179,16 @@ class PersistentShellMixin:
             exit_code = 1
         return output, exit_code, cwd.strip()
 
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
     def _execute_persistent(self, command: str, cwd: str, *,
                             timeout: int | None = None,
                             stdin_data: str | None = None) -> dict:
         if not self._shell_alive:
             logger.info("Persistent shell died, restarting...")
-            self._start_persistent_shell()
+            self._init_persistent_shell()
 
         exec_command, sudo_stdin = self._prepare_command(command)
         effective_timeout = timeout or self.timeout
@@ -216,27 +269,3 @@ class PersistentShellMixin:
         if stderr.strip():
             parts.append(stderr.rstrip("\n"))
         return "\n".join(parts)
-
-    def _cleanup_persistent_shell(self):
-        if self._shell_proc is None:
-            return
-
-        if self._session_id:
-            self._cleanup_temp_files()
-
-        try:
-            self._shell_proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            self._shell_proc.terminate()
-            self._shell_proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            self._shell_proc.kill()
-
-        self._shell_alive = False
-        self._shell_proc = None
-
-        if hasattr(self, "_drain_thread") and self._drain_thread.is_alive():
-            self._drain_thread.join(timeout=1.0)
-

@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -176,6 +177,21 @@ def print_error(text: str):
     print(color(f"✗ {text}", Colors.RED))
 
 
+def _terminal_columns(default: int = 120) -> int:
+    """Best-effort terminal width detection for menu rendering."""
+    try:
+        return max(40, shutil.get_terminal_size(fallback=(default, 24)).columns)
+    except Exception:
+        return default
+
+
+def _truncate_menu_text(text: str, max_width: int) -> str:
+    """Prevent wrapped menu entries, which can glitch simple_term_menu redraws."""
+    if max_width <= 5 or len(text) <= max_width:
+        return text
+    return text[: max_width - 1] + "…"
+
+
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     if default:
@@ -218,6 +234,9 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             flags=re.UNICODE,
         )
         menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
+        # Keep entries on one line; wrapped entries can visually corrupt redraw.
+        max_item_width = _terminal_columns() - 6
+        menu_choices = [_truncate_menu_text(c, max_item_width) for c in menu_choices]
 
         print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
 
@@ -330,6 +349,9 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
             flags=re.UNICODE,
         )
         menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
+        # Keep entries on one line; wrapped entries can visually corrupt redraw.
+        max_item_width = _terminal_columns() - 6
+        menu_items = [_truncate_menu_text(i, max_item_width) for i in menu_items]
 
         # Map pre-selected indices to the actual menu entry strings
         preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]

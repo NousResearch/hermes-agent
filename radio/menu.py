@@ -214,6 +214,7 @@ def radio_menu(
         nonlocal active_decades, active_moods, mic_breaks
 
         curses.curs_set(0)
+        stdscr.keypad(True)  # interpret arrow keys as single KEY_* codes
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
@@ -439,6 +440,7 @@ def search_menu(results: List[Dict[str, Any]], title: str = "Search Results") ->
 
     def _run(stdscr):
         curses.curs_set(0)
+        stdscr.keypad(True)
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()

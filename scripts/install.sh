@@ -562,9 +562,51 @@ clone_repo() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
+
+            local autostash_ref=""
+            if [ -n "$(git status --porcelain)" ]; then
+                local stash_name
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+                log_info "Local changes detected, stashing before update..."
+                git stash push --include-untracked -m "$stash_name"
+                autostash_ref="$(git rev-parse --verify refs/stash)"
+            fi
+
             git fetch origin
             git checkout "$BRANCH"
             git pull origin "$BRANCH"
+
+            if [ -n "$autostash_ref" ]; then
+                local restore_now="yes"
+                if [ -t 0 ] && [ -t 1 ]; then
+                    echo
+                    log_warn "Local changes were stashed before updating."
+                    log_warn "Restoring them may reapply local customizations onto the updated codebase."
+                    printf "Restore local changes now? [Y/n] "
+                    read -r restore_answer
+                    case "$restore_answer" in
+                        ""|y|Y|yes|YES|Yes) restore_now="yes" ;;
+                        *) restore_now="no" ;;
+                    esac
+                fi
+
+                if [ "$restore_now" = "yes" ]; then
+                    log_info "Restoring local changes..."
+                    if git stash apply "$autostash_ref"; then
+                        git stash drop "$autostash_ref" >/dev/null
+                        log_warn "Local changes were restored on top of the updated codebase."
+                        log_warn "Review git diff / git status if Hermes behaves unexpectedly."
+                    else
+                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                        log_info "Resolve manually with: git stash apply $autostash_ref"
+                        exit 1
+                    fi
+                else
+                    log_info "Skipped restoring local changes."
+                    log_info "Your changes are still preserved in git stash."
+                    log_info "Restore manually with: git stash apply $autostash_ref"
+                fi
+            fi
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"

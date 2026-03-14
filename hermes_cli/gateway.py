@@ -367,6 +367,13 @@ def systemd_status(deep: bool = False):
         print("✗ Gateway service is stopped")
         print("  Run: hermes gateway start")
 
+    runtime_lines = _runtime_health_lines()
+    if runtime_lines:
+        print()
+        print("Recent gateway health:")
+        for line in runtime_lines:
+            print(f"  {line}")
+
     if deep:
         print_systemd_linger_guidance()
     else:
@@ -691,6 +698,35 @@ def _platform_status(platform: dict) -> str:
     if val:
         return "configured"
     return "not configured"
+
+
+def _runtime_health_lines() -> list[str]:
+    """Summarize the latest persisted gateway runtime health state."""
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return []
+
+    state = read_runtime_status()
+    if not state:
+        return []
+
+    lines: list[str] = []
+    gateway_state = state.get("gateway_state")
+    exit_reason = state.get("exit_reason")
+    platforms = state.get("platforms", {}) or {}
+
+    for platform, pdata in platforms.items():
+        if pdata.get("state") == "fatal":
+            message = pdata.get("error_message") or "unknown error"
+            lines.append(f"⚠ {platform}: {message}")
+
+    if gateway_state == "startup_failed" and exit_reason:
+        lines.append(f"⚠ Last startup issue: {exit_reason}")
+    elif gateway_state == "stopped" and exit_reason:
+        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+
+    return lines
 
 
 def _setup_standard_platform(platform: dict):
@@ -1186,11 +1222,23 @@ def gateway_command(args):
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
+                runtime_lines = _runtime_health_lines()
+                if runtime_lines:
+                    print()
+                    print("Recent gateway health:")
+                    for line in runtime_lines:
+                        print(f"  {line}")
                 print()
                 print("To install as a service:")
                 print("  hermes gateway install")
             else:
                 print("✗ Gateway is not running")
+                runtime_lines = _runtime_health_lines()
+                if runtime_lines:
+                    print()
+                    print("Recent gateway health:")
+                    for line in runtime_lines:
+                        print(f"  {line}")
                 print()
                 print("To start:")
                 print("  hermes gateway          # Run in foreground")

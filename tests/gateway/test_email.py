@@ -797,7 +797,7 @@ class TestConnectDisconnect(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b"1 2 3"])
+        mock_imap.uid.return_value = ("OK", [b"1 2 3"])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP") as mock_smtp:
@@ -831,7 +831,7 @@ class TestConnectDisconnect(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b""])
+        mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP", side_effect=Exception("SMTP down")):
@@ -880,8 +880,15 @@ class TestFetchNewMessages(unittest.TestCase):
         raw_email["Message-ID"] = "<msg@test.com>"
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b"1 2 3"])
-        mock_imap.fetch.return_value = ("OK", [(b"3", raw_email.as_bytes())])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2 3"])
+            if command == "fetch":
+                return ("OK", [(b"3", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
@@ -896,7 +903,7 @@ class TestFetchNewMessages(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b""])
+        mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
@@ -922,8 +929,15 @@ class TestFetchNewMessages(unittest.TestCase):
         raw_email["Message-ID"] = "<msg@test.com>"
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b"1"])
-        mock_imap.fetch.return_value = ("OK", [(b"1", raw_email.as_bytes())])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
@@ -966,8 +980,15 @@ class TestPollLoop(unittest.TestCase):
         raw_email["Message-ID"] = "<inbox@test.com>"
 
         mock_imap = MagicMock()
-        mock_imap.search.return_value = ("OK", [b"1"])
-        mock_imap.fetch.return_value = ("OK", [(b"1", raw_email.as_bytes())])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             asyncio.run(adapter._check_inbox())

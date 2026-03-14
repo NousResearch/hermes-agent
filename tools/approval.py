@@ -343,6 +343,19 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    # --yolo: bypass all approval prompts and pre-exec guard checks
+    if os.getenv("HERMES_YOLO_MODE"):
+        return {"approved": True, "message": None}
+
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
+    # flows, we do not block on approvals and we skip external guard work.
+    if not is_cli and not is_gateway and not is_ask:
+        return {"approved": True, "message": None}
+
     # --- Phase 1: Gather findings from both checks ---
 
     # Tirith check — wrapper guarantees no raise for expected failures.
@@ -390,13 +403,6 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 3: Approval ---
 
-    is_cli = os.getenv("HERMES_INTERACTIVE")
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
-
-    # Non-interactive: auto-allow (matches existing behavior)
-    if not is_cli and not is_gateway:
-        return {"approved": True, "message": None}
-
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
     primary_key = warnings[0][0]
@@ -405,7 +411,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Gateway/async: single approval_required with combined description
     # Store all pattern keys so gateway replay approves all of them
-    if is_gateway or os.getenv("HERMES_EXEC_ASK"):
+    if is_gateway or is_ask:
         submit_pending(session_key, {
             "command": command,
             "pattern_key": primary_key,        # backward compat

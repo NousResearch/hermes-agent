@@ -1388,7 +1388,6 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         # User-defined quick commands (exec or alias)
-
         if command:
             if isinstance(self.config, dict):
                 quick_commands = self.config.get("quick_commands", {}) or {}

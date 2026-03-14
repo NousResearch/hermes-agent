@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
         'guides/team-telegram-assistant',
         'guides/python-library',
         'guides/use-mcp-with-hermes',
+        'guides/use-soul-with-hermes',
       ],
     },
     {

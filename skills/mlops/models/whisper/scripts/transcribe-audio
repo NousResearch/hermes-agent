@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Cross-platform Whisper transcription wrapper.
+
+Automatically selects the best backend for the current platform:
+  - macOS Apple Silicon  ->  mlx-whisper  (Metal / ANE acceleration)
+  - Linux / Windows      ->  faster-whisper  (CUDA or CPU)
+
+Audio is normalised to mono 16 kHz WAV via ffmpeg before inference.
+Model weights are cached under ~/whisper/cache/huggingface/.
+"""
+
+import argparse
+import contextlib
+import io
+import json
+import os
+import platform
+import sys
+import tempfile
+from pathlib import Path
+from subprocess import run as _run
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+BASE_DIR = Path.home() / "whisper"
+TMP_DIR = BASE_DIR / "tmp"
+CACHE_DIR = BASE_DIR / "cache"
+HF_HOME = CACHE_DIR / "huggingface"
+
+# ---------------------------------------------------------------------------
+# Backend detection
+# ---------------------------------------------------------------------------
+
+_SYSTEM = platform.system()
+
+
+def _is_apple_silicon() -> bool:
+    return _SYSTEM == "Darwin" and platform.machine() == "arm64"
+
+
+USE_MLX = _is_apple_silicon()
+
+if USE_MLX:
+    try:
+        import mlx_whisper  # noqa: F401  (used later)
+    except ImportError:
+        sys.exit(
+            "Error: mlx-whisper is not installed.\n"
+            "Install it with:  uv pip install mlx-whisper"
+        )
+else:
+    try:
+        from faster_whisper import WhisperModel  # noqa: F401
+    except ImportError:
+        sys.exit(
+            "Error: faster-whisper is not installed.\n"
+            "Install it with:  uv pip install faster-whisper"
+        )
+
+# ---------------------------------------------------------------------------
+# Model aliases
+# ---------------------------------------------------------------------------
+
+_MLX_ALIASES: dict[str, str] = {
+    "tiny": "mlx-community/whisper-tiny",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
+}
+
+_FASTER_ALIASES: dict[str, str] = {
+    "tiny": "tiny",
+    "base": "base",
+    "small": "small",
+    "medium": "medium",
+    "large": "large-v3",
+    "turbo": "large-v3-turbo",
+}
+
+DEFAULT_MODEL = "small"
+
+# ---------------------------------------------------------------------------
+# ffmpeg normalisation
+# ---------------------------------------------------------------------------
+
+
+def _ffmpeg_normalise(input_path: Path, output_path: Path) -> None:
+    """Convert *input_path* to mono 16 kHz 16-bit PCM WAV."""
+    proc = _run(
+        [
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
+        raise RuntimeError(f"ffmpeg conversion failed: {detail}")
+
+
+# ---------------------------------------------------------------------------
+# Backend: mlx-whisper
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_mlx(
+    wav: str,
+    model: str,
+    language: str | None,
+    task: str,
+    word_timestamps: bool,
+    initial_prompt: str | None,
+) -> dict:
+    repo = _MLX_ALIASES.get(model, model)
+    with contextlib.redirect_stdout(io.StringIO()), \
+         contextlib.redirect_stderr(io.StringIO()):
+        return mlx_whisper.transcribe(
+            wav,
+            path_or_hf_repo=repo,
+            language=language,
+            task=task,
+            word_timestamps=word_timestamps,
+            initial_prompt=initial_prompt,
+            verbose=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backend: faster-whisper
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_faster(
+    wav: str,
+    model: str,
+    language: str | None,
+    task: str,
+    word_timestamps: bool,
+    initial_prompt: str | None,
+) -> dict:
+    model_id = _FASTER_ALIASES.get(model, model)
+
+    # Pick the best available device.
+    device, compute_type = "cpu", "int8"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device, compute_type = "cuda", "float16"
+    except ImportError:
+        pass
+
+    fw = WhisperModel(
+        model_id,
+        device=device,
+        compute_type=compute_type,
+        download_root=str(HF_HOME / "hub"),
+    )
+    segments_iter, info = fw.transcribe(
+        wav,
+        language=language,
+        task=task,
+        word_timestamps=word_timestamps,
+        initial_prompt=initial_prompt,
+        beam_size=5,
+    )
+
+    segments: list[dict] = []
+    text_parts: list[str] = []
+    for seg in segments_iter:
+        entry: dict = {"start": seg.start, "end": seg.end, "text": seg.text}
+        if word_timestamps and seg.words:
+            entry["words"] = [
+                {
+                    "word": w.word,
+                    "start": w.start,
+                    "end": w.end,
+                    "probability": w.probability,
+                }
+                for w in seg.words
+            ]
+        segments.append(entry)
+        text_parts.append(seg.text)
+
+    return {
+        "text": "".join(text_parts),
+        "segments": segments,
+        "language": info.language,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Transcribe audio locally with Whisper (cross-platform)",
+    )
+    parser.add_argument("audio", help="Path to an audio or video file")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help="Model alias (tiny/base/small/medium/turbo) or HF repo",
+    )
+    parser.add_argument("--language", default=None, help="ISO 639-1 code")
+    parser.add_argument(
+        "--task",
+        choices=["transcribe", "translate"],
+        default="transcribe",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON instead of plain text",
+    )
+    parser.add_argument(
+        "--word-timestamps",
+        action="store_true",
+        help="Include per-word timestamps (with --json)",
+    )
+    parser.add_argument(
+        "--initial-prompt",
+        default=None,
+        help="Context hint to improve domain-specific accuracy",
+    )
+    args = parser.parse_args()
+
+    # -- Resolve input -------------------------------------------------
+    input_path = Path(args.audio).expanduser().resolve()
+    if not input_path.exists():
+        print(f"Error: file not found: {input_path}", file=sys.stderr)
+        return 2
+
+    # -- Ensure directories --------------------------------------------
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    HF_HOME.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(HF_HOME))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_HOME / "hub"))
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+    # -- Normalise audio -----------------------------------------------
+    with tempfile.NamedTemporaryFile(
+        suffix=".wav", dir=TMP_DIR, delete=False,
+    ) as tmp:
+        wav_path = Path(tmp.name)
+
+    try:
+        _ffmpeg_normalise(input_path, wav_path)
+        transcribe = _transcribe_mlx if USE_MLX else _transcribe_faster
+        result = transcribe(
+            str(wav_path),
+            args.model,
+            args.language,
+            args.task,
+            args.word_timestamps,
+            args.initial_prompt,
+        )
+    finally:
+        wav_path.unlink(missing_ok=True)
+
+    # -- Output --------------------------------------------------------
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print((result.get("text") or "").strip())
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

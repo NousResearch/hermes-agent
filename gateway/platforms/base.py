@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+from collections import deque
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
@@ -347,10 +348,12 @@ class BasePlatformAdapter(ABC):
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
         
-        # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Track active message handlers per session for interrupt support.
+        # Plain follow-ups queue until the running handler completes.
+        # Explicit /interrupt messages are stored separately and wake the runner.
         self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_messages: Dict[str, deque[MessageEvent]] = {}
+        self._pending_interrupt_messages: Dict[str, deque[MessageEvent]] = {}
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
     
@@ -683,11 +686,15 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
-            # Store this as a pending message - it will interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
-            self._pending_messages[session_key] = event
-            # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
+            if event.get_command() == "interrupt":
+                print(f"[{self.name}] ⚡ Explicit interrupt for active session {session_key}")
+                self._pending_interrupt_messages.setdefault(session_key, deque()).append(
+                    self._normalize_interrupt_event(event)
+                )
+                self._active_sessions[session_key].set()
+            else:
+                print(f"[{self.name}] 📨 Queued follow-up for active session {session_key}")
+                self._pending_messages.setdefault(session_key, deque()).append(event)
             return  # Don't process now - will be handled after current task finishes
         
         # Spawn background task to process this message
@@ -871,8 +878,8 @@ class BasePlatformAdapter(ABC):
                         print(f"[{self.name}] Error sending media: {media_err}")
             
             # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+            pending_event = self.get_pending_message(session_key)
+            if pending_event:
                 print(f"[{self.name}] 📨 Processing queued message from interrupt")
                 # Clean up current session before processing pending
                 if session_key in self._active_sessions:
@@ -903,11 +910,39 @@ class BasePlatformAdapter(ABC):
     
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
-        return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
-    
+        return (
+            session_key in self._active_sessions
+            and self._active_sessions[session_key].is_set()
+            and bool(self._pending_interrupt_messages.get(session_key))
+        )
+
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
-        return self._pending_messages.pop(session_key, None)
+        return self._pop_pending_event(self._pending_messages, session_key)
+
+    def get_pending_interrupt_message(self, session_key: str) -> Optional[MessageEvent]:
+        """Get and clear the next explicit interrupt message for a session."""
+        return self._pop_pending_event(self._pending_interrupt_messages, session_key)
+
+    @staticmethod
+    def _pop_pending_event(store: Dict[str, Any], session_key: str) -> Optional[MessageEvent]:
+        queue = store.get(session_key)
+        if not queue:
+            return None
+        if isinstance(queue, list):
+            event = queue.pop(0)
+        else:
+            event = queue.popleft()
+        if not queue:
+            store.pop(session_key, None)
+        return event
+
+    @staticmethod
+    def _normalize_interrupt_event(event: MessageEvent) -> MessageEvent:
+        """Convert /interrupt input into the text the agent should resume with."""
+        if event.get_command() != "interrupt":
+            return event
+        return replace(event, text=event.get_command_args().strip())
     
     def build_source(
         self,

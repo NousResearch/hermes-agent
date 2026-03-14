@@ -106,6 +106,20 @@ class TestSingleQueryState:
         assert hasattr(cli, "_pending_input")
 
 
+class TestInterruptCommandParsing:
+    def test_plain_message_is_not_force_interrupt(self):
+        cli = _make_cli()
+        assert cli._extract_interrupt_message("follow up question") is None
+
+    def test_interrupt_command_extracts_message(self):
+        cli = _make_cli()
+        assert cli._extract_interrupt_message("/interrupt urgent follow up") == "urgent follow up"
+
+    def test_interrupt_alias_without_message_returns_empty_string(self):
+        cli = _make_cli()
+        assert cli._extract_interrupt_message("/interrupt") == ""
+
+
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
         cli = _make_cli()

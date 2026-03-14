@@ -2800,6 +2800,13 @@ class HermesCLI:
         
         if cmd_lower in ("/quit", "/exit", "/q"):
             return False
+        elif cmd_lower.startswith("/interrupt"):
+            interrupt_message = self._extract_interrupt_message(cmd_original)
+            if not self._agent_running or not self.agent:
+                _cprint("  No active task to interrupt.")
+            else:
+                self.agent.interrupt(interrupt_message or None)
+                _cprint("  Interrupt requested.")
         elif cmd_lower == "/help":
             self.show_help()
         elif cmd_lower == "/tools":
@@ -4139,18 +4146,26 @@ class HermesCLI:
             except Exception:
                 pass
 
+    @staticmethod
+    def _extract_interrupt_message(text: str) -> Optional[str]:
+        stripped = (text or "").strip()
+        if not stripped.lower().startswith("/interrupt"):
+            return None
+        parts = stripped.split(maxsplit=1)
+        return parts[1].strip() if len(parts) > 1 else ""
+
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
-        Handles streaming output, interrupt detection (user typing while agent
-        is working), and re-queueing of interrupted messages.
+        Handles streaming output, explicit interrupt detection, and re-queueing
+        of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
-        race conditions between the process_loop and interrupt monitoring. Messages
-        typed while the agent is running go to _interrupt_queue; messages typed while
-        idle go to _pending_input.
+        race conditions between the process_loop and interrupt monitoring.
+        Explicit /interrupt prompts go to _interrupt_queue; ordinary follow-ups
+        queue in _pending_input until the current task finishes.
         
         Args:
             message: The user's message (str or multimodal content list)
@@ -4293,7 +4308,7 @@ class HermesCLI:
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
-                            self.agent.interrupt(interrupt_msg)
+                            self.agent.interrupt(interrupt_msg or None)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
@@ -4678,10 +4693,9 @@ class HermesCLI:
             - Approval selection: selected choice goes to approval response queue
             - Clarify freetext mode: answer goes to the clarify response queue
             - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running: goes to _interrupt_queue (chat() monitors this)
+            - Agent running + /interrupt: goes to _interrupt_queue (chat() monitors this)
+            - Agent running + any other input: queues in _pending_input
             - Agent idle: goes to _pending_input (process_loop monitors this)
-            Commands (starting with /) always go to _pending_input so they're
-            handled as commands, not sent as interrupt text to the agent.
             """
             # --- Sudo password prompt: submit the typed password ---
             if self._sudo_state:
@@ -4757,17 +4771,9 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and text.startswith("/")):
-                    self._interrupt_queue.put(payload)
-                    # Debug: log to file when message enters interrupt queue
-                    try:
-                        _dbg = _hermes_home / "interrupt_debug.log"
-                        with open(_dbg, "a") as _f:
-                            import time as _t
-                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                     f"agent_running={self._agent_running}\n")
-                    except Exception:
-                        pass
+                interrupt_message = self._extract_interrupt_message(text) if isinstance(text, str) else None
+                if self._agent_running and interrupt_message is not None:
+                    self._interrupt_queue.put(interrupt_message)
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -5152,7 +5158,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "Enter queues follow-up, /interrupt preempts, Ctrl+C cancels"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

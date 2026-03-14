@@ -74,6 +74,7 @@ class TestInterruptKeyConsistency:
         # Simulate adapter storing interrupt under session_key
         interrupt_event = asyncio.Event()
         adapter._active_sessions[session_key] = interrupt_event
+        adapter._pending_interrupt_messages[session_key] = [MessageEvent(text="go", source=source)]
         interrupt_event.set()
 
         # Using session_key → found
@@ -90,7 +91,7 @@ class TestInterruptKeyConsistency:
         session_key = build_session_key(source)
 
         event = MessageEvent(text="hello", source=source, message_id="42")
-        adapter._pending_messages[session_key] = event
+        adapter._pending_messages[session_key] = [event]
 
         # Using chat_id → None (the bug)
         assert adapter.get_pending_message(source.chat_id) is None
@@ -121,4 +122,22 @@ class TestInterruptKeyConsistency:
         assert source.chat_id not in adapter._pending_messages
 
         # Interrupt event was set
-        assert adapter._active_sessions[session_key].is_set()
+        assert adapter._active_sessions[session_key].is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_interrupt_uses_interrupt_queue(self):
+        """Explicit /interrupt should set the interrupt event and normalize text."""
+        adapter = StubAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+        source = _source("-1001234", "group")
+        session_key = build_session_key(source)
+
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        event = MessageEvent(text="/interrupt new priority", source=source, message_id="2")
+        await adapter.handle_message(event)
+
+        assert adapter.has_pending_interrupt(session_key) is True
+        pending = adapter.get_pending_interrupt_message(session_key)
+        assert pending is not None
+        assert pending.text == "new priority"

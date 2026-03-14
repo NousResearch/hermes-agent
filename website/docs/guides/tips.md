@@ -44,7 +44,7 @@ The CLI auto-detects multi-line pastes. Just paste a code block or error traceba
 
 ### Interrupt and Redirect
 
-Press **Ctrl+C** once to interrupt the agent mid-response. You can then type a new message to redirect it. Double-press Ctrl+C within 2 seconds to force exit. This is invaluable when the agent starts going down the wrong path.
+Press **Ctrl+C** once to interrupt the agent mid-response. If you want to keep the current task running, type a new message and press Enter to queue it for later; use `/interrupt <message>` when you need to redirect immediately. Double-press Ctrl+C within 2 seconds to force exit.
 
 ### Resume Sessions with `-c`
 

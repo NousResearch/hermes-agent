@@ -98,7 +98,39 @@ class TestBasePlatformTopicSessions:
         await adapter.handle_message(pending_event)
 
         assert scheduled == []
+        assert adapter._active_sessions[build_session_key(pending_event.source)].is_set() is False
         assert adapter.get_pending_message(build_session_key(pending_event.source)) == pending_event
+
+    @pytest.mark.asyncio
+    async def test_handle_message_explicit_interrupt_sets_interrupt_event(self, monkeypatch):
+        adapter = DummyTelegramAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        active_event = _make_event("-1001", "10")
+        session_key = build_session_key(active_event.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            coro.close()
+            return SimpleNamespace()
+
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+        interrupt_event = MessageEvent(
+            text="/interrupt please stop and handle this first",
+            source=active_event.source,
+            message_id="2",
+        )
+        await adapter.handle_message(interrupt_event)
+
+        assert scheduled == []
+        assert adapter.has_pending_interrupt(session_key) is True
+        queued_interrupt = adapter.get_pending_interrupt_message(session_key)
+        assert queued_interrupt is not None
+        assert queued_interrupt.text == "please stop and handle this first"
 
     @pytest.mark.asyncio
     async def test_process_message_background_replies_in_same_topic(self):

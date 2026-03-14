@@ -1057,7 +1057,12 @@ def _model_flow_openai_codex(config, current_model=""):
         _codex_token = _codex_creds.get("api_key")
     except Exception:
         pass
+
     codex_models = get_codex_model_ids(access_token=_codex_token)
+    if "gpt-5.4" not in codex_models:
+        print("Note: `gpt-5.4` is not currently supported for ChatGPT/Codex OAuth accounts.")
+        print("Use OpenRouter if you need GPT-5.4 specifically.")
+        print()
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:
@@ -1070,6 +1075,7 @@ def _model_flow_openai_codex(config, current_model=""):
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
+
 
 
 def _model_flow_custom(config):

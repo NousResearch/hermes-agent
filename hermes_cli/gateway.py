@@ -122,8 +122,71 @@ def is_windows() -> bool:
 SERVICE_NAME = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+
 def get_systemd_unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
+
+
+def get_systemd_linger_status() -> tuple[bool | None, str]:
+    """Return whether systemd user lingering is enabled for the current user.
+
+    Returns:
+        (True, "") when linger is enabled.
+        (False, "") when linger is disabled.
+        (None, detail) when the status could not be determined.
+    """
+    if not is_linux():
+        return None, "not supported on this platform"
+
+    import shutil
+
+    if not shutil.which("loginctl"):
+        return None, "loginctl not found"
+
+    username = os.getenv("USER") or os.getenv("LOGNAME")
+    if not username:
+        try:
+            import pwd
+            username = pwd.getpwuid(os.getuid()).pw_name
+        except Exception:
+            return None, "could not determine current user"
+
+    try:
+        result = subprocess.run(
+            ["loginctl", "show-user", username, "--property=Linger", "--value"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        return None, str(e)
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+        return None, detail or "loginctl query failed"
+
+    value = (result.stdout or "").strip().lower()
+    if value in {"yes", "true", "1"}:
+        return True, ""
+    if value in {"no", "false", "0"}:
+        return False, ""
+
+    rendered = value or "<empty>"
+    return None, f"unexpected loginctl output: {rendered}"
+
+
+def print_systemd_linger_guidance() -> None:
+    """Print the current linger status and the fix when it is disabled."""
+    linger_enabled, linger_detail = get_systemd_linger_status()
+    if linger_enabled is True:
+        print("✓ Systemd linger is enabled (service survives logout)")
+    elif linger_enabled is False:
+        print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
+        print("  Run: sudo loginctl enable-linger $USER")
+    else:
+        print(f"⚠ Could not verify systemd linger ({linger_detail})")
+        print("  If you want the gateway user service to survive logout, run:")
+        print("  sudo loginctl enable-linger $USER")
 
 def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
@@ -211,8 +274,7 @@ def systemd_install(force: bool = False):
     print(f"  hermes gateway status             # Check status")
     print(f"  journalctl --user -u {SERVICE_NAME} -f  # View logs")
     print()
-    print("To enable lingering (keeps running after logout):")
-    print("  sudo loginctl enable-linger $USER")
+    print_systemd_linger_guidance()
 
 def systemd_uninstall():
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)
@@ -245,28 +307,38 @@ def systemd_status(deep: bool = False):
         print("✗ Gateway service is not installed")
         print("  Run: hermes gateway install")
         return
-    
+
     # Show detailed status first
     subprocess.run(
         ["systemctl", "--user", "status", SERVICE_NAME, "--no-pager"],
         capture_output=False
     )
-    
+
     # Check if service is active
     result = subprocess.run(
         ["systemctl", "--user", "is-active", SERVICE_NAME],
         capture_output=True,
         text=True
     )
-    
+
     status = result.stdout.strip()
-    
+
     if status == "active":
         print("✓ Gateway service is running")
     else:
         print("✗ Gateway service is stopped")
         print("  Run: hermes gateway start")
-    
+
+    if deep:
+        print_systemd_linger_guidance()
+    else:
+        linger_enabled, _ = get_systemd_linger_status()
+        if linger_enabled is True:
+            print("✓ Systemd linger is enabled (service survives logout)")
+        elif linger_enabled is False:
+            print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
+            print("  Run: sudo loginctl enable-linger $USER")
+
     if deep:
         print()
         print("Recent logs:")

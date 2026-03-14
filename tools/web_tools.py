@@ -36,9 +36,19 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
-#TODO: Search Capabilities over the scraped pages
-#TODO: Store the pages in something
-#TODO: Tool to see what pages are available/saved to search over
+# TODO: Add persistent storage and search capabilities for scraped pages.
+#
+# Possible future improvements:
+#   - Store scraped page content locally (e.g. JSON, SQLite, or vector DB)
+#     so the agent can reuse previously scraped data across runs.
+#   - Implement search over stored pages (keyword or semantic search)
+#     to allow querying previously scraped content.
+#   - Add a tool to list stored pages so the agent can inspect available data.
+#
+# This would enable workflows like:
+#   1. Crawl a site once
+#   2. Persist the content
+#   3. Perform multiple queries over the stored data later.
 
 import json
 import logging

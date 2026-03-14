@@ -29,6 +29,7 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    MATTERMOST = "mattermost"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
 
@@ -359,6 +360,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.MATTERMOST: "MATTERMOST_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -450,6 +452,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SIGNAL,
                 chat_id=signal_home,
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Mattermost
+    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    if mattermost_token:
+        mattermost_url = os.getenv("MATTERMOST_URL", "")
+        if not mattermost_url:
+            logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
+        if Platform.MATTERMOST not in config.platforms:
+            config.platforms[Platform.MATTERMOST] = PlatformConfig()
+        config.platforms[Platform.MATTERMOST].enabled = True
+        config.platforms[Platform.MATTERMOST].token = mattermost_token
+        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+        if mattermost_home:
+            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+                platform=Platform.MATTERMOST,
+                chat_id=mattermost_home,
+                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Home Assistant

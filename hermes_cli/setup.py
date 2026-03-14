@@ -2121,6 +2121,52 @@ def setup_gateway(config: dict):
                     "⚠️  No allowlist set - anyone in your workspace can use the bot!"
                 )
 
+    # ── Mattermost ──
+    existing_mattermost = get_env_value("MATTERMOST_TOKEN")
+    if existing_mattermost:
+        print_info("Mattermost: already configured")
+        if prompt_yes_no("Reconfigure Mattermost?", False):
+            existing_mattermost = None
+
+    if not existing_mattermost and prompt_yes_no("Set up Mattermost?", False):
+        print_info("Works with any self-hosted Mattermost instance.")
+        print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
+        print_info("   2. Copy the bot token")
+        print()
+        mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+        if mm_url:
+            save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
+        token = prompt("Bot token", password=True)
+        if token:
+            save_env_value("MATTERMOST_TOKEN", token)
+            print_success("Mattermost token saved")
+
+            # Allowed users
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   To find your user ID: click your avatar → Profile")
+            print_info("   or use the API: GET /api/v4/users/me")
+            print()
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+            if allowed_users:
+                save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Mattermost allowlist configured")
+            else:
+                print_info(
+                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
+                )
+
+            # Home channel
+            print()
+            print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+            print_info("   To get a channel ID: click channel name → View Info → copy the ID")
+            print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
+            home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+            if home_channel:
+                save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+
     # ── WhatsApp ──
     existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
@@ -2138,6 +2184,7 @@ def setup_gateway(config: dict):
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
         or get_env_value("SLACK_BOT_TOKEN")
+        or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("WHATSAPP_ENABLED")
     )
     if any_messaging:

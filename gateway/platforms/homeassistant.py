@@ -83,6 +83,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
         self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
         self._ignore_entities: Set[str] = set(extra.get("ignore_entities", []))
+        self._watch_all: bool = bool(extra.get("watch_all", False))
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
         # Cooldown tracking: entity_id -> last_event_timestamp
@@ -114,6 +115,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Dedicated REST session for send() calls
             self._rest_session = aiohttp.ClientSession()
+
+            # Warn if no event filters are configured
+            if not self._watch_domains and not self._watch_entities and not self._watch_all:
+                logger.warning(
+                    "[%s] No watch_domains, watch_entities, or watch_all configured. "
+                    "All state_changed events will be dropped. Configure filters in "
+                    "your HA platform config to receive events.",
+                    self.name,
+                )
 
             # Start background listener
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -257,13 +267,17 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         if entity_id in self._ignore_entities:
             return
 
-        # Apply domain/entity watch filters
+        # Apply domain/entity watch filters (closed by default — require
+        # explicit watch_domains, watch_entities, or watch_all to forward)
         domain = entity_id.split(".")[0] if "." in entity_id else ""
         if self._watch_domains or self._watch_entities:
             domain_match = domain in self._watch_domains if self._watch_domains else False
             entity_match = entity_id in self._watch_entities if self._watch_entities else False
             if not domain_match and not entity_match:
                 return
+        elif not self._watch_all:
+            # No filters configured and watch_all is off — drop the event
+            return
 
         # Apply cooldown
         now = time.time()

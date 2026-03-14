@@ -63,6 +63,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **Anthropic** | `hermes model` (API key, setup-token, or Claude Code auto-detect) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -71,11 +72,39 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
-The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Credentials are stored at `~/.codex/auth.json` and auto-refresh. No Codex CLI installation required.
+The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 :::
 
 :::warning
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](#auxiliary-models) below.
+:::
+
+### Anthropic (Native)
+
+Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+
+```bash
+# With an API key (pay-per-token)
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+hermes chat --provider anthropic --model claude-sonnet-4-6
+
+# With a Claude Code setup-token (Pro/Max subscription)
+export ANTHROPIC_API_KEY=sk-ant-oat01-...  # from 'claude setup-token'
+hermes chat --provider anthropic
+
+# Auto-detect Claude Code credentials (if you have Claude Code installed)
+hermes chat --provider anthropic  # reads ~/.claude.json automatically
+```
+
+Or set it permanently:
+```yaml
+model:
+  provider: "anthropic"
+  default: "claude-sonnet-4-6"
+```
+
+:::tip Aliases
+`--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
 ### First-Class Chinese AI Providers
@@ -407,6 +436,39 @@ terminal:
   container_persistent: true         # Persist filesystem across sessions
 ```
 
+### Common Terminal Backend Issues
+
+If terminal commands fail immediately or the terminal tool is reported as disabled, check the following:
+
+- **Local backend**
+  - No special requirements. This is the safest default when you are just getting started.
+
+- **Docker backend**
+  - Ensure Docker Desktop (or the Docker daemon) is installed and running.
+  - Hermes needs to be able to find the `docker` CLI. It checks your `$PATH` first and also probes common Docker Desktop install locations on macOS. Run:
+    ```bash
+    docker version
+    ```
+    If this fails, fix your Docker installation or switch back to the local backend:
+    ```bash
+    hermes config set terminal.backend local
+    ```
+
+- **SSH backend**
+  - Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set, for example:
+    ```bash
+    export TERMINAL_ENV=ssh
+    export TERMINAL_SSH_HOST=my-server.example.com
+    export TERMINAL_SSH_USER=ubuntu
+    ```
+  - If either value is missing, Hermes will log a clear error and refuse to use the SSH backend.
+
+- **Modal backend**
+  - You need either a `MODAL_TOKEN_ID` environment variable or a `~/.modal.toml` config file.
+  - If neither is present, the backend check fails and Hermes will report that the Modal backend is not available.
+
+When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
+
 ### Docker Volume Mounts
 
 When using the Docker backend, `docker_volumes` lets you share host directories with the container. Each entry uses standard Docker `-v` syntax: `host_path:container_path[:options]`.
@@ -464,7 +526,7 @@ node_modules/
 ```yaml
 compression:
   enabled: true
-  threshold: 0.85              # Compress at 85% of context limit
+  threshold: 0.50              # Compress at 50% of context limit by default
   summary_model: "google/gemini-3-flash-preview"   # Model for summarization
   # summary_provider: "auto"   # "auto", "openrouter", "nous", "main"
 ```
@@ -637,12 +699,13 @@ tts:
 
 ```yaml
 display:
-  tool_progress: all    # off | new | all | verbose
-  personality: "kawaii"  # Default personality for the CLI
-  compact: false         # Compact output mode (less whitespace)
-  resume_display: full   # full (show previous messages on resume) | minimal (one-liner only)
-  bell_on_complete: false  # Play terminal bell when agent finishes (great for long tasks)
-  show_reasoning: false    # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  tool_progress: all      # off | new | all | verbose
+  skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
+  personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
+  compact: false          # Compact output mode (less whitespace)
+  resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
+  bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
+  show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
 ```
 
 | Mode | What you see |
@@ -685,8 +748,9 @@ Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
+- **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
 - **Type** — only `exec` is supported (runs a shell command); other types show an error
-- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal
+- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
 ## Human Delay
 
@@ -729,6 +793,7 @@ checkpoints:
   max_snapshots: 50              # Max checkpoints to keep per directory
 ```
 
+
 ## Delegation
 
 Configure subagent behavior for the delegate tool:
@@ -761,18 +826,24 @@ clarify:
 
 ## Context Files (SOUL.md, AGENTS.md)
 
-Drop these files in your project directory and the agent automatically picks them up:
+Hermes uses two different context scopes:
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Project-specific instructions, coding conventions |
-| `SOUL.md` | Persona definition — the agent embodies this personality |
-| `.cursorrules` | Cursor IDE rules (also detected) |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) |
+| File | Purpose | Scope |
+|------|---------|-------|
+| `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
+| `SOUL.md` | Default persona for this Hermes instance | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
+| `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
 
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
-- **SOUL.md** checks cwd first, then `~/.hermes/SOUL.md` as a global fallback.
-- All context files are capped at 20,000 characters with smart truncation.
+- **SOUL.md** is now global to the Hermes instance and is loaded only from `HERMES_HOME`.
+- Hermes automatically seeds a default `SOUL.md` if one does not already exist.
+- An empty `SOUL.md` contributes nothing to the system prompt.
+- All loaded context files are capped at 20,000 characters with smart truncation.
+
+See also:
+- [Personality & SOUL.md](/docs/user-guide/features/personality)
+- [Context Files](/docs/user-guide/features/context-files)
 
 ## Working Directory
 

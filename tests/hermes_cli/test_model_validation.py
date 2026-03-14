@@ -7,6 +7,7 @@ from hermes_cli.models import (
     fetch_api_models,
     normalize_provider,
     parse_model_input,
+    provider_label,
     provider_model_ids,
     validate_requested_model,
 )
@@ -111,6 +112,16 @@ class TestNormalizeProvider:
         assert normalize_provider("OpenRouter") == "openrouter"
 
 
+class TestProviderLabel:
+    def test_known_labels_and_auto(self):
+        assert provider_label("anthropic") == "Anthropic"
+        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("auto") == "Auto"
+
+    def test_unknown_provider_preserves_original_name(self):
+        assert provider_label("my-custom-provider") == "my-custom-provider"
+
+
 # -- provider_model_ids ------------------------------------------------------
 
 class TestProviderModelIds:
@@ -160,7 +171,8 @@ class TestValidateFormatChecks:
 
     def test_no_slash_model_rejected_if_not_in_api(self):
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
-        assert result["accepted"] is False
+        assert result["accepted"] is True
+        assert "not found" in result["message"]
 
 
 # -- validate — API found ----------------------------------------------------
@@ -184,37 +196,39 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_rejected(self):
+    def test_model_not_in_api_accepted_with_warning(self):
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is False
-        assert "not a valid model" in result["message"]
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert "not found" in result["message"]
 
-    def test_rejection_includes_suggestions(self):
+    def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
-        assert result["accepted"] is False
-        assert "Did you mean" in result["message"]
+        assert result["accepted"] is True
+        assert "Similar models" in result["message"]
 
 
-# -- validate — API unreachable (fallback) -----------------------------------
+# -- validate — API unreachable — accept and persist everything ----------------
 
 class TestValidateApiFallback:
-    def test_known_catalog_model_accepted_when_api_down(self):
+    def test_any_model_accepted_when_api_down(self):
         result = _validate("anthropic/claude-opus-4.6", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
 
-    def test_unknown_model_session_only_when_api_down(self):
+    def test_unknown_model_also_accepted_when_api_down(self):
+        """No hardcoded catalog gatekeeping — accept, persist, and warn."""
         result = _validate("anthropic/claude-next-gen", api_models=None)
         assert result["accepted"] is True
-        assert result["persist"] is False
-        assert "session only" in result["message"].lower()
+        assert result["persist"] is True
+        assert "could not reach" in result["message"].lower()
 
-    def test_zai_known_model_accepted_when_api_down(self):
+    def test_zai_model_accepted_when_api_down(self):
         result = _validate("glm-5", provider="zai", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
 
-    def test_unknown_provider_session_only_when_api_down(self):
+    def test_unknown_provider_accepted_when_api_down(self):
         result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
-        assert result["persist"] is False
+        assert result["persist"] is True

@@ -75,61 +75,33 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 |-----|--------|
 | `Enter` | Send message |
 | `Alt+Enter` or `Ctrl+J` | New line (multi-line input) |
+| `Alt+V` | Paste an image from the clipboard when supported by the terminal |
+| `Ctrl+V` | Paste text and opportunistically attach clipboard images |
 | `Ctrl+C` | Interrupt agent (double-press within 2s to force exit) |
 | `Ctrl+D` | Exit |
 | `Tab` | Autocomplete slash commands |
 
 ## Slash Commands
 
-Type `/` to see an autocomplete dropdown of all available commands.
+Type `/` to see the autocomplete dropdown. Hermes supports a large set of CLI slash commands, dynamic skill commands, and user-defined quick commands.
 
-### Navigation & Control
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/quit` | Exit the CLI (also: `/exit`, `/q`) |
-| `/clear` | Clear screen and reset conversation |
-| `/new` | Start a new conversation |
-| `/reset` | Reset conversation only (keep screen) |
-
-### Tools & Configuration
+Common examples:
 
 | Command | Description |
 |---------|-------------|
-| `/tools` | List all available tools grouped by toolset |
-| `/toolsets` | List available toolsets with descriptions |
-| `/model [provider:model]` | Show or change the current model (supports `provider:model` syntax) |
-| `/provider` | Show available providers with auth status |
-| `/config` | Show current configuration |
-| `/prompt [text]` | View/set/clear custom system prompt |
-| `/personality [name]` | Set a predefined personality |
-| `/reasoning [arg]` | Manage reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`) and display (`show`/`hide`) |
+| `/help` | Show command help |
+| `/model` | Show or change the current model |
+| `/tools` | List currently available tools |
+| `/skills browse` | Browse the skills hub and official optional skills |
+| `/background <prompt>` | Run a prompt in a separate background session |
+| `/skin` | Show or switch the active CLI skin |
+| `/reasoning high` | Increase reasoning effort |
+| `/title My Session` | Name the current session |
 
-### Conversation Management
-
-| Command | Description |
-|---------|-------------|
-| `/history` | Show conversation history |
-| `/retry` | Retry the last message |
-| `/undo` | Remove the last user/assistant exchange |
-| `/save` | Save the current conversation |
-| `/compress` | Manually compress conversation context |
-| `/usage` | Show token usage for this session |
-| `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
-
-### Skills & Scheduling
-
-| Command | Description |
-|---------|-------------|
-| `/cron` | Manage scheduled tasks |
-| `/skills` | Browse, search, install, inspect, or manage skills |
-| `/platforms` | Show gateway/messaging platform status |
-| `/verbose` | Cycle tool progress display: off → new → all → verbose |
-| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
+For the full built-in CLI and messaging lists, see [Slash Commands Reference](../reference/slash-commands.md).
 
 :::tip
-Commands are case-insensitive — `/HELP` works the same as `/help`. Most commands work mid-conversation.
+Commands are case-insensitive — `/HELP` works the same as `/help`. Installed skills also become slash commands automatically.
 :::
 
 ## Quick Commands
@@ -261,16 +233,16 @@ Resuming restores the full conversation history from SQLite. The agent sees all 
 
 Use `/title My Session Name` inside a chat to name the current session, or `hermes sessions rename <id> <title>` from the command line. Use `hermes sessions list` to browse past sessions.
 
-### Session Logging
+### Session Storage
 
-Sessions are automatically logged to `~/.hermes/sessions/`:
+CLI sessions are stored in Hermes's SQLite state database under `~/.hermes/state.db`. The database keeps:
 
-```
-sessions/
-├── session_20260201_143052_a1b2c3.json
-├── session_20260201_150217_d4e5f6.json
-└── ...
-```
+- session metadata (ID, title, timestamps, token counters)
+- message history
+- lineage across compressed/resumed sessions
+- full-text search indexes used by `session_search`
+
+Some messaging adapters also keep per-platform transcript files alongside the database, but the CLI itself resumes from the SQLite session store.
 
 ### Context Compression
 
@@ -280,7 +252,7 @@ Long conversations are automatically summarized when approaching context limits:
 # In ~/.hermes/config.yaml
 compression:
   enabled: true
-  threshold: 0.85    # Compress at 85% of context limit
+  threshold: 0.50    # Compress at 50% of context limit by default
   summary_model: "google/gemini-3-flash-preview"  # Model used for summarization
 ```
 

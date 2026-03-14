@@ -377,6 +377,18 @@ class TestViewFullCommand:
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
         assert result == "always"
 
+    def test_view_then_session_when_permanent_hidden(self):
+        """The view-full flow still works when allow_permanent=False."""
+        long_cmd = "rm -rf " + "d" * 200
+        inputs = iter(["v", "s"])
+        with mock_patch("builtins.input", side_effect=inputs):
+            result = prompt_dangerous_approval(
+                long_cmd,
+                "recursive delete",
+                allow_permanent=False,
+            )
+        assert result == "session"
+
     def test_view_not_shown_for_short_command(self):
         """Short commands don't offer the view option; 'v' falls through to deny."""
         short_cmd = "rm -rf /tmp"

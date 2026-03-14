@@ -94,7 +94,7 @@ Entries can optionally include:
 
 Each prompt gets a randomly sampled set of toolsets from a **distribution**. This ensures training data covers diverse tool combinations. Use `--list_distributions` to see all available distributions.
 
-Distributions define probability weights for each toolset combination. For example, a "default" distribution might assign high probability to `["terminal", "file", "web"]` and lower probability to web-only or file-only combinations.
+In the current implementation, distributions assign a probability to **each individual toolset**. The sampler flips each toolset independently, then guarantees that at least one toolset is enabled. This is different from a hand-authored table of prebuilt combinations.
 
 ## Output Format
 

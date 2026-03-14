@@ -150,7 +150,10 @@ class TelegramAdapter(BasePlatformAdapter):
             # Start polling in background
             await self._app.initialize()
             await self._app.start()
-            await self._app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             try:
@@ -159,6 +162,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("new", "Start a new conversation"),
                     BotCommand("reset", "Reset conversation history"),
                     BotCommand("model", "Show or change the model"),
+                    BotCommand("reasoning", "Show or change reasoning effort"),
                     BotCommand("personality", "Set a personality"),
                     BotCommand("retry", "Retry your last message"),
                     BotCommand("undo", "Remove the last exchange"),
@@ -173,6 +177,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("insights", "Show usage insights and analytics"),
                     BotCommand("update", "Update Hermes to the latest version"),
                     BotCommand("reload_mcp", "Reload MCP servers from config"),
+                    BotCommand("voice", "Toggle voice reply mode"),
                     BotCommand("help", "Show available commands"),
                 ])
             except Exception as e:
@@ -306,6 +311,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:

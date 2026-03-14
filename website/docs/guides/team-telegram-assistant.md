@@ -279,7 +279,9 @@ Users can also change this per-session with the `/verbose` command in chat.
 
 ### Set Up a Personality with SOUL.md
 
-Customize how the bot communicates by creating `~/.hermes/SOUL.md`:
+Customize how the bot communicates by editing `~/.hermes/SOUL.md`:
+
+For a full guide, see [Use SOUL.md with Hermes](/docs/guides/use-soul-with-hermes).
 
 ```markdown
 # Soul

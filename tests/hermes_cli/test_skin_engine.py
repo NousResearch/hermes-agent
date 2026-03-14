@@ -60,6 +60,9 @@ class TestBuiltinSkins:
         assert skin.name == "ares"
         assert skin.tool_prefix == "╎"
         assert skin.get_color("banner_border") == "#9F1C1C"
+        assert skin.get_color("response_border") == "#C7A96B"
+        assert skin.get_color("session_label") == "#C7A96B"
+        assert skin.get_color("session_border") == "#6E584B"
         assert skin.get_branding("agent_name") == "Ares Agent"
 
     def test_ares_has_spinner_customization(self):
@@ -230,3 +233,82 @@ class TestDisplayIntegration:
         from agent.display import get_cute_tool_message
         msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
         assert msg.startswith("┊")
+
+
+class TestCliBrandingHelpers:
+    def test_active_prompt_symbol_default(self):
+        from hermes_cli.skin_engine import get_active_prompt_symbol
+
+        assert get_active_prompt_symbol() == "❯ "
+
+    def test_active_prompt_symbol_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
+
+        set_active_skin("ares")
+        assert get_active_prompt_symbol() == "⚔ ❯ "
+
+    def test_active_help_header_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_help_header
+
+        set_active_skin("ares")
+        assert get_active_help_header() == "(⚔) Available Commands"
+
+    def test_active_goodbye_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_goodbye
+
+        set_active_skin("ares")
+        assert get_active_goodbye() == "Farewell, warrior! ⚔"
+
+    def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
+        from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
+
+        set_active_skin("ares")
+        overrides = get_prompt_toolkit_style_overrides()
+        required = {
+            "input-area",
+            "placeholder",
+            "prompt",
+            "prompt-working",
+            "hint",
+            "input-rule",
+            "image-badge",
+            "completion-menu",
+            "completion-menu.completion",
+            "completion-menu.completion.current",
+            "completion-menu.meta.completion",
+            "completion-menu.meta.completion.current",
+            "clarify-border",
+            "clarify-title",
+            "clarify-question",
+            "clarify-choice",
+            "clarify-selected",
+            "clarify-active-other",
+            "clarify-countdown",
+            "sudo-prompt",
+            "sudo-border",
+            "sudo-title",
+            "sudo-text",
+            "approval-border",
+            "approval-title",
+            "approval-desc",
+            "approval-cmd",
+            "approval-choice",
+            "approval-selected",
+        }
+        assert required.issubset(overrides.keys())
+
+    def test_prompt_toolkit_style_overrides_use_skin_colors(self):
+        from hermes_cli.skin_engine import (
+            set_active_skin,
+            get_active_skin,
+            get_prompt_toolkit_style_overrides,
+        )
+
+        set_active_skin("ares")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["input-rule"] == skin.get_color("input_rule")
+        assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
+        assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
+        assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"

@@ -14,7 +14,9 @@ This module provides:
 
 import os
 import platform
+import re
 import stat
+import sys
 import subprocess
 import sys
 import tempfile
@@ -22,10 +24,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 import yaml
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
@@ -65,6 +69,15 @@ def _secure_file(path):
         pass
 
 
+def _ensure_default_soul_md(home: Path) -> None:
+    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    soul_path = home / "SOUL.md"
+    if soul_path.exists():
+        return
+    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    _secure_file(soul_path)
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
@@ -74,6 +87,7 @@ def ensure_hermes_home():
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
+    _ensure_default_soul_md(home)
 
 
 # =============================================================================
@@ -110,7 +124,7 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
-    
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
@@ -121,7 +135,7 @@ DEFAULT_CONFIG = {
     
     "compression": {
         "enabled": True,
-        "threshold": 0.85,
+        "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
     },
@@ -191,8 +205,21 @@ DEFAULT_CONFIG = {
     },
     
     "stt": {
-        "enabled": True,
-        "model": "whisper-1",
+        "provider": "local",  # "local" (free, faster-whisper) | "openai" (Whisper API)
+        "local": {
+            "model": "base",  # tiny, base, small, medium, large-v3
+        },
+        "openai": {
+            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+    },
+
+    "voice": {
+        "record_key": "ctrl+b",
+        "max_recording_seconds": 120,
+        "auto_tts": False,
+        "silence_threshold": 200,     # RMS below this = silence (0-32767)
+        "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
     
     "human_delay": {
@@ -246,6 +273,15 @@ DEFAULT_CONFIG = {
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
+
+    # Pre-exec security scanning via tirith
+    "security": {
+        "redact_secrets": True,
+        "tirith_enabled": True,
+        "tirith_path": "tirith",
+        "tirith_timeout": 5,
+        "tirith_fail_open": True,
+    },
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 7,
@@ -456,7 +492,7 @@ OPTIONAL_ENV_VARS = {
         "description": "Honcho API key for AI-native persistent memory",
         "prompt": "Honcho API key",
         "url": "https://app.honcho.dev",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context"],
         "password": True,
         "category": "tool",
     },
@@ -854,6 +890,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
+    ensure_hermes_home()
     config_path = get_config_path()
     
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -875,6 +912,45 @@ def load_config() -> Dict[str, Any]:
             print(f"Warning: Failed to load config: {e}")
     
     return _normalize_max_turns_config(config)
+
+
+_SECURITY_COMMENT = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+# tirith pre-exec scanning is enabled by default when the tirith binary
+# is available. Configure via security.tirith_* keys or env vars
+# (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+#
+# security:
+#   redact_secrets: false
+#   tirith_enabled: true
+#   tirith_path: "tirith"
+#   tirith_timeout: 5
+#   tirith_fail_open: true
+"""
+
+_FALLBACK_COMMENT = """
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes login) — OpenAI Codex
+#   nous         (OAuth — hermes login) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
 
 
 _COMMENTED_SECTIONS = """
@@ -917,18 +993,18 @@ def save_config(config: Dict[str, Any]):
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
-    sections = []
+    parts = []
     sec = normalized.get("security", {})
     if not sec or sec.get("redact_secrets") is None:
-        sections.append("security")
+        parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
     if not fb or not (fb.get("provider") and fb.get("model")):
-        sections.append("fallback")
+        parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(
         config_path,
         normalized,
-        extra_content=_COMMENTED_SECTIONS if sections else None,
+        extra_content="".join(parts) if parts else None,
     )
     _secure_file(config_path)
 
@@ -954,6 +1030,9 @@ def load_env() -> Dict[str, str]:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    value = value.replace("\n", "").replace("\r", "")
     ensure_hermes_home()
     env_path = get_env_path()
     
@@ -996,12 +1075,38 @@ def save_env_value(key: str, value: str):
         raise
     _secure_file(env_path)
 
+    os.environ[key] = value
+
     # Restrict .env permissions to owner-only (contains API keys)
     if not _IS_WINDOWS:
         try:
             os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
+
+
+def save_anthropic_oauth_token(value: str, save_fn=None):
+    """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
+    writer = save_fn or save_env_value
+    writer("ANTHROPIC_TOKEN", value)
+    writer("ANTHROPIC_API_KEY", "")
+
+
+def save_anthropic_api_key(value: str, save_fn=None):
+    """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
+    writer = save_fn or save_env_value
+    writer("ANTHROPIC_API_KEY", value)
+    writer("ANTHROPIC_TOKEN", "")
+
+
+def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
+    save_env_value(key, value)
+    return {
+        "success": True,
+        "stored_as": key,
+        "validated": False,
+    }
+
 
 
 def get_env_value(key: str) -> Optional[str]:
@@ -1031,7 +1136,6 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    env_vars = load_env()
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -1051,7 +1155,6 @@ def show_config():
     
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
-        ("ANTHROPIC_API_KEY", "Anthropic"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
@@ -1061,6 +1164,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
+    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
+    print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
     # Model settings
     print()
@@ -1119,7 +1224,7 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
         comp_provider = compression.get('summary_provider', 'auto')
         if comp_provider != 'auto':
@@ -1186,7 +1291,7 @@ def edit_config():
                 break
     
     if not editor:
-        print(f"No editor found. Config file is at:")
+        print("No editor found. Config file is at:")
         print(f"  {config_path}")
         return
     
@@ -1391,7 +1496,7 @@ def config_command(args):
         if missing_config:
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
-            print(f"    Run 'hermes config migrate' to add them")
+            print("    Run 'hermes config migrate' to add them")
         
         print()
     

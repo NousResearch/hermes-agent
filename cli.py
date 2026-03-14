@@ -18,6 +18,8 @@ import shutil
 import sys
 import json
 import atexit
+import tempfile
+import time
 import uuid
 import textwrap
 from contextlib import contextmanager
@@ -96,7 +98,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = Path.home() / ".hermes" / path
+        path = _hermes_home / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []
@@ -141,16 +143,16 @@ def load_cli_config() -> Dict[str, Any]:
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
     """
-    # Check user config first (~/.hermes/config.yaml)
-    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    # Check user config first ({HERMES_HOME}/config.yaml)
+    user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    
+
     # Use user config if it exists, otherwise project config
     if user_config_path.exists():
         config_path = user_config_path
     else:
         config_path = project_config_path
-    
+
     # Default configuration
     defaults = {
         "model": {
@@ -175,7 +177,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.85,    # Compress at 85% of model's context limit
+            "threshold": 0.50,    # Compress at 50% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
         "agent": {
@@ -404,8 +406,10 @@ except Exception:
 
 from rich import box as rich_box
 from rich.console import Console
+from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text as _RichText
 
 import fire
 
@@ -430,6 +434,8 @@ from cron import create_job, list_jobs, remove_job, get_job
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from tools.skills_tool import set_secret_capture_callback
+from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
 # Guard to prevent cleanup from running multiple times on exit
@@ -694,6 +700,24 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
 
+def _accent_hex() -> str:
+    """Return the active skin accent color for legacy CLI output lines."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_color("ui_accent", "#FFBF00")
+    except Exception:
+        return "#FFBF00"
+
+
+def _rich_text_from_ansi(text: str) -> _RichText:
+    """Safely render assistant/tool output that may contain ANSI escapes.
+
+    Using Rich Text.from_ansi preserves literal bracketed text like
+    ``[not markup]`` while still interpreting real ANSI color codes.
+    """
+    return _RichText.from_ansi(text or "")
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -716,7 +740,12 @@ class ChatConsole:
     def __init__(self):
         from io import StringIO
         self._buffer = StringIO()
-        self._inner = Console(file=self._buffer, force_terminal=True, highlight=False)
+        self._inner = Console(
+            file=self._buffer,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+        )
 
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
@@ -1035,7 +1064,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         True if successful, False otherwise
     """
     # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
     
@@ -1149,8 +1178,8 @@ class HermesCLI:
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
-            or os.getenv("HERMES_INFERENCE_PROVIDER")
             or CLI_CONFIG["model"].get("provider")
+            or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
         self._provider_source: Optional[str] = None
@@ -1257,11 +1286,44 @@ class HermesCLI:
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # History file for persistent input recall across sessions
-        self._history_file = Path.home() / ".hermes_history"
+        self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
+        self._app = None
+
+        # State shared by interactive run() and single-query chat mode.
+        # These must exist before any direct chat() call because single-query
+        # mode does not go through run().
+        self._agent_running = False
+        self._pending_input = queue.Queue()
+        self._interrupt_queue = queue.Queue()
+        self._should_exit = False
+        self._last_ctrl_c_time = 0
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = 0
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._approval_state = None
+        self._approval_deadline = 0
+        self._approval_lock = threading.Lock()
+        self._secret_state = None
+        self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._command_running = False
         self._command_status = ""
+        self._attached_images: list[Path] = []
+        self._image_counter = 0
+
+        # Voice mode state (also reinitialized inside run() for interactive TUI).
+        self._voice_lock = threading.Lock()
+        self._voice_mode = False
+        self._voice_tts = False
+        self._voice_recorder = None
+        self._voice_recording = False
+        self._voice_processing = False
+        self._voice_continuous = False
+        self._voice_tts_done = threading.Event()
+        self._voice_tts_done.set()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -1467,13 +1529,16 @@ class HermesCLI:
                 title_part = ""
                 if session_meta.get("title"):
                     title_part = f" \"{session_meta['title']}\""
-                _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD}{title_part} "
-                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
-                    f"{len(restored)} total messages){_RST}"
+                ChatConsole().print(
+                    f"[bold {_accent_hex()}]↻ Resumed session[/] "
+                    f"[bold]{_escape(self.session_id)}[/]"
+                    f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
+                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                 )
             else:
-                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
+                ChatConsole().print(
+                    f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
+                )
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
@@ -1509,12 +1574,13 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._on_reasoning if self.show_reasoning else None,
-                honcho_session_key=self.session_id,
+                honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                tool_progress_callback=self._on_tool_progress,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -1733,6 +1799,19 @@ class HermesCLI:
         from rich.panel import Panel
         from rich.text import Text
 
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            _history_text_c = _skin.get_color("banner_text", "#FFF8DC")
+            _session_label_c = _skin.get_color("session_label", "#DAA520")
+            _session_border_c = _skin.get_color("session_border", "#8B8682")
+            _assistant_label_c = _skin.get_color("ui_ok", "#8FBC8F")
+        except Exception:
+            _history_text_c = "#FFF8DC"
+            _session_label_c = "#DAA520"
+            _session_border_c = "#8B8682"
+            _assistant_label_c = "#8FBC8F"
+
         lines = Text()
         if skipped:
             lines.append(
@@ -1742,14 +1821,14 @@ class HermesCLI:
 
         for i, (role, text) in enumerate(entries):
             if role == "user":
-                lines.append("  ● You: ", style="dim bold #DAA520")
+                lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             else:
-                lines.append("  ◆ Hermes: ", style="dim bold #8FBC8F")
+                lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
@@ -1759,9 +1838,10 @@ class HermesCLI:
 
         panel = Panel(
             lines,
-            title="[dim #DAA520]Previous Conversation[/]",
-            border_style="dim #8B8682",
+            title=f"[dim {_session_label_c}]Previous Conversation[/]",
+            border_style=f"dim {_session_border_c}",
             padding=(0, 1),
+            style=_history_text_c,
         )
         self.console.print(panel)
 
@@ -1773,7 +1853,7 @@ class HermesCLI:
         """
         from hermes_cli.clipboard import save_clipboard_image
 
-        img_dir = Path.home() / ".hermes" / "images"
+        img_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "images"
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
@@ -1971,19 +2051,30 @@ class HermesCLI:
         """Display help information with categorized commands."""
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
 
-        _cprint(f"\n{_BOLD}+{'-' * 55}+{_RST}")
-        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 15}|{_RST}")
-        _cprint(f"{_BOLD}+{'-' * 55}+{_RST}")
+        try:
+            from hermes_cli.skin_engine import get_active_help_header
+            header = get_active_help_header("(^_^)? Available Commands")
+        except Exception:
+            header = "(^_^)? Available Commands"
+        header = (header or "").strip() or "(^_^)? Available Commands"
+        inner_width = 55
+        if len(header) > inner_width:
+            header = header[:inner_width]
+        _cprint(f"\n{_BOLD}+{'-' * inner_width}+{_RST}")
+        _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
         for category, commands in COMMANDS_BY_CATEGORY.items():
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
             for cmd, desc in commands.items():
-                _cprint(f"    {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
+                ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             for cmd, info in sorted(_skill_commands.items()):
-                _cprint(f"    {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
+                )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -2069,7 +2160,7 @@ class HermesCLI:
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
-        user_config_path = Path.home() / '.hermes' / 'config.yaml'
+        user_config_path = _hermes_home / 'config.yaml'
         project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
             config_path = user_config_path
@@ -2178,15 +2269,63 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
-    def reset_conversation(self):
-        """Reset the conversation history."""
+    def new_session(self, silent=False):
+        """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
             except Exception:
                 pass
+
+        old_session_id = self.session_id
+        if self._session_db and old_session_id:
+            try:
+                self._session_db.end_session(old_session_id, "new_session")
+            except Exception:
+                pass
+
+        self.session_start = datetime.now()
+        timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        self.session_id = f"{timestamp_str}_{short_uuid}"
         self.conversation_history = []
-        print("(^_^)b Conversation reset!")
+        self._pending_title = None
+        self._resumed = False
+
+        if self.agent:
+            self.agent.session_id = self.session_id
+            self.agent.session_start = self.session_start
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = 0
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+            if self._session_db:
+                try:
+                    self._session_db.create_session(
+                        session_id=self.session_id,
+                        source="cli",
+                        model=self.model,
+                        model_config={
+                            "max_iterations": self.max_turns,
+                            "reasoning_config": self.reasoning_config,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        if not silent:
+            print("(^_^)v New session started!")
+
+    def reset_conversation(self):
+        """Reset the conversation by starting a new session."""
+        self.new_session()
     
     def save_conversation(self):
         """Save the current conversation to a file."""
@@ -2670,12 +2809,7 @@ class HermesCLI:
         elif cmd_lower == "/config":
             self.show_config()
         elif cmd_lower == "/clear":
-            # Flush memories before clearing
-            if self.agent and self.conversation_history:
-                try:
-                    self.agent.flush_memories(self.conversation_history)
-                except Exception:
-                    pass
+            self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
             # screen-clear escape sequences.  Use prompt_toolkit's output
@@ -2687,8 +2821,6 @@ class HermesCLI:
                 out.flush()
             else:
                 self.console.clear()
-            # Reset conversation
-            self.conversation_history = []
             # Show fresh banner.  Inside the TUI we must route Rich output
             # through ChatConsole (which uses prompt_toolkit's native ANSI
             # renderer) instead of self.console (which writes raw to stdout
@@ -2739,6 +2871,28 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    # Re-map Honcho session key to new title
+                                    if self.agent and getattr(self.agent, '_honcho', None):
+                                        try:
+                                            hcfg = self.agent._honcho_config
+                                            new_key = (
+                                                hcfg.resolve_session_name(
+                                                    session_title=new_title,
+                                                    session_id=self.agent.session_id,
+                                                )
+                                                if hcfg else new_title
+                                            )
+                                            if new_key and new_key != self.agent._honcho_session_key:
+                                                old_key = self.agent._honcho_session_key
+                                                self.agent._honcho.get_or_create(new_key)
+                                                self.agent._honcho_session_key = new_key
+                                                from tools.honcho_tools import set_session_context
+                                                set_session_context(self.agent._honcho, new_key)
+                                                from agent.display import honcho_session_line, write_tty
+                                                write_tty(honcho_session_line(hcfg.workspace_id, new_key) + "\n")
+                                                _cprint(f"  Honcho session: {old_key} → {new_key}")
+                                        except Exception:
+                                            pass
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -2769,7 +2923,7 @@ class HermesCLI:
                 else:
                     _cprint("  Session database not available.")
         elif cmd_lower in ("/reset", "/new"):
-            self.reset_conversation()
+            self.new_session()
         elif cmd_lower.startswith("/model"):
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
@@ -2896,6 +3050,8 @@ class HermesCLI:
             self._handle_background_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
+        elif cmd_lower.startswith("/voice"):
+            self._handle_voice_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -2912,7 +3068,10 @@ class HermesCLI:
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
-                            self.console.print(output if output else "[dim]Command returned no output[/]")
+                            if output:
+                                self.console.print(_rich_text_from_ansi(output))
+                            else:
+                                self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
                             self.console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
@@ -2924,7 +3083,9 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(base_cmd, user_instruction)
+                msg = build_skill_invocation_message(
+                    base_cmd, user_instruction, task_id=self.session_id
+                )
                 if msg:
                     skill_name = _skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
@@ -3002,26 +3163,29 @@ class HermesCLI:
 
                 # Display result in the CLI (thread-safe via patch_stdout)
                 print()
-                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
                 _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 if response:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
+                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
+                        _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        response,
-                        title=f"[bold]{label} (background #{task_num})[/bold]",
+                        _rich_text_from_ansi(response),
+                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
+                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 2),
                     ))
@@ -3081,6 +3245,8 @@ class HermesCLI:
         else:
             print(f"  Skin set to: {new_skin}")
         print("  Note: banner colors will update on next session start.")
+        if self._apply_tui_skin_style():
+            print("  Prompt + TUI colors updated.")
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
@@ -3207,6 +3373,12 @@ class HermesCLI:
                 f"  ✅ Compressed: {original_count} → {new_count} messages "
                 f"(~{approx_tokens:,} → ~{new_tokens:,} tokens)"
             )
+            # Flush Honcho async queue so queued messages land before context resets
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.flush_all()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
 
@@ -3374,6 +3546,407 @@ class HermesCLI:
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
 
+    # ====================================================================
+    # Tool progress callback (audio cues for voice mode)
+    # ====================================================================
+
+    def _on_tool_progress(self, function_name: str, preview: str, function_args: dict):
+        """Called when a tool starts executing. Plays audio cue in voice mode."""
+        if not self._voice_mode:
+            return
+        # Skip internal/thinking tools
+        if function_name.startswith("_"):
+            return
+        try:
+            from tools.voice_mode import play_beep
+            # Short, subtle tick sound (higher pitch, very brief)
+            threading.Thread(
+                target=play_beep,
+                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    # ====================================================================
+    # Voice mode methods
+    # ====================================================================
+
+    def _voice_start_recording(self):
+        """Start capturing audio from the microphone."""
+        if getattr(self, '_should_exit', False):
+            return
+        from tools.voice_mode import AudioRecorder, check_voice_requirements
+
+        reqs = check_voice_requirements()
+        if not reqs["audio_available"]:
+            raise RuntimeError(
+                "Voice mode requires sounddevice and numpy.\n"
+                "Install with: pip install sounddevice numpy\n"
+                "Or: pip install hermes-agent[voice]"
+            )
+        if not reqs.get("stt_available", reqs.get("stt_key_set")):
+            raise RuntimeError(
+                "Voice mode requires an STT provider for transcription.\n"
+                "Option 1: pip install faster-whisper  (free, local)\n"
+                "Option 2: Set GROQ_API_KEY (free tier)\n"
+                "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)"
+            )
+
+        # Prevent double-start from concurrent threads (atomic check-and-set)
+        with self._voice_lock:
+            if self._voice_recording:
+                return
+            self._voice_recording = True
+
+        # Load silence detection params from config
+        voice_cfg = {}
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+        except Exception:
+            pass
+
+        if self._voice_recorder is None:
+            self._voice_recorder = AudioRecorder()
+
+        # Apply config-driven silence params
+        self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
+        self._voice_recorder._silence_duration = voice_cfg.get("silence_duration", 3.0)
+
+        def _on_silence():
+            """Called by AudioRecorder when silence is detected after speech."""
+            with self._voice_lock:
+                if not self._voice_recording:
+                    return
+            _cprint(f"\n{_DIM}Silence detected, auto-stopping...{_RST}")
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            self._voice_stop_and_transcribe()
+
+        # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
+        try:
+            from tools.voice_mode import play_beep
+            play_beep(frequency=880, count=1)
+        except Exception:
+            pass
+
+        try:
+            self._voice_recorder.start(on_silence_stop=_on_silence)
+        except Exception:
+            with self._voice_lock:
+                self._voice_recording = False
+            raise
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+B to stop & exit continuous){_RST}")
+
+        # Periodically refresh prompt to update audio level indicator
+        def _refresh_level():
+            while True:
+                with self._voice_lock:
+                    still_recording = self._voice_recording
+                if not still_recording:
+                    break
+                if hasattr(self, '_app') and self._app:
+                    self._app.invalidate()
+                time.sleep(0.15)
+        threading.Thread(target=_refresh_level, daemon=True).start()
+
+    def _voice_stop_and_transcribe(self):
+        """Stop recording, transcribe via STT, and queue the transcript as input."""
+        # Atomic guard: only one thread can enter stop-and-transcribe.
+        # Set _voice_processing immediately so concurrent Ctrl+B presses
+        # don't race into the START path while recorder.stop() holds its lock.
+        with self._voice_lock:
+            if not self._voice_recording:
+                return
+            self._voice_recording = False
+            self._voice_processing = True
+
+        submitted = False
+        wav_path = None
+        try:
+            if self._voice_recorder is None:
+                return
+
+            wav_path = self._voice_recorder.stop()
+
+            # Audio cue: double beep after stream stopped (no CoreAudio conflict)
+            try:
+                from tools.voice_mode import play_beep
+                play_beep(frequency=660, count=2)
+            except Exception:
+                pass
+
+            if wav_path is None:
+                _cprint(f"{_DIM}No speech detected.{_RST}")
+                return
+
+            # _voice_processing is already True (set atomically above)
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            _cprint(f"{_DIM}Transcribing...{_RST}")
+
+            # Get STT model from config
+            stt_model = None
+            try:
+                from hermes_cli.config import load_config
+                stt_config = load_config().get("stt", {})
+                stt_model = stt_config.get("model")
+            except Exception:
+                pass
+
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(wav_path, model=stt_model)
+
+            if result.get("success") and result.get("transcript", "").strip():
+                transcript = result["transcript"].strip()
+                self._pending_input.put(transcript)
+                submitted = True
+            elif result.get("success"):
+                _cprint(f"{_DIM}No speech detected.{_RST}")
+            else:
+                error = result.get("error", "Unknown error")
+                _cprint(f"\n{_DIM}Transcription failed: {error}{_RST}")
+
+        except Exception as e:
+            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+        finally:
+            with self._voice_lock:
+                self._voice_processing = False
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            # Clean up temp file
+            try:
+                if wav_path and os.path.isfile(wav_path):
+                    os.unlink(wav_path)
+            except Exception:
+                pass
+
+            # Track consecutive no-speech cycles to avoid infinite restart loops.
+            if not submitted:
+                self._no_speech_count = getattr(self, '_no_speech_count', 0) + 1
+                if self._no_speech_count >= 3:
+                    self._voice_continuous = False
+                    self._no_speech_count = 0
+                    _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
+                    return
+            else:
+                self._no_speech_count = 0
+
+            # If no transcript was submitted but continuous mode is active,
+            # restart recording so the user can keep talking.
+            # (When transcript IS submitted, process_loop handles restart
+            # after chat() completes.)
+            if self._voice_continuous and not submitted and not self._voice_recording:
+                def _restart_recording():
+                    try:
+                        self._voice_start_recording()
+                        if hasattr(self, '_app') and self._app:
+                            self._app.invalidate()
+                    except Exception as e:
+                        _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                threading.Thread(target=_restart_recording, daemon=True).start()
+
+    def _voice_speak_response(self, text: str):
+        """Speak the agent's response aloud using TTS (runs in background thread)."""
+        if not self._voice_tts:
+            return
+        self._voice_tts_done.clear()
+        try:
+            from tools.tts_tool import text_to_speech_tool
+            from tools.voice_mode import play_audio_file
+            import json
+            import re
+
+            # Strip markdown and non-speech content for cleaner TTS
+            tts_text = text[:4000] if len(text) > 4000 else text
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
+            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
+            tts_text = tts_text.strip()
+            if not tts_text:
+                return
+
+            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
+            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
+            os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+            mp3_path = os.path.join(
+                tempfile.gettempdir(), "hermes_voice",
+                f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
+            )
+
+            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+
+            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
+            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+                play_audio_file(mp3_path)
+                # Clean up
+                try:
+                    os.unlink(mp3_path)
+                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                    if os.path.isfile(ogg_path):
+                        os.unlink(ogg_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.warning("Voice TTS playback failed: %s", e)
+            _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
+        finally:
+            self._voice_tts_done.set()
+
+    def _handle_voice_command(self, command: str):
+        """Handle /voice [on|off|tts|status] command."""
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            self._enable_voice_mode()
+        elif subcommand == "off":
+            self._disable_voice_mode()
+        elif subcommand == "tts":
+            self._toggle_voice_tts()
+        elif subcommand == "status":
+            self._show_voice_status()
+        elif subcommand == "":
+            # Toggle
+            if self._voice_mode:
+                self._disable_voice_mode()
+            else:
+                self._enable_voice_mode()
+        else:
+            _cprint(f"Unknown voice subcommand: {subcommand}")
+            _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _enable_voice_mode(self):
+        """Enable voice mode after checking requirements."""
+        if self._voice_mode:
+            _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
+            return
+
+        from tools.voice_mode import check_voice_requirements, detect_audio_environment
+
+        # Environment detection -- warn and block in incompatible environments
+        env_check = detect_audio_environment()
+        if not env_check["available"]:
+            _cprint(f"\n{_GOLD}Voice mode unavailable in this environment:{_RST}")
+            for warning in env_check["warnings"]:
+                _cprint(f"  {_DIM}{warning}{_RST}")
+            return
+
+        reqs = check_voice_requirements()
+        if not reqs["available"]:
+            _cprint(f"\n{_GOLD}Voice mode requirements not met:{_RST}")
+            for line in reqs["details"].split("\n"):
+                _cprint(f"  {_DIM}{line}{_RST}")
+            if reqs["missing_packages"]:
+                _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
+                _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
+            return
+
+        with self._voice_lock:
+            self._voice_mode = True
+
+        # Check config for auto_tts
+        try:
+            from hermes_cli.config import load_config
+            voice_config = load_config().get("voice", {})
+            if voice_config.get("auto_tts", False):
+                with self._voice_lock:
+                    self._voice_tts = True
+        except Exception:
+            pass
+
+        # Voice mode instruction is injected as a user message prefix (not a
+        # system prompt change) to avoid invalidating the prompt cache.  See
+        # _voice_message_prefix property and its usage in _process_message().
+
+        tts_status = " (TTS enabled)" if self._voice_tts else ""
+        try:
+            from hermes_cli.config import load_config
+            _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            _ptt_key = _raw_ptt.lower().replace("ctrl+", "c-").replace("alt+", "a-")
+        except Exception:
+            _ptt_key = "c-b"
+        _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
+        _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
+        _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
+        _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
+        _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+
+    def _disable_voice_mode(self):
+        """Disable voice mode, cancel any active recording, and stop TTS."""
+        recorder = None
+        with self._voice_lock:
+            if self._voice_recording and self._voice_recorder:
+                self._voice_recorder.cancel()
+                self._voice_recording = False
+            recorder = self._voice_recorder
+            self._voice_mode = False
+            self._voice_tts = False
+            self._voice_continuous = False
+
+        # Shut down the persistent audio stream in background
+        if recorder is not None:
+            def _bg_shutdown(rec=recorder):
+                try:
+                    rec.shutdown()
+                except Exception:
+                    pass
+            threading.Thread(target=_bg_shutdown, daemon=True).start()
+            self._voice_recorder = None
+
+        # Stop any active TTS playback
+        try:
+            from tools.voice_mode import stop_playback
+            stop_playback()
+        except Exception:
+            pass
+        self._voice_tts_done.set()
+
+        _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
+
+    def _toggle_voice_tts(self):
+        """Toggle TTS output for voice mode."""
+        if not self._voice_mode:
+            _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
+            return
+
+        with self._voice_lock:
+            self._voice_tts = not self._voice_tts
+        status = "enabled" if self._voice_tts else "disabled"
+
+        if self._voice_tts:
+            from tools.tts_tool import check_tts_requirements
+            if not check_tts_requirements():
+                _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+
+        _cprint(f"{_GOLD}Voice TTS {status}.{_RST}")
+
+    def _show_voice_status(self):
+        """Show current voice mode status."""
+        from hermes_cli.config import load_config
+        from tools.voice_mode import check_voice_requirements
+
+        reqs = check_voice_requirements()
+
+        _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
+        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
+        _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
+        _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
+        _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+        _display_key = _raw_key.replace("ctrl+", "Ctrl+").upper() if "ctrl+" in _raw_key.lower() else _raw_key
+        _cprint(f"  Record key: {_display_key}")
+        _cprint(f"\n  {_BOLD}Requirements:{_RST}")
+        for line in reqs["details"].split("\n"):
+            _cprint(f"    {line}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -3484,53 +4057,88 @@ class HermesCLI:
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
-    def _approval_callback(self, command: str, description: str) -> str:
+    def _approval_callback(self, command: str, description: str,
+                           *, allow_permanent: bool = True) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
-        
+
         Called from the agent thread. Shows a selection UI similar to clarify
-        with choices: once / session / always / deny.
+        with choices: once / session / always / deny. When allow_permanent
+        is False (tirith warnings present), the 'always' option is hidden.
+
+        Uses _approval_lock to serialize concurrent requests (e.g. from
+        parallel delegation subtasks) so each prompt gets its own turn
+        and the shared _approval_state / _approval_deadline aren't clobbered.
         """
         import time as _time
 
-        timeout = 60
-        response_queue = queue.Queue()
-        choices = ["once", "session", "always", "deny"]
+        with self._approval_lock:
+            timeout = 60
+            response_queue = queue.Queue()
+            choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
-        self._approval_state = {
-            "command": command,
-            "description": description,
-            "choices": choices,
-            "selected": 0,
-            "response_queue": response_queue,
-        }
-        self._approval_deadline = _time.monotonic() + timeout
+            self._approval_state = {
+                "command": command,
+                "description": description,
+                "choices": choices,
+                "selected": 0,
+                "response_queue": response_queue,
+            }
+            self._approval_deadline = _time.monotonic() + timeout
 
-        self._invalidate()
+            self._invalidate()
 
-        # Same throttled countdown as _clarify_callback — repaint only
-        # every 5 s to avoid flicker in Kitty / ghostty / etc.
-        _last_countdown_refresh = _time.monotonic()
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._approval_state = None
-                self._approval_deadline = 0
-                self._invalidate()
-                return result
-            except queue.Empty:
-                remaining = self._approval_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                now = _time.monotonic()
-                if now - _last_countdown_refresh >= 5.0:
-                    _last_countdown_refresh = now
+            _last_countdown_refresh = _time.monotonic()
+            while True:
+                try:
+                    result = response_queue.get(timeout=1)
+                    self._approval_state = None
+                    self._approval_deadline = 0
                     self._invalidate()
+                    return result
+                except queue.Empty:
+                    remaining = self._approval_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
+                    now = _time.monotonic()
+                    if now - _last_countdown_refresh >= 5.0:
+                        _last_countdown_refresh = now
+                        self._invalidate()
 
-        self._approval_state = None
-        self._approval_deadline = 0
+            self._approval_state = None
+            self._approval_deadline = 0
+            self._invalidate()
+            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+            return "deny"
+
+    def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
+        return prompt_for_secret(self, var_name, prompt, metadata)
+
+    def _submit_secret_response(self, value: str) -> None:
+        if not self._secret_state:
+            return
+        self._secret_state["response_queue"].put(value)
+        self._secret_state = None
+        self._secret_deadline = 0
         self._invalidate()
-        return "deny"
+
+    def _cancel_secret_capture(self) -> None:
+        self._submit_secret_response("")
+
+    def _clear_secret_input_buffer(self) -> None:
+        if getattr(self, "_app", None):
+            try:
+                self._app.current_buffer.reset()
+            except Exception:
+                pass
+
+    def _clear_current_input(self) -> None:
+        if getattr(self, "_app", None):
+            try:
+                self._app.current_buffer.text = ""
+            except Exception:
+                pass
+
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -3551,6 +4159,10 @@ class HermesCLI:
         Returns:
             The agent's response, or None on error
         """
+        # Single-query and direct chat callers do not go through run(), so
+        # register secure secret capture here as well.
+        set_secret_capture_callback(self._secret_capture_callback)
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -3569,26 +4181,97 @@ class HermesCLI:
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
-        
-        _cprint(f"{_GOLD}{'─' * 40}{_RST}")
+
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:
             # Run the conversation with interrupt monitoring
             result = None
-            
+
+            # --- Streaming TTS setup ---
+            # When ElevenLabs is the TTS provider and sounddevice is available,
+            # we stream audio sentence-by-sentence as the agent generates tokens
+            # instead of waiting for the full response.
+            use_streaming_tts = False
+            _streaming_box_opened = False
+            text_queue = None
+            tts_thread = None
+            stream_callback = None
+            stop_event = None
+
+            if self._voice_tts:
+                try:
+                    from tools.tts_tool import (
+                        _load_tts_config as _load_tts_cfg,
+                        _get_provider as _get_prov,
+                        _import_elevenlabs,
+                        _import_sounddevice,
+                        stream_tts_to_speaker,
+                    )
+                    _tts_cfg = _load_tts_cfg()
+                    if _get_prov(_tts_cfg) == "elevenlabs":
+                        # Verify both ElevenLabs SDK and audio output are available
+                        _import_elevenlabs()
+                        _import_sounddevice()
+                        use_streaming_tts = True
+                except (ImportError, OSError):
+                    pass
+                except Exception:
+                    pass
+
+            if use_streaming_tts:
+                text_queue = queue.Queue()
+                stop_event = threading.Event()
+
+                def display_callback(sentence: str):
+                    """Called by TTS consumer when a sentence is ready to display + speak."""
+                    nonlocal _streaming_box_opened
+                    if not _streaming_box_opened:
+                        _streaming_box_opened = True
+                        w = self.console.width
+                        label = " ⚕ Hermes "
+                        fill = w - 2 - len(label)
+                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                    _cprint(sentence.rstrip())
+
+                tts_thread = threading.Thread(
+                    target=stream_tts_to_speaker,
+                    args=(text_queue, stop_event, self._voice_tts_done),
+                    kwargs={"display_callback": display_callback},
+                    daemon=True,
+                )
+                tts_thread.start()
+
+                def stream_callback(delta: str):
+                    if text_queue is not None:
+                        text_queue.put(delta)
+
+            # When voice mode is active, prepend a brief instruction so the
+            # model responds concisely. The prefix is API-call-local only —
+            # run_conversation persists the original clean user message.
+            _voice_prefix = ""
+            if self._voice_mode and isinstance(message, str):
+                _voice_prefix = (
+                    "[Voice input — respond concisely and conversationally, "
+                    "2-3 sentences max. No code blocks or markdown.] "
+                )
+
             def run_agent():
                 nonlocal result
+                agent_message = _voice_prefix + message if _voice_prefix else message
                 result = self.agent.run_conversation(
-                    user_message=message,
+                    user_message=agent_message,
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                    stream_callback=stream_callback,
                     task_id=self.session_id,
+                    persist_user_message=message if _voice_prefix else None,
                 )
-            
+
             # Start agent in background thread
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
-            
+
             # Monitor the dedicated interrupt queue while the agent runs.
             # _interrupt_queue is separate from _pending_input, so process_loop
             # and chat() never compete for the same queue.
@@ -3607,15 +4290,36 @@ class HermesCLI:
                             if self._clarify_state or self._clarify_freetext:
                                 continue
                             print(f"\n⚡ New message detected, interrupting...")
+                            # Signal TTS to stop on interrupt
+                            if stop_event is not None:
+                                stop_event.set()
                             self.agent.interrupt(interrupt_msg)
+                            # Debug: log to file (stdout may be devnull from redirect_stdout)
+                            try:
+                                _dbg = _hermes_home / "interrupt_debug.log"
+                                with open(_dbg, "a") as _f:
+                                    import time as _t
+                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                                             f"children={len(self.agent._active_children)}, "
+                                             f"parent._interrupt={self.agent._interrupt_requested}\n")
+                                    for _ci, _ch in enumerate(self.agent._active_children):
+                                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                            except Exception:
+                                pass
                             break
                     except queue.Empty:
                         pass  # Queue empty or timeout, continue waiting
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
-            
+
             agent_thread.join()  # Ensure agent thread completes
+
+            # Signal end-of-text to TTS consumer and wait for it to finish
+            if use_streaming_tts and text_queue is not None:
+                text_queue.put(None)  # sentinel
+                if tts_thread is not None:
+                    tts_thread.join(timeout=120)
 
             # Drain any remaining agent output still in the StdoutProxy
             # buffer so tool/status lines render ABOVE our response box.
@@ -3627,15 +4331,22 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
-            
+
             # Get the final response
             response = result.get("final_response", "") if result else ""
-            
-            # Handle failed results (e.g., non-retryable errors like invalid model)
-            if result and result.get("failed") and not response:
+
+            # Handle failed or partial results (e.g., non-retryable errors, rate limits,
+            # truncated output, invalid tool calls). Both "failed" and "partial" with
+            # an empty final_response mean the agent couldn't produce a usable answer.
+            if result and (result.get("failed") or result.get("partial")) and not response:
                 error_detail = result.get("error", "Unknown error")
                 response = f"Error: {error_detail}"
-            
+                # Stop continuous voice mode on persistent errors (e.g. 429 rate limit)
+                # to avoid an infinite error → record → error loop
+                if self._voice_continuous:
+                    self._voice_continuous = False
+                    _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
+
             # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
@@ -3643,7 +4354,9 @@ class HermesCLI:
                 # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
-            
+
+            response_previewed = result.get("response_previewed", False) if result else False
+
             # Display reasoning (thinking) box if enabled and available
             if self.show_reasoning and result:
                 reasoning = result.get("last_reasoning")
@@ -3662,34 +4375,53 @@ class HermesCLI:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
-            if response:
-                # Use a Rich Panel for the response box — adapts to terminal
-                # width at render time instead of hard-coding border length.
+            if response and not response_previewed:
+                # Use skin engine for label/color with fallback
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
+                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
+                    _resp_text = "#FFF8DC"
 
-                _chat_console = ChatConsole()
-                _chat_console.print(Panel(
-                    response,
-                    title=f"[bold]{label}[/bold]",
-                    title_align="left",
-                    border_style=_resp_color,
-                    box=rich_box.HORIZONTALS,
-                    padding=(1, 2),
-                ))
-            
+                is_error_response = result and (result.get("failed") or result.get("partial"))
+                if use_streaming_tts and _streaming_box_opened and not is_error_response:
+                    # Text was already printed sentence-by-sentence; just close the box
+                    w = shutil.get_terminal_size().columns
+                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                else:
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        _rich_text_from_ansi(response),
+                        title=f"[{_resp_color} bold]{label}[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
+
+
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
-            
+
+            # Speak response aloud if voice TTS is enabled
+            # Skip batch TTS when streaming TTS already handled it
+            if self._voice_tts and response and not use_streaming_tts:
+                threading.Thread(
+                    target=self._voice_speak_response,
+                    args=(response,),
+                    daemon=True,
+                ).start()
+
+
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop
             if pending_message and hasattr(self, '_pending_input'):
@@ -3710,6 +4442,20 @@ class HermesCLI:
         except Exception as e:
             print(f"Error: {e}")
             return None
+        finally:
+            # Ensure streaming TTS resources are cleaned up even on error.
+            # Normal path sends the sentinel at line ~3568; this is a safety
+            # net for exception paths that skip it.  Duplicate sentinels are
+            # harmless — stream_tts_to_speaker exits on the first None.
+            if text_queue is not None:
+                try:
+                    text_queue.put_nowait(None)
+                except Exception:
+                    pass
+            if stop_event is not None:
+                stop_event.set()
+            if tts_thread is not None and tts_thread.is_alive():
+                tts_thread.join(timeout=5)
     
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
@@ -3735,11 +4481,115 @@ class HermesCLI:
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
         else:
-            print("Goodbye! ⚕")
+            try:
+                from hermes_cli.skin_engine import get_active_goodbye
+                goodbye = get_active_goodbye("Goodbye! ⚕")
+            except Exception:
+                goodbye = "Goodbye! ⚕"
+            print(goodbye)
+
+    def _get_tui_prompt_symbols(self) -> tuple[str, str]:
+        """Return ``(normal_prompt, state_suffix)`` for the active skin.
+
+        ``normal_prompt`` is the full ``branding.prompt_symbol``.
+        ``state_suffix`` is what special states (sudo/secret/approval/agent)
+        should render after their leading icon.
+        """
+        try:
+            from hermes_cli.skin_engine import get_active_prompt_symbol
+            symbol = get_active_prompt_symbol("❯ ")
+        except Exception:
+            symbol = "❯ "
+
+        symbol = (symbol or "❯ ").rstrip() + " "
+        stripped = symbol.rstrip()
+        if not stripped:
+            return "❯ ", "❯ "
+
+        parts = stripped.split()
+        candidate = parts[-1] if parts else ""
+        arrow_chars = ("❯", ">", "$", "#", "›", "»", "→")
+        if any(ch in candidate for ch in arrow_chars):
+            return symbol, candidate.rstrip() + " "
+
+        # Icon-only custom prompts should still remain visible in special states.
+        return symbol, symbol
+
+    def _audio_level_bar(self) -> str:
+        """Return a visual audio level indicator based on current RMS."""
+        _LEVEL_BARS = " ▁▂▃▄▅▆▇"
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is None:
+            return ""
+        rms = rec.current_rms
+        # Normalize RMS (0-32767) to 0-7 index, with log-ish scaling
+        # Typical speech RMS is 500-5000, we cap display at ~8000
+        level = min(rms, 8000) * 7 // 8000
+        return _LEVEL_BARS[level]
+
+    def _get_tui_prompt_fragments(self):
+        """Return the prompt_toolkit fragments for the current interactive state."""
+        symbol, state_suffix = self._get_tui_prompt_symbols()
+        if self._voice_recording:
+            bar = self._audio_level_bar()
+            return [("class:voice-recording", f"● {bar} {state_suffix}")]
+        if self._voice_processing:
+            return [("class:voice-processing", f"◉ {state_suffix}")]
+        if self._sudo_state:
+            return [("class:sudo-prompt", f"🔐 {state_suffix}")]
+        if self._secret_state:
+            return [("class:sudo-prompt", f"🔑 {state_suffix}")]
+        if self._approval_state:
+            return [("class:prompt-working", f"⚠ {state_suffix}")]
+        if self._clarify_freetext:
+            return [("class:clarify-selected", f"✎ {state_suffix}")]
+        if self._clarify_state:
+            return [("class:prompt-working", f"? {state_suffix}")]
+        if self._command_running:
+            return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
+        if self._agent_running:
+            return [("class:prompt-working", f"⚕ {state_suffix}")]
+        if self._voice_mode:
+            return [("class:voice-prompt", f"🎤 {state_suffix}")]
+        return [("class:prompt", symbol)]
+
+    def _get_tui_prompt_text(self) -> str:
+        """Return the visible prompt text for width calculations."""
+        return "".join(text for _, text in self._get_tui_prompt_fragments())
+
+    def _build_tui_style_dict(self) -> dict[str, str]:
+        """Layer the active skin's prompt_toolkit colors over the base TUI style."""
+        style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
+        try:
+            from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+            style_dict.update(get_prompt_toolkit_style_overrides())
+        except Exception:
+            pass
+        return style_dict
+
+    def _apply_tui_skin_style(self) -> bool:
+        """Refresh prompt_toolkit styling for a running interactive TUI."""
+        if not getattr(self, "_app", None) or not getattr(self, "_tui_style_base", None):
+            return False
+        self._app.style = PTStyle.from_dict(self._build_tui_style_dict())
+        self._invalidate(min_interval=0.0)
+        return True
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
+
+        # One-line Honcho session indicator (TTY-only, not captured by agent)
+        try:
+            from honcho_integration.client import HonchoClientConfig
+            from agent.display import honcho_session_line, write_tty
+            hcfg = HonchoClientConfig.from_global_config()
+            if hcfg.enabled:
+                sname = hcfg.resolve_session_name(session_id=self.session_id)
+                if sname:
+                    write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")
+        except Exception:
+            pass
 
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
@@ -3779,18 +4629,42 @@ class HermesCLI:
         # Dangerous command approval state (similar mechanism to clarify)
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
+        self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race fix)
 
         # Slash command loading state
         self._command_running = False
         self._command_status = ""
 
+        # Secure secret capture state for skill setup
+        self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
+        self._secret_deadline = 0
+
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
 
+        # Voice mode state (protected by _voice_lock for cross-thread access)
+        self._voice_lock = threading.Lock()
+        self._voice_mode = False        # Whether voice mode is enabled
+        self._voice_tts = False         # Whether TTS output is enabled
+        self._voice_recorder = None     # AudioRecorder instance (lazy init)
+        self._voice_recording = False   # Whether currently recording
+        self._voice_processing = False  # Whether STT is in progress
+        self._voice_continuous = False  # Whether to auto-restart after agent responds
+        self._voice_tts_done = threading.Event()  # Signals TTS playback finished
+        self._voice_tts_done.set()  # Initially "done" (no TTS pending)
+
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
+        set_secret_capture_callback(self._secret_capture_callback)
+
+        # Ensure tirith security scanner is available (downloads if needed)
+        try:
+            from tools.tirith_security import ensure_installed
+            ensure_installed()
+        except Exception:
+            pass  # Non-fatal — fail-open at scan time if unavailable
         
         # Key bindings for the input area
         kb = KeyBindings()
@@ -3814,6 +4688,14 @@ class HermesCLI:
                 text = event.app.current_buffer.text
                 self._sudo_state["response_queue"].put(text)
                 self._sudo_state = None
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- Secret prompt: submit the typed secret ---
+            if self._secret_state:
+                text = event.app.current_buffer.text
+                self._submit_secret_response(text)
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -3877,6 +4759,15 @@ class HermesCLI:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    # Debug: log to file when message enters interrupt queue
+                    try:
+                        _dbg = _hermes_home / "interrupt_debug.log"
+                        with open(_dbg, "a") as _f:
+                            import time as _t
+                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                     f"agent_running={self._agent_running}\n")
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -3929,7 +4820,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -3947,6 +4838,7 @@ class HermesCLI:
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
             
             Priority:
+            0. Cancel active voice recording
             1. Cancel active sudo/approval/clarify prompt
             2. Interrupt the running agent (first press)
             3. Force exit (second press within 2s, or when idle)
@@ -3954,10 +4846,36 @@ class HermesCLI:
             import time as _time
             now = _time.time()
 
+            # Cancel active voice recording.
+            # Run cancel() in a background thread to prevent blocking the
+            # event loop if AudioRecorder._lock or CoreAudio takes time.
+            _should_cancel_voice = False
+            _recorder_ref = None
+            with cli_ref._voice_lock:
+                if cli_ref._voice_recording and cli_ref._voice_recorder:
+                    _recorder_ref = cli_ref._voice_recorder
+                    cli_ref._voice_recording = False
+                    cli_ref._voice_continuous = False
+                    _should_cancel_voice = True
+            if _should_cancel_voice:
+                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+                threading.Thread(
+                    target=_recorder_ref.cancel, daemon=True
+                ).start()
+                event.app.invalidate()
+                return
+
             # Cancel sudo prompt
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # Cancel secret prompt
+            if self._secret_state:
+                self._cancel_secret_capture()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -4007,6 +4925,75 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
+        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
+        # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
+        try:
+            from hermes_cli.config import load_config
+            _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
+        except Exception:
+            _voice_key = "c-b"
+
+        @kb.add(_voice_key)
+        def handle_voice_record(event):
+            """Toggle voice recording when voice mode is active.
+
+            IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
+            Any blocking call here (locks, sd.wait, disk I/O) freezes the
+            entire UI.  All heavy work is dispatched to daemon threads.
+            """
+            if not cli_ref._voice_mode:
+                return
+            # Always allow STOPPING a recording (even when agent is running)
+            if cli_ref._voice_recording:
+                # Manual stop via push-to-talk key: stop continuous mode
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = False
+                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
+                event.app.invalidate()
+                threading.Thread(
+                    target=cli_ref._voice_stop_and_transcribe,
+                    daemon=True,
+                ).start()
+            else:
+                # Guard: don't START recording during agent run or interactive prompts
+                if cli_ref._agent_running:
+                    return
+                if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
+                    return
+                # Guard: don't start while a previous stop/transcribe cycle is
+                # still running — recorder.stop() holds AudioRecorder._lock and
+                # start() would block the event-loop thread waiting for it.
+                if cli_ref._voice_processing:
+                    return
+
+                # Interrupt TTS if playing, so user can start talking.
+                # stop_playback() is fast (just terminates a subprocess).
+                if not cli_ref._voice_tts_done.is_set():
+                    try:
+                        from tools.voice_mode import stop_playback
+                        stop_playback()
+                        cli_ref._voice_tts_done.set()
+                    except Exception:
+                        pass
+
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = True
+
+                # Dispatch to a daemon thread so play_beep(sd.wait),
+                # AudioRecorder.start(lock acquire), and config I/O
+                # never block the prompt_toolkit event loop.
+                def _start_recording():
+                    try:
+                        cli_ref._voice_start_recording()
+                        if hasattr(cli_ref, '_app') and cli_ref._app:
+                            cli_ref._app.invalidate()
+                    except Exception as e:
+                        _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
+                threading.Thread(target=_start_recording, daemon=True).start()
+                event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)
@@ -4058,19 +5045,7 @@ class HermesCLI:
         cli_ref = self
 
         def get_prompt():
-            if cli_ref._sudo_state:
-                return [('class:sudo-prompt', '🔐 ❯ ')]
-            if cli_ref._approval_state:
-                return [('class:prompt-working', '⚠ ❯ ')]
-            if cli_ref._clarify_freetext:
-                return [('class:clarify-selected', '✎ ❯ ')]
-            if cli_ref._clarify_state:
-                return [('class:prompt-working', '? ❯ ')]
-            if cli_ref._command_running:
-                return [('class:prompt-working', f"{cli_ref._command_spinner_frame()} ❯ ")]
-            if cli_ref._agent_running:
-                return [('class:prompt-working', '⚕ ❯ ')]
-            return [('class:prompt', '❯ ')]
+            return cli_ref._get_tui_prompt_fragments()
 
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         input_area = TextArea(
@@ -4087,11 +5062,11 @@ class HermesCLI:
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
-        # The prompt characters ("❯ " etc.) consume ~4 columns.
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                available_width = shutil.get_terminal_size().columns - 4  # subtract prompt width
+                prompt_width = max(2, len(self._get_tui_prompt_text()))
+                available_width = shutil.get_terminal_size().columns - prompt_width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
@@ -4122,7 +5097,7 @@ class HermesCLI:
             if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
-                paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
+                paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
@@ -4138,7 +5113,9 @@ class HermesCLI:
         input_area.control.input_processors.append(
             ConditionalProcessor(
                 PasswordProcessor(),
-                filter=Condition(lambda: bool(cli_ref._sudo_state)),
+                filter=Condition(
+                    lambda: bool(cli_ref._sudo_state) or bool(cli_ref._secret_state)
+                ),
             )
         )
 
@@ -4156,8 +5133,14 @@ class HermesCLI:
                 return Transformation(fragments=ti.fragments)
 
         def _get_placeholder():
+            if cli_ref._voice_recording:
+                return "recording... Ctrl+B to stop, Ctrl+C to cancel"
+            if cli_ref._voice_processing:
+                return "transcribing..."
             if cli_ref._sudo_state:
                 return "type password (hidden), Enter to skip"
+            if cli_ref._secret_state:
+                return "type secret (hidden), Enter to skip"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
@@ -4170,6 +5153,8 @@ class HermesCLI:
                 return f"{frame} {status}"
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
+            if cli_ref._voice_mode:
+                return "type or Ctrl+B to record"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -4184,6 +5169,13 @@ class HermesCLI:
                 remaining = max(0, int(cli_ref._sudo_deadline - _time.monotonic()))
                 return [
                     ('class:hint', '  password hidden · Enter to skip'),
+                    ('class:clarify-countdown', f'  ({remaining}s)'),
+                ]
+
+            if cli_ref._secret_state:
+                remaining = max(0, int(cli_ref._secret_deadline - _time.monotonic()))
+                return [
+                    ('class:hint', '  secret hidden · Enter to skip'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
@@ -4216,7 +5208,7 @@ class HermesCLI:
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
             # Keep a 1-line spacer while agent runs so output doesn't push
             # right up against the top rule of the input area
@@ -4372,6 +5364,42 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._sudo_state is not None),
         )
 
+        def _get_secret_display():
+            state = cli_ref._secret_state
+            if not state:
+                return []
+
+            title = '🔑 Skill Setup Required'
+            prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
+            metadata = state.get("metadata") or {}
+            help_text = metadata.get("help")
+            body = 'Enter secret below (hidden), or press Enter to skip'
+            content_lines = [prompt, body]
+            if help_text:
+                content_lines.insert(1, str(help_text))
+            box_width = _panel_box_width(title, content_lines)
+            lines = []
+            lines.append(('class:sudo-border', '╭─ '))
+            lines.append(('class:sudo-title', title))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
+            if help_text:
+                _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', str(help_text), box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        secret_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_secret_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._secret_state is not None),
+        )
+
         # --- Dangerous command approval: display widget ---
 
         def _get_approval_display():
@@ -4464,6 +5492,24 @@ class HermesCLI:
             height=Condition(lambda: bool(cli_ref._attached_images)),
         )
 
+        # Persistent voice mode status bar (visible only when voice mode is on)
+        def _get_voice_status():
+            if cli_ref._voice_recording:
+                return [('class:voice-status-recording', ' ● REC  Ctrl+B to stop ')]
+            if cli_ref._voice_processing:
+                return [('class:voice-status', ' ◉ Transcribing... ')]
+            tts = " | TTS on" if cli_ref._voice_tts else ""
+            cont = " | Continuous" if cli_ref._voice_continuous else ""
+            return [('class:voice-status', f' 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ')]
+
+        voice_status_bar = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_voice_status),
+                height=1,
+            ),
+            filter=Condition(lambda: cli_ref._voice_mode),
+        )
+
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
         # the corresponding interactive prompt is active.
@@ -4471,6 +5517,7 @@ class HermesCLI:
             HSplit([
                 Window(height=0),
                 sudo_widget,
+                secret_widget,
                 approval_widget,
                 clarify_widget,
                 spinner_widget,
@@ -4479,12 +5526,13 @@ class HermesCLI:
                 image_bar,
                 input_area,
                 input_rule_bot,
+                voice_status_bar,
                 CompletionsMenu(max_height=12, scroll_offset=1),
             ])
         )
         
         # Style for the application
-        style = PTStyle.from_dict({
+        self._tui_style_base = {
             'input-area': '#FFF8DC',
             'placeholder': '#555555 italic',
             'prompt': '#FFF8DC',
@@ -4519,7 +5567,14 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
-        })
+            # Voice mode
+            'voice-prompt': '#87CEEB',
+            'voice-recording': '#FF4444 bold',
+            'voice-processing': '#FFA500 italic',
+            'voice-status': 'bg:#1a1a2e #87CEEB',
+            'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+        }
+        style = PTStyle.from_dict(self._build_tui_style_dict())
         
         # Create the application
         app = Application(
@@ -4582,20 +5637,25 @@ class HermesCLI:
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
+                            )
                             user_input = full_text
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     else:
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
+                                f"[dim](+{line_count - 1} lines)[/]"
+                            )
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
                     if submit_images:
@@ -4605,13 +5665,29 @@ class HermesCLI:
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
-                    
+
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
                         app.invalidate()  # Refresh status line
+
+                        # Continuous voice: auto-restart recording after agent responds.
+                        # Dispatch to a daemon thread so play_beep (sd.wait) and
+                        # AudioRecorder.start (lock acquire) never block process_loop —
+                        # otherwise queued user input would stall silently.
+                        if self._voice_mode and self._voice_continuous and not self._voice_recording:
+                            def _restart_recording():
+                                try:
+                                    if self._voice_tts:
+                                        self._voice_tts_done.wait(timeout=60)
+                                        time.sleep(0.3)
+                                    self._voice_start_recording()
+                                    app.invalidate()
+                                except Exception as e:
+                                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                            threading.Thread(target=_restart_recording, daemon=True).start()
                     
                 except Exception as e:
                     print(f"Error: {e}")
@@ -4637,9 +5713,29 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
-            # Unregister terminal_tool callbacks to avoid dangling references
+            # Shut down voice recorder (release persistent audio stream)
+            if hasattr(self, '_voice_recorder') and self._voice_recorder:
+                try:
+                    self._voice_recorder.shutdown()
+                except Exception:
+                    pass
+                self._voice_recorder = None
+            # Clean up old temp voice recordings
+            try:
+                from tools.voice_mode import cleanup_temp_recordings
+                cleanup_temp_recordings()
+            except Exception:
+                pass
+            # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
+            set_secret_capture_callback(None)
+            # Flush + shut down Honcho async writer (drains queue before exit)
+            if self.agent and getattr(self.agent, '_honcho', None):
+                try:
+                    self.agent._honcho.shutdown()
+                except Exception:
+                    pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:

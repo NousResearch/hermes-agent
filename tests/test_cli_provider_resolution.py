@@ -162,6 +162,22 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    config_copy = dict(cli.CLI_CONFIG)
+    model_copy = dict(config_copy.get("model", {}))
+    model_copy["provider"] = "custom"
+    model_copy["base_url"] = "https://api.fireworks.ai/inference/v1"
+    config_copy["model"] = model_copy
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="fireworks/minimax-m2p5", compact=True, max_turns=1)
+
+    assert shell.requested_provider == "custom"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must

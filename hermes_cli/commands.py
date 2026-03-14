@@ -16,9 +16,9 @@ from prompt_toolkit.completion import Completer, Completion
 # Commands organized by category for better help display
 COMMANDS_BY_CATEGORY = {
     "Session": {
-        "/new": "Start a new conversation (reset history)",
-        "/reset": "Reset conversation only (keep screen)",
-        "/clear": "Clear screen and reset conversation (fresh start)",
+        "/new": "Start a new session (fresh session ID + history)",
+        "/reset": "Start a new session (alias for /new)",
+        "/clear": "Clear screen and start a new session",
         "/history": "Show conversation history",
         "/save": "Save the current conversation",
         "/retry": "Retry the last message (resend to agent)",
@@ -37,6 +37,7 @@ COMMANDS_BY_CATEGORY = {
         "/verbose": "Cycle tool progress display: off → new → all → verbose",
         "/reasoning": "Manage reasoning effort and display (usage: /reasoning [level|show|hide])",
         "/skin": "Show or change the display skin/theme",
+        "/voice": "Toggle voice mode (Ctrl+B to record). Usage: /voice [on|off|tts|status]",
     },
     "Tools & Skills": {
         "/tools": "List available tools",

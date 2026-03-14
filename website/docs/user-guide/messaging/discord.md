@@ -202,7 +202,7 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 
 ## Bot Behavior
 
-- **Server channels**: The bot responds to all messages from allowed users in channels it can access. It does **not** require a mention or prefix — any message from an allowed user is treated as a prompt.
+- **Server channels**: By default the bot requires an `@mention` before it responds in server channels. You can disable that globally with `DISCORD_REQUIRE_MENTION=false` or allow specific channels to be mention-free via `DISCORD_FREE_RESPONSE_CHANNELS`.
 - **Direct messages**: DMs always work, even without the Message Content Intent enabled (Discord exempts DMs from this requirement). However, you should still enable the intent for server channel support.
 - **Conversations**: Each channel or DM maintains its own conversation context.
 
@@ -210,8 +210,13 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 
 Hermes Agent supports Discord voice messages:
 
-- **Incoming voice messages** are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY` to be set in your environment).
-- **Text-to-speech**: When TTS is enabled, the bot can send spoken responses as MP3 file attachments.
+- **Incoming voice messages** are automatically transcribed using Whisper (requires `GROQ_API_KEY` or `VOICE_TOOLS_OPENAI_KEY` to be set in your environment).
+- **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
+- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+
+For the full setup and operational guide, see:
+- [Voice Mode](/docs/user-guide/features/voice-mode)
+- [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
 
 ## Troubleshooting
 

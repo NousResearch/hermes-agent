@@ -60,8 +60,8 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
-    # Honcho user context (gated on honcho being active via check_fn)
-    "query_user_context",
+    # Honcho memory tools (gated on honcho being active via check_fn)
+    "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -192,7 +192,7 @@ TOOLSETS = {
 
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
         "includes": []
     },
 
@@ -224,6 +224,25 @@ TOOLSETS = {
     # All platforms share the same core tools (including send_message,
     # which is gated on gateway running via its check_fn).
     # ==========================================================================
+
+    "hermes-acp": {
+        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
+            "todo", "memory",
+            "session_search",
+            "execute_code", "delegate_task",
+        ],
+        "includes": []
+    },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",

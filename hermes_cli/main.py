@@ -18,14 +18,34 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
-    hermes version             # Show version
-    hermes update              # Update to latest version
-    hermes uninstall           # Uninstall Hermes Agent
-    hermes sessions browse     # Interactive session picker with search
+    hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes honcho status                   # Show Honcho config and connection status
+    hermes honcho sessions                 # List directory → session name mappings
+    hermes honcho map <name>               # Map current directory to a session name
+    hermes honcho peer                     # Show peer names and dialectic settings
+    hermes honcho peer --user NAME         # Set user peer name
+    hermes honcho peer --ai NAME           # Set AI peer name
+    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    hermes honcho mode                     # Show current memory mode
+    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
+    hermes honcho tokens                   # Show token budget settings
+    hermes honcho tokens --context N       # Set session.context() token cap
+    hermes honcho tokens --dialectic N     # Set dialectic result char cap
+    hermes honcho identity                 # Show AI peer identity representation
+    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
+    hermes version             Show version
+    hermes update              Update to latest version
+    hermes uninstall           Uninstall Hermes Agent
+    hermes acp                 Run as an ACP server for editor integration
+    hermes sessions browse     Interactive session picker with search
+
+    hermes claw migrate --dry-run  # Preview migration without changes
 """
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -50,11 +70,31 @@ os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
+import time as _time
+from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def _relative_time(ts) -> str:
+    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+    if not ts:
+        return "?"
+    delta = _time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    if delta < 172800:
+        return "yesterday"
+    if delta < 604800:
+        return f"{int(delta / 86400)}d ago"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
 def _has_any_provider_configured() -> bool:
@@ -68,7 +108,7 @@ def _has_any_provider_configured() -> bool:
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     # Collect all provider env vars
-    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
+    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
@@ -121,27 +161,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     # Try curses-based picker first
     try:
         import curses
-        import time as _time
-        from datetime import datetime
 
         result_holder = [None]
-
-        def _relative_time(ts):
-            if not ts:
-                return "?"
-            delta = _time.time() - ts
-            if delta < 60:
-                return "just now"
-            elif delta < 3600:
-                return f"{int(delta / 60)}m ago"
-            elif delta < 86400:
-                return f"{int(delta / 3600)}h ago"
-            elif delta < 172800:
-                return "yesterday"
-            elif delta < 604800:
-                return f"{int(delta / 86400)}d ago"
-            else:
-                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
         def _format_row(s, max_x):
             """Format a session row for display."""
@@ -333,26 +354,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         pass
 
     # Fallback: numbered list (Windows without curses, etc.)
-    import time as _time
-    from datetime import datetime
-
-    def _relative_time_fb(ts):
-        if not ts:
-            return "?"
-        delta = _time.time() - ts
-        if delta < 60:
-            return "just now"
-        elif delta < 3600:
-            return f"{int(delta / 60)}m ago"
-        elif delta < 86400:
-            return f"{int(delta / 3600)}h ago"
-        elif delta < 172800:
-            return "yesterday"
-        elif delta < 604800:
-            return f"{int(delta / 86400)}d ago"
-        else:
-            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -360,7 +361,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         label = title or preview or s["id"]
         if len(label) > 50:
             label = label[:47] + "..."
-        last_active = _relative_time_fb(s.get("last_active"))
+        last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
         print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
 
@@ -459,6 +460,15 @@ def cmd_chat(args):
         print()
         print("  Run:  hermes setup")
         print()
+
+        from hermes_cli.setup import is_interactive_stdin, print_noninteractive_setup_guidance
+
+        if not is_interactive_stdin():
+            print_noninteractive_setup_guidance(
+                "No interactive TTY detected for the first-run setup prompt."
+            )
+            sys.exit(1)
+
         try:
             reply = input("Run setup now? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -630,7 +640,7 @@ def cmd_whatsapp(args):
         print("✓ Bridge dependencies already installed")
 
     # ── Step 5: Check for existing session ───────────────────────────────
-    session_dir = Path.home() / ".hermes" / "whatsapp" / "session"
+    session_dir = get_hermes_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     if (session_dir / "creds.json").exists():
@@ -727,8 +737,8 @@ def cmd_model(args):
         config_provider = model_cfg.get("provider")
 
     effective_provider = (
-        os.getenv("HERMES_INFERENCE_PROVIDER")
-        or config_provider
+        config_provider
+        or os.getenv("HERMES_INFERENCE_PROVIDER")
         or "auto"
     )
     try:
@@ -746,6 +756,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -764,6 +775,7 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
@@ -832,6 +844,8 @@ def cmd_model(args):
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
+    elif selected_provider == "anthropic":
+        _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
     elif selected_provider in ("zai", "minimax", "minimax-cn"):
@@ -1035,6 +1049,7 @@ def _model_flow_openai_codex(config, current_model=""):
         _codex_token = _codex_creds.get("api_key")
     except Exception:
         pass
+
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
@@ -1048,6 +1063,7 @@ def _model_flow_openai_codex(config, current_model=""):
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
+
 
 
 def _model_flow_custom(config):
@@ -1521,8 +1537,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection
-    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    # Model selection — try live /models endpoint first, fall back to defaults
+    from hermes_cli.models import fetch_api_models
+    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+    live_models = fetch_api_models(api_key_for_probe, effective_base)
+
+    if live_models:
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(f"  ⚠ Could not auto-detect models from API — showing defaults.")
+            print(f"    Use \"Enter custom model name\" if you don't see your model.")
+        # else: no defaults either, will fall through to raw input
+
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
@@ -1551,6 +1580,199 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
+
+
+def _run_anthropic_oauth_flow(save_env_value):
+    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
+    from agent.anthropic_adapter import run_oauth_setup_token
+    from hermes_cli.config import save_anthropic_oauth_token
+
+    try:
+        print()
+        print("  Running 'claude setup-token' — follow the prompts below.")
+        print("  A browser window will open for you to authorize access.")
+        print()
+        token = run_oauth_setup_token()
+        if token:
+            save_anthropic_oauth_token(token, save_fn=save_env_value)
+            print("  ✓ OAuth credentials saved.")
+            return True
+
+        # Subprocess completed but no token auto-detected — ask user to paste
+        print()
+        print("  If the setup-token was displayed above, paste it here:")
+        print()
+        try:
+            manual_token = input("  Paste setup-token (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if manual_token:
+            save_anthropic_oauth_token(manual_token, save_fn=save_env_value)
+            print("  ✓ Setup-token saved.")
+            return True
+
+        print("  ⚠ Could not detect saved credentials.")
+        return False
+
+    except FileNotFoundError:
+        # Claude CLI not installed — guide user through manual setup
+        print()
+        print("  The 'claude' CLI is required for OAuth login.")
+        print()
+        print("  To install and authenticate:")
+        print()
+        print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
+        print("    2. Run:                  claude setup-token")
+        print("    3. Follow the browser prompts to authorize")
+        print("    4. Re-run:               hermes model")
+        print()
+        print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+        print()
+        try:
+            token = input("  Setup-token (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if token:
+            save_anthropic_oauth_token(token, save_fn=save_env_value)
+            print("  ✓ Setup-token saved.")
+            return True
+        print("  Cancelled — install Claude Code and try again.")
+        return False
+
+
+def _model_flow_anthropic(config, current_model=""):
+    """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
+    import os
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value, save_env_value, load_config, save_config,
+        save_anthropic_api_key,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    pconfig = PROVIDER_REGISTRY["anthropic"]
+
+    # Check ALL credential sources
+    existing_key = (
+        get_env_value("ANTHROPIC_TOKEN")
+        or os.getenv("ANTHROPIC_TOKEN", "")
+        or get_env_value("ANTHROPIC_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY", "")
+        or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+    )
+    cc_available = False
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        cc_creds = read_claude_code_credentials()
+        if cc_creds and is_claude_code_token_valid(cc_creds):
+            cc_available = True
+    except Exception:
+        pass
+
+    has_creds = bool(existing_key) or cc_available
+    needs_auth = not has_creds
+
+    if has_creds:
+        # Show what we found
+        if existing_key:
+            print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+        elif cc_available:
+            print("  Claude Code credentials: ✓ (auto-detected)")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            needs_auth = True
+        elif choice == "3":
+            return
+        # choice == "1" or default: use existing, proceed to model selection
+
+    if needs_auth:
+        # Show auth method choice
+        print()
+        print("  Choose authentication method:")
+        print()
+        print("    1. Claude Pro/Max subscription (OAuth login)")
+        print("    2. Anthropic API key (pay-per-token)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if choice == "1":
+            if not _run_anthropic_oauth_flow(save_env_value):
+                return
+
+        elif choice == "2":
+            print()
+            print("  Get an API key at: https://console.anthropic.com/settings/keys")
+            print()
+            try:
+                api_key = input("  API key (sk-ant-...): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not api_key:
+                print("  Cancelled.")
+                return
+            save_anthropic_api_key(api_key, save_fn=save_env_value)
+            print("  ✓ API key saved.")
+
+        else:
+            print("  No change.")
+            return
+    print()
+
+    # Model selection
+    model_list = _PROVIDER_MODELS.get("anthropic", [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        # Clear custom endpoint if set
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        _save_model_choice(selected)
+
+        # Update config with provider — clear base_url since
+        # resolve_runtime_provider() always hardcodes Anthropic's URL.
+        # Leaving a stale base_url in config can contaminate other
+        # providers if the user switches without running 'hermes model'.
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "anthropic"
+        model.pop("base_url", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
 
@@ -1709,9 +1931,82 @@ def _update_via_zip(args):
     print("✓ Update complete!")
 
 
+def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not status.stdout.strip():
+        return None
+
+    from datetime import datetime, timezone
+
+    stash_name = datetime.now(timezone.utc).strftime("hermes-update-autostash-%Y%m%d-%H%M%S")
+    print("→ Local changes detected — stashing before update...")
+    subprocess.run(
+        git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
+        cwd=cwd,
+        check=True,
+    )
+    stash_ref = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "refs/stash"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return stash_ref
+
+
+
+def _restore_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+    prompt_user: bool = False,
+) -> bool:
+    if prompt_user:
+        print()
+        print("⚠ Local changes were stashed before updating.")
+        print("  Restoring them may reapply local customizations onto the updated codebase.")
+        print("  Review the result afterward if Hermes behaves unexpectedly.")
+        print("Restore local changes now? [Y/n]")
+        response = input().strip().lower()
+        if response not in ("", "y", "yes"):
+            print("Skipped restoring local changes.")
+            print("Your changes are still preserved in git stash.")
+            print(f"Restore manually with: git stash apply {stash_ref}")
+            return False
+
+    print("→ Restoring local changes...")
+    restore = subprocess.run(
+        git_cmd + ["stash", "apply", stash_ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if restore.returncode != 0:
+        print("✗ Update pulled new code, but restoring local changes failed.")
+        if restore.stdout.strip():
+            print(restore.stdout.strip())
+        if restore.stderr.strip():
+            print(restore.stderr.strip())
+        print("Your changes are still preserved in git stash.")
+        print(f"Resolve manually with: git stash apply {stash_ref}")
+        sys.exit(1)
+
+    subprocess.run(git_cmd + ["stash", "drop", stash_ref], cwd=cwd, check=True)
+    print("⚠ Local changes were restored on top of the updated codebase.")
+    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    return True
+
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
-    import subprocess
     import shutil
     
     print("⚕ Updating Hermes Agent...")
@@ -1777,8 +2072,21 @@ def cmd_update(args):
             return
         
         print(f"→ Found {commit_count} new commit(s)")
+
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
+
         print("→ Pulling updates...")
-        subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        try:
+            subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        finally:
+            if auto_stash_ref is not None:
+                _restore_stashed_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                )
         
         # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")
@@ -2035,7 +2343,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -2374,7 +2682,7 @@ For more help on a command:
     skills_parser = subparsers.add_parser(
         "skills",
         help="Search, install, configure, and manage skills",
-        description="Search, install, inspect, audit, configure, and manage skills from GitHub, ClawHub, and other registries."
+        description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries."
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
@@ -2382,12 +2690,12 @@ For more help on a command:
     skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
     skills_browse.add_argument("--size", type=int, default=20, help="Results per page (default: 20)")
     skills_browse.add_argument("--source", default="all",
-                               choices=["all", "official", "github", "clawhub", "lobehub"],
+                               choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"],
                                help="Filter by source (default: all)")
 
     skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
     skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument("--source", default="all", choices=["all", "official", "github", "clawhub", "lobehub"])
+    skills_search.add_argument("--source", default="all", choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"])
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
@@ -2399,7 +2707,13 @@ For more help on a command:
     skills_inspect.add_argument("identifier", help="Skill identifier")
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin"])
+    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
+
+    skills_check = skills_subparsers.add_parser("check", help="Check installed hub skills for updates")
+    skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")
+
+    skills_update = skills_subparsers.add_parser("update", help="Update installed hub skills")
+    skills_update.add_argument("name", nargs="?", help="Specific skill to update (default: all outdated skills)")
 
     skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
@@ -2441,6 +2755,94 @@ For more help on a command:
             skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
+    # honcho command
+    # =========================================================================
+    honcho_parser = subparsers.add_parser(
+        "honcho",
+        help="Manage Honcho AI memory integration",
+        description=(
+            "Honcho is a memory layer that persists across sessions.\n\n"
+            "Each conversation is stored as a peer interaction in a workspace. "
+            "Honcho builds a representation of the user over time — conclusions, "
+            "patterns, context — and surfaces the relevant slice at the start of "
+            "each turn so Hermes knows who you are without you having to repeat yourself.\n\n"
+            "Modes: hybrid (Honcho + local MEMORY.md), honcho (Honcho only), "
+            "local (MEMORY.md only). Write frequency is configurable so memory "
+            "writes never block the response."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
+
+    honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")
+    honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
+    honcho_subparsers.add_parser("sessions", help="List known Honcho session mappings")
+
+    honcho_map = honcho_subparsers.add_parser(
+        "map", help="Map current directory to a Honcho session name (no arg = list mappings)"
+    )
+    honcho_map.add_argument(
+        "session_name", nargs="?", default=None,
+        help="Session name to associate with this directory. Omit to list current mappings.",
+    )
+
+    honcho_peer = honcho_subparsers.add_parser(
+        "peer", help="Show or update peer names and dialectic reasoning level"
+    )
+    honcho_peer.add_argument("--user", metavar="NAME", help="Set user peer name")
+    honcho_peer.add_argument("--ai", metavar="NAME", help="Set AI peer name")
+    honcho_peer.add_argument(
+        "--reasoning",
+        metavar="LEVEL",
+        choices=("minimal", "low", "medium", "high", "max"),
+        help="Set default dialectic reasoning level (minimal/low/medium/high/max)",
+    )
+
+    honcho_mode = honcho_subparsers.add_parser(
+        "mode", help="Show or set memory mode (hybrid/honcho/local)"
+    )
+    honcho_mode.add_argument(
+        "mode", nargs="?", metavar="MODE",
+        choices=("hybrid", "honcho", "local"),
+        help="Memory mode to set (hybrid/honcho/local). Omit to show current.",
+    )
+
+    honcho_tokens = honcho_subparsers.add_parser(
+        "tokens", help="Show or set token budget for context and dialectic"
+    )
+    honcho_tokens.add_argument(
+        "--context", type=int, metavar="N",
+        help="Max tokens Honcho returns from session.context() per turn",
+    )
+    honcho_tokens.add_argument(
+        "--dialectic", type=int, metavar="N",
+        help="Max chars of dialectic result to inject into system prompt",
+    )
+
+    honcho_identity = honcho_subparsers.add_parser(
+        "identity", help="Seed or show the AI peer's Honcho identity representation"
+    )
+    honcho_identity.add_argument(
+        "file", nargs="?", default=None,
+        help="Path to file to seed from (e.g. SOUL.md). Omit to show usage.",
+    )
+    honcho_identity.add_argument(
+        "--show", action="store_true",
+        help="Show current AI peer representation from Honcho",
+    )
+
+    honcho_subparsers.add_parser(
+        "migrate",
+        help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
+    )
+
+    def cmd_honcho(args):
+        from honcho_integration.cli import honcho_command
+        honcho_command(args)
+
+    honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
     # tools command
@@ -2518,30 +2920,6 @@ For more help on a command:
             if not sessions:
                 print("No sessions found.")
                 return
-            from datetime import datetime
-            import time as _time
-
-            def _relative_time(ts):
-                """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
-                if not ts:
-                    return "?"
-                delta = _time.time() - ts
-                if delta < 60:
-                    return "just now"
-                elif delta < 3600:
-                    mins = int(delta / 60)
-                    return f"{mins}m ago"
-                elif delta < 86400:
-                    hours = int(delta / 3600)
-                    return f"{hours}h ago"
-                elif delta < 172800:
-                    return "yesterday"
-                elif delta < 604800:
-                    days = int(delta / 86400)
-                    return f"{days}d ago"
-                else:
-                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
                 print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
@@ -2684,6 +3062,69 @@ For more help on a command:
     insights_parser.set_defaults(func=cmd_insights)
 
     # =========================================================================
+    # claw command (OpenClaw migration)
+    # =========================================================================
+    claw_parser = subparsers.add_parser(
+        "claw",
+        help="OpenClaw migration tools",
+        description="Migrate settings, memories, skills, and API keys from OpenClaw to Hermes"
+    )
+    claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
+
+    # claw migrate
+    claw_migrate = claw_subparsers.add_parser(
+        "migrate",
+        help="Migrate from OpenClaw to Hermes",
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+    )
+    claw_migrate.add_argument(
+        "--source",
+        help="Path to OpenClaw directory (default: ~/.openclaw)"
+    )
+    claw_migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be migrated without making changes"
+    )
+    claw_migrate.add_argument(
+        "--preset",
+        choices=["user-data", "full"],
+        default="full",
+        help="Migration preset (default: full). 'user-data' excludes secrets"
+    )
+    claw_migrate.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files (default: skip conflicts)"
+    )
+    claw_migrate.add_argument(
+        "--migrate-secrets",
+        action="store_true",
+        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.)"
+    )
+    claw_migrate.add_argument(
+        "--workspace-target",
+        help="Absolute path to copy workspace instructions into"
+    )
+    claw_migrate.add_argument(
+        "--skill-conflict",
+        choices=["skip", "overwrite", "rename"],
+        default="skip",
+        help="How to handle skill name conflicts (default: skip)"
+    )
+    claw_migrate.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+
+    def cmd_claw(args):
+        from hermes_cli.claw import claw_command
+        claw_command(args)
+
+    claw_parser.set_defaults(func=cmd_claw)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(
@@ -2721,6 +3162,27 @@ For more help on a command:
         help="Skip confirmation prompts"
     )
     uninstall_parser.set_defaults(func=cmd_uninstall)
+
+    # =========================================================================
+    # acp command
+    # =========================================================================
+    acp_parser = subparsers.add_parser(
+        "acp",
+        help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
+        description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
+    )
+
+    def cmd_acp(args):
+        """Launch Hermes Agent as an ACP server."""
+        try:
+            from acp_adapter.entry import main as acp_main
+            acp_main()
+        except ImportError:
+            print("ACP dependencies not installed.")
+            print("Install them with:  pip install -e '.[acp]'")
+            sys.exit(1)
+
+    acp_parser.set_defaults(func=cmd_acp)
     
     # =========================================================================
     # Parse and execute

@@ -129,6 +129,7 @@ class TestGetTextAuxiliaryClient:
     def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
         # Override the autouse monkeypatch for codex
         monkeypatch.setattr(
             "agent.auxiliary_client._read_codex_access_token",
@@ -137,7 +138,7 @@ class TestGetTextAuxiliaryClient:
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
-        assert model == "gpt-4o-mini"
+        assert model == "my-local-model"
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
@@ -150,9 +151,13 @@ class TestGetTextAuxiliaryClient:
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
 
-    def test_returns_none_when_nothing_available(self):
+    def test_returns_none_when_nothing_available(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
@@ -209,17 +214,21 @@ class TestVisionClientFallback:
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
         assert client is not None
-        assert model == "gpt-4o-mini"
+        assert model == "my-local-model"
 
     def test_vision_forced_main_returns_none_without_creds(self, monkeypatch):
         """Forced main with no credentials still returns None."""
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_vision_auxiliary_client()
         assert client is None
         assert model is None
@@ -305,21 +314,23 @@ class TestResolveForcedProvider:
     def test_forced_main_uses_custom(self, monkeypatch):
         monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
-        assert model == "gpt-4o-mini"
+        assert model == "my-local-model"
 
     def test_forced_main_skips_openrouter_nous(self, monkeypatch):
         """Even if OpenRouter key is set, 'main' skips it."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
         # Should use custom endpoint, not OpenRouter
-        assert model == "gpt-4o-mini"
+        assert model == "my-local-model"
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \

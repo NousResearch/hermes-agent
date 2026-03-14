@@ -63,7 +63,12 @@ def get_skin_tool_prefix() -> str:
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
+def _oneline(text: str) -> str:
+    """Collapse whitespace (including newlines) to single spaces."""
+    return " ".join(text.split())
+
+
+def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | None:
     """Build a short preview of a tool call's primary argument for display."""
     if not args:
         return None
@@ -89,7 +94,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         if sid:
             parts.append(sid[:16])
         if data:
-            parts.append(f'"{data[:20]}"')
+            parts.append(f'"{_oneline(data[:20])}"')
         if timeout_val and action == "wait":
             parts.append(f"{timeout_val}s")
         return " ".join(parts) if parts else None
@@ -105,24 +110,24 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
             return f"planning {len(todos_arg)} task(s)"
 
     if tool_name == "session_search":
-        query = args.get("query", "")
+        query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
         if action == "add":
-            content = args.get("content", "")
+            content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{args.get('old_text', '')[:20]}\""
+            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
         elif action == "remove":
-            return f"-{target}: \"{args.get('old_text', '')[:20]}\""
+            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
         return action
 
     if tool_name == "send_message":
         target = args.get("target", "?")
-        msg = args.get("message", "")
+        msg = _oneline(args.get("message", ""))
         if len(msg) > 20:
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
@@ -156,7 +161,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
     if isinstance(value, list):
         value = value[0] if value else ""
 
-    preview = str(value).strip()
+    preview = _oneline(str(value))
     if not preview:
         return None
     if len(preview) > max_len:
@@ -535,3 +540,46 @@ def get_cute_tool_message(
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+
+
+# =========================================================================
+# Honcho session line (one-liner with clickable OSC 8 hyperlink)
+# =========================================================================
+
+_DIM = "\033[2m"
+_SKY_BLUE = "\033[38;5;117m"
+_ANSI_RESET = "\033[0m"
+
+
+def honcho_session_url(workspace: str, session_name: str) -> str:
+    """Build a Honcho app URL for a session."""
+    from urllib.parse import quote
+    return (
+        f"https://app.honcho.dev/explore"
+        f"?workspace={quote(workspace, safe='')}"
+        f"&view=sessions"
+        f"&session={quote(session_name, safe='')}"
+    )
+
+
+def _osc8_link(url: str, text: str) -> str:
+    """OSC 8 terminal hyperlink (clickable in iTerm2, Ghostty, WezTerm, etc.)."""
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def honcho_session_line(workspace: str, session_name: str) -> str:
+    """One-line session indicator: `Honcho session: <clickable name>`."""
+    url = honcho_session_url(workspace, session_name)
+    linked_name = _osc8_link(url, f"{_SKY_BLUE}{session_name}{_ANSI_RESET}")
+    return f"{_DIM}Honcho session:{_ANSI_RESET} {linked_name}"
+
+
+def write_tty(text: str) -> None:
+    """Write directly to /dev/tty, bypassing stdout capture."""
+    try:
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        os.write(fd, text.encode("utf-8"))
+        os.close(fd)
+    except OSError:
+        sys.stdout.write(text)
+        sys.stdout.flush()

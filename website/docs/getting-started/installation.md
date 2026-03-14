@@ -123,6 +123,7 @@ uv pip install -e "."
 | `honcho` | AI-native memory (Honcho integration) | `uv pip install -e ".[honcho]"` |
 | `mcp` | Model Context Protocol support | `uv pip install -e ".[mcp]"` |
 | `homeassistant` | Home Assistant integration | `uv pip install -e ".[homeassistant]"` |
+| `acp` | ACP editor integration support | `uv pip install -e ".[acp]"` |
 | `slack` | Slack messaging | `uv pip install -e ".[slack]"` |
 | `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
 

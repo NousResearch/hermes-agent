@@ -14,11 +14,10 @@ import time
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
-
-_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-_VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
-_AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-_VOICE_EXTS = {'.ogg', '.opus'}
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+_VOICE_EXTS = {".ogg", ".opus"}
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -135,6 +134,11 @@ def _handle_send(args):
     if not pconfig or not pconfig.enabled:
         return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/gateway.json or environment variables."})
 
+    from gateway.platforms.base import BasePlatformAdapter
+
+    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+
     used_home_channel = False
     if not chat_id:
         home = config.get_home_channel(platform)
@@ -150,16 +154,25 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        result = _run_async(_send_to_platform(platform, pconfig, chat_id, message, thread_id=thread_id))
+        result = _run_async(
+            _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_message,
+                thread_id=thread_id,
+                media_files=media_files,
+            )
+        )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
         # Mirror the sent message into the target's gateway session
-        if isinstance(result, dict) and result.get("success"):
+        if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
                 source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, message, source_label=source_label, thread_id=thread_id):
+                if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
                     result["mirrored"] = True
             except Exception:
                 pass
@@ -180,48 +193,97 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     return None, None, False
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None):
+def _describe_media_for_mirror(media_files):
+    """Return a human-readable mirror summary when a message only contains media."""
+    if not media_files:
+        return ""
+    if len(media_files) == 1:
+        media_path, is_voice = media_files[0]
+        ext = os.path.splitext(media_path)[1].lower()
+        if is_voice and ext in _VOICE_EXTS:
+            return "[Sent voice message]"
+        if ext in _IMAGE_EXTS:
+            return "[Sent image attachment]"
+        if ext in _VIDEO_EXTS:
+            return "[Sent video attachment]"
+        if ext in _AUDIO_EXTS:
+            return "[Sent audio attachment]"
+        return "[Sent document attachment]"
+    return f"[Sent {len(media_files)} media attachments]"
+
+
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
     """Route a message to the appropriate platform sender."""
     from gateway.config import Platform
+
+    media_files = media_files or []
     if platform == Platform.TELEGRAM:
-        return await _send_telegram(pconfig.token, chat_id, message, thread_id=thread_id)
-    elif platform == Platform.DISCORD:
-        return await _send_discord(pconfig.token, chat_id, message)
+        return await _send_telegram(
+            pconfig.token,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+        )
+    if media_files and not message.strip():
+        return {
+            "error": (
+                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"target {platform.value} had only media attachments"
+            )
+        }
+    warning = None
+    if media_files:
+        warning = (
+            f"MEDIA attachments were omitted for {platform.value}; "
+            "native send_message media delivery is currently only supported for telegram"
+        )
+
+    if platform == Platform.DISCORD:
+        result = await _send_discord(pconfig.token, chat_id, message)
     elif platform == Platform.SLACK:
-        return await _send_slack(pconfig.token, chat_id, message)
+        result = await _send_slack(pconfig.token, chat_id, message)
     elif platform == Platform.SIGNAL:
-        return await _send_signal(pconfig.extra, chat_id, message)
+        result = await _send_signal(pconfig.extra, chat_id, message)
     elif platform == Platform.EMAIL:
-        return await _send_email(pconfig.extra, chat_id, message)
-    return {"error": f"Direct sending not yet implemented for {platform.value}"}
+        result = await _send_email(pconfig.extra, chat_id, message)
+    else:
+        result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+
+    if warning and isinstance(result, dict) and result.get("success"):
+        warnings = list(result.get("warnings", []))
+        warnings.append(warning)
+        result["warnings"] = warnings
+    return result
 
 
-async def _send_telegram(token, chat_id, message, thread_id=None):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
     """Send via Telegram Bot API (one-shot, no polling needed)."""
     try:
         from telegram import Bot
-        from gateway.platforms.base import BasePlatformAdapter
+
         bot = Bot(token=token)
         int_chat_id = int(chat_id)
+        media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
             thread_kwargs["message_thread_id"] = int(thread_id)
 
-        # Extract MEDIA:<path> tags and send files natively
-        media_files, cleaned = BasePlatformAdapter.extract_media(message)
-
         last_msg = None
-        # Send text portion if any remains
-        if cleaned.strip():
+        warnings = []
+
+        if message.strip():
             last_msg = await bot.send_message(
-                chat_id=int_chat_id, text=cleaned, **thread_kwargs
+                chat_id=int_chat_id, text=message, **thread_kwargs
             )
 
-        # Send extracted media files
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
-                logger.warning("Media file not found, skipping: %s", media_path)
+                warning = f"Media file not found, skipping: {media_path}"
+                logger.warning(warning)
+                warnings.append(warning)
                 continue
+
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
@@ -246,15 +308,25 @@ async def _send_telegram(token, chat_id, message, thread_id=None):
                             chat_id=int_chat_id, document=f, **thread_kwargs
                         )
             except Exception as e:
-                logger.error("Failed to send media %s: %s", media_path, e)
+                warning = f"Failed to send media {media_path}: {e}"
+                logger.error(warning)
+                warnings.append(warning)
 
-        # If no text and no media sent, send cleaned text as fallback
         if last_msg is None:
-            last_msg = await bot.send_message(
-                chat_id=int_chat_id, text=cleaned if cleaned.strip() else message, **thread_kwargs
-            )
+            error = "No deliverable text or media remained after processing MEDIA tags"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
 
-        return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(last_msg.message_id)}
+        result = {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": chat_id,
+            "message_id": str(last_msg.message_id),
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:

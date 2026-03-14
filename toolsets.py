@@ -202,6 +202,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "android": {
+        "description": "Android device control — read screen, tap, type, open apps, and more via the hermes-android bridge",
+        "tools": [
+            "android_ping", "android_read_screen", "android_tap", "android_tap_text",
+            "android_type", "android_swipe", "android_open_app", "android_press_key",
+            "android_screenshot", "android_scroll", "android_wait",
+            "android_get_apps", "android_current_app",
+            "android_setup",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

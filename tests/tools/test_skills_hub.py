@@ -8,10 +8,12 @@ from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
     LobeHubSource,
+    SkillsShSource,
     SkillMeta,
     SkillBundle,
     HubLockFile,
     TapsManager,
+    create_source_router,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -91,6 +93,129 @@ class TestTrustLevelFor:
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
         assert result in ("trusted", "community")
+
+
+# ---------------------------------------------------------------------------
+# SkillsShSource
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsShSource:
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        return SkillsShSource(auth=auth)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "skills": [
+                    {
+                        "id": "vercel-labs/agent-skills/vercel-react-best-practices",
+                        "skillId": "vercel-react-best-practices",
+                        "name": "vercel-react-best-practices",
+                        "installs": 207679,
+                        "source": "vercel-labs/agent-skills",
+                    }
+                ]
+            },
+        )
+
+        results = self._source().search("react", limit=5)
+
+        assert len(results) == 1
+        assert results[0].source == "skills.sh"
+        assert results[0].identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert "skills.sh" in results[0].description
+        assert results[0].repo == "vercel-labs/agent-skills"
+        assert results[0].path == "vercel-react-best-practices"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_search_uses_featured_homepage_links(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices">React</a>
+                <a href="/anthropics/skills/pdf">PDF</a>
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices">React again</a>
+            ''',
+        )
+
+        results = self._source().search("", limit=10)
+
+        assert [r.identifier for r in results] == [
+            "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices",
+            "skills-sh/anthropics/skills/pdf",
+        ]
+        assert all(r.source == "skills.sh" for r in results)
+
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_delegates_to_github_source_and_relabels_bundle(self, mock_fetch):
+        mock_fetch.return_value = SkillBundle(
+            name="vercel-react-best-practices",
+            files={"SKILL.md": "# Test"},
+            source="github",
+            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
+            trust_level="community",
+        )
+
+        bundle = self._source().fetch("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert bundle is not None
+        assert bundle.source == "skills.sh"
+        assert bundle.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
+
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_delegates_to_github_source_and_relabels_meta(self, mock_inspect):
+        mock_inspect.return_value = SkillMeta(
+            name="vercel-react-best-practices",
+            description="React rules",
+            source="github",
+            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
+            trust_level="community",
+            repo="vercel-labs/agent-skills",
+            path="vercel-react-best-practices",
+        )
+
+        meta = self._source().inspect("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert meta is not None
+        assert meta.source == "skills.sh"
+        assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        mock_inspect.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
+
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_falls_back_to_repo_skill_catalog_when_slug_differs(self, mock_inspect, mock_list_skills):
+        resolved = SkillMeta(
+            name="vercel-react-best-practices",
+            description="React rules",
+            source="github",
+            identifier="vercel-labs/agent-skills/skills/react-best-practices",
+            trust_level="community",
+            repo="vercel-labs/agent-skills",
+            path="skills/react-best-practices",
+        )
+        mock_inspect.side_effect = lambda identifier: resolved if identifier == resolved.identifier else None
+        mock_list_skills.return_value = [resolved]
+
+        meta = self._source().inspect("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert meta is not None
+        assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert mock_list_skills.called
+
+
+class TestCreateSourceRouter:
+    def test_includes_skills_sh_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, SkillsShSource) for src in sources)
 
 
 # ---------------------------------------------------------------------------

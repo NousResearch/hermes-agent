@@ -6,13 +6,17 @@ are made.
 """
 
 import json
+import logging
 import re
 import uuid
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import run_agent
 from honcho_integration.client import HonchoClientConfig
 from run_agent import AIAgent, _inject_honcho_turn_context
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -70,13 +74,67 @@ def agent_with_memory_tool():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-key-1234567890",
+            api_key="test-k...7890",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
         )
         a.client = MagicMock()
         return a
+
+
+def test_aiagent_reuses_existing_errors_log_handler():
+    """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    error_log_path = (run_agent._hermes_home / "logs" / "errors.log").resolve()
+
+    try:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+
+        error_log_path.parent.mkdir(parents=True, exist_ok=True)
+        preexisting_handler = RotatingFileHandler(
+            error_log_path,
+            maxBytes=2 * 1024 * 1024,
+            backupCount=2,
+        )
+        root_logger.addHandler(preexisting_handler)
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        matching_handlers = [
+            handler for handler in root_logger.handlers
+            if isinstance(handler, RotatingFileHandler)
+            and error_log_path == Path(handler.baseFilename).resolve()
+        ]
+        assert len(matching_handlers) == 1
+    finally:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            if handler not in original_handlers:
+                handler.close()
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
 
 
 # ---------------------------------------------------------------------------

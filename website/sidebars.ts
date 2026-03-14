@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
         'guides/python-library',
         'guides/use-mcp-with-hermes',
         'guides/use-soul-with-hermes',
+        'guides/use-voice-mode-with-hermes',
       ],
     },
     {

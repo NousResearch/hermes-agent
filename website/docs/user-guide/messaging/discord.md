@@ -212,6 +212,11 @@ Hermes Agent supports Discord voice messages:
 
 - **Incoming voice messages** are automatically transcribed using Whisper (requires `GROQ_API_KEY` or `VOICE_TOOLS_OPENAI_KEY` to be set in your environment).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
+- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+
+For the full setup and operational guide, see:
+- [Voice Mode](/docs/user-guide/features/voice-mode)
+- [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
 
 ## Troubleshooting
 

@@ -1007,8 +1007,9 @@ class TestSendEmailStandalone(unittest.TestCase):
         "EMAIL_SMTP_PORT": "587",
     })
     def test_send_email_tool_success(self):
-        """_send_email should use SMTP to send."""
+        """_send_email should use verified STARTTLS when sending."""
         import asyncio
+        import ssl
         from tools.send_message_tool import _send_email
 
         with patch("smtplib.SMTP") as mock_smtp:
@@ -1021,6 +1022,8 @@ class TestSendEmailStandalone(unittest.TestCase):
 
             self.assertTrue(result["success"])
             self.assertEqual(result["platform"], "email")
+            _, kwargs = mock_server.starttls.call_args
+            self.assertIsInstance(kwargs["context"], ssl.SSLContext)
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

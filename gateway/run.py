@@ -1684,6 +1684,7 @@ class GatewayRunner:
             validate_requested_model,
             curated_models_for_provider,
             normalize_provider,
+            detect_provider_for_model,
             _PROVIDER_LABELS,
         )
 
@@ -1741,6 +1742,13 @@ class GatewayRunner:
 
         # Parse provider:model syntax
         target_provider, new_model = parse_model_input(args, current_provider)
+
+        # Auto-detect provider when no explicit provider:model syntax was used
+        if target_provider == current_provider:
+            detected = detect_provider_for_model(new_model, current_provider)
+            if detected:
+                target_provider = detected
+
         provider_changed = target_provider != current_provider
 
         # Resolve credentials for the target provider (for API probe)

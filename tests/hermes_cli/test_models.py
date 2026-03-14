@@ -1,6 +1,6 @@
 """Tests for the hermes_cli models module."""
 
-from hermes_cli.models import OPENROUTER_MODELS, menu_labels, model_ids
+from hermes_cli.models import OPENROUTER_MODELS, menu_labels, model_ids, detect_provider_for_model
 
 
 class TestModelIds:
@@ -54,3 +54,26 @@ class TestOpenRouterModels:
     def test_at_least_5_models(self):
         """Sanity check that the models list hasn't been accidentally truncated."""
         assert len(OPENROUTER_MODELS) >= 5
+
+
+class TestDetectProviderForModel:
+    def test_deepseek_chat_detected_from_codex(self):
+        """deepseek-chat should resolve to the deepseek provider."""
+        assert detect_provider_for_model("deepseek-chat", "openai-codex") == "deepseek"
+
+    def test_direct_provider_wins_over_aggregator(self):
+        """claude-opus-4-6 is in both anthropic and nous; direct provider wins."""
+        result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
+        assert result == "anthropic"
+
+    def test_current_provider_model_returns_none(self):
+        """Models belonging to the current provider should not trigger a switch."""
+        assert detect_provider_for_model("gpt-5.2-codex", "openai-codex") is None
+
+    def test_openrouter_catalog_fallback(self):
+        """Models only in the OpenRouter catalog should return openrouter."""
+        assert detect_provider_for_model("anthropic/claude-opus-4.6", "deepseek") == "openrouter"
+
+    def test_unknown_model_returns_none(self):
+        """Completely unknown model names should return None."""
+        assert detect_provider_for_model("nonexistent-model-xyz", "openai-codex") is None

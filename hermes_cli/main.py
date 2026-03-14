@@ -1962,7 +1962,25 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
 
 
-def _restore_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
+def _restore_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+    prompt_user: bool = False,
+) -> bool:
+    if prompt_user:
+        print()
+        print("⚠ Local changes were stashed before updating.")
+        print("  Restoring them may reapply local customizations onto the updated codebase.")
+        print("  Review the result afterward if Hermes behaves unexpectedly.")
+        print("Restore local changes now? [Y/n]")
+        response = input().strip().lower()
+        if response not in ("", "y", "yes"):
+            print("Skipped restoring local changes.")
+            print("Your changes are still preserved in git stash.")
+            print(f"Restore manually with: git stash apply {stash_ref}")
+            return False
+
     print("→ Restoring local changes...")
     restore = subprocess.run(
         git_cmd + ["stash", "apply", stash_ref],
@@ -1981,6 +1999,9 @@ def _restore_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> N
         sys.exit(1)
 
     subprocess.run(git_cmd + ["stash", "drop", stash_ref], cwd=cwd, check=True)
+    print("⚠ Local changes were restored on top of the updated codebase.")
+    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    return True
 
 
 
@@ -2053,13 +2074,19 @@ def cmd_update(args):
         print(f"→ Found {commit_count} new commit(s)")
 
         auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
 
         print("→ Pulling updates...")
         try:
             subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
         finally:
             if auto_stash_ref is not None:
-                _restore_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
+                _restore_stashed_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                )
         
         # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")

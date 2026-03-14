@@ -1,14 +1,26 @@
 ---
 name: one-three-one-rule
 description: Enforces the 1-3-1 communication framework for clear, concise, and structured agent responses.
+version: 1.0.0
+author: Willard Moore
+license: MIT
 category: communication
+metadata:
+  hermes:
+    tags: [Communication, Decision-Making, Structure]
 ---
 
-### 1-3-1 Communication Protocol
+# 1-3-1 Communication Rule
 
 This skill ensures all responses adhere to a strict 1-3-1 format: Problem, Options, Recommendation, followed by Definition of Done (DoD) and Implementation Plan tailored to the chosen option.
 
-### Rules:
+## When to Use
+
+- When the user explicitly asks for a "1-3-1" response.
+- When a task requires a structured decision with trade-offs and a clear recommendation.
+- When you need to keep communication focused, concise, and action-oriented.
+
+## Procedure (Rules)
 
 1.  **Problem:**
     *   Must be a single, concise sentence.
@@ -35,16 +47,15 @@ This skill ensures all responses adhere to a strict 1-3-1 format: Problem, Optio
     *   It outlines the tooling, commands, and workflow.
     *   *Note:* Similar to the DoD, the Implementation Plan must be updated if a different option becomes the recommendation.
 
-### Skill Usage:
+## Verification
 
-- When presented with a task requiring a structured approach, invoke this skill.
-- First, state the clear, concise **Problem**.
-- Then, present Options (A, B, C) with their trade-offs.
-- State the **Recommendation** (your chosen option).
-- Finally, provide the Definition of Done and Implementation Plan specifically aligned with the **recommended** option.
-- If the user selects a different option, revise the Recommendation, DoD, and Implementation Plan accordingly.
+- The response includes exactly one **Problem** sentence with no "and".
+- The response includes exactly three **Options** (A, B, C) with pros and cons.
+- The response includes a single **Recommendation** that clearly picks one option.
+- The response includes a **Definition of Done** and **Implementation Plan** aligned with the recommended option.
+- If the user picks a different option, the updated response adjusts Recommendation, DoD, and Implementation Plan to that option.
 
-### Example Interaction:
+## Example Interaction
 
 User: I need to integrate with Linear.
 
@@ -79,5 +90,5 @@ Agent:
    - Step 5: Provide live proof.
    - Step 6: Save approach.
 
-### Note on Dynamic Options:
+### Note on Dynamic Options
 If the user selects Option A or B, the Recommendation, DoD, and Implementation Plan will be adjusted accordingly, based on the chosen option's specifics.

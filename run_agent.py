@@ -100,6 +100,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from utils import atomic_json_write
 
 HONCHO_TOOL_NAMES = {
     "honcho_context",
@@ -1398,8 +1399,12 @@ class AIAgent:
                 "messages": cleaned,
             }
 
-            with open(self.session_log_file, "w", encoding="utf-8") as f:
-                json.dump(entry, f, indent=2, ensure_ascii=False, default=str)
+            atomic_json_write(
+                self.session_log_file,
+                entry,
+                indent=2,
+                default=str,
+            )
 
         except Exception as e:
             if self.verbose_logging:

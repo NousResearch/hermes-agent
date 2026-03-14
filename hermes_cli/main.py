@@ -34,11 +34,13 @@ Usage:
     hermes honcho identity                 # Show AI peer identity representation
     hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
+    hermes version             # Show version
+    hermes update              # Update to latest version
+    hermes uninstall           # Uninstall Hermes Agent
+    hermes acp                 # Run as an ACP server for editor integration
+    hermes sessions browse     # Interactive session picker with search
+    hermes audit list          # List recent tool-call audit log entries
+    hermes audit stats         # Tool-call frequency and error-rate statistics
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -2224,7 +2226,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "sessions", "insights", "version", "update", "uninstall",
+        "sessions", "audit", "insights", "version", "update", "uninstall",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2273,6 +2275,8 @@ Examples:
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session
+    hermes audit list             Browse tool-call audit log
+    hermes audit stats            Tool-call frequency statistics
     hermes update                 Update to latest version
 
 For more help on a command:
@@ -2876,6 +2880,10 @@ For more help on a command:
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
 
+    sessions_import = sessions_subparsers.add_parser("import", help="Import sessions from a JSONL file")
+    sessions_import.add_argument("input", help="Input JSONL file path")
+    sessions_import.add_argument("--overwrite", action="store_true", help="Overwrite existing sessions with the same ID (default: skip)")
+
     sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     sessions_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
@@ -2947,6 +2955,34 @@ For more help on a command:
                     for s in sessions:
                         f.write(_json.dumps(s, ensure_ascii=False) + "\n")
                 print(f"Exported {len(sessions)} sessions to {args.output}")
+
+        elif action == "import":
+            input_path = args.input
+            if not os.path.isfile(input_path):
+                print(f"Error: File not found: {input_path}")
+                return
+            sessions_data = []
+            with open(input_path, "r", encoding="utf-8") as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        sessions_data.append(_json.loads(line))
+                    except _json.JSONDecodeError as e:
+                        print(f"Error: Invalid JSON on line {line_num}: {e}")
+                        return
+            if not sessions_data:
+                print("No sessions found in file.")
+                return
+            result = db.import_sessions(sessions_data, overwrite=args.overwrite)
+            print(f"Imported {result['imported']} session(s) ({result['messages_imported']} messages).")
+            if result["skipped"]:
+                print(f"Skipped {result['skipped']} duplicate(s) (use --overwrite to replace).")
+            if result["errors"]:
+                print(f"Errors ({len(result['errors'])}):")
+                for err in result["errors"]:
+                    print(f"  - {err}")
 
         elif action == "delete":
             if not args.yes:
@@ -3028,6 +3064,151 @@ For more help on a command:
         db.close()
 
     sessions_parser.set_defaults(func=cmd_sessions)
+
+    # =========================================================================
+    # audit command
+    # =========================================================================
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Query the agent tool-call audit log",
+        description=(
+            "Browse and filter the persistent audit log that records every tool "
+            "call executed by the agent — including timestamps, arguments, result "
+            "summaries, duration, and error status."
+        ),
+    )
+    audit_subparsers = audit_parser.add_subparsers(dest="audit_action")
+
+    audit_list = audit_subparsers.add_parser("list", help="List recent audit log entries")
+    audit_list.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
+    audit_list.add_argument("--tool", metavar="TOOL_NAME", help="Filter by tool name (exact match)")
+    audit_list.add_argument(
+        "--since",
+        metavar="HOURS",
+        type=float,
+        help="Only show entries from the last N hours",
+    )
+    audit_list.add_argument("--errors", action="store_true", help="Show only failed tool calls")
+    audit_list.add_argument("--limit", type=int, default=40, help="Max entries to show (default: 40)")
+    audit_list.add_argument("--json", dest="output_json", action="store_true", help="Output as JSON")
+
+    audit_stats = audit_subparsers.add_parser(
+        "stats", help="Show tool-call frequency and error-rate statistics"
+    )
+    audit_stats.add_argument("--session", metavar="SESSION_ID", help="Scope to a single session")
+    audit_stats.add_argument(
+        "--since",
+        metavar="HOURS",
+        type=float,
+        help="Only count entries from the last N hours",
+    )
+    audit_stats.add_argument("--limit", type=int, default=20, help="Max tools to show (default: 20)")
+
+    def cmd_audit(args):
+        import json as _json
+        import time as _time
+        from datetime import datetime
+
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception as e:
+            print(f"Error: Could not open session database: {e}")
+            return
+
+        action = getattr(args, "audit_action", None)
+
+        def _fmt_ts(ts):
+            if not ts:
+                return "?"
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+        def _relative_time(ts):
+            if not ts:
+                return "?"
+            delta = _time.time() - ts
+            if delta < 60:
+                return "just now"
+            elif delta < 3600:
+                return f"{int(delta / 60)}m ago"
+            elif delta < 86400:
+                return f"{int(delta / 3600)}h ago"
+            elif delta < 172800:
+                return "yesterday"
+            elif delta < 604800:
+                return f"{int(delta / 86400)}d ago"
+            else:
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+        if action == "list":
+            since_ts = (_time.time() - args.since * 3600) if args.since else None
+            entries = db.query_audit_log(
+                session_id=getattr(args, "session", None),
+                tool_name=getattr(args, "tool", None),
+                since=since_ts,
+                errors_only=getattr(args, "errors", False),
+                limit=args.limit,
+            )
+            db.close()
+
+            if not entries:
+                print("No audit log entries found.")
+                return
+
+            if getattr(args, "output_json", False):
+                print(_json.dumps(entries, indent=2, default=str))
+                return
+
+            # Table header
+            print(
+                f"{'When':<16} {'Tool':<24} {'ms':>5} {'E':<2} "
+                f"{'Session':<22} {'Result'}"
+            )
+            print("─" * 100)
+            for e in entries:
+                when = _relative_time(e.get("timestamp"))
+                tool = (e.get("tool_name") or "")[:23]
+                ms = e.get("duration_ms")
+                ms_str = str(ms) if ms is not None else "—"
+                err = "✗" if e.get("is_error") else " "
+                sid = (e.get("session_id") or "")[:21]
+                summary = (e.get("result_summary") or "").replace("\n", " ")[:45]
+                print(f"{when:<16} {tool:<24} {ms_str:>5} {err:<2} {sid:<22} {summary}")
+
+        elif action == "stats":
+            since_ts = (_time.time() - args.since * 3600) if args.since else None
+            rows = db.audit_log_stats(
+                session_id=getattr(args, "session", None),
+                since=since_ts,
+                limit=args.limit,
+            )
+            db.close()
+
+            if not rows:
+                print("No audit log entries found.")
+                return
+
+            total_calls = sum(r["call_count"] for r in rows)
+            total_errors = sum(r["error_count"] or 0 for r in rows)
+            print(f"Total calls: {total_calls}  |  Errors: {total_errors}\n")
+            print(f"{'Tool':<30} {'Calls':>6} {'Errors':>7} {'Err%':>6} {'Avg ms':>7}")
+            print("─" * 62)
+            for r in rows:
+                calls = r["call_count"]
+                errors = r["error_count"] or 0
+                err_pct = f"{errors / calls * 100:.0f}%" if calls else "—"
+                avg_ms = r["avg_duration_ms"]
+                avg_ms_str = str(avg_ms) if avg_ms is not None else "—"
+                print(
+                    f"{r['tool_name']:<30} {calls:>6} {errors:>7} "
+                    f"{err_pct:>6} {avg_ms_str:>7}"
+                )
+
+        else:
+            audit_parser.print_help()
+            db.close()
+
+    audit_parser.set_defaults(func=cmd_audit)
 
     # =========================================================================
     # insights command

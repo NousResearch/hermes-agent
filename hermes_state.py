@@ -25,7 +25,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,10 +64,24 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT REFERENCES sessions(id),
+    timestamp REAL NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments TEXT,
+    result_summary TEXT,
+    duration_ms INTEGER,
+    is_error INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
 """
 
 FTS_SQL = """
@@ -152,6 +166,24 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Index already exists
                 cursor.execute("UPDATE schema_version SET version = 4")
+            if current_version < 5:
+                # v5: add audit_log table for full tool-call history
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS audit_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT REFERENCES sessions(id),
+                        timestamp REAL NOT NULL,
+                        tool_name TEXT NOT NULL,
+                        arguments TEXT,
+                        result_summary TEXT,
+                        duration_ms INTEGER,
+                        is_error INTEGER DEFAULT 0
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id);
+                    CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_log(tool_name);
+                    CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 5")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -757,16 +789,173 @@ class SessionDB:
         self._conn.commit()
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all its messages. Returns True if found."""
+        """Delete a session and all its messages and audit log entries. Returns True if found."""
         cursor = self._conn.execute(
             "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
         )
         if cursor.fetchone()[0] == 0:
             return False
         self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM audit_log WHERE session_id = ?", (session_id,))
         self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         self._conn.commit()
         return True
+
+    # =========================================================================
+    # Audit log
+    # =========================================================================
+
+    # Keywords whose matching argument keys are redacted before storage.
+    _SENSITIVE_KEY_FRAGMENTS = frozenset({
+        "password", "secret", "token", "api_key", "apikey",
+        "key", "auth", "credential",
+    })
+
+    @classmethod
+    def _redact_arguments(cls, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a shallow copy of *arguments* with sensitive values replaced.
+
+        A key is considered sensitive when any of the ``_SENSITIVE_KEY_FRAGMENTS``
+        appears as a substring of the lower-cased key name.
+        """
+        redacted: Dict[str, Any] = {}
+        for k, v in arguments.items():
+            if any(frag in k.lower() for frag in cls._SENSITIVE_KEY_FRAGMENTS):
+                redacted[k] = "***REDACTED***"
+            else:
+                redacted[k] = v
+        return redacted
+
+    def log_tool_call(
+        self,
+        session_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any] = None,
+        result_summary: str = None,
+        duration_ms: int = None,
+        is_error: bool = False,
+    ) -> int:
+        """Record a single tool-call execution in the audit log.
+
+        Sensitive argument values (passwords, tokens, keys, etc.) are
+        automatically redacted before storage.  Returns the new row ID.
+        """
+        safe_args = self._redact_arguments(arguments) if arguments else None
+        cursor = self._conn.execute(
+            """INSERT INTO audit_log
+               (session_id, timestamp, tool_name, arguments,
+                result_summary, duration_ms, is_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                time.time(),
+                tool_name,
+                json.dumps(safe_args, ensure_ascii=False) if safe_args else None,
+                result_summary,
+                duration_ms,
+                1 if is_error else 0,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def query_audit_log(
+        self,
+        session_id: str = None,
+        tool_name: str = None,
+        since: float = None,
+        until: float = None,
+        errors_only: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Query the audit log with optional filters.
+
+        Args:
+            session_id: Filter to entries for this session.
+            tool_name:  Filter to entries for this tool (exact match).
+            since:      Unix timestamp lower bound (inclusive).
+            until:      Unix timestamp upper bound (inclusive).
+            errors_only: When True only return entries where is_error = 1.
+            limit:      Max rows to return.
+            offset:     Pagination offset.
+
+        Returns list of dicts with keys: id, session_id, timestamp, tool_name,
+        arguments (parsed dict or None), result_summary, duration_ms, is_error.
+        """
+        where: List[str] = []
+        params: List[Any] = []
+
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        if tool_name:
+            where.append("tool_name = ?")
+            params.append(tool_name)
+        if since is not None:
+            where.append("timestamp >= ?")
+            params.append(since)
+        if until is not None:
+            where.append("timestamp <= ?")
+            params.append(until)
+        if errors_only:
+            where.append("is_error = 1")
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.extend([limit, offset])
+
+        cursor = self._conn.execute(
+            f"SELECT * FROM audit_log {where_sql} "
+            f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            params,
+        )
+        rows = []
+        for row in cursor.fetchall():
+            entry = dict(row)
+            if entry.get("arguments"):
+                try:
+                    entry["arguments"] = json.loads(entry["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            rows.append(entry)
+        return rows
+
+    def audit_log_stats(
+        self,
+        session_id: str = None,
+        since: float = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return tool-call frequency counts, sorted by most-called.
+
+        Returns a list of dicts with keys: tool_name, call_count, error_count,
+        avg_duration_ms.  Optionally scoped to a single session or time window.
+        """
+        where: List[str] = []
+        params: List[Any] = []
+
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        if since is not None:
+            where.append("timestamp >= ?")
+            params.append(since)
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+
+        cursor = self._conn.execute(
+            f"""SELECT tool_name,
+                       COUNT(*) AS call_count,
+                       SUM(is_error) AS error_count,
+                       CAST(AVG(duration_ms) AS INTEGER) AS avg_duration_ms
+                FROM audit_log {where_sql}
+                GROUP BY tool_name
+                ORDER BY call_count DESC
+                LIMIT ?""",
+            params,
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
         """
@@ -791,7 +980,205 @@ class SessionDB:
 
         for sid in session_ids:
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+            self._conn.execute("DELETE FROM audit_log WHERE session_id = ?", (sid,))
             self._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
 
         self._conn.commit()
         return len(session_ids)
+
+    def import_sessions(
+        self,
+        sessions_data: List[Dict[str, Any]],
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Import sessions from a list of dicts (one per JSONL line from export).
+
+        Each dict must have the same shape as export_session() output:
+        session-level fields + a "messages" list.
+
+        Args:
+            sessions_data: List of session dicts (with nested "messages").
+            overwrite: If True, delete existing sessions with the same ID
+                       before importing. If False (default), skip duplicates.
+
+        Returns:
+            Dict with keys: imported, skipped, errors, messages_imported.
+        """
+        imported = 0
+        skipped = 0
+        errors = []
+        messages_imported = 0
+
+        # Collect all session IDs currently in the DB for parent_session_id
+        # validation and duplicate detection.
+        existing_ids: set = set()
+        cursor = self._conn.execute("SELECT id FROM sessions")
+        for row in cursor:
+            existing_ids.add(row["id"])
+
+        # IDs that will exist after import (existing + newly imported)
+        all_ids = set(existing_ids)
+        for entry in sessions_data:
+            sid = entry.get("id")
+            if sid:
+                all_ids.add(sid)
+
+        for line_num, entry in enumerate(sessions_data, 1):
+            sid = entry.get("id")
+            if not sid:
+                errors.append(f"Line {line_num}: missing session 'id' field")
+                continue
+
+            source = entry.get("source")
+            if not source:
+                errors.append(f"Line {line_num} ({sid}): missing 'source' field")
+                continue
+
+            started_at = entry.get("started_at")
+            if started_at is None:
+                errors.append(f"Line {line_num} ({sid}): missing 'started_at' field")
+                continue
+
+            # Duplicate handling
+            if sid in existing_ids:
+                if overwrite:
+                    self._conn.execute(
+                        "DELETE FROM messages WHERE session_id = ?", (sid,)
+                    )
+                    self._conn.execute(
+                        "DELETE FROM sessions WHERE id = ?", (sid,)
+                    )
+                else:
+                    skipped += 1
+                    continue
+
+            # parent_session_id: set to NULL if parent not in DB and not
+            # being imported in this batch
+            parent_id = entry.get("parent_session_id")
+            if parent_id and parent_id not in all_ids:
+                parent_id = None
+
+            # model_config is already a JSON string from the export
+            # (dict(row) returns the raw TEXT column). Don't double-encode.
+            model_config = entry.get("model_config")
+
+            # title: on UNIQUE conflict, set to NULL rather than failing
+            title = entry.get("title")
+
+            try:
+                self._conn.execute(
+                    """INSERT INTO sessions
+                       (id, source, user_id, model, model_config,
+                        system_prompt, parent_session_id, started_at,
+                        ended_at, end_reason, message_count,
+                        tool_call_count, input_tokens, output_tokens, title)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        sid,
+                        source,
+                        entry.get("user_id"),
+                        entry.get("model"),
+                        model_config,
+                        entry.get("system_prompt"),
+                        parent_id,
+                        started_at,
+                        entry.get("ended_at"),
+                        entry.get("end_reason"),
+                        entry.get("message_count", 0),
+                        entry.get("tool_call_count", 0),
+                        entry.get("input_tokens", 0),
+                        entry.get("output_tokens", 0),
+                        title,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                # Most likely a duplicate title — retry with NULL title
+                if "title" in str(exc).lower():
+                    try:
+                        self._conn.execute(
+                            """INSERT INTO sessions
+                               (id, source, user_id, model, model_config,
+                                system_prompt, parent_session_id, started_at,
+                                ended_at, end_reason, message_count,
+                                tool_call_count, input_tokens, output_tokens,
+                                title)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                       ?, ?, ?)""",
+                            (
+                                sid,
+                                source,
+                                entry.get("user_id"),
+                                entry.get("model"),
+                                model_config,
+                                entry.get("system_prompt"),
+                                parent_id,
+                                started_at,
+                                entry.get("ended_at"),
+                                entry.get("end_reason"),
+                                entry.get("message_count", 0),
+                                entry.get("tool_call_count", 0),
+                                entry.get("input_tokens", 0),
+                                entry.get("output_tokens", 0),
+                                None,
+                            ),
+                        )
+                    except sqlite3.IntegrityError:
+                        errors.append(
+                            f"Line {line_num} ({sid}): duplicate session ID"
+                        )
+                        continue
+                else:
+                    errors.append(f"Line {line_num} ({sid}): {exc}")
+                    continue
+
+            # Insert messages — raw INSERT to preserve exported counters.
+            # tool_calls was json.loads()'d during export, must re-serialize.
+            messages = entry.get("messages") or []
+            for msg in messages:
+                tool_calls_raw = msg.get("tool_calls")
+                if tool_calls_raw is not None:
+                    if not isinstance(tool_calls_raw, str):
+                        tool_calls_raw = json.dumps(tool_calls_raw)
+                # else: already None
+
+                self._conn.execute(
+                    """INSERT INTO messages
+                       (session_id, role, content, tool_call_id,
+                        tool_calls, tool_name, timestamp, token_count,
+                        finish_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        sid,
+                        msg.get("role", "user"),
+                        msg.get("content"),
+                        msg.get("tool_call_id"),
+                        tool_calls_raw,
+                        msg.get("tool_name"),
+                        msg.get("timestamp", started_at),
+                        msg.get("token_count"),
+                        msg.get("finish_reason"),
+                    ),
+                )
+                messages_imported += 1
+
+            existing_ids.add(sid)
+            imported += 1
+
+        self._conn.commit()
+
+        # Rebuild FTS5 index to ensure consistency after bulk insert
+        try:
+            self._conn.execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass  # FTS5 not available or already consistent
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "messages_imported": messages_imported,
+        }

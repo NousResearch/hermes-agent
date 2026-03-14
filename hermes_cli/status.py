@@ -147,6 +147,8 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+    if codex_logged_in:
+        print(f"    Dashboard:  Hermes traffic appears as Other in the Codex usage dashboard — this is expected")
 
     # =========================================================================
     # API-Key Providers

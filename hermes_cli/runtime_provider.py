@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from hermes_cli import auth as auth_mod
 from hermes_cli.auth import (
     AuthError,
     PROVIDER_REGISTRY,
@@ -55,6 +56,19 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
         return None
+
+    # Raw names should only map to custom providers when they are not already
+    # valid built-in providers or aliases. Explicit menu keys like
+    # ``custom:local`` always target the saved custom provider.
+    if requested_norm == "auto":
+        return None
+    if not requested_norm.startswith("custom:"):
+        try:
+            auth_mod.resolve_provider(requested_norm)
+        except AuthError:
+            pass
+        else:
+            return None
 
     config = load_config()
     custom_providers = config.get("custom_providers")

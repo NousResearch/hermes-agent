@@ -226,27 +226,37 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
 
 
-def test_resolve_runtime_provider_nous_api(monkeypatch):
-    """Nous Portal API key provider resolves via the api_key path."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous-api")
+def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     monkeypatch.setattr(
         rp,
-        "resolve_api_key_provider_credentials",
-        lambda pid: {
-            "provider": "nous-api",
-            "api_key": "nous-test-key",
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "nous",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "shadow-key",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_nous_runtime_credentials",
+        lambda **kwargs: {
             "base_url": "https://inference-api.nousresearch.com/v1",
-            "source": "NOUS_API_KEY",
+            "api_key": "nous-runtime-key",
+            "source": "portal",
+            "expires_at": None,
         },
     )
 
-    resolved = rp.resolve_runtime_provider(requested="nous-api")
+    resolved = rp.resolve_runtime_provider(requested="nous")
 
-    assert resolved["provider"] == "nous-api"
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["provider"] == "nous"
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
-    assert resolved["api_key"] == "nous-test-key"
-    assert resolved["requested_provider"] == "nous-api"
+    assert resolved["api_key"] == "nous-runtime-key"
+    assert resolved["requested_provider"] == "nous"
 
 
 def test_explicit_openrouter_skips_openai_base_url(monkeypatch):

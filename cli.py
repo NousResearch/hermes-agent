@@ -1151,8 +1151,8 @@ class HermesCLI:
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
-            or os.getenv("HERMES_INFERENCE_PROVIDER")
             or CLI_CONFIG["model"].get("provider")
+            or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
         self._provider_source: Optional[str] = None

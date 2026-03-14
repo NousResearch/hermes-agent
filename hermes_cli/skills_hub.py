@@ -920,7 +920,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source github] [--limit N]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official] [--limit N]\n")
             return
         source = "all"
         limit = 10

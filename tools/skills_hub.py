@@ -507,6 +507,21 @@ class SkillsShSource(SkillSource):
     BASE_URL = "https://skills.sh"
     SEARCH_URL = f"{BASE_URL}/api/search"
     _SKILL_LINK_RE = re.compile(r'href=["\']/(?P<id>(?!agents/|_next/|api/)[^"\'/]+/[^"\'/]+/[^"\'/]+)["\']')
+    _INSTALL_CMD_RE = re.compile(
+        r'npx\s+skills\s+add\s+(?P<repo>https?://github\.com/[^\s<]+|[^\s<]+)'
+        r'(?:\s+--skill\s+(?P<skill>[^\s<]+))?',
+        re.IGNORECASE,
+    )
+    _PAGE_H1_RE = re.compile(r'<h1[^>]*>(?P<title>.*?)</h1>', re.IGNORECASE | re.DOTALL)
+    _PROSE_H1_RE = re.compile(
+        r'<div[^>]*class=["\'][^"\']*prose[^"\']*["\'][^>]*>.*?<h1[^>]*>(?P<title>.*?)</h1>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    _PROSE_P_RE = re.compile(
+        r'<div[^>]*class=["\'][^"\']*prose[^"\']*["\'][^>]*>.*?<p[^>]*>(?P<body>.*?)</p>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    _WEEKLY_INSTALLS_RE = re.compile(r'Weekly Installs.*?children\\":\\"(?P<count>[0-9.,Kk]+)\\"', re.DOTALL)
 
     def __init__(self, auth: GitHubAuth):
         self.auth = auth
@@ -561,7 +576,8 @@ class SkillsShSource(SkillSource):
                 bundle.identifier = self._wrap_identifier(canonical)
                 return bundle
 
-        resolved = self._discover_identifier(canonical)
+        detail = self._fetch_detail_page(canonical)
+        resolved = self._discover_identifier(canonical, detail=detail)
         if resolved:
             bundle = self.github.fetch(resolved)
             if bundle:
@@ -572,22 +588,19 @@ class SkillsShSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         canonical = self._normalize_identifier(identifier)
+        detail: Optional[dict] = None
         for candidate in self._candidate_identifiers(canonical):
             meta = self.github.inspect(candidate)
             if meta:
-                meta.source = "skills.sh"
-                meta.identifier = self._wrap_identifier(canonical)
-                meta.trust_level = self.trust_level_for(canonical)
-                return meta
+                detail = self._fetch_detail_page(canonical)
+                return self._finalize_inspect_meta(meta, canonical, detail)
 
-        resolved = self._discover_identifier(canonical)
+        detail = self._fetch_detail_page(canonical)
+        resolved = self._discover_identifier(canonical, detail=detail)
         if resolved:
             meta = self.github.inspect(resolved)
             if meta:
-                meta.source = "skills.sh"
-                meta.identifier = self._wrap_identifier(canonical)
-                meta.trust_level = self.trust_level_for(canonical)
-                return meta
+                return self._finalize_inspect_meta(meta, canonical, detail)
         return None
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:
@@ -661,45 +674,169 @@ class SkillsShSource(SkillSource):
             path=skill_path,
         )
 
-    def _discover_identifier(self, identifier: str) -> Optional[str]:
+    def _fetch_detail_page(self, identifier: str) -> Optional[dict]:
+        cache_key = f"skills_sh_detail_{hashlib.md5(identifier.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/{identifier}", timeout=20)
+            if resp.status_code != 200:
+                return None
+        except httpx.HTTPError:
+            return None
+
+        detail = self._parse_detail_page(identifier, resp.text)
+        if detail:
+            _write_index_cache(cache_key, detail)
+        return detail
+
+    def _parse_detail_page(self, identifier: str, html: str) -> Optional[dict]:
         parts = identifier.split("/", 2)
         if len(parts) < 3:
             return None
 
-        repo = f"{parts[0]}/{parts[1]}"
+        default_repo = f"{parts[0]}/{parts[1]}"
         skill_token = parts[2]
+        repo = default_repo
+        install_skill = skill_token
+
+        install_match = self._INSTALL_CMD_RE.search(html)
+        if install_match:
+            repo_value = (install_match.group("repo") or "").strip()
+            install_skill = (install_match.group("skill") or install_skill).strip()
+            repo = self._extract_repo_slug(repo_value) or repo
+
+        page_title = self._extract_first_match(self._PAGE_H1_RE, html)
+        body_title = self._extract_first_match(self._PROSE_H1_RE, html)
+        body_summary = self._extract_first_match(self._PROSE_P_RE, html)
+        weekly_installs = self._extract_weekly_installs(html)
+
+        return {
+            "repo": repo,
+            "install_skill": install_skill,
+            "page_title": page_title,
+            "body_title": body_title,
+            "body_summary": body_summary,
+            "weekly_installs": weekly_installs,
+        }
+
+    def _discover_identifier(self, identifier: str, detail: Optional[dict] = None) -> Optional[str]:
+        parts = identifier.split("/", 2)
+        if len(parts) < 3:
+            return None
+
+        default_repo = f"{parts[0]}/{parts[1]}"
+        repo = detail.get("repo", default_repo) if isinstance(detail, dict) else default_repo
+        skill_token = parts[2]
+        tokens = [skill_token]
+        if isinstance(detail, dict):
+            tokens.extend([
+                detail.get("install_skill", ""),
+                detail.get("page_title", ""),
+                detail.get("body_title", ""),
+            ])
+
         for base_path in ("skills/", ".agents/skills/", ".claude/skills/"):
             try:
                 skills = self.github._list_skills_in_repo(repo, base_path)
             except Exception:
                 continue
             for meta in skills:
-                if self._matches_skill_token(meta, skill_token):
+                if self._matches_skill_tokens(meta, tokens):
                     return meta.identifier
         return None
 
-    @staticmethod
-    def _matches_skill_token(meta: SkillMeta, skill_token: str) -> bool:
-        target = skill_token.strip("/").lower()
-        target_base = target.split("/")[-1]
+    def _finalize_inspect_meta(self, meta: SkillMeta, canonical: str, detail: Optional[dict]) -> SkillMeta:
+        meta.source = "skills.sh"
+        meta.identifier = self._wrap_identifier(canonical)
+        meta.trust_level = self.trust_level_for(canonical)
 
-        def variants(value: Optional[str]) -> set[str]:
-            if not value:
-                return set()
-            normalized = value.strip("/").lower()
-            base = normalized.split("/")[-1]
-            return {
-                normalized,
-                base,
-                normalized.replace("_", "-"),
-                base.replace("_", "-"),
-            }
+        if isinstance(detail, dict):
+            body_summary = detail.get("body_summary")
+            weekly_installs = detail.get("weekly_installs")
+            if body_summary:
+                meta.description = body_summary
+            elif meta.description and weekly_installs:
+                meta.description = f"{meta.description} · {weekly_installs} weekly installs on skills.sh"
+        return meta
 
+    @classmethod
+    def _matches_skill_tokens(cls, meta: SkillMeta, skill_tokens: List[str]) -> bool:
         candidates = set()
-        candidates.update(variants(meta.name))
-        candidates.update(variants(meta.path))
-        candidates.update(variants(meta.identifier.split("/", 2)[-1] if meta.identifier else None))
-        return target in candidates or target_base in candidates
+        candidates.update(cls._token_variants(meta.name))
+        candidates.update(cls._token_variants(meta.path))
+        candidates.update(cls._token_variants(meta.identifier.split("/", 2)[-1] if meta.identifier else None))
+
+        for token in skill_tokens:
+            variants = cls._token_variants(token)
+            if variants & candidates:
+                return True
+        return False
+
+    @staticmethod
+    def _token_variants(value: Optional[str]) -> set[str]:
+        if not value:
+            return set()
+
+        plain = SkillsShSource._strip_html(str(value)).strip().strip("/").lower()
+        if not plain:
+            return set()
+
+        base = plain.split("/")[-1]
+        sanitized = re.sub(r'[^a-z0-9/_-]+', '-', plain).strip('-')
+        sanitized_base = sanitized.split("/")[-1] if sanitized else ""
+        slash_tail = plain.split("/")[-1]
+        slash_tail_clean = slash_tail.lstrip('@')
+        slash_tail_clean = slash_tail_clean.split('/')[-1]
+
+        variants = {
+            plain,
+            plain.replace("_", "-"),
+            plain.replace("/", "-"),
+            base,
+            base.replace("_", "-"),
+            base.replace("/", "-"),
+            sanitized,
+            sanitized.replace("/", "-") if sanitized else "",
+            sanitized_base,
+            slash_tail_clean,
+            slash_tail_clean.replace("_", "-"),
+        }
+        return {v for v in variants if v}
+
+    @staticmethod
+    def _extract_repo_slug(repo_value: str) -> Optional[str]:
+        repo_value = repo_value.strip()
+        if repo_value.startswith("https://github.com/"):
+            repo_value = repo_value[len("https://github.com/"):]
+        repo_value = repo_value.strip("/")
+        parts = repo_value.split("/")
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+        return None
+
+    @staticmethod
+    def _extract_first_match(pattern: re.Pattern, text: str) -> Optional[str]:
+        match = pattern.search(text)
+        if not match:
+            return None
+        value = next((group for group in match.groups() if group), None)
+        if value is None:
+            return None
+        return SkillsShSource._strip_html(value).strip() or None
+
+    @staticmethod
+    def _extract_weekly_installs(html: str) -> Optional[str]:
+        match = SkillsShSource._WEEKLY_INSTALLS_RE.search(html)
+        if not match:
+            return None
+        return match.group("count")
+
+    @staticmethod
+    def _strip_html(value: str) -> str:
+        return re.sub(r'<[^>]+>', '', value)
 
     @staticmethod
     def _normalize_identifier(identifier: str) -> str:

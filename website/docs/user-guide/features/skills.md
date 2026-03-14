@@ -10,6 +10,11 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 
 All skills live in **`~/.hermes/skills/`** — a single directory that serves as the source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
 
+See also:
+
+- [Bundled Skills Catalog](/docs/reference/skills-catalog)
+- [Official Optional Skills Catalog](/docs/reference/optional-skills-catalog)
+
 ## Using Skills
 
 Every installed skill is automatically available as a slash command:
@@ -139,6 +144,7 @@ When a missing value is encountered, Hermes asks for it securely only when the s
 │   │   ├── SKILL.md               # Main instructions (required)
 │   │   ├── references/            # Additional docs
 │   │   ├── templates/             # Output formats
+│   │   ├── scripts/               # Helper scripts callable from the skill
 │   │   └── assets/                # Supplementary files
 │   └── vllm/
 │       └── SKILL.md
@@ -198,6 +204,8 @@ hermes skills tap add myorg/skills-repo  # Add a custom source
 ```
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats.
+
+Official optional skills use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
 
 ### Trust Levels
 

@@ -72,7 +72,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
-The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Credentials are stored at `~/.codex/auth.json` and auto-refresh. No Codex CLI installation required.
+The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 :::
 
 :::warning
@@ -493,7 +493,7 @@ node_modules/
 ```yaml
 compression:
   enabled: true
-  threshold: 0.85              # Compress at 85% of context limit
+  threshold: 0.50              # Compress at 50% of context limit by default
   summary_model: "google/gemini-3-flash-preview"   # Model for summarization
   # summary_provider: "auto"   # "auto", "openrouter", "nous", "main"
 ```
@@ -666,12 +666,13 @@ tts:
 
 ```yaml
 display:
-  tool_progress: all    # off | new | all | verbose
-  personality: "kawaii"  # Default personality for the CLI
-  compact: false         # Compact output mode (less whitespace)
-  resume_display: full   # full (show previous messages on resume) | minimal (one-liner only)
-  bell_on_complete: false  # Play terminal bell when agent finishes (great for long tasks)
-  show_reasoning: false    # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  tool_progress: all      # off | new | all | verbose
+  skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
+  personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
+  compact: false          # Compact output mode (less whitespace)
+  resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
+  bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
+  show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
 ```
 
 | Mode | What you see |
@@ -714,8 +715,9 @@ Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
+- **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
 - **Type** — only `exec` is supported (runs a shell command); other types show an error
-- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal
+- **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
 ## Human Delay
 

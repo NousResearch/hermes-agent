@@ -62,7 +62,7 @@ hermes gateway status       # Check service status
 
 | Command | Description |
 |---------|-------------|
-| `/new` or `/reset` | Start fresh conversation |
+| `/new` or `/reset` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
 | `/provider` | Show available providers with auth status |
 | `/personality [name]` | Set a personality |
@@ -72,8 +72,13 @@ hermes gateway status       # Check service status
 | `/stop` | Stop the running agent |
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
+| `/title [name]` | Set or show the session title |
+| `/resume [name]` | Resume a previously named session |
 | `/usage` | Show token usage for this session |
 | `/insights [days]` | Show usage insights and analytics |
+| `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
+| `/rollback [number]` | List or restore filesystem checkpoints |
+| `/background <prompt>` | Run a prompt in a separate background session |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -92,7 +97,7 @@ Sessions reset based on configurable policies:
 | Policy | Default | Description |
 |--------|---------|-------------|
 | Daily | 4:00 AM | Reset at a specific hour each day |
-| Idle | 120 min | Reset after N minutes of inactivity |
+| Idle | 1440 min | Reset after N minutes of inactivity |
 | Both | (combined) | Whichever triggers first |
 
 Configure per-platform overrides in `~/.hermes/gateway.json`:
@@ -204,7 +209,7 @@ Each platform has its own toolset:
 | Slack | `hermes-slack` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
-| Home Assistant | `hermes-gateway` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
 
 ## Next Steps
 

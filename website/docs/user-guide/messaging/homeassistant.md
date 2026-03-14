@@ -130,33 +130,22 @@ The Home Assistant gateway adapter connects via WebSocket and subscribes to `sta
 By default, **no events are forwarded**. You must configure at least one of `watch_domains`, `watch_entities`, or `watch_all` to receive events. Without filters, a warning is logged at startup and all state changes are silently dropped.
 :::
 
-Configure which events the agent sees in `~/.hermes/config.yaml` under the Home Assistant platform's `extra` section:
+Configure which events the agent sees in `~/.hermes/gateway.json` under the Home Assistant platform's `extra` section:
 
-```yaml
-# ~/.hermes/config.yaml
-messaging:
-  platforms:
-    homeassistant:
-      extra:
-        # Watch specific domains (recommended)
-        watch_domains:
-          - climate
-          - binary_sensor
-          - alarm_control_panel
-          - light
-
-        # Watch specific entities (in addition to domains)
-        watch_entities:
-          - sensor.front_door_battery
-
-        # Ignore noisy entities
-        ignore_entities:
-          - sensor.uptime
-          - sensor.cpu_usage
-          - sensor.memory_usage
-
-        # Per-entity cooldown (seconds)
-        cooldown_seconds: 30
+```json
+{
+  "platforms": {
+    "homeassistant": {
+      "enabled": true,
+      "extra": {
+        "watch_domains": ["climate", "binary_sensor", "alarm_control_panel", "light"],
+        "watch_entities": ["sensor.front_door_battery"],
+        "ignore_entities": ["sensor.uptime", "sensor.cpu_usage", "sensor.memory_usage"],
+        "cooldown_seconds": 30
+      }
+    }
+  }
+}
 ```
 
 | Setting | Default | Description |

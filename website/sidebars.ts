@@ -54,6 +54,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/memory',
             'user-guide/features/context-files',
             'user-guide/features/personality',
+            'user-guide/features/skins',
           ],
         },
         {
@@ -111,6 +112,11 @@ const sidebars: SidebarsConfig = {
       label: 'Reference',
       items: [
         'reference/cli-commands',
+        'reference/slash-commands',
+        'reference/tools-reference',
+        'reference/toolsets-reference',
+        'reference/skills-catalog',
+        'reference/optional-skills-catalog',
         'reference/environment-variables',
         'reference/faq',
       ],

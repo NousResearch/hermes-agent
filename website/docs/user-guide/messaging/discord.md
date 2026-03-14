@@ -202,7 +202,7 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 
 ## Bot Behavior
 
-- **Server channels**: The bot responds to all messages from allowed users in channels it can access. It does **not** require a mention or prefix — any message from an allowed user is treated as a prompt.
+- **Server channels**: By default the bot requires an `@mention` before it responds in server channels. You can disable that globally with `DISCORD_REQUIRE_MENTION=false` or allow specific channels to be mention-free via `DISCORD_FREE_RESPONSE_CHANNELS`.
 - **Direct messages**: DMs always work, even without the Message Content Intent enabled (Discord exempts DMs from this requirement). However, you should still enable the intent for server channel support.
 - **Conversations**: Each channel or DM maintains its own conversation context.
 

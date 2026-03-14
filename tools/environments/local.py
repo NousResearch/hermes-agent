@@ -1,5 +1,6 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
+import glob
 import os
 import platform
 import shutil
@@ -226,10 +227,6 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         if self.persistent:
             self._init_persistent_shell()
 
-    # ------------------------------------------------------------------
-    # PersistentShellMixin: backend-specific implementations
-    # ------------------------------------------------------------------
-
     @property
     def _temp_prefix(self) -> str:
         return f"/tmp/hermes-local-{self._session_id}"
@@ -241,14 +238,13 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             [user_shell, "-l"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             env=run_env,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
     def _read_temp_files(self, *paths: str) -> list[str]:
-        """Read local files directly."""
         results = []
         for path in paths:
             try:
@@ -259,7 +255,6 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         return results
 
     def _kill_shell_children(self):
-        """Kill children of the persistent shell via pkill -P."""
         if self._shell_pid is None:
             return
         try:
@@ -270,9 +265,12 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
             pass
 
-    # ------------------------------------------------------------------
-    # One-shot execution (original behavior)
-    # ------------------------------------------------------------------
+    def _cleanup_temp_files(self):
+        for f in glob.glob(f"{self._temp_prefix}-*"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
@@ -281,7 +279,6 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         effective_timeout = timeout or self.timeout
         exec_command, sudo_stdin = self._prepare_command(command)
 
-        # Merge the sudo password (if any) with caller-supplied stdin_data.
         if sudo_stdin is not None and stdin_data is not None:
             effective_stdin = sudo_stdin + stdin_data
         elif sudo_stdin is not None:
@@ -377,10 +374,6 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
         except Exception as e:
             return {"output": f"Execution error: {str(e)}", "returncode": 1}
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,

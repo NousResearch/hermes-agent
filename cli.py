@@ -535,13 +535,23 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     # Copy files listed in .worktreeinclude (gitignored files the agent needs)
     include_file = Path(repo_root) / ".worktreeinclude"
     if include_file.exists():
+        repo_root_resolved = Path(repo_root).resolve()
+        wt_path_resolved = wt_path.resolve()
         try:
             for line in include_file.read_text().splitlines():
                 entry = line.strip()
                 if not entry or entry.startswith("#"):
                     continue
-                src = Path(repo_root) / entry
-                dst = wt_path / entry
+                src = (Path(repo_root) / entry).resolve()
+                dst = (wt_path / entry).resolve()
+                # Guard against path traversal — both src and dst must
+                # stay within their respective roots.
+                if not str(src).startswith(str(repo_root_resolved) + os.sep) and src != repo_root_resolved:
+                    logger.warning("Skipping .worktreeinclude entry %r: resolves outside repo root", entry)
+                    continue
+                if not str(dst).startswith(str(wt_path_resolved) + os.sep) and dst != wt_path_resolved:
+                    logger.warning("Skipping .worktreeinclude entry %r: destination resolves outside worktree", entry)
+                    continue
                 if src.is_file():
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(src), str(dst))
@@ -549,7 +559,7 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     # Symlink directories (faster, saves disk)
                     if not dst.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        os.symlink(str(src.resolve()), str(dst))
+                        os.symlink(str(src), str(dst))
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 

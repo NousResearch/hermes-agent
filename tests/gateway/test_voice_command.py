@@ -390,33 +390,6 @@ class TestDiscordPlayTtsSkip:
 # Web play_tts sends play_audio (not voice bubble)
 # =====================================================================
 
-class TestWebPlayTts:
-    """Web adapter play_tts sends invisible play_audio, not a voice bubble."""
-
-    @pytest.mark.asyncio
-    async def test_play_tts_sends_play_audio(self, tmp_path):
-        from gateway.platforms.web import WebAdapter
-        from gateway.config import PlatformConfig
-
-        config = PlatformConfig(enabled=True, extra={
-            "port": 0, "host": "127.0.0.1", "token": "tok",
-        })
-        adapter = WebAdapter(config)
-        adapter._broadcast = AsyncMock()
-        adapter._media_dir = tmp_path / "media"
-        adapter._media_dir.mkdir()
-
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        result = await adapter.play_tts(chat_id="web", audio_path=str(audio_file))
-        assert result.success is True
-
-        payload = adapter._broadcast.call_args[0][0]
-        assert payload["type"] == "play_audio"
-        assert "/media/" in payload["url"]
-
-
 # =====================================================================
 # Help text + known commands
 # =====================================================================

@@ -292,16 +292,10 @@ TOOLSETS = {
         "includes": []
     },
 
-    "hermes-web": {
-        "description": "Web UI bot toolset - browser-based chat interface (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-web"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
     }
 }
 

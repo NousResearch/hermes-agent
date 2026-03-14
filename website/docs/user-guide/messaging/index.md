@@ -15,12 +15,12 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, Home As
 │                              Hermes Gateway                                   │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐ ┌─────┐│
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │ │ Web ││
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│ │Adpt ││
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘ └──┬──┘│
-│       │             │           │           │         │         │        │       │   │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┴───────┘   │
+│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐       │
+│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │       │
+│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│       │
+│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘       │
+│       │             │           │           │         │         │        │           │
+│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘           │
 │                                     │                                                │
 │                            ┌────────▼────────┐                                       │
 │                            │  Session Store  │                                       │
@@ -81,7 +81,6 @@ hermes gateway status       # Check service status
 | `/background <prompt>` | Run a prompt in a separate background session |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
-| `/remote-control [port] [token]` | Start web UI for remote access |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill |
 
@@ -221,4 +220,3 @@ Each platform has its own toolset:
 - [Signal Setup](signal.md)
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)
-- [Web UI Setup](web.md)

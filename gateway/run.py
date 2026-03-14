@@ -829,13 +829,6 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
-        elif platform == Platform.WEB:
-            from gateway.platforms.web import WebAdapter, check_web_requirements
-            if not check_web_requirements():
-                logger.warning("Web: aiohttp not installed. Run: pip install aiohttp")
-                return None
-            return WebAdapter(config)
-
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -853,11 +846,6 @@ class GatewayRunner:
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
         if source.platform == Platform.HOMEASSISTANT:
-            return True
-
-        # Web UI users are authenticated via token at the WebSocket level.
-        # No additional allowlist check needed.
-        if source.platform == Platform.WEB:
             return True
 
         user_id = source.user_id
@@ -978,7 +966,7 @@ class GatewayRunner:
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
-                          "background", "reasoning", "voice", "remote-control", "remote_control"}
+                          "background", "reasoning", "voice"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -1052,10 +1040,6 @@ class GatewayRunner:
 
         if command == "voice":
             return await self._handle_voice_command(event)
-
-        if command in ("remote-control", "remote_control"):
-            return await self._handle_remote_control_command(event)
-
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -1741,7 +1725,6 @@ class GatewayRunner:
             "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/background <prompt>` — Run a prompt in a separate background session",
             "`/voice [on|off|tts|status]` — Toggle voice reply mode",
-            "`/remote-control [port] [token]` — Start web UI for remote access",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -2415,10 +2398,6 @@ class GatewayRunner:
                 }
                 if event.source.thread_id:
                     send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
-                import inspect
-                sig = inspect.signature(adapter.send_voice)
-                if "metadata" not in sig.parameters:
-                    send_kwargs.pop("metadata", None)
                 await adapter.send_voice(**send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
@@ -2488,62 +2467,6 @@ class GatewayRunner:
             )
         return f"❌ {result['error']}"
 
-    async def _handle_remote_control_command(self, event: MessageEvent) -> str:
-        """Handle /remote-control — start or show the web UI for remote access."""
-        from gateway.config import Platform, PlatformConfig
-
-        is_dm = event.source and event.source.chat_type == "dm"
-
-        # Already running?
-        if Platform.WEB in self.adapters:
-            adapter = self.adapters[Platform.WEB]
-            local_ip = adapter._get_local_ip()
-            token_display = adapter._token if is_dm else "(hidden — use in DM to see token)"
-            return (
-                f"Web UI already running.\n"
-                f"URL: http://{local_ip}:{adapter._port}\n"
-                f"Token: {token_display}"
-            )
-
-        # Start web adapter on the fly
-        try:
-            from gateway.platforms.web import WebAdapter, check_web_requirements
-            if not check_web_requirements():
-                return "Web UI requires aiohttp. Run: pip install aiohttp"
-
-            args = event.get_command_args().strip()
-            port = 8765
-            token = ""
-            for part in args.split():
-                if part.isdigit():
-                    port = int(part)
-                elif part and not part.startswith("-"):
-                    token = part
-
-            web_config = PlatformConfig(
-                enabled=True,
-                extra={"port": port, "host": "127.0.0.1", "token": token},
-            )
-            adapter = WebAdapter(web_config)
-            adapter.set_message_handler(self._handle_message)
-
-            success = await adapter.connect()
-            if not success:
-                return f"Failed to start Web UI on port {port}. Port may be in use."
-
-            self.adapters[Platform.WEB] = adapter
-            local_ip = adapter._get_local_ip()
-            token_display = adapter._token if is_dm else "(hidden — use in DM to see token)"
-            return (
-                f"Web UI started!\n"
-                f"URL: http://{local_ip}:{adapter._port}\n"
-                f"Token: {token_display}\n"
-                f"Open this URL on your phone or any device on the same network."
-            )
-        except Exception as e:
-            logger.error("Failed to start web UI: %s", e, exc_info=True)
-            return f"Failed to start Web UI: {e}"
-
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -2607,7 +2530,6 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
-                Platform.WEB: "hermes-web",
             }
             platform_toolsets_config = {}
             try:
@@ -2629,7 +2551,6 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
-                Platform.WEB: "web",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -3517,7 +3438,6 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
-            Platform.WEB: "hermes-web",
         }
 
         # Try to load platform_toolsets from config
@@ -3542,7 +3462,6 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
-            Platform.WEB: "web",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

@@ -538,21 +538,19 @@ _PLATFORMS = [
         "emoji": "🔷",
         "token_var": "MATRIX_ACCESS_TOKEN",
         "setup_instructions": [
-            "1. Register a Matrix account for your bot on your homeserver:",
-            "   register_new_matrix_user -c /etc/matrix-synapse/homeserver.yaml \\",
-            "     --no-admin -u hermes -p <password>",
-            "   (adjust the path to homeserver.yaml for your setup)",
-            "2. Generate an access token (replace homeserver, username, password):",
-            "   curl -s -XPOST 'https://<homeserver>/_matrix/client/v3/login' \\",
-            "     -H 'Content-Type: application/json' \\",
-            "     -d '{\"type\":\"m.login.password\",\"user\":\"hermes\",\"password\":\"<password>\"}'",
-            "   Copy the 'access_token' value from the JSON response (starts with syt_)",
-            "3. Find your own Matrix user ID so you can add yourself to the allowlist:",
-            "   Your user ID is in the format @username:homeserver (e.g., @alice:matrix.org)",
-            "   You can confirm it via: Element → Settings → General → your Matrix ID",
-            "4. Invite the bot to any room — it will auto-accept invites from allowed users",
-            "5. For self-hosted servers with self-signed TLS certificates,",
-            "   set MATRIX_VERIFY_SSL=false (safe for private/LAN homeservers)",
+            "Run the guided setup wizard — it handles everything automatically:",
+            "  hermes gateway setup matrix",
+            "",
+            "What you need:",
+            "  1. A Matrix homeserver (Synapse, Dendrite, matrix.org, etc.)",
+            "  2. A dedicated bot account — just a username and password",
+            "  3. Your own Matrix user ID (e.g. @you:yourserver.org) for the allowlist",
+            "",
+            "The wizard will log in as the bot, configure E2EE, bootstrap cross-signing,",
+            "and sign the bot's identity with your account — all in one pass.",
+            "",
+            "To re-run trust verification separately (e.g. after adding a new allowed user):",
+            "  hermes gateway verify-matrix",
         ],
         "vars": [
             {"name": "MATRIX_HOMESERVER_URL", "prompt": "Homeserver URL", "password": False,
@@ -1713,8 +1711,10 @@ def _setup_matrix():
     print_info("  Next steps:")
     print_info("  1. Start the gateway:  hermes gateway run")
     if e2ee_enabled:
-        print_info("  2. If verification isn't complete: hermes gateway verify-matrix")
-        print_info("  3. Restart Element to see the verified status.")
+        print_info("  2. Restart Element to see the verified status.")
+        print_info("  If trust verification didn't complete (e.g. rate-limited or")
+        print_info("  you added new allowed users later), run:")
+        print_info("    hermes gateway verify-matrix")
 
 
 def _setup_signal():

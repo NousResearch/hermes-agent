@@ -78,16 +78,31 @@ You can confirm it in Element: **Settings → General → your Matrix ID**.
 hermes gateway setup
 ```
 
-Select **Matrix** when prompted. The wizard asks for:
+Select **Matrix** when prompted. The wizard handles everything automatically:
 
-1. Homeserver URL (e.g., `https://matrix.example.org`)
-2. SSL verification — set `false` early if using self-signed certs so connectivity tests work
-3. Bot Matrix user ID (e.g., `@hermes:matrix.example.org`)
-4. Bot access token (the `syt_...` token from Step 2) — validated live against `/account/whoami`
-5. Device ID (the `device_id` from Step 2) — keeps E2EE sessions stable across restarts
-6. E2EE — whether to enable end-to-end encryption (requires libolm + mautrix[e2be])
-7. Allowed Matrix users (comma-separated — your personal Matrix ID, not the bot's)
-8. Home room ID (optional — for cron job delivery)
+1. Homeserver URL and SSL verification
+2. Bot Matrix user ID
+3. **Bot account password** — the wizard logs in for you and retrieves the access token and device ID automatically. You don't need to run any curl commands.
+4. E2EE setup (optional) — checks dependencies, bootstraps cross-signing, saves the recovery key
+5. Allowed Matrix users (your personal Matrix ID)
+6. Home room ID (optional)
+7. **Trust verification** — the wizard logs in as each allowed user and signs the bot's identity so Element shows it as verified
+
+After the wizard completes, start the gateway:
+
+```bash
+hermes gateway run
+```
+
+Cross-signing keys are bootstrapped on the first sync (a few seconds after start). If you restart Element, the bot will appear as a verified device.
+
+:::tip Re-running setup
+If verification doesn't complete during the wizard (e.g., due to rate limiting), run:
+```bash
+hermes gateway verify-matrix
+```
+This signs the bot's identity from each allowed user's account and only needs to be run once.
+:::
 
 ### Option B: Manual Configuration
 
@@ -111,7 +126,21 @@ MATRIX_HOME_CHANNEL_NAME=Home
 
 # Set to false for self-signed TLS certificates (common for self-hosted servers)
 MATRIX_VERIFY_SSL=true
+
+# E2EE — requires mautrix[e2be] asyncpg aiosqlite base58 + libolm system package
+MATRIX_E2EE=true
+
+# Bot account password — used to bootstrap cross-signing keys on first gateway start.
+# Not required if your homeserver doesn't need password auth for cross-signing upload.
+MATRIX_PASSWORD=your-bot-account-password
+
+# Recovery key — printed by the gateway on first E2EE start, auto-saved by the wizard.
+# Used to re-sign the bot's device on restarts so Element shows it as verified.
+# Save this somewhere safe (password manager). If lost, cross-signing must be re-bootstrapped.
+MATRIX_RECOVERY_KEY=EsAB cdef ghij klmn opqr stuv wxyz ABCD EFGH IJKL MNOP QRST
 ```
+
+After setting these manually, run `hermes gateway verify-matrix` to establish trust with your allowed users.
 
 ### Start the Gateway
 

@@ -797,7 +797,7 @@ class GatewayRunner:
         elif platform == Platform.MATRIX:
             from gateway.platforms.matrix import MatrixAdapter, check_matrix_requirements
             if not check_matrix_requirements():
-                logger.warning("Matrix: matrix-nio not installed or MATRIX_HOMESERVER_URL/MATRIX_ACCESS_TOKEN/MATRIX_USER_ID not configured")
+                logger.warning("Matrix: mautrix not installed or MATRIX_HOMESERVER_URL/MATRIX_ACCESS_TOKEN/MATRIX_USER_ID not configured")
                 return None
             return MatrixAdapter(config)
 

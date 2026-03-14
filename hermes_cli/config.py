@@ -544,6 +544,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATRIX_HOME_CHANNEL_NAME": {
+        "description": "Display name for the Matrix home channel (default: 'Home'). Used in session labels and logs.",
+        "prompt": "Matrix home channel display name",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "MATRIX_ALLOWED_USERS": {
         "description": "Comma-separated Matrix user IDs allowed to use the bot (e.g., @user:matrix.org)",
         "prompt": "Allowed Matrix users (comma-separated)",

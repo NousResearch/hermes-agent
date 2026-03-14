@@ -2073,7 +2073,7 @@ def setup_gateway(config: dict):
 
     if not existing_matrix and prompt_yes_no("Set up Matrix bot?", False):
         print_info("Matrix connects to any homeserver (matrix.org, self-hosted, etc.).")
-        print_info("Requires matrix-nio: pip install matrix-nio")
+        print_info("For E2EE: pip install 'mautrix[e2be]' asyncpg aiosqlite base58")
         print_info("For the full guided setup run: hermes gateway setup matrix")
         print()
         if prompt_yes_no("Run the full Matrix setup wizard now?", True):

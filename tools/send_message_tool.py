@@ -337,6 +337,20 @@ async def _send_matrix(pconfig, chat_id, message):
     verify_ssl_raw = pconfig.extra.get("verify_ssl", "true")
     verify_ssl = str(verify_ssl_raw).lower() not in ("false", "0", "no")
 
+    # This function sends via a one-shot HTTP client (no sync loop, no OlmMachine).
+    # It cannot encrypt messages. If MATRIX_E2EE=true and the target room is
+    # encrypted, the message will be rejected silently by clients that require
+    # encryption. For sending to encrypted rooms, use the running gateway instead
+    # of this tool directly.
+    e2ee_enabled = str(pconfig.extra.get("e2ee", "false")).lower() in ("true", "1", "yes")
+    if e2ee_enabled:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "send_matrix: MATRIX_E2EE=true but this tool cannot encrypt messages. "
+            "Messages to encrypted rooms will fail or be ignored by clients. "
+            "The gateway handles encryption automatically for room messages."
+        )
+
     if not homeserver_url or not access_token:
         return {
             "error": (

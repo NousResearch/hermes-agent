@@ -60,28 +60,56 @@ logger = logging.getLogger(__name__)
 def _patch_mautrix_py314() -> None:
     """Monkey-patch mautrix 0.21.0 for Python 3.14 compatibility.
 
-    Python 3.14 changed how several asyncio and stdlib primitives work.
-    This function applies targeted fixes at import time. It is a no-op on
-    Python < 3.14, so it does not affect users on supported Python versions.
+    Python 3.14 tightened several asyncio and stdlib behaviors. This function
+    applies targeted fixes at import time. Most patches are no-ops on Python < 3.14.
 
     Patches applied:
     1. MegolmEncryptionMachine._megolm_locks — replace defaultdict(asyncio.Lock)
        with a plain dict; create locks lazily inside async methods.
+       (Python 3.14: Lock() in defaultdict lambda is created outside a running loop)
     2. MemoryCryptoStore.transaction() — replace async-def-returning-None with a
-       proper @asynccontextmanager no-op (async with None raises TypeError in 3.14).
+       proper @asynccontextmanager no-op.
+       (Python 3.14: async with None raises TypeError; was silently tolerated before)
     3. MemoryStateStore.find_shared_rooms() — add missing method that
        DeviceListMachine calls unconditionally but only asyncpg store implements.
+       (Runtime bug on all Python versions when using MemoryStateStore with device lists)
     4. MemoryCryptoStore.drop_signatures_by_key() — fix len(None) crash when
        dict.pop() returns None for a missing key.
-    5. MemoryCryptoStore.put_cross_signing_key() — handle read-only NamedTuple
-       field (TOFUSigningKey.key) by replacing the entry instead of mutating it.
+       (mautrix bug present on all Python versions, not version-specific)
+    5. MemoryCryptoStore.put_cross_signing_key() — handle read-only NamedTuple.
+       (Python 3.14: NamedTuple fields became strictly immutable)
     """
     import sys
-    if sys.version_info < (3, 14):
-        return
-
     import asyncio
     from contextlib import asynccontextmanager
+
+    # Patch 4 fixes a real mautrix bug present on all Python versions.
+    # Apply it unconditionally so it protects users on Python 3.12/3.13 too.
+    try:
+        from mautrix.crypto.store.memory import MemoryCryptoStore as _MCS_all
+
+        async def _drop_sigs_all(self, signer):
+            deleted = self._signatures.pop(signer, None)
+            return len(deleted) if deleted is not None else 0
+
+        _MCS_all.drop_signatures_by_key = _drop_sigs_all
+    except Exception as e:
+        logger.debug("mautrix patch 4 (drop_signatures_by_key) skipped: %s", e)
+
+    # Patch 3 (find_shared_rooms) is also needed on all Python versions.
+    try:
+        from mautrix.client.state_store import MemoryStateStore as _MSS_all
+
+        if not hasattr(_MSS_all, "find_shared_rooms"):
+            async def _find_shared_rooms_all(self, user_id):
+                return list(getattr(self, "_members", {}).keys())
+
+            _MSS_all.find_shared_rooms = _find_shared_rooms_all
+    except Exception as e:
+        logger.debug("mautrix patch 3 (find_shared_rooms) skipped: %s", e)
+
+    if sys.version_info < (3, 14):
+        return
 
     # 1. encrypt_megolm: lazy lock creation
     try:
@@ -116,29 +144,6 @@ def _patch_mautrix_py314() -> None:
         _MCS.transaction = _transaction_noop
     except Exception as e:
         logger.debug("mautrix py314 patch 2 (transaction) skipped: %s", e)
-
-    # 3. MemoryStateStore.find_shared_rooms: missing method stub
-    try:
-        from mautrix.client.state_store import MemoryStateStore as _MSS
-
-        async def _find_shared_rooms(self, user_id):
-            return list(getattr(self, "_members", {}).keys())
-
-        _MSS.find_shared_rooms = _find_shared_rooms
-    except Exception as e:
-        logger.debug("mautrix py314 patch 3 (find_shared_rooms) skipped: %s", e)
-
-    # 4. MemoryCryptoStore.drop_signatures_by_key: fix len(None) crash
-    try:
-        from mautrix.crypto.store.memory import MemoryCryptoStore as _MCS2
-
-        async def _drop_sigs(self, signer):
-            deleted = self._signatures.pop(signer, None)
-            return len(deleted) if deleted is not None else 0
-
-        _MCS2.drop_signatures_by_key = _drop_sigs
-    except Exception as e:
-        logger.debug("mautrix py314 patch 4 (drop_signatures_by_key) skipped: %s", e)
 
     # 5. MemoryCryptoStore.put_cross_signing_key: handle read-only NamedTuple
     try:
@@ -733,11 +738,17 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         self._seen_event_ids[event_id] = now
 
-        # Periodic cleanup of stale seen IDs
+        # Periodic cleanup of stale seen IDs and expired SAS sessions.
         if now - self._last_seen_cleanup > self._seen_cleanup_interval:
             cutoff = now - self._seen_cleanup_interval
             self._seen_event_ids = {
                 k: v for k, v in self._seen_event_ids.items() if v > cutoff
+            }
+            # Purge SAS verification sessions that were started but never completed.
+            # Without this, abandoned verification attempts accumulate indefinitely.
+            self._sas_sessions = {
+                k: v for k, v in self._sas_sessions.items()
+                if now - v.get("_started_at", now) < 300  # 5 min max per SAS flow
             }
             self._last_seen_cleanup = now
 
@@ -1143,6 +1154,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "sas": sas,
                 "sender": sender,
                 "from_device": raw.get("from_device", ""),
+                "_started_at": time.time(),  # for periodic expiry cleanup
             }
             await self._client.send_to_one_device(
                 EventType.find("m.key.verification.key", t_class=EventType.Class.TO_DEVICE),

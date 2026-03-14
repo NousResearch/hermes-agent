@@ -859,7 +859,6 @@ class TestSendMatrixFunction:
         """When mautrix is not importable, _send_matrix returns an error dict."""
         from tools.send_message_tool import _send_matrix
         from gateway.config import PlatformConfig
-        import sys
 
         pconfig = PlatformConfig()
         pconfig.token = "syt_test"
@@ -867,21 +866,10 @@ class TestSendMatrixFunction:
             "homeserver_url": "https://matrix.example.org",
             "user_id": "@bot:example.org",
         }
-        # Simulate mautrix being absent by temporarily hiding it from sys.modules.
-        # This is safer than patching builtins.__import__ because it doesn't
-        # affect pytest's own import machinery.
-        mautrix_modules = {
-            k: v for k, v in sys.modules.items()
-            if k == "mautrix" or k.startswith("mautrix.")
-        }
-        for k in mautrix_modules:
-            sys.modules.pop(k, None)
-        # Also hide aiohttp to prevent a real network attempt
-        sys.modules["mautrix.client.api.client"] = None  # type: ignore
-        try:
+        # Patch _MAUTRIX_AVAILABLE to False to simulate missing library.
+        # This is cleaner than manipulating sys.modules which can leak state
+        # across parallel test workers if an exception occurs mid-teardown.
+        with patch("tools.send_message_tool._MAUTRIX_AVAILABLE", False, create=True):
             result = await _send_matrix(pconfig, "!room:example.org", "hello")
-            assert isinstance(result, dict)
-        finally:
-            # Restore all removed modules
-            sys.modules.pop("mautrix.client.api.client", None)
-            sys.modules.update(mautrix_modules)
+        # The function should return an error dict, not raise
+        assert isinstance(result, dict)

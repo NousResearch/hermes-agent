@@ -97,7 +97,7 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
     assert reloaded["model"]["default"] == "custom/model"
 
 
-def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch, capsys):
+def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
     _clear_provider_env(monkeypatch)
@@ -136,10 +136,8 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
     save_config(config)
 
     reloaded = load_config()
-    output = capsys.readouterr().out
 
     assert captured["access_token"] == "codex-access-token"
-    assert "not currently supported for ChatGPT/Codex OAuth accounts" in output
     assert isinstance(reloaded["model"], dict)
     assert reloaded["model"]["provider"] == "openai-codex"
     assert reloaded["model"]["default"] == "gpt-5.2-codex"

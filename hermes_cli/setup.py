@@ -1275,10 +1275,6 @@ def setup_model_provider(config: dict):
                 logger.debug("Could not resolve Codex runtime credentials for model list: %s", exc)
 
             codex_models = get_codex_model_ids(access_token=codex_token)
-            if "gpt-5.4" not in codex_models:
-                print_warning("`gpt-5.4` is not currently supported for ChatGPT/Codex OAuth accounts.")
-                print_info("Use OpenRouter if you need GPT-5.4 specifically.")
-                print()
 
             model_choices = codex_models + [f"Keep current ({current_model})"]
             default_codex = 0

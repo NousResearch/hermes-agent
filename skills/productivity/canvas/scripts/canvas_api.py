@@ -16,8 +16,33 @@ import sys
 
 import requests
 
-CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
-CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
+
+def _load_hermes_env_value(key: str) -> str:
+    """Load a value from ~/.hermes/.env if not already in os.environ."""
+    val = os.environ.get(key, "")
+    if val:
+        return val
+    # Fallback: read directly from the .env file (python-dotenv may not be
+    # installed or load_dotenv may not have run for this process).
+    env_path = os.path.join(
+        os.environ.get("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes")),
+        ".env",
+    )
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    if k.strip() == key:
+                        return v.strip().strip("\"'")
+    except FileNotFoundError:
+        pass
+    return ""
+
+
+CANVAS_API_TOKEN = _load_hermes_env_value("CANVAS_API_TOKEN")
+CANVAS_BASE_URL = _load_hermes_env_value("CANVAS_BASE_URL").rstrip("/")
 
 
 def _check_config():

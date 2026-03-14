@@ -147,6 +147,17 @@ hermes skills install official/security/1password
 
 Or use the `/skills` slash command inside chat.
 
+### Use Hermes inside an editor via ACP
+
+Hermes can also run as an ACP server for ACP-compatible editors like VS Code, Zed, and JetBrains:
+
+```bash
+pip install -e '.[acp]'
+hermes acp
+```
+
+See [ACP Editor Integration](../user-guide/features/acp.md) for setup details.
+
 ### Try MCP servers
 
 Connect to external tools via the Model Context Protocol:

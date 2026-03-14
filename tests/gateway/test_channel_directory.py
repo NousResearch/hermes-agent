@@ -203,7 +203,7 @@ class TestBuildFromSessions:
             },
         })
 
-        with patch.object(Path, "home", return_value=tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")
 
         ids = {entry["id"] for entry in entries}

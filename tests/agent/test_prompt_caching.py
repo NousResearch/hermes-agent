@@ -23,6 +23,14 @@ class TestApplyCacheMarker:
         _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
 
+    def test_empty_string_content_gets_top_level_marker(self):
+        """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
+        msg = {"role": "assistant", "content": ""}
+        _apply_cache_marker(msg, MARKER)
+        assert msg["cache_control"] == MARKER
+        # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
+        assert msg["content"] == ""
+
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
         _apply_cache_marker(msg, MARKER)

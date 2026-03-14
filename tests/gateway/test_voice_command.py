@@ -292,14 +292,14 @@ class TestAutoVoiceReply:
 
     # -- Discord VC exception: runner must handle --------------------------
 
-    def test_discord_vc_voice_input_runner_fires(self, runner):
-        """Discord VC + voice input: base play_tts skips (VC override),
-        so runner must handle via play_in_voice_channel."""
-        assert self._call(runner, "all", MessageType.VOICE, in_voice_channel=True) is True
+    def test_discord_vc_voice_input_base_handles(self, runner):
+        """Discord VC + voice input: base adapter play_tts plays in VC,
+        so runner skips to avoid double playback."""
+        assert self._call(runner, "all", MessageType.VOICE, in_voice_channel=True) is False
 
-    def test_discord_vc_voice_only_runner_fires(self, runner):
-        """Discord VC + voice_only + voice: runner must handle."""
-        assert self._call(runner, "voice_only", MessageType.VOICE, in_voice_channel=True) is True
+    def test_discord_vc_voice_only_base_handles(self, runner):
+        """Discord VC + voice_only + voice: base adapter handles."""
+        assert self._call(runner, "voice_only", MessageType.VOICE, in_voice_channel=True) is False
 
     # -- Edge cases --------------------------------------------------------
 
@@ -422,17 +422,23 @@ class TestDiscordPlayTtsSkip:
         return adapter
 
     @pytest.mark.asyncio
-    async def test_play_tts_skipped_when_in_vc(self):
+    async def test_play_tts_plays_in_vc_when_connected(self):
         adapter = self._make_discord_adapter()
         # Simulate bot in voice channel for guild 111, text channel 123
         mock_vc = MagicMock()
         mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
         adapter._voice_clients[111] = mock_vc
         adapter._voice_text_channels[111] = 123
 
+        # Mock play_in_voice_channel to avoid actual ffmpeg call
+        async def fake_play(gid, path):
+            return True
+        adapter.play_in_voice_channel = fake_play
+
         result = await adapter.play_tts(chat_id="123", audio_path="/tmp/test.ogg")
+        # play_tts now plays in VC instead of being a no-op
         assert result.success is True
-        # send_voice should NOT have been called (no client, would fail)
 
     @pytest.mark.asyncio
     async def test_play_tts_not_skipped_when_not_in_vc(self):

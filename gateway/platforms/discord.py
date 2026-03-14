@@ -695,13 +695,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Play auto-TTS audio.
 
-        When the bot is in a voice channel for this chat's guild, skip the
-        file attachment — the gateway runner plays audio in the VC instead.
+        When the bot is in a voice channel for this chat's guild, play
+        directly in the VC instead of sending as a file attachment.
         """
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.debug("[%s] Skipping play_tts for %s — VC playback handled by runner", self.name, chat_id)
-                return SendResult(success=True)
+                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
     async def send_voice(

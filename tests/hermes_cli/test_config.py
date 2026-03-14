@@ -40,6 +40,20 @@ class TestEnsureHermesHome:
             assert (tmp_path / "logs").is_dir()
             assert (tmp_path / "memories").is_dir()
 
+    def test_creates_default_soul_md_if_missing(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+            soul_path = tmp_path / "SOUL.md"
+            assert soul_path.exists()
+            assert soul_path.read_text(encoding="utf-8").strip() != ""
+
+    def test_does_not_overwrite_existing_soul_md(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text("custom soul", encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == "custom soul"
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):

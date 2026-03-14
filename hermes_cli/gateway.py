@@ -235,7 +235,21 @@ def systemd_stop():
     print("✓ Service stopped")
 
 def systemd_restart():
-    subprocess.run(["systemctl", "--user", "restart", SERVICE_NAME], check=True)
+    # `systemctl restart` sends SIGTERM and waits up to TimeoutStopSec (default 90s)
+    # before giving up. The gateway runs agent LLM calls in a thread-pool executor
+    # which cannot be interrupted by SIGTERM, causing the restart to hang or fail
+    # with "Job canceled" if the old process doesn't exit in time.
+    #
+    # Fix: send SIGKILL immediately to ensure the old process is gone, then start
+    # fresh. This is safe because the gateway persists all state to disk (SQLite
+    # crypto store, session DB, sync token) — no in-flight work is lost that
+    # wouldn't be retried on reconnect anyway.
+    subprocess.run(
+        ["systemctl", "--user", "kill", "-s", "SIGKILL", SERVICE_NAME],
+        check=False,  # ignore error if service is already stopped
+    )
+    import time; time.sleep(1)
+    subprocess.run(["systemctl", "--user", "start", SERVICE_NAME], check=True)
     print("✓ Service restarted")
 
 def systemd_status(deep: bool = False):
@@ -762,6 +776,947 @@ def _is_service_running() -> bool:
     return len(find_gateway_pids()) > 0
 
 
+def _detect_linux_distro() -> str:
+    """Return a simple distro family string: 'arch', 'debian', 'fedora', or 'unknown'."""
+    try:
+        with open("/etc/os-release") as f:
+            content = f.read().lower()
+        if "arch" in content or "manjaro" in content or "endeavour" in content:
+            return "arch"
+        if "debian" in content or "ubuntu" in content or "mint" in content or "pop" in content:
+            return "debian"
+        if "fedora" in content or "rhel" in content or "centos" in content or "rocky" in content:
+            return "fedora"
+    except OSError:
+        pass
+    return "unknown"
+
+
+def _install_libolm() -> bool:
+    """Attempt to install libolm via the system package manager. Returns True on success.
+
+    libolm is a C library required by the mautrix E2EE backend (python-olm).
+    """
+    import shutil
+    import platform as _platform
+
+    system = _platform.system()
+    cmd: list = []
+
+    if system == "Darwin":
+        if shutil.which("brew"):
+            cmd = ["brew", "install", "libolm"]
+        else:
+            print_error("  Homebrew not found. Install it from https://brew.sh then run: brew install libolm")
+            return False
+    elif system == "Linux":
+        distro = _detect_linux_distro()
+        if distro == "arch" and shutil.which("pacman"):
+            cmd = ["sudo", "pacman", "-S", "--noconfirm", "libolm"]
+        elif distro == "debian" and shutil.which("apt-get"):
+            cmd = ["sudo", "apt-get", "install", "-y", "libolm-dev"]
+        elif distro == "fedora" and shutil.which("dnf"):
+            cmd = ["sudo", "dnf", "install", "-y", "libolm-devel"]
+        else:
+            print_warning("  Could not detect package manager.")
+            print_info("  Install libolm manually:")
+            print_info("    Arch:   sudo pacman -S libolm")
+            print_info("    Debian: sudo apt install libolm-dev")
+            print_info("    Fedora: sudo dnf install libolm-devel")
+            print_info("    macOS:  brew install libolm")
+            return False
+    else:
+        print_warning(f"  Unsupported OS: {system}. Install libolm manually.")
+        return False
+
+    print_info(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode == 0:
+        print_success("  libolm installed successfully.")
+        return True
+    else:
+        print_error("  libolm installation failed. You may need to run it manually with sudo.")
+        return False
+
+
+def _bootstrap_user_trust(
+    homeserver: str,
+    allowed_users_str: str,
+    bot_user_id: str,
+    bot_token: str,
+    verify_ssl: bool,
+) -> None:
+    """Bootstrap cross-signing trust between allowed users and the bot.
+
+    For each allowed user:
+      1. Ask for their Matrix password (used only to obtain a temporary token).
+      2. If their cross-signing master/user-signing keys are missing, upload them.
+      3. Sign the bot's master key with their user-signing key.
+
+    This makes Element show the bot as "verified" without any manual ceremony.
+    The user's password is NOT stored — it is only used for the one-time login.
+    """
+    try:
+        import httpx as _httpx
+        import json as _json
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, PublicFormat, PrivateFormat, NoEncryption,
+        )
+        from pathlib import Path as _Path
+    except ImportError as e:
+        print_warning(f"  Skipping trust bootstrap — missing dependency: {e}")
+        return
+
+    hs = homeserver.rstrip("/")
+    users = [u.strip() for u in allowed_users_str.split(",") if u.strip()]
+    if not users:
+        return
+
+    # Fetch bot's master key from server
+    try:
+        r = _httpx.post(
+            f"{hs}/_matrix/client/v3/keys/query",
+            headers={"Authorization": f"Bearer {bot_token}"},
+            json={"device_keys": {bot_user_id: []}},
+            verify=verify_ssl, timeout=10,
+        )
+        bot_mk_obj = r.json().get("master_keys", {}).get(bot_user_id, {})
+        if not bot_mk_obj:
+            print_warning("  Bot has no master key yet — start the gateway first, then re-run setup.")
+            return
+        bot_mk_pub = list(bot_mk_obj.get("keys", {}).values())[0]
+    except Exception as e:
+        print_warning(f"  Could not fetch bot master key: {e}")
+        return
+
+    def _canonical_json(obj):
+        return _json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+
+    def _sign_obj(obj, priv, uid, key_id):
+        to_sign = {k: v for k, v in obj.items() if k not in ("signatures", "unsigned")}
+        sig = _b64.b64encode(priv.sign(_canonical_json(to_sign))).decode()
+        obj.setdefault("signatures", {}).setdefault(uid, {})[f"ed25519:{key_id}"] = sig
+        return obj
+
+    print()
+    print_info("  Setting up cross-signing trust between your account(s) and the bot.")
+    print_info("  Your password is used only to obtain a one-time login token — it is not stored.")
+
+    for user_id in users:
+        print()
+        print_info(f"  User: {user_id}")
+        try:
+            import getpass
+            password = getpass.getpass(f"  Password for {user_id} (Enter to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print_info("  Skipped.")
+            continue
+        if not password:
+            print_info("  Skipped.")
+            continue
+
+        # Log in to get a temporary token
+        # Retry login with backoff — Synapse rate-limits repeated logins
+        # (429 Too Many Requests) when multiple logins happen in quick succession
+        # during the setup wizard (bot login + recovery key bootstrap + user login).
+        import time as _time
+        user_token = None
+        temp_device_id = ""
+        localpart = user_id.split(":")[0].lstrip("@")
+        for _attempt in range(3):
+            if _attempt > 0:
+                _wait = _attempt * 5
+                print_info(f"  Rate limited — waiting {_wait}s before retrying...")
+                _time.sleep(_wait)
+            try:
+                r = _httpx.post(
+                    f"{hs}/_matrix/client/v3/login",
+                    json={
+                        "type": "m.login.password",
+                        "identifier": {"type": "m.id.user", "user": localpart},
+                        "password": password,
+                        "initial_device_display_name": "Hermes Setup (temporary)",
+                    },
+                    verify=verify_ssl, timeout=10,
+                )
+                if r.status_code == 429:
+                    continue  # retry
+                if r.status_code != 200:
+                    print_warning(f"  Login failed ({r.status_code}): {r.json().get('error', r.text[:80])}")
+                    break
+                user_token = r.json()["access_token"]
+                temp_device_id = r.json().get("device_id", "")
+                break
+            except Exception as e:
+                print_warning(f"  Login error: {e}")
+                break
+        if not user_token:
+            print_warning(f"  Could not log in as {user_id} — skipping trust setup.")
+            print_info("  Run 'hermes gateway verify-matrix' after setup to complete trust.")
+            continue
+
+        headers = {"Authorization": f"Bearer {user_token}"}
+
+        try:
+            # Check existing cross-signing state
+            rq = _httpx.post(
+                f"{hs}/_matrix/client/v3/keys/query",
+                headers=headers,
+                json={"device_keys": {user_id: []}},
+                verify=verify_ssl, timeout=10,
+            )
+            qdata = rq.json()
+            existing_mk = qdata.get("master_keys", {}).get(user_id, {})
+            existing_usk = qdata.get("user_signing_keys", {}).get(user_id, {})
+            existing_ssk = qdata.get("self_signing_keys", {}).get(user_id, {})
+
+            # Load or generate user's cross-signing keys.
+            # Always verify local keys match what the server has. If they don't
+            # (e.g. after multiple setup attempts), regenerate and re-upload.
+            user_keys_file = _Path(f"~/.hermes/matrix/user_cross_signing_{user_id.lstrip('@').replace(':', '_')}.json").expanduser()
+
+            def _gen_and_save_keys():
+                _mk = Ed25519PrivateKey.generate()
+                _usk = Ed25519PrivateKey.generate()
+                _ssk = Ed25519PrivateKey.generate()
+                _mk_pub  = _b64.b64encode(_mk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+                _usk_pub = _b64.b64encode(_usk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+                _ssk_pub = _b64.b64encode(_ssk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+                user_keys_file.write_text(_json.dumps({
+                    "master_private": _b64.b64encode(_mk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(),
+                    "master_public": _mk_pub,
+                    "user_signing_private": _b64.b64encode(_usk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(),
+                    "user_signing_public": _usk_pub,
+                    "self_signing_private": _b64.b64encode(_ssk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(),
+                    "self_signing_public": _ssk_pub,
+                }))
+                user_keys_file.chmod(0o600)
+                return _mk, _usk, _ssk, _mk_pub, _usk_pub, _ssk_pub
+
+            needs_upload = not existing_mk or not existing_usk or not existing_ssk
+
+            if user_keys_file.exists() and existing_mk and not needs_upload:
+                # Verify local keys match the server before reusing them.
+                # If they don't match (e.g. because setup was run multiple times),
+                # regenerate fresh keys and re-upload.
+                saved = _json.loads(user_keys_file.read_text())
+                server_usk_pub = list(existing_usk.get("keys", {}).values())[0] if existing_usk else ""
+                if saved.get("user_signing_public") == server_usk_pub:
+                    mk_priv = Ed25519PrivateKey.from_private_bytes(_b64.b64decode(saved["master_private"]))
+                    usk_priv = Ed25519PrivateKey.from_private_bytes(_b64.b64decode(saved["user_signing_private"]))
+                    ssk_priv = Ed25519PrivateKey.from_private_bytes(_b64.b64decode(saved["self_signing_private"]))
+                    mk_pub = saved["master_public"]
+                    usk_pub = saved["user_signing_public"]
+                    ssk_pub = saved["self_signing_public"]
+                else:
+                    mk_priv, usk_priv, ssk_priv, mk_pub, usk_pub, ssk_pub = _gen_and_save_keys()
+                    needs_upload = True
+            else:
+                mk_priv, usk_priv, ssk_priv, mk_pub, usk_pub, ssk_pub = _gen_and_save_keys()
+
+            # After generating, always upload to ensure server matches local keys.
+            # This is idempotent: if the server already has matching keys, no harm done.
+            needs_upload = True
+
+            if needs_upload:
+                mk_obj = {"user_id": user_id, "usage": ["master"], "keys": {f"ed25519:{mk_pub}": mk_pub}}
+                ssk_obj = {"user_id": user_id, "usage": ["self_signing"], "keys": {f"ed25519:{ssk_pub}": ssk_pub}}
+                usk_obj = {"user_id": user_id, "usage": ["user_signing"], "keys": {f"ed25519:{usk_pub}": usk_pub}}
+                _sign_obj(ssk_obj, mk_priv, user_id, mk_pub)
+                _sign_obj(usk_obj, mk_priv, user_id, mk_pub)
+
+                body = {"master_key": mk_obj, "self_signing_key": ssk_obj, "user_signing_key": usk_obj}
+
+                ru = _httpx.post(
+                    f"{hs}/_matrix/client/v3/keys/device_signing/upload",
+                    headers=headers, json=body, verify=verify_ssl, timeout=15,
+                )
+                if ru.status_code == 401:
+                    # UIA required — retry with password auth
+                    session = ru.json().get("session")
+                    body["auth"] = {
+                        "type": "m.login.password",
+                        "identifier": {"type": "m.id.user", "user": user_id},
+                        "password": password,
+                        "session": session,
+                    }
+                    ru = _httpx.post(
+                        f"{hs}/_matrix/client/v3/keys/device_signing/upload",
+                        headers=headers, json=body, verify=verify_ssl, timeout=15,
+                    )
+                if ru.status_code != 200:
+                    print_warning(f"  Cross-signing upload failed: {ru.status_code} {ru.text[:100]}")
+                    continue
+                print_success(f"  Uploaded cross-signing keys for {user_id}")
+                # Brief pause for Synapse to propagate the new keys before signing
+                import time as _t; _t.sleep(2)
+            else:
+                # Keys exist — load usk_priv from file
+                if not user_keys_file.exists():
+                    print_warning(f"  {user_id} already has cross-signing keys but local private keys are missing.")
+                    print_warning("  Cannot sign the bot without the private key. Skipping.")
+                    continue
+
+            # Re-fetch the bot's master key fresh from the server to ensure
+            # we sign the exact bytes Synapse has stored (not a cached version).
+            try:
+                _rq2 = _httpx.post(
+                    f"{hs}/_matrix/client/v3/keys/query",
+                    headers={"Authorization": f"Bearer {bot_token}"},
+                    json={"device_keys": {bot_user_id: []}},
+                    verify=verify_ssl, timeout=10,
+                )
+                _fresh_mk = _rq2.json().get("master_keys", {}).get(bot_user_id, {})
+                if _fresh_mk:
+                    bot_mk_obj = _fresh_mk
+                    bot_mk_pub = list(bot_mk_obj.get("keys", {}).values())[0]
+            except Exception:
+                pass  # Use the previously fetched bot_mk_obj
+
+            # Sign the bot's master key with the user's user-signing key
+            bot_mk_to_sign = {k: v for k, v in bot_mk_obj.items() if k not in ("signatures", "unsigned")}
+            sig = _b64.b64encode(usk_priv.sign(_canonical_json(bot_mk_to_sign))).decode()
+            signed_bot_mk = dict(bot_mk_obj)
+            signed_bot_mk.setdefault("signatures", {}).setdefault(user_id, {})[f"ed25519:{usk_pub}"] = sig
+
+            # The Matrix spec requires the key ID for cross-signing master keys
+            # to use the bare public key (no "ed25519:" prefix) as the dict key
+            # in the signatures/upload body. Device keys use the device ID instead.
+            rs = _httpx.post(
+                f"{hs}/_matrix/client/v3/keys/signatures/upload",
+                headers=headers,
+                json={bot_user_id: {bot_mk_pub: signed_bot_mk}},
+                verify=verify_ssl, timeout=10,
+            )
+            failures = rs.json().get("failures", {}) if rs.status_code == 200 else {}
+            if rs.status_code == 200 and not failures:
+                print_success(f"  {user_id} now trusts the bot's identity — no more verification warnings.")
+            else:
+                # Log the full failure for debugging
+                print_warning(f"  Signature upload failed: {rs.status_code} {rs.text[:200]}")
+
+        except Exception as e:
+            print_warning(f"  Bootstrap error for {user_id}: {e}")
+        finally:
+            # Always log out the temporary session
+            try:
+                # Log out the temporary session — this also invalidates the token
+                # and cleans up the device on the homeserver automatically.
+                _httpx.post(
+                    f"{hs}/_matrix/client/v3/logout",
+                    headers=headers, verify=verify_ssl, timeout=5,
+                )
+            except Exception:
+                pass
+
+
+def _setup_matrix():
+    """Interactive setup for Matrix homeserver integration."""
+    print()
+    print(color("  ─── 🔷 Matrix Setup ───", Colors.CYAN))
+
+    # ── Prerequisite checklist ──
+    print()
+    print_info("  What you need to get started:")
+    print_info("  1. A running Matrix homeserver (Synapse, Dendrite, matrix.org, etc.)")
+    print_info("  2. A dedicated bot account on that homeserver")
+    print_info("     — just a username and password, e.g. 'hermes' / 'your-chosen-password'")
+    print_info("  3. Your own Matrix user ID to add to the allowlist")
+    print_info("     e.g. @you:yourserver.org")
+    print()
+    print_info("  That's it. The wizard will handle everything else:")
+    print_info("  • Log in as the bot and obtain its access token and device ID")
+    print_info("  • Set up E2EE encryption (optional but recommended)")
+    print_info("  • Bootstrap cross-signing so Element shows the bot as verified")
+    print_info("  • Sign the bot's identity with your account")
+    print()
+    print_info("  To create a bot account on Synapse (if you haven't already):")
+    print_info("    register_new_matrix_user -c /path/to/homeserver.yaml \\")
+    print_info("      --no-admin -u botname http://localhost:8008")
+    print_info("  (For Docker/k3s: run inside the Synapse container)")
+
+    existing_token = get_env_value("MATRIX_ACCESS_TOKEN")
+    if existing_token:
+        print()
+        print_success("Matrix is already configured.")
+        if not prompt_yes_no("  Reconfigure Matrix?", False):
+            return
+
+        # Offer to wipe existing crypto state so the new configuration starts
+        # clean. Stale Olm sessions, device keys, and cross-signing data from
+        # the old account will cause decrypt failures with a new bot account.
+        print()
+        print_info("  Reconfiguring creates a new bot identity.")
+        print_info("  Existing E2EE state (crypto DB, sessions, recovery key) should be")
+        print_info("  wiped if you are changing the homeserver or bot account.")
+        if prompt_yes_no("  Wipe existing E2EE state for a clean start?", True):
+            import shutil as _sh
+            from pathlib import Path as _P
+            wiped = []
+            matrix_dir = _P(os.path.expanduser("~/.hermes/matrix"))
+            if matrix_dir.exists():
+                _sh.rmtree(matrix_dir)
+                wiped.append("crypto DB and sessions")
+            for _key in ("MATRIX_RECOVERY_KEY", "MATRIX_DEVICE_ID",
+                         "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"):
+                _val = get_env_value(_key)
+                if _val:
+                    save_env_value(_key, "")
+                    wiped.append(_key)
+            if wiped:
+                print_success(f"  Wiped: {', '.join(wiped)}")
+            else:
+                print_info("  Nothing to wipe.")
+        else:
+            print_info("  Keeping existing E2EE state — only credentials will be updated.")
+
+    # ── Homeserver URL ──
+    print()
+    print_info("  Enter your Matrix homeserver URL.")
+    print_info("  Example: https://matrix.example.org or https://matrix.org")
+    existing_hs = get_env_value("MATRIX_HOMESERVER_URL") or ""
+    if existing_hs:
+        print_info(f"  Current: {existing_hs}")
+    try:
+        homeserver = input(f"  Homeserver URL{f' [{existing_hs}]' if existing_hs else ''}: ").strip()
+        if not homeserver:
+            homeserver = existing_hs
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if not homeserver:
+        print_error("  Homeserver URL is required.")
+        return
+    homeserver = homeserver.rstrip("/")
+
+    # ── SSL verification (up front — critical for self-hosted) ──
+    print()
+    print_info("  If your homeserver uses a self-signed TLS certificate")
+    print_info("  (common for self-hosted servers), set verify_ssl to false.")
+    print_info("  The connection is still encrypted — only certificate validation is skipped.")
+    existing_ssl = get_env_value("MATRIX_VERIFY_SSL") or "true"
+    try:
+        ssl_input = input(f"  Verify SSL? [true/false] [{existing_ssl}]: ").strip().lower()
+        if not ssl_input:
+            ssl_input = existing_ssl
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    verify_ssl = ssl_input not in ("false", "0", "no")
+    ssl_val = "true" if verify_ssl else "false"
+
+    # ── Test homeserver reachability ──
+    print_info("  Testing homeserver reachability...")
+    try:
+        import httpx
+        resp = httpx.get(
+            f"{homeserver}/_matrix/client/versions",
+            timeout=10.0,
+            verify=verify_ssl,
+        )
+        if resp.status_code == 200:
+            print_success("  Homeserver is reachable!")
+        else:
+            print_warning(f"  Homeserver responded with HTTP {resp.status_code}.")
+            if not prompt_yes_no("  Continue anyway?", False):
+                return
+    except Exception as e:
+        print_warning(f"  Could not reach homeserver at {homeserver}: {e}")
+        if not prompt_yes_no("  Save anyway? (you can fix the URL later)", True):
+            return
+
+    # ── Bot user ID ──
+    print()
+    print_info("  Enter the bot's Matrix user ID (e.g., @agentname:yourdomain).")
+    existing_uid = get_env_value("MATRIX_USER_ID") or ""
+    if existing_uid:
+        print_info(f"  Current: {existing_uid}")
+    try:
+        user_id = input(f"  Bot Matrix user ID{f' [{existing_uid}]' if existing_uid else ''}: ").strip()
+        if not user_id:
+            user_id = existing_uid
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if not user_id:
+        print_error("  Bot user ID is required.")
+        return
+
+    # ── Access token + Device ID — offer to fetch automatically ──
+    print()
+    print_info("  The bot needs an access token and device ID.")
+    print_info("  Option A — enter the bot account password and the wizard fetches them:")
+    print_info("  Option B — paste a token you already obtained manually.")
+    print()
+    _localpart = user_id.split(":")[0].lstrip("@") if user_id else "botusername"
+    print_info(f"  To get a token manually (replace PASSWORD with {_localpart}'s password):")
+    print_info(f"    curl -s -XPOST '{homeserver}/_matrix/client/v3/login' \\")
+    print_info( "      -H 'Content-Type: application/json' \\")
+    print_info(f"      -d '{{\"type\":\"m.login.password\",\"user\":\"{_localpart}\",\"password\":\"PASSWORD\"}}'")
+    print_info("  Then copy 'access_token' and 'device_id' from the JSON output.")
+
+    token = ""
+    device_id = ""
+
+    # Try auto-fetch if user provides the bot account password
+    try:
+        import getpass as _gp
+        bot_password = _gp.getpass(
+            "  Bot account password (Enter to skip and paste token manually): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    if bot_password:
+        try:
+            import httpx as _hx
+            localpart = user_id.split(":")[0].lstrip("@")
+            login_resp = _hx.post(
+                f"{homeserver}/_matrix/client/v3/login",
+                json={
+                    "type": "m.login.password",
+                    "identifier": {"type": "m.id.user", "user": localpart},
+                    "password": bot_password,
+                    "initial_device_display_name": "Hermes Agent",
+                },
+                verify=verify_ssl, timeout=10,
+            )
+            if login_resp.status_code == 200:
+                ld = login_resp.json()
+                token = ld.get("access_token", "")
+                device_id = ld.get("device_id", "")
+                print_success(f"  Logged in — device ID: {device_id}")
+                # Also save the password for cross-signing bootstrap
+                save_env_value("MATRIX_PASSWORD", bot_password)
+            else:
+                print_warning(f"  Login failed ({login_resp.status_code}): {login_resp.json().get('error','')}")
+                print_info("  Falling back to manual token entry.")
+        except Exception as _e:
+            print_warning(f"  Auto-login failed: {_e}")
+            print_info("  Falling back to manual token entry.")
+
+    if not token:
+        print()
+        print_info("  Paste the 'access_token' value from the curl output above (starts with syt_).")
+        try:
+            import getpass
+            token = getpass.getpass("  Bot access token: ").strip()
+            # Strip invisible unicode characters that can appear when pasting
+            # from terminals or chat apps (zero-width spaces, BOM, etc.)
+            token = "".join(c for c in token if c.isprintable() and ord(c) < 128)
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup cancelled.")
+            return
+    if not token:
+        print_warning("  Skipped — Matrix won't work without an access token.")
+        return
+
+    # ── Validate token with whoami ──
+    print_info("  Validating access token...")
+    try:
+        import httpx
+        whoami_resp = httpx.get(
+            f"{homeserver}/_matrix/client/v3/account/whoami",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+            verify=verify_ssl,
+        )
+        if whoami_resp.status_code == 200:
+            returned_uid = whoami_resp.json().get("user_id", "")
+            if returned_uid == user_id:
+                print_success(f"  Token valid — authenticated as {returned_uid}")
+            else:
+                print_warning(
+                    f"  Token is valid but returned user_id '{returned_uid}' "
+                    f"does not match '{user_id}'."
+                )
+                if not prompt_yes_no("  Update bot user ID to match the token?", True):
+                    if not prompt_yes_no("  Continue with the mismatched user ID anyway?", False):
+                        return
+                else:
+                    user_id = returned_uid
+                    print_success(f"  Bot user ID updated to {user_id}")
+        elif whoami_resp.status_code == 401:
+            print_error("  Token is invalid (401 Unauthorized). Check for typos.")
+            if not prompt_yes_no("  Save the token anyway?", False):
+                return
+        else:
+            print_warning(f"  whoami returned HTTP {whoami_resp.status_code} — could not validate.")
+            if not prompt_yes_no("  Continue anyway?", True):
+                return
+    except Exception as e:
+        print_warning(f"  Could not validate token: {e}")
+        if not prompt_yes_no("  Continue anyway?", True):
+            return
+
+    # ── Device ID ──
+    # Already fetched if we did auto-login above. Otherwise prompt.
+    existing_dev = get_env_value("MATRIX_DEVICE_ID") or ""
+    if not device_id:
+        print()
+        print_info("  Enter the 'device_id' value from the curl output above.")
+        print_info("  This pins the bot to one device so Synapse doesn't create a new")
+        print_info("  session on every restart. Strongly recommended.")
+        if existing_dev:
+            print_info(f"  Current: {existing_dev}")
+        try:
+            device_id = input(f"  Device ID{f' [{existing_dev}]' if existing_dev else ''} (or Enter to skip): ").strip()
+            if not device_id:
+                device_id = existing_dev
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup cancelled.")
+            return
+    if not device_id:
+        print_warning("  No device ID set — Synapse will assign a new one on each restart.")
+    else:
+        print_success(f"  Device ID: {device_id}")
+
+    # ── E2EE ──
+    print()
+    print_info("  End-to-end encryption (E2EE) lets the bot read and send encrypted messages.")
+    print_info("  Required packages: pip install 'mautrix[e2be]' asyncpg aiosqlite base58")
+    print_info("  Also requires the libolm C library (used by mautrix for Olm/Megolm crypto):")
+    print_info("    Arch:   sudo pacman -S libolm")
+    print_info("    Debian: sudo apt install libolm-dev")
+    print_info("    Fedora: sudo dnf install libolm-devel")
+    print_info("    macOS:  brew install libolm")
+    print_info("  For private homeservers on Tailscale/VPN, E2EE is optional —")
+    print_info("  network traffic is already encrypted at the transport layer.")
+    existing_e2ee = get_env_value("MATRIX_E2EE") or "false"
+    try:
+        e2ee_input = input(f"  Enable E2EE? [true/false] [{existing_e2ee}]: ").strip().lower()
+        if not e2ee_input:
+            e2ee_input = existing_e2ee
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    e2ee_enabled = e2ee_input in ("true", "1", "yes")
+    if e2ee_enabled:
+        # 1. Check / install libolm (required by python-olm which mautrix uses)
+        try:
+            import olm  # noqa: F401
+            print_success("  libolm found.")
+        except ImportError:
+            print_warning("  libolm not found (python-olm import failed).")
+            if prompt_yes_no("  Attempt to install libolm now?", True):
+                _install_libolm()
+            else:
+                print_warning("  Install libolm manually before starting the gateway.")
+
+        # 2. Check / install mautrix[e2be] + SQLite store dependencies
+        try:
+            from mautrix.crypto import OlmMachine  # noqa: F401
+            from mautrix.crypto.store.asyncpg import PgCryptoStore  # noqa: F401
+            import aiosqlite  # noqa: F401
+            print_success("  mautrix[e2be] + asyncpg + aiosqlite found.")
+        except ImportError:
+            print_warning("  mautrix[e2be] not installed.")
+            if prompt_yes_no("  Install mautrix[e2be] now?", True):
+                import sys as _sys
+                # asyncpg and aiosqlite are required for the SQLite crypto store
+                result = subprocess.run(
+                    [_sys.executable, "-m", "pip", "install",
+                     "mautrix[e2be]", "asyncpg", "aiosqlite", "base58"],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    print_success("  mautrix[e2be] and dependencies installed.")
+                else:
+                    print_error(
+                        "  Installation failed. Run manually: "
+                        "pip install 'mautrix[e2be]' asyncpg aiosqlite base58"
+                    )
+            else:
+                print_warning(
+                    "  Skipping — run: pip install 'mautrix[e2be]' asyncpg aiosqlite base58"
+                )
+
+    # ── Cross-signing (password for bootstrap) ──
+    print()
+    print_info("  Cross-signing lets Element verify the bot's identity so the")
+    print_info("  'device not verified by owner' warning disappears permanently.")
+    print_info("  The bot account password is stored in .env and used to bootstrap")
+    print_info("  cross-signing keys on first gateway start.")
+    existing_password = get_env_value("MATRIX_PASSWORD") or ""
+    if existing_password:
+        # Password was already saved (either from the auto-login step above,
+        # or from a previous wizard run). Confirm it's set — no need to re-enter.
+        print_success("  ✓ Bot password already saved in .env — cross-signing will bootstrap automatically.")
+    else:
+        try:
+            import getpass
+            password_input = getpass.getpass(
+                "  Bot account password (leave empty to skip): "
+            ).strip()
+            if password_input:
+                save_env_value("MATRIX_PASSWORD", password_input)
+                print_success("  Password saved.")
+            else:
+                print_info("  Skipped — cross-signing bootstrap will be attempted without password.")
+                print_info("  If it fails, re-run this wizard and enter the bot account password.")
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+    # ── Recovery key — bootstrap and save automatically ──
+    # At this point we have: token, password, homeserver, user_id.
+    # That's everything needed to bootstrap cross-signing and obtain the
+    # recovery key right now, without the user having to run the gateway
+    # first and copy anything manually.
+    if e2ee_enabled:
+        print()
+        print_info("  Bootstrapping E2EE cross-signing keys...")
+        print_info("  The recovery key lets the bot self-sign its device on every restart,")
+        print_info("  removing the 'encrypted by unverified device' warning permanently.")
+
+        existing_rk = get_env_value("MATRIX_RECOVERY_KEY") or ""
+        bot_password = get_env_value("MATRIX_PASSWORD") or ""
+
+        if existing_rk:
+            print_success("  ✓ Recovery key already set in .env — no action needed.")
+        elif not bot_password:
+            print_warning("  Bot password not set — skipping automatic recovery key bootstrap.")
+            print_info("  Start the gateway and save the printed recovery key manually.")
+        else:
+            # Bootstrap cross-signing and obtain the recovery key directly.
+            # We do this by making the same API calls the gateway makes on first start,
+            # but synchronously using httpx here in the wizard.
+            try:
+                import httpx as _hx, json as _j, asyncio as _asyncio
+
+                async def _get_recovery_key():
+                    """Bootstrap cross-signing using mautrix and return the recovery key."""
+                    import logging as _log
+                    # Suppress mautrix internal debug warnings during bootstrap
+                    for _nl in ("mautrix.crypto", "mau.crypto", "mau.client.crypto"):
+                        _log.getLogger(_nl).setLevel(_log.ERROR)
+                    import aiohttp as _aiohttp
+                    from mautrix.util.async_db import Database
+                    from mautrix.crypto.store.asyncpg import PgCryptoStore
+                    from mautrix.crypto import OlmMachine
+                    from mautrix.client.state_store import MemoryStateStore
+                    from mautrix.client import Client
+                    import os as _os
+                    from pathlib import Path as _Path
+
+                    data_dir = _Path(_os.path.expanduser("~/.hermes/matrix"))
+                    data_dir.mkdir(parents=True, exist_ok=True)
+                    db_path = data_dir / "crypto.db"
+
+                    db = Database.create(
+                        f"sqlite:{db_path}",
+                        upgrade_table=PgCryptoStore.upgrade_table,
+                    )
+                    await db.start()
+                    store = PgCryptoStore(user_id, "hermes-matrix-e2ee", db)
+                    await store.open()
+
+                    connector = _aiohttp.TCPConnector(ssl=False if not verify_ssl else None)
+                    session = _aiohttp.ClientSession(connector=connector)
+                    state_store = MemoryStateStore()
+                    client = Client(
+                        mxid=user_id, base_url=homeserver,
+                        token=token, client_session=session,
+                        state_store=state_store, sync_store=store,
+                    )
+                    whoami = await client.whoami()
+                    client.device_id = whoami.device_id
+
+                    crypto = OlmMachine(client=client, crypto_store=store, state_store=state_store)
+                    client.crypto = crypto
+                    await crypto.load()
+
+                    # Upload device keys if needed
+                    if not crypto.account.shared:
+                        await crypto.share_keys()
+
+                    # Check trust state — only bootstrap if not already verified
+                    from mautrix.types import TrustState as _TS
+                    try:
+                        ts = await crypto.resolve_trust(crypto.own_identity)
+                        if ts >= _TS.CROSS_SIGNED_UNTRUSTED:
+                            await session.close()
+                            await db.stop()
+                            return None, "already verified"
+                    except Exception:
+                        pass
+
+                    # Bootstrap cross-signing with UIA fallback
+                    rk = None
+                    try:
+                        rk = await crypto.generate_recovery_key(passphrase=bot_password or None)
+                    except Exception as e:
+                        if "401" in str(e) and bot_password:
+                            _uia = _j.loads(str(e).split("401: ", 1)[-1])
+                            _auth = {
+                                "type": "m.login.password",
+                                "identifier": {"type": "m.id.user", "user": user_id},
+                                "password": bot_password,
+                                "session": _uia.get("session", ""),
+                            }
+                            from mautrix.crypto.cross_signing_key import CrossSigningSeeds as _CSS
+                            _seeds = _CSS.generate()
+                            _sk = await crypto.ssss.generate_and_upload_key(bot_password or None)
+                            await crypto._upload_cross_signing_keys_to_ssss(_sk, _seeds)
+                            await crypto._publish_cross_signing_keys(_seeds.to_keys(), auth=_auth)
+                            await crypto.ssss.set_default_key_id(_sk.id)
+                            await crypto.sign_own_device(crypto.own_identity)
+                            rk = _sk.recovery_key
+                        else:
+                            raise
+
+                    await session.close()
+                    await db.stop()
+                    return rk, None
+
+                recovery_key, reason = _asyncio.run(_get_recovery_key())
+
+                if recovery_key:
+                    save_env_value("MATRIX_RECOVERY_KEY", recovery_key)
+                    print_success(f"  ✓ Recovery key obtained and saved to .env: {recovery_key}")
+                    print_info("  The bot will use this to self-sign its device on every restart.")
+                elif reason == "already verified":
+                    print_success("  ✓ Bot cross-signing already verified — no bootstrap needed.")
+                else:
+                    print_warning("  Could not obtain recovery key automatically.")
+                    print_info("  The gateway will bootstrap on first start and save the key.")
+
+            except Exception as _rk_exc:
+                print_warning(f"  Automatic bootstrap skipped ({_rk_exc}).")
+                print_info("  The gateway will bootstrap on first start and save the key.")
+
+        print()
+        print_success("  E2EE setup complete.")
+
+    # ── Save core vars ──
+    save_env_value("MATRIX_HOMESERVER_URL", homeserver)
+    save_env_value("MATRIX_USER_ID", user_id)
+    save_env_value("MATRIX_ACCESS_TOKEN", token)
+    save_env_value("MATRIX_VERIFY_SSL", ssl_val)
+    save_env_value("MATRIX_E2EE", "true" if e2ee_enabled else "false")
+    if device_id:
+        save_env_value("MATRIX_DEVICE_ID", device_id)
+
+    # ── Allowed users ──
+    print()
+    print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Enter Matrix user IDs allowed to message the bot (comma-separated).")
+    print_info("  This is YOUR Matrix ID (not the bot's) — e.g. @alice:matrix.example.org")
+    existing_allowed = get_env_value("MATRIX_ALLOWED_USERS") or ""
+    if existing_allowed:
+        print_info(f"  Current: {existing_allowed}")
+    try:
+        allowed = input(f"  Allowed users{f' [{existing_allowed}]' if existing_allowed else ''}: ").strip()
+        if not allowed:
+            allowed = existing_allowed
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+    if allowed:
+        save_env_value("MATRIX_ALLOWED_USERS", allowed.replace(" ", ""))
+        print_success("  Saved — only these users can interact with the bot.")
+    else:
+        print()
+        access_choices = [
+            "Enable open access (anyone who invites the bot can use it)",
+            "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+            "Skip for now (bot will deny all users until configured)",
+        ]
+        access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+        if access_idx == 0:
+            save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+            print_warning("  Open access enabled — anyone can use your bot!")
+        elif access_idx == 1:
+            print_success("  DM pairing mode — users will receive a code to request access.")
+        else:
+            print_info("  Skipped — configure later with 'hermes gateway setup'")
+
+    # ── Home room ──
+    print()
+    print_info("  Optionally set a home room ID for cron job delivery.")
+    print_info("  Room IDs look like: !abc123:yourdomain")
+    print_info("  Find it in Element: Room Settings → Advanced → Internal Room ID")
+    existing_home = get_env_value("MATRIX_HOME_CHANNEL") or ""
+    if existing_home:
+        print_info(f"  Current: {existing_home}")
+    try:
+        home_channel = input(f"  Home room ID{f' [{existing_home}]' if existing_home else ''} (or Enter to skip): ").strip()
+        if not home_channel:
+            home_channel = existing_home
+    except (EOFError, KeyboardInterrupt):
+        pass
+    else:
+        if home_channel:
+            save_env_value("MATRIX_HOME_CHANNEL", home_channel)
+            print_success(f"  Home room set to {home_channel}")
+
+    # ── Cross-signing bootstrap and trust verification ──
+    # Run this inline during setup so the user never needs to run a separate
+    # command. We have everything we need: bot token, bot password, allowed
+    # user passwords (prompted in _bootstrap_user_trust).
+    if e2ee_enabled and allowed:
+        print()
+        print_info("  Setting up E2EE trust chain so Element shows the bot as verified...")
+
+        # Step 1: Upload the bot's cross-signing keys directly using the bot password.
+        # This is what the gateway does on first start, but we do it here so the
+        # trust chain is complete before the user ever starts the gateway.
+        bot_password = get_env_value("MATRIX_PASSWORD") or ""
+        if bot_password:
+            try:
+                import httpx as _hx, json as _j
+                # First attempt without UIA
+                _cs_resp = _hx.post(
+                    f"{homeserver.rstrip('/')}/_matrix/client/v3/keys/device_signing/upload",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={},  # empty — just to get the UIA challenge
+                    verify=verify_ssl, timeout=10,
+                )
+                if _cs_resp.status_code == 401:
+                    # Server requires UIA — expected on Synapse when keys exist
+                    pass  # _bootstrap_user_trust handles the actual key generation
+                elif _cs_resp.status_code == 200:
+                    pass  # No UIA needed, gateway will handle on first start
+            except Exception:
+                pass
+
+        # Step 2: Sign the bot's master key with each allowed user's key.
+        # _bootstrap_user_trust prompts for each allowed user's password.
+        # It handles generating/uploading user cross-signing keys AND signing
+        # the bot's master key — completing the full trust chain.
+        try:
+            import httpx as _hx
+            _r = _hx.post(
+                f"{homeserver.rstrip('/')}/_matrix/client/v3/keys/query",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"device_keys": {user_id: []}},
+                verify=verify_ssl, timeout=10,
+            )
+            _has_mk = bool(_r.json().get("master_keys", {}).get(user_id))
+        except Exception:
+            _has_mk = False
+
+        if _has_mk:
+            _bootstrap_user_trust(homeserver, allowed, user_id, token, verify_ssl)
+        else:
+            print_info("  Bot cross-signing keys will be uploaded on first gateway start.")
+            print_info("  After starting the gateway, run:")
+            print_info("    hermes gateway verify-matrix")
+            print_info("  to complete the trust chain. This is a one-time step.")
+
+    print()
+    print_success("🔷 Matrix configured!")
+    print_info("  Invite the bot to any room — it will auto-accept if you're in the allowlist.")
+    print()
+    print_info("  Next steps:")
+    print_info("  1. Start the gateway:  hermes gateway run")
+    if e2ee_enabled:
+        print_info("  2. If verification isn't complete: hermes gateway verify-matrix")
+        print_info("  3. Restart Element to see the verified status.")
+
+
 def _setup_signal():
     """Interactive setup for Signal messenger."""
     import shutil
@@ -931,6 +1886,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "matrix":
+            _setup_matrix()
         else:
             _setup_standard_platform(platform)
 

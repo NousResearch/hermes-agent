@@ -2064,12 +2064,31 @@ def setup_gateway(config: dict):
             print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
             print_info("or personal self-chat) and pair via QR code.")
 
+    # ── Matrix ──
+    existing_matrix = get_env_value("MATRIX_ACCESS_TOKEN")
+    if existing_matrix:
+        print_info("Matrix: already configured")
+        if prompt_yes_no("Reconfigure Matrix?", False):
+            existing_matrix = None
+
+    if not existing_matrix and prompt_yes_no("Set up Matrix bot?", False):
+        print_info("Matrix connects to any homeserver (matrix.org, self-hosted, etc.).")
+        print_info("Requires matrix-nio: pip install matrix-nio")
+        print_info("For the full guided setup run: hermes gateway setup matrix")
+        print()
+        if prompt_yes_no("Run the full Matrix setup wizard now?", True):
+            from hermes_cli.gateway import _setup_matrix  # type: ignore[import]
+            _setup_matrix()
+        else:
+            print_info("You can configure Matrix later with: hermes gateway setup matrix")
+
     # ── Gateway Service Setup ──
     any_messaging = (
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
         or get_env_value("SLACK_BOT_TOKEN")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("MATRIX_ACCESS_TOKEN")
     )
     if any_messaging:
         print()

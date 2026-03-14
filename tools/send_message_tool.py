@@ -1,8 +1,9 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
-human-friendly channel names to IDs. Works in both CLI and gateway contexts.
+(Telegram, Discord, Slack, Matrix, Signal, WhatsApp). Supports listing available
+targets and resolving human-friendly channel names to IDs. Works in both CLI
+and gateway contexts.
 """
 
 import json
@@ -319,62 +320,75 @@ async def _send_email(extra, chat_id, message):
 
 
 async def _send_matrix(pconfig, chat_id, message):
-    """Send via Matrix Client-Server API (one-shot, no persistent sync needed)."""
+    """Send via Matrix Client-Server API using mautrix (one-shot, no persistent sync)."""
     try:
-        from nio import AsyncClient, AsyncClientConfig, RoomSendResponse
+        import aiohttp
+        from mautrix.client.api.client import ClientAPI
+        from mautrix.types import (
+            EventType, Format, MessageType,
+            RoomID, TextMessageEventContent,
+        )
     except ImportError:
-        return {"error": "matrix-nio not installed. Run: pip install matrix-nio"}
+        return {"error": "mautrix not installed. Run: pip install 'mautrix[e2be]' base58"}
 
     homeserver_url = pconfig.extra.get("homeserver_url", "").rstrip("/")
     access_token = pconfig.token or ""
     user_id = pconfig.extra.get("user_id", "")
-    verify_ssl = pconfig.extra.get("verify_ssl", True)
+    verify_ssl_raw = pconfig.extra.get("verify_ssl", "true")
+    verify_ssl = str(verify_ssl_raw).lower() not in ("false", "0", "no")
 
     if not homeserver_url or not access_token:
         return {
             "error": (
-                "Matrix not configured "
-                "(MATRIX_HOMESERVER_URL and MATRIX_ACCESS_TOKEN required)"
+                "Matrix not configured: "
+                "MATRIX_HOMESERVER_URL and MATRIX_ACCESS_TOKEN are required"
             )
         }
     if not user_id:
-        return {"error": "Matrix not configured (MATRIX_USER_ID required)"}
+        return {"error": "Matrix not configured: MATRIX_USER_ID is required"}
 
-    config = AsyncClientConfig(encryption_enabled=False)
-    client = AsyncClient(
-        homeserver_url, user_id, config=config, ssl=verify_ssl
-    )
-    client.access_token = access_token
+    connector = aiohttp.TCPConnector(ssl=False if not verify_ssl else None)
+    session = aiohttp.ClientSession(connector=connector)
 
     try:
-        # Include HTML rendering if markdown library is available
-        msg_content: dict = {"msgtype": "m.text", "body": message}
+        client = ClientAPI(
+            mxid=user_id,
+            base_url=homeserver_url,
+            token=access_token,
+            client_session=session,
+        )
+
+        # Build content with optional Markdown → HTML rendering
+        body = message
+        formatted_body = None
         try:
             import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = html
+            formatted_body = _md.markdown(message, extensions=["fenced_code", "tables"])
         except ImportError:
             pass
 
-        resp = await client.room_send(
-            room_id=chat_id,
-            message_type="m.room.message",
-            content=msg_content,
-            ignore_unverified_devices=True,
+        content = TextMessageEventContent(
+            msgtype=MessageType.TEXT,
+            body=body,
+            format=Format.HTML if formatted_body else None,
+            formatted_body=formatted_body,
         )
-        if isinstance(resp, RoomSendResponse):
-            return {
-                "success": True,
-                "platform": "matrix",
-                "chat_id": chat_id,
-                "event_id": resp.event_id,
-            }
-        return {"error": f"Matrix send failed: {resp}"}
+
+        event_id = await client.send_message_event(
+            room_id=RoomID(chat_id),
+            event_type=EventType.ROOM_MESSAGE,
+            content=content,
+        )
+        return {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": chat_id,
+            "event_id": str(event_id),
+        }
     except Exception as e:
         return {"error": f"Matrix send failed: {e}"}
     finally:
-        await client.close()
+        await session.close()
 
 
 def _check_send_message():

@@ -521,8 +521,107 @@ def cmd_chat(args):
     cli_main(**kwargs)
 
 
+def _cmd_gateway_verify_matrix(args):
+    """
+    Establish cross-signing trust between allowed users and the Matrix bot.
+
+    This command:
+      1. Checks that the gateway is running and the bot has a master key
+      2. For each allowed user (or --user if specified), asks for their password
+      3. Uploads their cross-signing keys if missing
+      4. Signs the bot's master key with their user-signing key
+
+    Run this once after `hermes gateway run` to remove the "unverified device"
+    warning in Element permanently.
+
+    Usage:
+        hermes gateway verify-matrix
+        hermes gateway verify-matrix --user @alice:matrix.example.org
+    """
+    import os
+    from hermes_cli.config import get_env_value
+
+    # Ensure .env is loaded (main.py loads it at startup, but this function
+    # may be called from a subprocess that hasn't done so yet)
+    try:
+        from hermes_cli.config import load_env
+        load_env()
+    except Exception:
+        pass
+
+    print()
+    print("┌─────────────────────────────────────────────────────────┐")
+    print("│         🔷 Matrix Trust Verification                    │")
+    print("├─────────────────────────────────────────────────────────┤")
+    print("│  Signs the bot's identity with your Matrix account so   │")
+    print("│  Element shows the bot as a verified, trusted device.   │")
+    print("└─────────────────────────────────────────────────────────┘")
+    print()
+
+    homeserver = get_env_value("MATRIX_HOMESERVER_URL") or ""
+    bot_token = get_env_value("MATRIX_ACCESS_TOKEN") or ""
+    bot_user_id = get_env_value("MATRIX_USER_ID") or ""
+    verify_ssl_raw = get_env_value("MATRIX_VERIFY_SSL") or "true"
+    verify_ssl = verify_ssl_raw.lower() not in ("false", "0", "no")
+
+    if not homeserver or not bot_token or not bot_user_id:
+        print("✗  Matrix is not configured. Run: hermes gateway setup matrix")
+        return
+
+    # Check the bot has a master key (gateway must be running or have run at least once)
+    try:
+        import httpx
+        r = httpx.post(
+            f"{homeserver.rstrip('/')}/_matrix/client/v3/keys/query",
+            headers={"Authorization": f"Bearer {bot_token}"},
+            json={"device_keys": {bot_user_id: []}},
+            verify=verify_ssl, timeout=10,
+        )
+        bot_mk = r.json().get("master_keys", {}).get(bot_user_id, {})
+        if not bot_mk:
+            print("✗  Bot has no cross-signing master key yet.")
+            print("   Start the gateway first:  hermes gateway run")
+            print("   Then re-run this command.")
+            return
+        print(f"✓  Bot master key found for {bot_user_id}")
+    except Exception as e:
+        print(f"✗  Could not reach homeserver: {e}")
+        return
+
+    # Determine which users to verify as
+    allowed_raw = get_env_value("MATRIX_ALLOWED_USERS") or ""
+    allowed_users = [u.strip() for u in allowed_raw.split(",") if u.strip()]
+    if getattr(args, "user", None):
+        allowed_users = [args.user]
+
+    if not allowed_users:
+        print("✗  No allowed users configured (MATRIX_ALLOWED_USERS).")
+        print("   Run: hermes gateway setup matrix")
+        return
+
+    print(f"  Allowed users to verify as: {', '.join(allowed_users)}")
+    print()
+
+    from hermes_cli.gateway import _bootstrap_user_trust
+    _bootstrap_user_trust(
+        homeserver=homeserver,
+        allowed_users_str=",".join(allowed_users),
+        bot_user_id=bot_user_id,
+        bot_token=bot_token,
+        verify_ssl=verify_ssl,
+    )
+
+    print()
+    print("  Done. Restart Element to pick up the new trust state.")
+    print(f"  {bot_user_id} should now appear as verified in Element.")
+
+
 def cmd_gateway(args):
     """Gateway management commands."""
+    # The argparse dest for gateway subcommands is "gateway_command" (see add_subparsers).
+    if getattr(args, "gateway_command", None) == "verify-matrix":
+        _cmd_gateway_verify_matrix(args)
+        return
     from hermes_cli.gateway import gateway_command
     gateway_command(args)
 
@@ -2365,6 +2464,16 @@ For more help on a command:
 
     # gateway setup
     gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+
+    # gateway verify-matrix
+    gateway_verify = gateway_subparsers.add_parser(
+        "verify-matrix",
+        help="Establish cross-signing trust between allowed users and the Matrix bot",
+    )
+    gateway_verify.add_argument(
+        "--user",
+        help="Matrix user ID to verify as (default: uses MATRIX_ALLOWED_USERS from config)",
+    )
 
     gateway_parser.set_defaults(func=cmd_gateway)
     

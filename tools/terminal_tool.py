@@ -1130,12 +1130,10 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
+            from tools.environments.local import LocalEnvironment  # noqa: F401
             return True
         elif env_type == "docker":
-            from minisweagent.environments.docker import DockerEnvironment
-            # Check if docker is available (use find_docker for macOS PATH issues)
-            from tools.environments.docker import find_docker
+            from tools.environments.docker import DockerEnvironment, find_docker  # noqa: F401
             import subprocess
             docker = find_docker()
             if not docker:
@@ -1144,8 +1142,7 @@ def check_terminal_requirements() -> bool:
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":
-            from minisweagent.environments.singularity import SingularityEnvironment
-            # Check if singularity/apptainer is available
+            from tools.environments.singularity import SingularityEnvironment  # noqa: F401
             import subprocess
             import shutil
             executable = shutil.which("apptainer") or shutil.which("singularity")
@@ -1154,15 +1151,15 @@ def check_terminal_requirements() -> bool:
                 return result.returncode == 0
             return False
         elif env_type == "ssh":
-            from tools.environments.ssh import SSHEnvironment
+            from tools.environments.ssh import SSHEnvironment  # noqa: F401
             # Check that host and user are configured
             return bool(config.get("ssh_host")) and bool(config.get("ssh_user"))
         elif env_type == "modal":
-            from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+            from tools.environments.modal import ModalEnvironment  # noqa: F401
             # Check for modal token
             return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
         elif env_type == "daytona":
-            from daytona import Daytona
+            from daytona import Daytona  # noqa: F401
             return os.getenv("DAYTONA_API_KEY") is not None
         else:
             return False

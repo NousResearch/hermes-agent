@@ -440,10 +440,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.MATRIX] = PlatformConfig()
         config.platforms[Platform.MATRIX].enabled = True
         config.platforms[Platform.MATRIX].token = matrix_token
+        matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
+        # Store as lowercase strings so the adapter can read them consistently
+        # with a simple `.lower() not in ("false", "0", "no")` check.
+        matrix_e2ee = os.getenv("MATRIX_E2EE", "false")
+        matrix_verify_ssl = os.getenv("MATRIX_VERIFY_SSL", "true")
         config.platforms[Platform.MATRIX].extra.update({
             "homeserver_url": matrix_homeserver.rstrip("/"),
             "user_id": matrix_user_id,
-            "verify_ssl": os.getenv("MATRIX_VERIFY_SSL", "true").lower() not in ("false", "0", "no"),
+            "device_id": matrix_device_id,
+            "verify_ssl": matrix_verify_ssl,
+            "e2ee": matrix_e2ee,
         })
         matrix_home = os.getenv("MATRIX_HOME_CHANNEL")
         if matrix_home:

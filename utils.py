@@ -1,4 +1,11 @@
-"""Shared utility functions for hermes-agent."""
+"""
+Shared utility functions for the Hermes Agent infrastructure.
+
+This module provides high-integrity file I/O operations. In an autonomous 
+agentic environment, ensuring state persistence without corruption is 
+critical, as malformed configuration or state files can lead to 
+unrecoverable logic failures.
+"""
 
 import json
 import os
@@ -10,11 +17,21 @@ import yaml
 
 
 def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2) -> None:
-    """Write JSON data to a file atomically.
+    """
+    Write JSON data to a file using an atomic 'replace' pattern.
 
-    Uses temp file + fsync + os.replace to ensure the target file is never
-    left in a partially-written state.  If the process crashes mid-write,
-    the previous version of the file remains intact.
+    This function mitigates the risk of file corruption during system crashes. 
+    By writing to a temporary file and performing an 'os.replace', the 
+    operation ensures that the target file is either fully updated or 
+    remains in its previous valid state.
+
+    Technical Safety:
+    - Uses 'os.fsync' to force the OS to flush data to physical storage.
+    - Uses 'os.replace' for a POSIX-compliant atomic swap.
+    
+    NOTE: While file-system atomic, this does not implement application-level 
+    file locking. Concurrent writes from multiple processes (Race Conditions) 
+    should be managed via higher-level orchestrators.
 
     Args:
         path: Target file path (will be created or overwritten).
@@ -33,6 +50,7 @@ def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2) -> 
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent, ensure_ascii=False)
             f.flush()
+            # Ensure the OS flushes buffers to disk before we rename
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
@@ -51,19 +69,19 @@ def atomic_yaml_write(
     sort_keys: bool = False,
     extra_content: str | None = None,
 ) -> None:
-    """Write YAML data to a file atomically.
+    """
+    Write YAML data to a file atomically, mirroring the safety of 'atomic_json_write'.
 
-    Uses temp file + fsync + os.replace to ensure the target file is never
-    left in a partially-written state.  If the process crashes mid-write,
-    the previous version of the file remains intact.
+    Crucial for human-readable configurations where partial writes would 
+    render the YAML parser unable to recover the agent's settings.
 
     Args:
         path: Target file path (will be created or overwritten).
         data: YAML-serializable data to write.
         default_flow_style: YAML flow style (default False).
         sort_keys: Whether to sort dict keys (default False).
-        extra_content: Optional string to append after the YAML dump
-            (e.g. commented-out sections for user reference).
+        extra_content: Optional string to append after the YAML dump 
+                       (e.g., manual comments).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

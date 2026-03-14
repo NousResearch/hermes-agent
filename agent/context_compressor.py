@@ -17,6 +17,16 @@ from agent.model_metadata import (
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
+    "to save context space. The summary below describes work that was "
+    "already completed, and the current session state may still reflect "
+    "that work (for example, files may already be changed). Use the summary "
+    "and the current state to continue from where things left off, and "
+    "avoid repeating work:"
+)
+LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
 
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.
@@ -102,22 +112,22 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
+        prompt = f"""Create a concise handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
 
-Write from a neutral perspective describing:
+Describe:
 1. What actions were taken (tool calls, searches, file operations)
 2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
+3. Important decisions, constraints, or user preferences
+4. Relevant data, file names, outputs, or next steps needed to continue
 
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
+Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{self.summary_target_tokens} tokens.
 
 ---
 TURNS TO SUMMARIZE:
 {content_to_summarize}
 ---
 
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+Write only the summary body. Do not include any preamble or prefix; the system will add the handoff wrapper."""
 
         # Use the centralized LLM router — handles provider resolution,
         # auth, and fallback internally.
@@ -137,9 +147,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             if not isinstance(content, str):
                 content = str(content) if content else ""
             summary = content.strip()
-            if not summary.startswith("[CONTEXT SUMMARY]:"):
-                summary = "[CONTEXT SUMMARY]: " + summary
-            return summary
+            return self._with_summary_prefix(summary)
         except RuntimeError:
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary.")
@@ -147,6 +155,16 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         except Exception as e:
             logging.warning("Failed to generate context summary: %s", e)
             return None
+
+    @staticmethod
+    def _with_summary_prefix(summary: str) -> str:
+        """Normalize summary text to the current compaction handoff format."""
+        text = (summary or "").strip()
+        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
@@ -287,7 +305,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (
+                    (msg.get("content") or "")
+                    + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
+                )
             compressed.append(msg)
 
         if summary:

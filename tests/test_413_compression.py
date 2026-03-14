@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 
 
@@ -340,7 +341,7 @@ class TestPreflightCompression:
             # Simulate compression reducing messages
             mock_compress.return_value = (
                 [
-                    {"role": "user", "content": "[CONTEXT SUMMARY]: Previous conversation"},
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
                     {"role": "user", "content": "hello"},
                 ],
                 "new system prompt",

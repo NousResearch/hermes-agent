@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -69,11 +70,31 @@ os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
+import time as _time
+from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def _relative_time(ts) -> str:
+    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+    if not ts:
+        return "?"
+    delta = _time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    if delta < 172800:
+        return "yesterday"
+    if delta < 604800:
+        return f"{int(delta / 86400)}d ago"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
 def _has_any_provider_configured() -> bool:
@@ -140,27 +161,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     # Try curses-based picker first
     try:
         import curses
-        import time as _time
-        from datetime import datetime
 
         result_holder = [None]
-
-        def _relative_time(ts):
-            if not ts:
-                return "?"
-            delta = _time.time() - ts
-            if delta < 60:
-                return "just now"
-            elif delta < 3600:
-                return f"{int(delta / 60)}m ago"
-            elif delta < 86400:
-                return f"{int(delta / 3600)}h ago"
-            elif delta < 172800:
-                return "yesterday"
-            elif delta < 604800:
-                return f"{int(delta / 86400)}d ago"
-            else:
-                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
         def _format_row(s, max_x):
             """Format a session row for display."""
@@ -352,26 +354,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         pass
 
     # Fallback: numbered list (Windows without curses, etc.)
-    import time as _time
-    from datetime import datetime
-
-    def _relative_time_fb(ts):
-        if not ts:
-            return "?"
-        delta = _time.time() - ts
-        if delta < 60:
-            return "just now"
-        elif delta < 3600:
-            return f"{int(delta / 60)}m ago"
-        elif delta < 86400:
-            return f"{int(delta / 3600)}h ago"
-        elif delta < 172800:
-            return "yesterday"
-        elif delta < 604800:
-            return f"{int(delta / 86400)}d ago"
-        else:
-            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -379,7 +361,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         label = title or preview or s["id"]
         if len(label) > 50:
             label = label[:47] + "..."
-        last_active = _relative_time_fb(s.get("last_active"))
+        last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
         print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
 
@@ -1949,9 +1931,82 @@ def _update_via_zip(args):
     print("✓ Update complete!")
 
 
+def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not status.stdout.strip():
+        return None
+
+    from datetime import datetime, timezone
+
+    stash_name = datetime.now(timezone.utc).strftime("hermes-update-autostash-%Y%m%d-%H%M%S")
+    print("→ Local changes detected — stashing before update...")
+    subprocess.run(
+        git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
+        cwd=cwd,
+        check=True,
+    )
+    stash_ref = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "refs/stash"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return stash_ref
+
+
+
+def _restore_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+    prompt_user: bool = False,
+) -> bool:
+    if prompt_user:
+        print()
+        print("⚠ Local changes were stashed before updating.")
+        print("  Restoring them may reapply local customizations onto the updated codebase.")
+        print("  Review the result afterward if Hermes behaves unexpectedly.")
+        print("Restore local changes now? [Y/n]")
+        response = input().strip().lower()
+        if response not in ("", "y", "yes"):
+            print("Skipped restoring local changes.")
+            print("Your changes are still preserved in git stash.")
+            print(f"Restore manually with: git stash apply {stash_ref}")
+            return False
+
+    print("→ Restoring local changes...")
+    restore = subprocess.run(
+        git_cmd + ["stash", "apply", stash_ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if restore.returncode != 0:
+        print("✗ Update pulled new code, but restoring local changes failed.")
+        if restore.stdout.strip():
+            print(restore.stdout.strip())
+        if restore.stderr.strip():
+            print(restore.stderr.strip())
+        print("Your changes are still preserved in git stash.")
+        print(f"Resolve manually with: git stash apply {stash_ref}")
+        sys.exit(1)
+
+    subprocess.run(git_cmd + ["stash", "drop", stash_ref], cwd=cwd, check=True)
+    print("⚠ Local changes were restored on top of the updated codebase.")
+    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    return True
+
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
-    import subprocess
     import shutil
     
     print("⚕ Updating Hermes Agent...")
@@ -2017,8 +2072,21 @@ def cmd_update(args):
             return
         
         print(f"→ Found {commit_count} new commit(s)")
+
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
+
         print("→ Pulling updates...")
-        subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        try:
+            subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        finally:
+            if auto_stash_ref is not None:
+                _restore_stashed_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                )
         
         # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")
@@ -2846,30 +2914,6 @@ For more help on a command:
             if not sessions:
                 print("No sessions found.")
                 return
-            from datetime import datetime
-            import time as _time
-
-            def _relative_time(ts):
-                """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
-                if not ts:
-                    return "?"
-                delta = _time.time() - ts
-                if delta < 60:
-                    return "just now"
-                elif delta < 3600:
-                    mins = int(delta / 60)
-                    return f"{mins}m ago"
-                elif delta < 86400:
-                    hours = int(delta / 3600)
-                    return f"{hours}h ago"
-                elif delta < 172800:
-                    return "yesterday"
-                elif delta < 604800:
-                    days = int(delta / 86400)
-                    return f"{days}d ago"
-                else:
-                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
                 print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")

@@ -37,6 +37,7 @@ COMMANDS_BY_CATEGORY = {
         "/verbose": "Cycle tool progress display: off → new → all → verbose",
         "/reasoning": "Manage reasoning effort and display (usage: /reasoning [level|show|hide])",
         "/skin": "Show or change the display skin/theme",
+        "/voice": "Toggle voice mode (Ctrl+B to record). Usage: /voice [on|off|tts|status]",
     },
     "Tools & Skills": {
         "/tools": "List available tools",

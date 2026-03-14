@@ -31,6 +31,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    HTTP = "http"
 
 
 @dataclass
@@ -464,6 +465,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.EMAIL,
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
+    # HTTP API
+    http_token = os.getenv("HTTP_AUTH_TOKEN")
+    http_port = os.getenv("HTTP_PORT")
+    if http_token or http_port:
+        if Platform.HTTP not in config.platforms:
+            config.platforms[Platform.HTTP] = PlatformConfig()
+        config.platforms[Platform.HTTP].enabled = True
+        if http_token:
+            config.platforms[Platform.HTTP].token = http_token
+        config.platforms[Platform.HTTP].extra.update({
+            "port": int(http_port) if http_port else 8720,
+            "host": os.getenv("HTTP_HOST", "0.0.0.0"),
+        })
+        http_home = os.getenv("HTTP_HOME_CHANNEL")
+        if http_home:
+            config.platforms[Platform.HTTP].home_channel = HomeChannel(
+                platform=Platform.HTTP,
+                chat_id=http_home,
+                name="HTTP Home",
             )
 
     # Session settings

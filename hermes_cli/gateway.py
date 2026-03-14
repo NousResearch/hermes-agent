@@ -544,6 +544,26 @@ _PLATFORMS = [
              "help": "Only emails from these addresses will be processed."},
         ],
     },
+    {
+        "key": "http",
+        "label": "HTTP API",
+        "emoji": "🌐",
+        "token_var": "HTTP_AUTH_TOKEN",
+        "setup_instructions": [
+            "The HTTP API exposes your Hermes Agent over a REST API.",
+            "Mobile apps and scripts can connect to it directly.",
+            "",
+            "1. Choose a port (default: 8720)",
+            "2. Set an auth token for security (recommended)",
+            "3. For remote access, use a reverse proxy with HTTPS",
+        ],
+        "vars": [
+            {"name": "HTTP_AUTH_TOKEN", "prompt": "Auth token (Bearer)", "password": True,
+             "help": "Clients must send this as 'Authorization: Bearer <token>'"},
+            {"name": "HTTP_PORT", "prompt": "Port number (default: 8720)", "password": False,
+             "help": "The port the HTTP API will listen on."},
+        ],
+    },
 ]
 
 

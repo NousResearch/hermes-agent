@@ -214,12 +214,15 @@ def _resolve_gateway_model() -> str:
 class GatewayRunner:
     """
     Main gateway controller.
-    
+
     Manages the lifecycle of all platform adapters and routes
     messages to/from the agent.
     """
-    
+
+    _instance: "GatewayRunner | None" = None
+
     def __init__(self, config: Optional[GatewayConfig] = None):
+        GatewayRunner._instance = self
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
 
@@ -800,6 +803,14 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
+        elif platform == Platform.HTTP:
+            from gateway.platforms.http import HTTPAdapter, check_http_requirements
+            if not check_http_requirements():
+                logger.warning("HTTP: fastapi/uvicorn not installed. "
+                               "Run: pip install 'hermes-agent[http]'")
+                return None
+            return HTTPAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -830,6 +841,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.HTTP: "HTTP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -838,6 +850,7 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.HTTP: "HTTP_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

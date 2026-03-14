@@ -120,6 +120,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "http": Platform.HTTP,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -188,6 +189,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None)
         return await _send_signal(pconfig.extra, chat_id, message)
     elif platform == Platform.EMAIL:
         return await _send_email(pconfig.extra, chat_id, message)
+    elif platform == Platform.HTTP:
+        return await _send_http(chat_id, message)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -313,6 +316,23 @@ async def _send_email(extra, chat_id, message):
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Email send failed: {e}"}
+
+
+async def _send_http(chat_id, message):
+    """Send via the HTTP adapter's in-process send mechanism."""
+    try:
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+        runner = getattr(GatewayRunner, '_instance', None)
+        if runner and Platform.HTTP in runner.adapters:
+            adapter = runner.adapters[Platform.HTTP]
+            result = await adapter.send(chat_id, message)
+            if result.success:
+                return {"success": True, "platform": "http", "chat_id": chat_id}
+            return {"error": result.error or "HTTP send failed"}
+        return {"error": "HTTP adapter not connected"}
+    except Exception as e:
+        return {"error": f"HTTP send failed: {e}"}
 
 
 def _check_send_message():

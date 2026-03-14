@@ -216,6 +216,7 @@ def show_status(args):
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "HTTP API": ("HTTP_AUTH_TOKEN", "HTTP_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

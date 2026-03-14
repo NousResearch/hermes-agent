@@ -77,6 +77,9 @@ _DB_CONNSTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bearer tokens in arbitrary text (not just Authorization headers)
+_AUTH_BEARER_RE = re.compile(r"(Bearer\s+)([A-Za-z0-9_.\-/+=]{8,})")
+
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -123,6 +126,12 @@ def redact_sensitive_text(text: str) -> str:
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(
         lambda m: m.group(1) + _mask_token(m.group(2)),
+        text,
+    )
+
+    # Bearer tokens in arbitrary text
+    text = _AUTH_BEARER_RE.sub(
+        lambda m: m.group(1) + m.group(2)[:4] + "..." + m.group(2)[-2:],
         text,
     )
 

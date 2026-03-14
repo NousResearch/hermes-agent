@@ -50,6 +50,7 @@ COMMANDS_BY_CATEGORY = {
         "/help": "Show this help message",
         "/usage": "Show token usage for the current session",
         "/insights": "Show usage insights and analytics (last 30 days)",
+        "/audit": "Show recent tool-call audit log (usage: /audit [--errors] [--tool NAME])",
         "/platforms": "Show gateway/messaging platform status",
         "/paste": "Check clipboard for an image and attach it",
     },

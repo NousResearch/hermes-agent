@@ -639,7 +639,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -700,7 +700,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 4
+        assert cursor.fetchone()[0] == 5
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

@@ -1890,7 +1890,7 @@ class AIAgent:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
-    
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
 
@@ -3847,6 +3847,20 @@ class AIAgent:
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+            # Audit log: record every tool call with its arguments and outcome.
+            if self._session_db:
+                try:
+                    self._session_db.log_tool_call(
+                        session_id=self.session_id,
+                        tool_name=function_name,
+                        arguments=function_args,
+                        result_summary=result_preview,
+                        duration_ms=int(tool_duration * 1000),
+                        is_error=_is_error_result,
+                    )
+                except Exception:
+                    logger.debug("Audit log write failed", exc_info=True)
+
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result preview: {result_preview}...")
@@ -5316,7 +5330,7 @@ class AIAgent:
                     
                     # Reset retry counter on successful JSON validation
                     self._invalid_json_retries = 0
-                    
+
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
                     # If this turn has both content AND tool_calls, capture the content

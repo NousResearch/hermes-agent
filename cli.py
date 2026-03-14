@@ -3039,6 +3039,8 @@ class HermesCLI:
             self._show_usage()
         elif cmd_lower.startswith("/insights"):
             self._show_insights(cmd_original)
+        elif cmd_lower.startswith("/audit"):
+            self._show_audit(cmd_original)
         elif cmd_lower == "/paste":
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
@@ -3478,12 +3480,112 @@ class HermesCLI:
             from agent.insights import InsightsEngine
 
             db = SessionDB()
-            engine = InsightsEngine(db)
-            report = engine.generate(days=days, source=source)
-            print(engine.format_terminal(report))
-            db.close()
+            try:
+                engine = InsightsEngine(db)
+                report = engine.generate(days=days, source=source)
+                print(engine.format_terminal(report))
+            finally:
+                db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")
+
+    def _show_audit(self, command: str = "/audit"):
+        """Show recent tool-call audit log entries for the current session.
+
+        Supports optional flags:
+            --errors          Only show failed tool calls.
+            --tool TOOL_NAME  Filter by exact tool name.
+            --limit N         Max entries (default 20).
+            --stats           Show frequency/error-rate table instead of log.
+        """
+        import time as _time
+        from datetime import datetime
+
+        # Parse flags
+        parts = command.split()
+        errors_only = False
+        tool_filter = None
+        limit = 20
+        show_stats = False
+        i = 1
+        while i < len(parts):
+            if parts[i] == "--errors":
+                errors_only = True
+                i += 1
+            elif parts[i] == "--stats":
+                show_stats = True
+                i += 1
+            elif parts[i] == "--tool" and i + 1 < len(parts):
+                tool_filter = parts[i + 1]
+                i += 2
+            elif parts[i] == "--limit" and i + 1 < len(parts):
+                try:
+                    limit = int(parts[i + 1])
+                except ValueError:
+                    print(f"  Invalid --limit value: {parts[i + 1]}")
+                    return
+                i += 2
+            else:
+                i += 1
+
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                session_id = getattr(self.agent, "session_id", None) if self.agent else None
+
+                if show_stats:
+                    rows = db.audit_log_stats(session_id=session_id, limit=limit)
+                    if not rows:
+                        print("  No audit log entries found.")
+                        return
+                    total_calls = sum(r["call_count"] for r in rows)
+                    total_errors = sum(r["error_count"] or 0 for r in rows)
+                    print(f"\n  Tool-call statistics{' (this session)' if session_id else ''}:")
+                    print(f"  Total calls: {total_calls}  |  Errors: {total_errors}\n")
+                    print(f"  {'Tool':<30} {'Calls':>6} {'Errors':>7} {'Err%':>6} {'Avg ms':>7}")
+                    print("  " + "─" * 62)
+                    for r in rows:
+                        calls = r["call_count"]
+                        errors = r["error_count"] or 0
+                        err_pct = f"{errors / calls * 100:.0f}%" if calls else "—"
+                        avg_ms = r["avg_duration_ms"]
+                        avg_ms_str = str(avg_ms) if avg_ms is not None else "—"
+                        print(
+                            f"  {r['tool_name']:<30} {calls:>6} {errors:>7} "
+                            f"{err_pct:>6} {avg_ms_str:>7}"
+                        )
+                    return
+
+                entries = db.query_audit_log(
+                    session_id=session_id,
+                    tool_name=tool_filter,
+                    errors_only=errors_only,
+                    limit=limit,
+                )
+            finally:
+                db.close()
+
+            if not entries:
+                print("  No audit log entries found.")
+                return
+
+            scope = "this session" if session_id else "all sessions"
+            print(f"\n  Audit log ({scope}, last {len(entries)}):\n")
+            print(f"  {'When':<14} {'Tool':<24} {'ms':>5} {'E':<2} {'Result'}")
+            print("  " + "─" * 80)
+            for e in entries:
+                ts = e.get("timestamp")
+                when = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "?"
+                tool = (e.get("tool_name") or "")[:23]
+                ms = e.get("duration_ms")
+                ms_str = str(ms) if ms is not None else "—"
+                err = "✗" if e.get("is_error") else " "
+                summary = (e.get("result_summary") or "").replace("\n", " ")[:45]
+                print(f"  {when:<14} {tool:<24} {ms_str:>5} {err:<2} {summary}")
+            print()
+        except Exception as e:
+            print(f"  Error reading audit log: {e}")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

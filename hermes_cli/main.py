@@ -2682,7 +2682,7 @@ For more help on a command:
     skills_parser = subparsers.add_parser(
         "skills",
         help="Search, install, configure, and manage skills",
-        description="Search, install, inspect, audit, configure, and manage skills from GitHub, ClawHub, and other registries."
+        description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries."
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
@@ -2690,12 +2690,12 @@ For more help on a command:
     skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
     skills_browse.add_argument("--size", type=int, default=20, help="Results per page (default: 20)")
     skills_browse.add_argument("--source", default="all",
-                               choices=["all", "official", "github", "clawhub", "lobehub"],
+                               choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"],
                                help="Filter by source (default: all)")
 
     skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
     skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument("--source", default="all", choices=["all", "official", "github", "clawhub", "lobehub"])
+    skills_search.add_argument("--source", default="all", choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"])
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
@@ -2708,6 +2708,12 @@ For more help on a command:
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
+
+    skills_check = skills_subparsers.add_parser("check", help="Check installed hub skills for updates")
+    skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")
+
+    skills_update = skills_subparsers.add_parser("update", help="Update installed hub skills")
+    skills_update.add_argument("name", nargs="?", help="Specific skill to update (default: all outdated skills)")
 
     skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")

@@ -1968,6 +1968,52 @@ class AIAgent:
 
         return messages
 
+    @staticmethod
+    def _cap_delegate_task_calls(tool_calls: list) -> list:
+        """Enforce MAX_CONCURRENT_CHILDREN on delegate_task calls in one turn.
+
+        The delegate_tool already caps the *task list* inside a single call,
+        but the model can emit multiple separate ``delegate_task`` tool_calls
+        in one turn.  This method truncates the excess, preserving all
+        non-delegate calls and the first MAX_CONCURRENT_CHILDREN delegate ones.
+
+        Returns a new list (original is not mutated) or the original list
+        object if no truncation was needed.
+        """
+        from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
+        delegate_tcs = [tc for tc in tool_calls if tc.function.name == "delegate_task"]
+        if len(delegate_tcs) <= MAX_CONCURRENT_CHILDREN:
+            return tool_calls
+        non_delegate = [tc for tc in tool_calls if tc.function.name != "delegate_task"]
+        truncated = non_delegate + delegate_tcs[:MAX_CONCURRENT_CHILDREN]
+        logger.warning(
+            "Truncated %d excess delegate_task call(s) to enforce "
+            "MAX_CONCURRENT_CHILDREN=%d limit",
+            len(delegate_tcs) - MAX_CONCURRENT_CHILDREN, MAX_CONCURRENT_CHILDREN,
+        )
+        return truncated
+
+    @staticmethod
+    def _deduplicate_tool_calls(tool_calls: list) -> list:
+        """Remove duplicate (tool_name, arguments) pairs within a single turn.
+
+        Some models occasionally emit the same call twice.  Only the first
+        occurrence of each unique ``(name, arguments)`` pair is kept.
+
+        Returns a new list (original is not mutated) or the original list
+        object if no duplicates were found.
+        """
+        seen: set = set()
+        unique: list = []
+        for tc in tool_calls:
+            key = (tc.function.name, tc.function.arguments)
+            if key not in seen:
+                seen.add(key)
+                unique.append(tc)
+            else:
+                logger.warning("Removed duplicate tool call: %s", tc.function.name)
+        return unique if len(unique) < len(tool_calls) else tool_calls
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
 
@@ -5394,45 +5440,14 @@ class AIAgent:
                     self._invalid_json_retries = 0
 
                     # ── Phase 2a: Hard subagent limit ─────────────────────
-                    # The delegate_tool caps the task *list* inside a single
-                    # call, but the model can emit multiple separate
-                    # delegate_task tool_calls in one turn.  Truncate the
-                    # excess here, before dispatch and before the assistant
-                    # message is serialised into history.
-                    from tools.delegate_tool import MAX_CONCURRENT_CHILDREN as _MAX_CHILDREN
-                    _delegate_tcs = [
-                        tc for tc in assistant_message.tool_calls
-                        if tc.function.name == "delegate_task"
-                    ]
-                    if len(_delegate_tcs) > _MAX_CHILDREN:
-                        _non_delegate = [
-                            tc for tc in assistant_message.tool_calls
-                            if tc.function.name != "delegate_task"
-                        ]
-                        assistant_message.tool_calls = _non_delegate + _delegate_tcs[:_MAX_CHILDREN]
-                        logger.warning(
-                            "Truncated %d excess delegate_task call(s) to enforce "
-                            "MAX_CONCURRENT_CHILDREN=%d limit",
-                            len(_delegate_tcs) - _MAX_CHILDREN, _MAX_CHILDREN,
-                        )
+                    assistant_message.tool_calls = self._cap_delegate_task_calls(
+                        assistant_message.tool_calls
+                    )
 
                     # ── Phase 2b: Tool call deduplication ─────────────────
-                    # Some models emit the same (tool_name, arguments) pair
-                    # more than once in a single turn.  Keep only the first
-                    # occurrence to avoid redundant work and API waste.
-                    _seen_calls: set = set()
-                    _unique_calls: list = []
-                    for _tc in assistant_message.tool_calls:
-                        _tc_key = (_tc.function.name, _tc.function.arguments)
-                        if _tc_key not in _seen_calls:
-                            _seen_calls.add(_tc_key)
-                            _unique_calls.append(_tc)
-                        else:
-                            logger.warning(
-                                "Removed duplicate tool call: %s", _tc.function.name
-                            )
-                    if len(_unique_calls) < len(assistant_message.tool_calls):
-                        assistant_message.tool_calls = _unique_calls
+                    assistant_message.tool_calls = self._deduplicate_tool_calls(
+                        assistant_message.tool_calls
+                    )
 
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     

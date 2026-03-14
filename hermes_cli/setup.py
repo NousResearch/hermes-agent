@@ -460,12 +460,41 @@ def _print_setup_summary(config: dict, hermes_home):
 
     tool_status = []
 
-    # OpenRouter (required for vision, moa)
+    # Vision — works with OpenRouter, Nous OAuth, Codex OAuth, or OpenAI endpoint
+    _has_vision = False
     if get_env_value("OPENROUTER_API_KEY"):
+        _has_vision = True
+    else:
+        try:
+            _vauth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
+            if _vauth_path.is_file():
+                import json as _vjson
+
+                _vauth = _vjson.loads(_vauth_path.read_text())
+                if _vauth.get("active_provider") == "nous":
+                    _np = _vauth.get("providers", {}).get("nous", {})
+                    if _np.get("agent_key") or _np.get("access_token"):
+                        _has_vision = True
+                elif _vauth.get("active_provider") == "openai-codex":
+                    _cp = _vauth.get("providers", {}).get("openai-codex", {})
+                    if _cp.get("tokens", {}).get("access_token"):
+                        _has_vision = True
+        except Exception:
+            pass
+    if not _has_vision:
+        _oai_base = get_env_value("OPENAI_BASE_URL") or ""
+        if get_env_value("OPENAI_API_KEY") and "api.openai.com" in _oai_base.lower():
+            _has_vision = True
+
+    if _has_vision:
         tool_status.append(("Vision (image analysis)", True, None))
+    else:
+        tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
+
+    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
+    if get_env_value("OPENROUTER_API_KEY"):
         tool_status.append(("Mixture of Agents", True, None))
     else:
-        tool_status.append(("Vision (image analysis)", False, "OPENROUTER_API_KEY"))
         tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
     # Firecrawl (web tools)
@@ -1246,35 +1275,112 @@ def setup_model_provider(config: dict):
         elif existing_or:
             selected_provider = "openrouter"
 
-    # ── OpenRouter API Key for tools (if not already set) ──
-    # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
-    # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in (
-        "nous",
-        "openai-codex",
-        "custom",
-        "zai",
-        "kimi-coding",
-        "minimax",
-        "minimax-cn",
-        "anthropic",
-    ) and not get_env_value("OPENROUTER_API_KEY"):
-        print()
-        print_header("OpenRouter API Key (for tools)")
-        print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
-        print_info("independently of your main inference provider.")
-        print_info("Get your API key at: https://openrouter.ai/keys")
+    # ── Vision & Image Analysis Setup ──
+    # Vision requires a multimodal-capable provider. Check whether the user's
+    # chosen provider already covers it — if so, skip the prompt entirely.
+    _vision_needs_setup = True
 
-        api_key = prompt(
-            "  OpenRouter API key (optional, press Enter to skip)", password=True
-        )
-        if api_key:
-            save_env_value("OPENROUTER_API_KEY", api_key)
-            print_success("OpenRouter API key saved (for tools)")
-        else:
-            print_info(
-                "Skipped - some tools (vision, web scraping) won't work without this"
+    if selected_provider == "openrouter":
+        # OpenRouter → Gemini for vision, already configured
+        _vision_needs_setup = False
+    elif selected_provider == "nous":
+        # Nous Portal OAuth → Gemini via Nous, already configured
+        _vision_needs_setup = False
+    elif selected_provider == "openai-codex":
+        # Codex OAuth → gpt-5.3-codex supports vision
+        _vision_needs_setup = False
+    elif selected_provider == "custom":
+        _custom_base = (get_env_value("OPENAI_BASE_URL") or "").lower()
+        if "api.openai.com" in _custom_base:
+            # Direct OpenAI endpoint — show vision model picker
+            print()
+            print_header("Vision Model")
+            print_info("Your OpenAI endpoint supports vision. Pick a model for image analysis:")
+            _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
+            _vm_choices = _oai_vision_models + ["Keep default (gpt-4o-mini)"]
+            _vm_idx = prompt_choice("Select vision model:", _vm_choices, len(_vm_choices) - 1)
+            _selected_vision_model = (
+                _oai_vision_models[_vm_idx]
+                if _vm_idx < len(_oai_vision_models)
+                else "gpt-4o-mini"
             )
+            save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+            print_success(f"Vision model set to {_selected_vision_model}")
+            _vision_needs_setup = False
+
+    # Even for providers without native vision, check if existing credentials
+    # from a previous setup already cover it (e.g. user had OpenRouter before
+    # switching to z.ai)
+    if _vision_needs_setup:
+        if get_env_value("OPENROUTER_API_KEY"):
+            _vision_needs_setup = False
+        else:
+            # Check for Nous Portal OAuth in auth.json
+            try:
+                _auth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
+                if _auth_path.is_file():
+                    import json as _json
+
+                    _auth_data = _json.loads(_auth_path.read_text())
+                    if _auth_data.get("active_provider") == "nous":
+                        _nous_p = _auth_data.get("providers", {}).get("nous", {})
+                        if _nous_p.get("agent_key") or _nous_p.get("access_token"):
+                            _vision_needs_setup = False
+            except Exception:
+                pass
+
+    if _vision_needs_setup:
+        _prov_names = {
+            "nous-api": "Nous Portal API key",
+            "zai": "Z.AI / GLM",
+            "kimi-coding": "Kimi / Moonshot",
+            "minimax": "MiniMax",
+            "minimax-cn": "MiniMax CN",
+            "anthropic": "Anthropic",
+            "custom": "your custom endpoint",
+        }
+        _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
+
+        print()
+        print_header("Vision & Image Analysis (optional)")
+        print_info(f"Vision requires a multimodal-capable provider. {_prov_display}")
+        print_info("doesn't natively support it. Choose how to enable vision,")
+        print_info("or skip to configure later.")
+        print()
+
+        _vision_choices = [
+            "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
+            "OpenAI — enter API key & choose a vision model",
+            "Skip for now",
+        ]
+        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
+
+        if _vision_idx == 0:  # OpenRouter
+            _or_key = prompt("  OpenRouter API key", password=True)
+            if _or_key:
+                save_env_value("OPENROUTER_API_KEY", _or_key)
+                print_success("OpenRouter key saved — vision will use Gemini")
+            else:
+                print_info("Skipped — vision won't be available")
+        elif _vision_idx == 1:  # OpenAI
+            _oai_key = prompt("  OpenAI API key", password=True)
+            if _oai_key:
+                save_env_value("OPENAI_API_KEY", _oai_key)
+                save_env_value("OPENAI_BASE_URL", "https://api.openai.com/v1")
+                _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
+                _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
+                _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
+                _selected_vision_model = (
+                    _oai_vision_models[_vm_idx]
+                    if _vm_idx < len(_oai_vision_models)
+                    else "gpt-4o-mini"
+                )
+                save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+                print_success(f"Vision configured with OpenAI ({_selected_vision_model})")
+            else:
+                print_info("Skipped — vision won't be available")
+        else:
+            print_info("Skipped — add later with 'hermes config set OPENROUTER_API_KEY ...'")
 
     # ── Model Selection (adapts based on provider) ──
     if selected_provider != "custom":  # Custom already prompted for model name

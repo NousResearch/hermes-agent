@@ -29,7 +29,7 @@ def _get_model_config() -> Dict[str, Any]:
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
-    """Resolve provider request from explicit arg, env, then config."""
+    """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
         return requested.strip().lower()
 

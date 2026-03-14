@@ -86,6 +86,7 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.config = gateway_run.GatewayConfig()
     return runner
 
 

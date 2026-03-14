@@ -1176,3 +1176,308 @@ class TestCodexStreamDeltaCollection:
         assert len(synth.content) == 1
         assert synth.content[0].type == "output_text"
         assert synth.content[0].text == "check"
+
+
+# ---------------------------------------------------------------------------
+# Regression: _run_codex_stream case-b patch + timeout config
+# ---------------------------------------------------------------------------
+# These cover the half of the empty-content patch not already in
+# TestCodexStreamDeltaCollection:
+#   Case (a) — missing message item          → TestCodexStreamDeltaCollection
+#   Case (b) — message item with EMPTY content → TestCodexStreamCaseBEmptyContent (here)
+#   Timeout env/kwarg                         → TestCodexStreamCaseBEmptyContent (here)
+# ---------------------------------------------------------------------------
+
+class TestCodexStreamCaseBEmptyContent:
+    """
+    Regression: _run_codex_stream must patch a message item whose content
+    list is empty or whitespace-only with the collected streaming deltas.
+
+    Without this patch, _normalize_codex_response returns content="" and
+    triggers up to 3 retries each potentially 120 s long.
+    """
+
+    def _make_stream(self, deltas, final_response):
+        """Return a context-manager-compatible fake stream."""
+        import contextlib
+
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta=d)
+            for d in deltas
+        ]
+
+        class _Stream:
+            def __iter__(self_inner):
+                return iter(events)
+            def get_final_response(self_inner):
+                return final_response
+
+        @contextlib.contextmanager
+        def _ctx(**kwargs):
+            yield _Stream()
+
+        return _ctx
+
+    def test_case_b_empty_content_list_is_patched(self, monkeypatch):
+        """
+        Message item exists in response.output but its content list is EMPTY.
+        _run_codex_stream must replace it with the collected streaming deltas.
+        This was the root cause of 3× retry storms (each up to 120 s).
+        """
+        agent = _build_agent(monkeypatch)
+
+        final = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="r1",
+                    encrypted_content="enc",
+                    summary=[],
+                ),
+                SimpleNamespace(
+                    type="message", status="completed",
+                    content=[],   # <- empty content: the bug
+                ),
+            ],
+            status="completed", output_text="",
+        )
+
+        agent.client = SimpleNamespace(responses=SimpleNamespace(
+            stream=self._make_stream(["The", " fix", " worked!"], final)
+        ))
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        msg_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert len(msg_items) == 1
+        assert msg_items[0].content, "Content must not be empty after patch"
+        assert msg_items[0].content[0].text == "The fix worked!", (
+            f"Patched content must equal joined deltas, got: "
+            f"{msg_items[0].content[0].text!r}"
+        )
+
+    def test_case_b_whitespace_only_content_is_patched(self, monkeypatch):
+        """
+        Message item whose only content text is whitespace must be treated
+        as empty and patched with the streaming deltas.
+        """
+        agent = _build_agent(monkeypatch)
+
+        final = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message", status="completed",
+                    content=[SimpleNamespace(type="output_text", text="   ")],
+                ),
+            ],
+            status="completed", output_text="   ",
+        )
+
+        agent.client = SimpleNamespace(responses=SimpleNamespace(
+            stream=self._make_stream(["Real", " content"], final)
+        ))
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        msg_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert msg_items[0].content[0].text == "Real content", (
+            "Whitespace-only content must be patched with delta text"
+        )
+
+    def test_case_b_nonempty_content_not_overwritten(self, monkeypatch):
+        """
+        When the message item already has valid non-empty text, it must
+        NOT be replaced — the authoritative response text wins.
+        """
+        agent = _build_agent(monkeypatch)
+        original = "Original authoritative response"
+
+        final = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message", status="completed",
+                    content=[SimpleNamespace(type="output_text", text=original)],
+                ),
+            ],
+            status="completed", output_text=original,
+        )
+
+        agent.client = SimpleNamespace(responses=SimpleNamespace(
+            stream=self._make_stream(["Different", " text"], final)
+        ))
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        msg_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert msg_items[0].content[0].text == original, (
+            "Non-empty authoritative content must not be overwritten by deltas"
+        )
+
+    def test_stream_timeout_env_override(self, monkeypatch):
+        """
+        HERMES_CODEX_STREAM_TIMEOUT env var must control per-request timeout.
+        Guards against accidental removal of the env-var lookup.
+        """
+        import inspect
+        source = inspect.getsource(run_agent.AIAgent._run_codex_stream)
+        assert "HERMES_CODEX_STREAM_TIMEOUT" in source, (
+            "_run_codex_stream must read HERMES_CODEX_STREAM_TIMEOUT env var "
+            "so operators can tune the per-request timeout without a code change"
+        )
+        assert "120.0" in source, (
+            "Default stream timeout must be 120.0 seconds"
+        )
+
+    def test_timeout_forwarded_to_stream_call(self, monkeypatch):
+        """
+        The resolved timeout value must be forwarded as `timeout=` kwarg to
+        client.responses.stream() — not silently dropped.
+        """
+        import inspect
+        source = inspect.getsource(run_agent.AIAgent._run_codex_stream)
+        assert "timeout=_codex_stream_timeout" in source, (
+            "Timeout must be passed to client.responses.stream() as "
+            "timeout=_codex_stream_timeout so requests don't hang indefinitely"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Regression: reasoning-only response skips retry loop
+# ---------------------------------------------------------------------------
+# _normalize_codex_response sets reasoning_only=True when the model produces
+# only a <reasoning> item with no final text and no tool_calls.
+# The run_conversation() retry loop must detect this and break immediately
+# instead of burning 3×120 s on pointless retries.
+# ---------------------------------------------------------------------------
+
+class TestReasoningOnlyRetrySkip:
+    """
+    When Codex produces only a reasoning item (no final text, no tool_calls),
+    retrying is pointless. The retry loop must break early via reasoning_only=True.
+    """
+
+    def _reasoning_response(self):
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="r1",
+                    encrypted_content="enc",
+                    summary=[SimpleNamespace(
+                        type="summary_text", text="I thought about it",
+                    )],
+                )
+            ],
+            output_text="",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=0, total_tokens=5),
+        )
+
+    def test_reasoning_only_flag_set_when_no_final_text(self, monkeypatch):
+        """
+        Response with only a reasoning item → assistant_message.reasoning_only = True.
+        """
+        agent = _build_agent(monkeypatch)
+        msg, finish_reason = agent._normalize_codex_response(self._reasoning_response())
+        assert getattr(msg, "reasoning_only", False) is True, (
+            "reasoning-only response must set reasoning_only=True on the "
+            "assistant message so the retry loop can break early"
+        )
+
+    def test_reasoning_only_false_when_final_text_present(self, monkeypatch):
+        """
+        Response with both reasoning and final text → reasoning_only = False.
+        """
+        agent = _build_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="r1", encrypted_content="enc",
+                    summary=[SimpleNamespace(type="summary_text", text="thought")],
+                ),
+                SimpleNamespace(
+                    type="message", status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Answer.")],
+                ),
+            ],
+            output_text="Answer.",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=8, total_tokens=13),
+        )
+        msg, _ = agent._normalize_codex_response(response)
+        assert getattr(msg, "reasoning_only", True) is False, (
+            "reasoning_only must be False when a final text message is present"
+        )
+
+    def test_reasoning_only_false_when_tool_calls_present(self, monkeypatch):
+        """
+        Response with reasoning + tool_call but no text → reasoning_only = False.
+        A tool_call turn is not a dead-end — execution continues.
+        """
+        agent = _build_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="r1", encrypted_content="enc",
+                    summary=[SimpleNamespace(type="summary_text", text="need tool")],
+                ),
+                SimpleNamespace(
+                    type="function_call", id="fc1", call_id="call_1",
+                    name="terminal", arguments="{}",
+                ),
+            ],
+            output_text="",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=2, total_tokens=7),
+        )
+        msg, finish_reason = agent._normalize_codex_response(response)
+        assert getattr(msg, "reasoning_only", True) is False, (
+            "reasoning_only must be False when tool_calls are present"
+        )
+        assert finish_reason == "tool_calls"
+
+    def test_reasoning_only_false_when_no_reasoning_items(self, monkeypatch):
+        """
+        Plain response with text but no reasoning items → reasoning_only = False.
+        """
+        agent = _build_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message", status="completed",
+                    content=[SimpleNamespace(type="output_text", text="plain answer")],
+                ),
+            ],
+            output_text="plain answer",
+            status="completed",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=2, total_tokens=7),
+        )
+        msg, _ = agent._normalize_codex_response(response)
+        assert getattr(msg, "reasoning_only", False) is False, (
+            "Response with no reasoning items must not be flagged reasoning_only"
+        )
+
+    def test_reasoning_only_attribute_always_present(self, monkeypatch):
+        """
+        _normalize_codex_response must always set reasoning_only on the
+        returned object so downstream code can safely call getattr.
+        """
+        agent = _build_agent(monkeypatch)
+        msg, _ = agent._normalize_codex_response(
+            _codex_message_response("hi")
+        )
+        assert hasattr(msg, "reasoning_only"), (
+            "assistant_message must always have a reasoning_only attribute "
+            "(even when False) so getattr(..., False) is always safe"
+        )
+        assert msg.reasoning_only is False
+
+    def test_retry_loop_source_has_reasoning_only_guard(self, monkeypatch):
+        """
+        Structural guard: run_conversation() retry loop must contain the
+        reasoning_only check so the fix is not silently reverted.
+        """
+        import inspect
+        source = inspect.getsource(run_agent.AIAgent.run_conversation)
+        assert "reasoning_only" in source, (
+            "run_conversation() retry loop must check reasoning_only "
+            "to skip pointless retries on reasoning-only Codex responses"
+        )

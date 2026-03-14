@@ -579,6 +579,35 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "matrix",
+        "label": "Matrix",
+        "emoji": "🔐",
+        "token_var": "MATRIX_ACCESS_TOKEN",
+        "setup_instructions": [
+            "1. Works with any Matrix homeserver (self-hosted Synapse/Conduit/Dendrite or matrix.org)",
+            "2. Create a bot user on your homeserver, or use your own account",
+            "3. Get an access token: Element → Settings → Help & About → Access Token",
+            "   Or via API: curl -X POST https://your-server/_matrix/client/v3/login \\",
+            "     -d '{\"type\":\"m.login.password\",\"user\":\"@bot:server\",\"password\":\"...\"}'",
+            "4. Alternatively, provide user ID + password and Hermes will log in directly",
+            "5. For E2EE: set MATRIX_ENCRYPTION=true (requires pip install 'matrix-nio[e2e]')",
+            "6. To find your user ID: it's @username:your-server (shown in Element profile)",
+        ],
+        "vars": [
+            {"name": "MATRIX_HOMESERVER", "prompt": "Homeserver URL (e.g. https://matrix.example.org)", "password": False,
+             "help": "Your Matrix homeserver URL. Works with any self-hosted instance."},
+            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Access token (leave empty to use password login instead)", "password": True,
+             "help": "Paste your access token, or leave empty and provide user ID + password below."},
+            {"name": "MATRIX_USER_ID", "prompt": "User ID (@bot:server — required for password login)", "password": False,
+             "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org"},
+            {"name": "MATRIX_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)", "password": False,
+             "is_allowlist": True,
+             "help": "Matrix user IDs who can interact with the bot."},
+            {"name": "MATRIX_HOME_ROOM", "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications."},
+        ],
+    },
+    {
         "key": "mattermost",
         "label": "Mattermost",
         "emoji": "💬",
@@ -674,6 +703,16 @@ def _platform_status(platform: dict) -> str:
         if all([val, pwd, imap, smtp]):
             return "configured"
         if any([val, pwd, imap, smtp]):
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "matrix":
+        homeserver = get_env_value("MATRIX_HOMESERVER")
+        password = get_env_value("MATRIX_PASSWORD")
+        if (val or password) and homeserver:
+            e2ee = get_env_value("MATRIX_ENCRYPTION")
+            suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
+            return f"configured{suffix}"
+        if val or password or homeserver:
             return "partially configured"
         return "not configured"
     if val:

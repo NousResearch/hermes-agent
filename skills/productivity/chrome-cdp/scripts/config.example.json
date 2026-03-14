@@ -1,0 +1,12 @@
+{
+  "default_host": "127.0.0.1",
+  "default_port": 9222,
+  "chrome_profile": null,
+  "chrome_binary": null,
+  "auto_launch": false,
+  "headless": false,
+  "wsl_proxy": false,
+  "wsl_windows_python": "/mnt/c/Windows/py.exe",
+  "wsl_connector_path": null
+}
+EOF; __hermes_rc=$?; printf '__HERMES_FENCE_a9f7b3__'; exit $__hermes_rc

@@ -110,18 +110,17 @@ HONCHO_TOOL_NAMES = {
 
 
 class _SafeWriter:
-    """Transparent stdout wrapper that catches OSError from broken pipes.
+    """Transparent stdio wrapper that catches OSError from broken pipes.
 
     When hermes-agent runs as a systemd service, Docker container, or headless
-    daemon, the stdout pipe can become unavailable (idle timeout, buffer
+    daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
     exhaustion, socket reset). Any print() call then raises
-    ``OSError: [Errno 5] Input/output error``, which can crash
-    run_conversation() — especially via double-fault when the except handler
+    ``OSError: [Errno 5] Input/output error``, which can crash agent setup or
+    run_conversation() — especially via double-fault when an except handler
     also tries to print.
 
     This wrapper delegates all writes to the underlying stream and silently
-    catches OSError.  It is installed once at the start of run_conversation()
-    and is transparent when stdout is healthy (zero overhead on the happy path).
+    catches OSError. It is transparent when the wrapped stream is healthy.
     """
 
     __slots__ = ("_inner",)
@@ -152,6 +151,14 @@ class _SafeWriter:
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+
+def _install_safe_stdio() -> None:
+    """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and not isinstance(stream, _SafeWriter):
+            setattr(sys, stream_name, _SafeWriter(stream))
 
 
 class IterationBudget:
@@ -324,6 +331,8 @@ class AIAgent:
             honcho_manager: Optional shared HonchoSessionManager owned by the caller.
             honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
         """
+        _install_safe_stdio()
+
         self.model = model
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
@@ -3868,10 +3877,9 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
-        # Guard stdout against OSError from broken pipes (systemd/headless/daemon).
-        # Installed once, transparent when stdout is healthy, prevents crash on write.
-        if not isinstance(sys.stdout, _SafeWriter):
-            sys.stdout = _SafeWriter(sys.stdout)
+        # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
+        # Installed once, transparent when streams are healthy, prevents crash on write.
+        _install_safe_stdio()
 
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())

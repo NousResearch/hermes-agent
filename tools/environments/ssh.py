@@ -77,6 +77,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
+    _poll_interval: float = 0.15
+
     @property
     def _temp_prefix(self) -> str:
         return f"/tmp/hermes-ssh-{self._session_id}"

@@ -263,39 +263,43 @@ def create_job(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
-    origin: Optional[Dict[str, Any]] = None
+    origin: Optional[Dict[str, Any]] = None,
+    skill: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
-    
+
     Args:
-        prompt: The prompt to run (must be self-contained)
+        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set)
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
         origin: Source info where job was created (for "origin" delivery)
-    
+        skill: Optional skill name to load before running the prompt
+
     Returns:
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
-    
+
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
-    
+
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
-    
+
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
-    
+
+    label_source = skill or prompt or "cron job"
     job = {
         "id": job_id,
-        "name": name or prompt[:50].strip(),
+        "name": name or label_source[:50].strip(),
         "prompt": prompt,
+        "skill": skill,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -303,6 +307,9 @@ def create_job(
             "completed": 0
         },
         "enabled": True,
+        "state": "scheduled",
+        "paused_at": None,
+        "paused_reason": None,
         "created_at": now,
         "next_run_at": compute_next_run(parsed_schedule),
         "last_run_at": None,
@@ -312,11 +319,11 @@ def create_job(
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
     }
-    
+
     jobs = load_jobs()
     jobs.append(job)
     save_jobs(jobs)
-    
+
     return job
 
 
@@ -338,14 +345,80 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update a job by ID."""
+    """Update a job by ID, refreshing derived schedule fields when needed."""
     jobs = load_jobs()
     for i, job in enumerate(jobs):
-        if job["id"] == job_id:
-            jobs[i] = {**job, **updates}
-            save_jobs(jobs)
-            return jobs[i]
+        if job["id"] != job_id:
+            continue
+
+        updated = {**job, **updates}
+        schedule_changed = "schedule" in updates
+
+        if schedule_changed:
+            updated_schedule = updated["schedule"]
+            updated["schedule_display"] = updates.get(
+                "schedule_display",
+                updated_schedule.get("display", updated.get("schedule_display")),
+            )
+            if updated.get("state") != "paused":
+                updated["next_run_at"] = compute_next_run(updated_schedule)
+
+        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+            updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+        jobs[i] = updated
+        save_jobs(jobs)
+        return jobs[i]
     return None
+
+
+def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Pause a job without deleting it."""
+    return update_job(
+        job_id,
+        {
+            "enabled": False,
+            "state": "paused",
+            "paused_at": _hermes_now().isoformat(),
+            "paused_reason": reason,
+        },
+    )
+
+
+def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Resume a paused job and compute the next future run from now."""
+    job = get_job(job_id)
+    if not job:
+        return None
+
+    next_run_at = compute_next_run(job["schedule"])
+    return update_job(
+        job_id,
+        {
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "next_run_at": next_run_at,
+        },
+    )
+
+
+def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Schedule a job to run on the next scheduler tick."""
+    job = get_job(job_id)
+    if not job:
+        return None
+    return update_job(
+        job_id,
+        {
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "next_run_at": _hermes_now().isoformat(),
+        },
+    )
 
 
 def remove_job(job_id: str) -> bool:
@@ -389,11 +462,14 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             
             # Compute next run
             job["next_run_at"] = compute_next_run(job["schedule"], now)
-            
+
             # If no next run (one-shot completed), disable
             if job["next_run_at"] is None:
                 job["enabled"] = False
-            
+                job["state"] = "completed"
+            elif job.get("state") != "paused":
+                job["state"] = "scheduled"
+
             save_jobs(jobs)
             return
     

@@ -320,7 +320,8 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
-    # User-defined quick commands that bypass the agent loop (type: exec only)
+    # User-defined quick commands that either run shell commands (type: exec)
+    # or alias to another slash command/skill (type: alias, target: /some-command)
     "quick_commands": {},
     # Custom personalities — add your own entries here
     # Supports string format: {"name": "system prompt"}

@@ -23,6 +23,7 @@ class TestCLIQuickCommands:
         cli.console = MagicMock()
         cli.agent = None
         cli.conversation_history = []
+        cli.session_id = "test-session"
         return cli
 
     def test_exec_command_runs_and_prints_output(self):
@@ -46,6 +47,20 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
         assert "no output" in args.lower()
+
+    def test_alias_command_routes_to_target_command(self):
+        cli = self._make_cli({"moe-review": {"type": "alias", "target": "/legal-thought-leadership-review"}})
+        with patch("cli._skill_commands", {"/legal-thought-leadership-review": {"name": "legal-thought-leadership-review"}}), \
+             patch("cli.build_skill_invocation_message", return_value="expanded-skill-message"):
+            result = cli.process_command("/moe-review tighten this draft")
+        assert result is True
+
+    def test_alias_command_supports_other_skill_targets(self):
+        cli = self._make_cli({"moe-argument": {"type": "alias", "target": "/law-argument-editor"}})
+        with patch("cli._skill_commands", {"/law-argument-editor": {"name": "law-argument-editor"}}), \
+             patch("cli.build_skill_invocation_message", return_value="argument-skill-message"):
+            result = cli.process_command("/moe-argument sharpen the thesis")
+        assert result is True
 
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
@@ -116,6 +131,46 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_alias_command_rewrites_to_skill_command(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"moe-review": {"type": "alias", "target": "/legal-thought-leadership-review"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.session_store = MagicMock()
+        runner.session_store.get_or_create_session.side_effect = RuntimeError("stop after rewrite")
+
+        event = self._make_event("moe-review", "tighten this draft")
+        with patch("gateway.run.build_session_key", return_value="sess"), \
+             patch("agent.skill_commands.get_skill_commands", return_value={"/legal-thought-leadership-review": {"name": "legal-thought-leadership-review"}}), \
+             patch("agent.skill_commands.build_skill_invocation_message", return_value="expanded-skill-message"), \
+             pytest.raises(RuntimeError, match="stop after rewrite"):
+            await runner._handle_message(event)
+        assert event.text == "expanded-skill-message"
+
+    @pytest.mark.asyncio
+    async def test_alias_command_rewrites_to_other_skill_targets(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"moe-style": {"type": "alias", "target": "/law-style-editor"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.session_store = MagicMock()
+        runner.session_store.get_or_create_session.side_effect = RuntimeError("stop after rewrite")
+
+        event = self._make_event("moe-style", "polish this post")
+        with patch("gateway.run.build_session_key", return_value="sess"), \
+             patch("agent.skill_commands.get_skill_commands", return_value={"/law-style-editor": {"name": "law-style-editor"}}), \
+             patch("agent.skill_commands.build_skill_invocation_message", return_value="style-skill-message"), \
+             pytest.raises(RuntimeError, match="stop after rewrite"):
+            await runner._handle_message(event)
+        assert event.text == "style-skill-message"
 
     @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):

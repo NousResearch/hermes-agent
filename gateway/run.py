@@ -1387,7 +1387,8 @@ class GatewayRunner:
         if command == "voice":
             return await self._handle_voice_command(event)
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
+        # User-defined quick commands (exec or alias)
+
         if command:
             if isinstance(self.config, dict):
                 quick_commands = self.config.get("quick_commands", {}) or {}
@@ -1415,8 +1416,18 @@ class GatewayRunner:
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        target_command = target.lstrip("/")
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                        command = target_command
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
                 else:
-                    return f"Quick command '/{command}' has unsupported type (only 'exec' is supported)."
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1427,7 +1438,7 @@ class GatewayRunner:
                 if cmd_key in skill_cmds:
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=session_key
+                        cmd_key, user_instruction, task_id=build_session_key(source)
                     )
                     if msg:
                         event.text = msg

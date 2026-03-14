@@ -976,7 +976,7 @@ For the behavior details and examples, see [Sessions](/docs/user-guide/sessions)
 
 ## Quick Commands
 
-Define custom commands that run shell commands without invoking the LLM — zero token usage, instant execution. Especially useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+Define custom commands that either run shell commands without invoking the LLM or alias to another slash command. This is useful from the CLI and messaging platforms (Telegram, Discord, etc.) for quick server checks, utility scripts, or shorter names for complex skill commands.
 
 ```yaml
 quick_commands:
@@ -992,14 +992,22 @@ quick_commands:
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
+  moe-review:
+    type: alias
+    target: /legal-thought-leadership-review
+  moe-style:
+    type: alias
+    target: /law-style-editor
 ```
 
-Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging platform. The command runs locally on the host and returns the output directly — no LLM call, no tokens consumed.
+Usage:
+- `exec` commands like `/status`, `/disk`, `/update`, or `/gpu` run locally on the host and return output directly — no LLM call, no tokens consumed.
+- `alias` commands like `/moe-review` or `/moe-style` rewrite to another slash command before normal processing, so they can target built-in commands or installed skills.
 
-- **30-second timeout** — long-running commands are killed with an error message
-- **Priority** — quick commands are checked before skill commands, so you can override skill names
+- **30-second timeout** — applies to `exec` quick commands; long-running commands are killed with an error message
+- **Priority** — quick commands are checked before skill commands, so you can override skill names or add shorter aliases
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
-- **Type** — only `exec` is supported (runs a shell command); other types show an error
+- **Types** — `exec` runs a shell command; `alias` rewrites to another slash command via `target`
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
 ## Human Delay

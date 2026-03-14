@@ -2,11 +2,12 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with two providers:
+Provides speech-to-text transcription with three providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **openai** — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
+  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -33,18 +34,9 @@ logger = logging.getLogger(__name__)
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
 
-try:
-    from faster_whisper import WhisperModel
-    _HAS_FASTER_WHISPER = True
-except ImportError:
-    _HAS_FASTER_WHISPER = False
-    WhisperModel = None  # type: ignore[assignment,misc]
-
-try:
-    from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-    _HAS_OPENAI = True
-except ImportError:
-    _HAS_OPENAI = False
+import importlib.util as _ilu
+_HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
+_HAS_OPENAI = _ilu.find_spec("openai") is not None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,18 +44,44 @@ except ImportError:
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
-DEFAULT_OPENAI_MODEL = "whisper-1"
+DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
+DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
+
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
+# Known model sets for auto-correction
+OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
+GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+
 # Singleton for the local model — loaded once, reused across calls
-_local_model: Optional["WhisperModel"] = None
+_local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
+
+def get_stt_model_from_config() -> Optional[str]:
+    """Read the STT model name from ~/.hermes/config.yaml.
+
+    Returns the value of ``stt.model`` if present, otherwise ``None``.
+    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
+    """
+    try:
+        import yaml
+        cfg_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("stt", {}).get("model")
+    except Exception:
+        pass
+    return None
 
 
 def _load_stt_config() -> dict:
@@ -80,7 +98,7 @@ def _get_provider(stt_config: dict) -> str:
 
     Priority:
       1. Explicit config value  (``stt.provider``)
-      2. Auto-detect: local if faster-whisper available, else openai if key set
+      2. Auto-detect: local > groq (free) > openai (paid)
       3. Disabled (returns "none")
     """
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
@@ -88,19 +106,37 @@ def _get_provider(stt_config: dict) -> str:
     if provider == "local":
         if _HAS_FASTER_WHISPER:
             return "local"
-        # Local requested but not available — fall back to openai if possible
+        # Local requested but not available — fall back to groq, then openai
+        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            logger.info("faster-whisper not installed, falling back to Groq Whisper API")
+            return "groq"
         if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
             logger.info("faster-whisper not installed, falling back to OpenAI Whisper API")
+            return "openai"
+        return "none"
+
+    if provider == "groq":
+        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            return "groq"
+        # Groq requested but no key — fall back
+        if _HAS_FASTER_WHISPER:
+            logger.info("GROQ_API_KEY not set, falling back to local faster-whisper")
+            return "local"
+        if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+            logger.info("GROQ_API_KEY not set, falling back to OpenAI Whisper API")
             return "openai"
         return "none"
 
     if provider == "openai":
         if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
             return "openai"
-        # OpenAI requested but no key — fall back to local if possible
+        # OpenAI requested but no key — fall back
         if _HAS_FASTER_WHISPER:
             logger.info("VOICE_TOOLS_OPENAI_KEY not set, falling back to local faster-whisper")
             return "local"
+        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            logger.info("VOICE_TOOLS_OPENAI_KEY not set, falling back to Groq Whisper API")
+            return "groq"
         return "none"
 
     return provider  # Unknown — let it fail downstream
@@ -150,6 +186,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
+        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
@@ -164,11 +201,59 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             Path(file_path).name, model_name, info.language, info.duration,
         )
 
-        return {"success": True, "transcript": transcript}
+        return {"success": True, "transcript": transcript, "provider": "local"}
 
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+# ---------------------------------------------------------------------------
+# Provider: groq (Whisper API — free tier)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Groq Whisper API (free tier available)."""
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
+
+    if not _HAS_OPENAI:
+        return {"success": False, "transcript": "", "error": "openai package not installed"}
+
+    # Auto-correct model if caller passed an OpenAI-only model
+    if model_name in OPENAI_MODELS:
+        logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
+        model_name = DEFAULT_GROQ_STT_MODEL
+
+    try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
+
+        with open(file_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model=model_name,
+                file=audio_file,
+                response_format="text",
+            )
+
+        transcript_text = str(transcription).strip()
+        logger.info("Transcribed %s via Groq API (%s, %d chars)",
+                     Path(file_path).name, model_name, len(transcript_text))
+
+        return {"success": True, "transcript": transcript_text, "provider": "groq"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except APIConnectionError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except APITimeoutError as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except APIError as e:
+        return {"success": False, "transcript": "", "error": f"API error: {e}"}
+    except Exception as e:
+        logger.error("Groq transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
 # Provider: openai (Whisper API)
@@ -184,8 +269,14 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
+    # Auto-correct model if caller passed a Groq-only model
+    if model_name in GROQ_MODELS:
+        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
+        model_name = DEFAULT_STT_MODEL
+
     try:
-        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=30, max_retries=0)
 
         with open(file_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
@@ -198,7 +289,7 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
                      Path(file_path).name, model_name, len(transcript_text))
 
-        return {"success": True, "transcript": transcript_text}
+        return {"success": True, "transcript": transcript_text, "provider": "openai"}
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -223,7 +314,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper if available, else OpenAI API
+      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -234,6 +325,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "success" (bool): Whether transcription succeeded
           - "transcript" (str): The transcribed text (empty on failure)
           - "error" (str, optional): Error message if success is False
+          - "provider" (str, optional): Which provider was used
     """
     # Validate input
     error = _validate_audio_file(file_path)
@@ -249,9 +341,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         return _transcribe_local(file_path, model_name)
 
+    if provider == "groq":
+        model_name = model or DEFAULT_GROQ_STT_MODEL
+        return _transcribe_groq(file_path, model_name)
+
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
-        model_name = model or openai_cfg.get("model", DEFAULT_OPENAI_MODEL)
+        model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
 
     # No provider available
@@ -260,6 +356,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "transcript": "",
         "error": (
             "No STT provider available. Install faster-whisper for free local "
-            "transcription, or set VOICE_TOOLS_OPENAI_KEY for the OpenAI Whisper API."
+            "transcription, set GROQ_API_KEY for free Groq Whisper, "
+            "or set VOICE_TOOLS_OPENAI_KEY for the OpenAI Whisper API."
         ),
     }

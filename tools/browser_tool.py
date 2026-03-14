@@ -224,23 +224,13 @@ def _emergency_cleanup_all_sessions():
         logger.error("Emergency cleanup error: %s", e)
 
 
-def _signal_handler(signum, frame):
-    """Handle interrupt signals to cleanup sessions before exit."""
-    logger.warning("Received signal %s, cleaning up...", signum)
-    _emergency_cleanup_all_sessions()
-    sys.exit(128 + signum)
-
-
-# Register cleanup handlers
+# Register cleanup via atexit only.  Previous versions installed SIGINT/SIGTERM
+# handlers that called sys.exit(), but this conflicts with prompt_toolkit's
+# async event loop — a SystemExit raised inside a key-binding callback
+# corrupts the coroutine state and makes the process unkillable.  atexit
+# handlers run on any normal exit (including sys.exit), so browser sessions
+# are still cleaned up without hijacking signals.
 atexit.register(_emergency_cleanup_all_sessions)
-
-# Only register signal handlers in main process (not in multiprocessing workers)
-try:
-    if os.getpid() == os.getpgrp():  # Main process check
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
-except (OSError, AttributeError):
-    pass  # Signal handling not available (e.g., Windows or worker process)
 
 
 # =============================================================================

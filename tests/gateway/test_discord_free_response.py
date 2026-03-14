@@ -29,6 +29,8 @@ def _ensure_discord_mock():
     discord_mod.Embed = MagicMock
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
+        choices=lambda **kwargs: (lambda fn: fn),
+        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
     ext_mod = MagicMock()

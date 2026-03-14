@@ -266,6 +266,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(

@@ -275,12 +275,25 @@ class FakeHAServer:
         affected = []
         entity_id = body.get("entity_id")
         if entity_id:
-            new_state = "on" if service == "turn_on" else "off"
             for s in ENTITY_STATES:
                 if s["entity_id"] == entity_id:
+                    if service == "turn_on":
+                        s["state"] = "on"
+                    elif service == "turn_off":
+                        s["state"] = "off"
+                    elif service == "set_temperature" and "temperature" in body:
+                        s["attributes"]["temperature"] = body["temperature"]
+                        # Keep current state or set to heat if off
+                        if s["state"] == "off":
+                            s["state"] = "heat"
+                        # Simulate temperature sensor approaching the target
+                        for ts in ENTITY_STATES:
+                            if ts["entity_id"] == "sensor.temperature":
+                                ts["state"] = str(body["temperature"] - 0.5)
+                                break
                     affected.append({
                         "entity_id": entity_id,
-                        "state": new_state,
+                        "state": s["state"],
                         "attributes": s.get("attributes", {}),
                     })
                     break

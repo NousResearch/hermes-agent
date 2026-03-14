@@ -69,6 +69,7 @@ class PersistentShellMixin:
         self._drain_thread.start()
 
         init_script = (
+            f"export TERM=${{TERM:-dumb}}\n"
             f"touch {self._pshell_stdout} {self._pshell_stderr} "
             f"{self._pshell_status} {self._pshell_cwd} {self._pshell_pid_file}\n"
             f"echo $$ > {self._pshell_pid_file}\n"

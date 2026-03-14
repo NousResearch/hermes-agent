@@ -471,6 +471,8 @@ def _get_env_config() -> Dict[str, Any]:
     # is running inside the container/remote).
     if env_type == "local":
         default_cwd = os.getcwd()
+    elif env_type == "ssh":
+        default_cwd = "~"
     else:
         default_cwd = "/root"
     

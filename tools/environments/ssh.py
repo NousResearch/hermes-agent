@@ -153,7 +153,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             effective_stdin = stdin_data
 
         cmd = self._build_ssh_command()
-        cmd.extend(["bash", "-c", wrapped])
+        cmd.append(wrapped)
 
         try:
             kwargs = self._build_run_kwargs(timeout, effective_stdin)

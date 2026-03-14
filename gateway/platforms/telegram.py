@@ -216,7 +216,8 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        _flood_retried: bool = False,
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
@@ -265,6 +266,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
         except Exception as e:
+            err_str = str(e).lower()
+            if "flood" in err_str and not _flood_retried:
+                m = re.search(r"retry.after.?(\d+)", err_str)
+                wait = min(int(m.group(1)) if m else 3, 30)
+                logger.warning("[%s] FloodWait on send to chat=%s — waiting %ds then retrying",
+                               self.name, chat_id, wait)
+                await asyncio.sleep(wait)
+                return await self.send(chat_id, content, reply_to, metadata, _flood_retried=True)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
@@ -273,6 +282,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        _flood_retried: bool = False,
     ) -> SendResult:
         """Edit a previously sent Telegram message."""
         if not self._bot:
@@ -295,6 +305,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
+            err_str = str(e).lower()
+            if "flood" in err_str and not _flood_retried:
+                m = re.search(r"retry.after.?(\d+)", err_str)
+                wait = min(int(m.group(1)) if m else 3, 30)
+                logger.warning("[%s] FloodWait on edit_message chat=%s msg=%s — waiting %ds then retrying",
+                               self.name, chat_id, message_id, wait)
+                await asyncio.sleep(wait)
+                return await self.edit_message(chat_id, message_id, content, _flood_retried=True)
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
@@ -302,6 +320,190 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
+            return SendResult(success=False, error=str(e))
+
+    async def send_raw(
+        self, chat_id: str, content: str, metadata: dict = None,
+    ) -> SendResult:
+        """Send a plain-text message without MarkdownV2 formatting."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id), text=content, parse_mode=None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def edit_message_raw(
+        self, chat_id: str, message_id: str, content: str,
+    ) -> SendResult:
+        """Edit a message with plain text (no MarkdownV2 formatting).
+
+        Handles Telegram FloodWait by waiting the required delay and
+        retrying once.  Intermediate streaming edits can trigger rate
+        limits in groups; silently dropping them creates visible update gaps.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        for attempt in range(2):  # one retry after FloodWait
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id), message_id=int(message_id),
+                    text=content, parse_mode=None,
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "flood" in err_str and attempt == 0:
+                    m = re.search(r"retry.after.?(\d+)", err_str)
+                    wait = min(int(m.group(1)) if m else 2, 10)
+                    logger.warning("[%s] FloodWait on intermediate edit, retrying after %ds",
+                                   self.name, wait)
+                    await asyncio.sleep(wait)
+                    continue
+                return SendResult(success=False, error=str(e))
+        return SendResult(success=False, error="FloodWait retry exhausted")
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether this adapter supports Telegram Bot API sendMessageDraft (9.3+)."""
+        return True
+
+    async def send_draft(
+        self, chat_id: str, draft_id: int, text: str, metadata: dict = None,
+    ):
+        """Push a draft update via sendMessageDraft (Bot API 9.5+).
+
+        Bot API 9.5 (March 1 2026) removed the topics/forum requirement —
+        sendMessageDraft now works in ALL chat types (private DMs, groups,
+        supergroups, channels, forum topics).
+
+        Returns the message_id string on first success (so the stream consumer
+        can store it for finalization via editMessageText), True on subsequent
+        updates, or False on failure.
+        """
+        if not self._bot:
+            return False
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return False
+
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            result = await self._bot.send_message_draft(
+                chat_id=cid, draft_id=draft_id, text=text,
+                parse_mode=None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            # Return the message_id string so the caller can store it for
+            # finalization.  Message object is truthy so bool checks still work.
+            if result and hasattr(result, "message_id"):
+                return str(result.message_id)
+            return bool(result)
+        except Exception as e:
+            logger.warning("[%s] send_message_draft failed: %s", self.name, e)
+            return False
+
+    async def finalize_draft(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: dict = None,
+        draft_message_id: str = None,
+        draft_id: int = None,
+    ) -> SendResult:
+        """Finalize a draft stream with full formatting.
+
+        Strategy (in priority order):
+          1. draft_message_id set → editMessageText in-place (used when PTB
+             returns a Message object from send_message_draft in a future release).
+          2. draft_id set → send a permanent sendMessage() with MarkdownV2.
+             sendMessageDraft previews are ephemeral — they disappear without a
+             real sendMessage commit.  The draft preview vanishes naturally once
+             the permanent message arrives.
+          3. Neither → plain sendMessage fallback (draft never started).
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            formatted = self.format_message(content)
+            thread_id = metadata.get("thread_id") if metadata else None
+
+            if draft_message_id:
+                # In-place edit (if we have the message_id)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(draft_message_id),
+                        text=formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                except Exception:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(draft_message_id),
+                        text=content,
+                        parse_mode=None,
+                    )
+                return SendResult(success=True, message_id=draft_message_id)
+
+            if draft_id:
+                # sendMessageDraft previews are ephemeral — they disappear
+                # without a real sendMessage commit.  Use send_message() here
+                # so the final reply is a permanent Telegram message.
+                # The draft preview will vanish naturally when the real
+                # message arrives.
+                try:
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        message_thread_id=int(thread_id) if thread_id else None,
+                    )
+                except Exception:
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=content,
+                        parse_mode=None,
+                        message_thread_id=int(thread_id) if thread_id else None,
+                    )
+                return SendResult(success=True, message_id=str(msg.message_id))
+
+            # Fallback: draft never started, send as new message
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id), text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    message_thread_id=int(thread_id) if thread_id else None,
+                )
+            except Exception:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id), text=content, parse_mode=None,
+                    message_thread_id=int(thread_id) if thread_id else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a Telegram message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id), message_id=int(message_id),
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
             return SendResult(success=False, error=str(e))
 
     async def send_voice(

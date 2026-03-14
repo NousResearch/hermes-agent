@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -135,6 +136,47 @@ class PlatformConfig:
 
 
 @dataclass
+class StreamingConfig:
+    """Configuration for streaming token delivery to messaging platforms.
+
+    Defaults are the live-tested optimized values from PR #774.
+    Override in config.yaml under the streaming: key.
+
+    Example config.yaml:
+        streaming:
+          enabled: true
+          transport: auto       # auto | draft | edit
+          edit_interval: 0.15  # seconds between Telegram API calls (tuned)
+          buffer_threshold: 20 # chars to buffer before sending update (tuned)
+          cursor: ' ▉'         # appended to intermediate messages only
+    """
+    enabled: bool = False
+    transport: str = "auto"          # auto | draft | edit
+    edit_interval: float = 0.15      # optimized: 149ms gaps vs 257ms at 0.5s
+    buffer_threshold: int = 20       # optimized: 42% smoother than threshold=50
+    cursor: str = " ▉"
+
+    def to_dict(self):
+        return {
+            "enabled": self.enabled,
+            "transport": self.transport,
+            "edit_interval": self.edit_interval,
+            "buffer_threshold": self.buffer_threshold,
+            "cursor": self.cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StreamingConfig":
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            transport=str(data.get("transport", "auto")),
+            edit_interval=float(data.get("edit_interval", 0.15)),
+            buffer_threshold=int(data.get("buffer_threshold", 20)),
+            cursor=str(data.get("cursor", " ▉")),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -160,6 +202,9 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+
+    # Streaming
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -259,6 +304,7 @@ class GatewayConfig:
         quick_commands = data.get("quick_commands", {})
         if not isinstance(quick_commands, dict):
             quick_commands = {}
+        streaming = StreamingConfig.from_dict(data["streaming"]) if "streaming" in data else StreamingConfig()
 
         return cls(
             platforms=platforms,
@@ -269,6 +315,7 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            streaming=streaming,
         )
 
 
@@ -331,6 +378,11 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Bridge streaming config from config.yaml to GatewayConfig
+            streaming_data = yaml_cfg.get("streaming")
+            if streaming_data and isinstance(streaming_data, dict):
+                config.streaming = StreamingConfig.from_dict(streaming_data)
     except Exception:
         pass
 

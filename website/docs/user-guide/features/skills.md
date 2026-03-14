@@ -222,6 +222,92 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
 
+### Integrated hubs and registries
+
+Hermes currently integrates with these skills ecosystems and discovery sources:
+
+#### 1. Official optional skills (`official`)
+
+These are maintained in the Hermes repository itself and install with builtin trust.
+
+- Catalog: [Official Optional Skills Catalog](../../reference/optional-skills-catalog)
+- Source in repo: `optional-skills/`
+- Example:
+
+```bash
+hermes skills browse --source official
+hermes skills install official/security/1password
+```
+
+#### 2. skills.sh (`skills-sh`)
+
+This is Vercel's public skills directory. Hermes can search it directly, inspect skill detail pages, resolve alias-style slugs, and install from the underlying source repo.
+
+- Directory: [skills.sh](https://skills.sh/)
+- CLI/tooling repo: [vercel-labs/skills](https://github.com/vercel-labs/skills)
+- Official Vercel skills repo: [vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills)
+- Example:
+
+```bash
+hermes skills search react --source skills-sh
+hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
+hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
+```
+
+#### 3. Well-known skill endpoints (`well-known`)
+
+This is URL-based discovery from sites that publish `/.well-known/skills/index.json`. It is not a single centralized hub — it is a web discovery convention.
+
+- Example live endpoint: [Mintlify docs skills index](https://mintlify.com/docs/.well-known/skills/index.json)
+- Reference server implementation: [vercel-labs/skills-handler](https://github.com/vercel-labs/skills-handler)
+- Example:
+
+```bash
+hermes skills search https://mintlify.com/docs --source well-known
+hermes skills inspect well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+```
+
+#### 4. Direct GitHub skills (`github`)
+
+Hermes can install directly from GitHub repositories and GitHub-based taps. This is useful when you already know the repo/path or want to add your own custom source repo.
+
+- OpenAI skills: [openai/skills](https://github.com/openai/skills)
+- Anthropic skills: [anthropics/skills](https://github.com/anthropics/skills)
+- Example community tap source: [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
+- Example:
+
+```bash
+hermes skills install openai/skills/k8s
+hermes skills tap add myorg/skills-repo
+```
+
+#### 5. ClawHub (`clawhub`)
+
+A third-party skills marketplace integrated as a community source.
+
+- Site: [clawhub.ai](https://clawhub.ai/)
+- Hermes source id: `clawhub`
+
+#### 6. Claude marketplace-style repos (`claude-marketplace`)
+
+Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
+
+Known integrated sources include:
+- [anthropics/skills](https://github.com/anthropics/skills)
+- [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
+
+Hermes source id: `claude-marketplace`
+
+#### 7. LobeHub (`lobehub`)
+
+Hermes can search and convert agent entries from LobeHub's public catalog into installable Hermes skills.
+
+- Site: [LobeHub](https://lobehub.com/)
+- Public agents index: [chat-agents.lobehub.com](https://chat-agents.lobehub.com/)
+- Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
+- Hermes source id: `lobehub`
+
 ### Security scanning and `--force`
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, supply-chain signals, and other threats.

@@ -4442,6 +4442,28 @@ class AIAgent:
                         response = self._streaming_api_call(api_kwargs, cb)
                     else:
                         response = self._interruptible_api_call(api_kwargs)
+                        # Forward full response to TTS callback for non-streaming providers
+                        # (e.g. Anthropic) so voice TTS still works via batch delivery.
+                        if cb is not None and response:
+                            try:
+                                content = None
+                                # Try choices first — _interruptible_api_call converts all
+                                # providers (including Anthropic) to this format.
+                                try:
+                                    content = response.choices[0].message.content
+                                except (AttributeError, IndexError):
+                                    pass
+                                # Fallback: Anthropic native content blocks
+                                if not content and self.api_mode == "anthropic_messages":
+                                    text_parts = [
+                                        block.text for block in getattr(response, "content", [])
+                                        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+                                    ]
+                                    content = " ".join(text_parts) if text_parts else None
+                                if content:
+                                    cb(content)
+                            except Exception:
+                                pass
                     
                     api_duration = time.time() - api_start_time
                     
@@ -4531,10 +4553,10 @@ class AIAgent:
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
-                        self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
-                        self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}")
-                        self._vprint(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
-                        self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
+                        self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
+                        self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
+                        self._vprint(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}", force=True)
+                        self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
@@ -4554,7 +4576,7 @@ class AIAgent:
                         
                         # Longer backoff for rate limiting (likely cause of None choices)
                         wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...")
+                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
@@ -4594,7 +4616,7 @@ class AIAgent:
                         finish_reason = response.choices[0].finish_reason
 
                     if finish_reason == "length":
-                        self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens")
+                        self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
 
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message

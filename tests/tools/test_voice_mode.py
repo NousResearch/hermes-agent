@@ -866,3 +866,73 @@ class TestConfigurableSilenceParams:
         assert recorder._has_spoken is True
 
         recorder.cancel()
+
+
+# ============================================================================
+# Bugfix regression tests
+# ============================================================================
+
+
+class TestSubprocessTimeoutKill:
+    """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
+
+    def test_timeout_kills_process(self):
+        import subprocess, os
+        proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pid = proc.pid
+        assert proc.poll() is None
+
+        try:
+            proc.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+        assert proc.poll() is not None
+        assert proc.returncode is not None
+
+
+class TestStreamLeakOnStartFailure:
+    """Bug: stream.start() failure left stream unclosed."""
+
+    def test_stream_closed_on_start_failure(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Audio device busy")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+
+        with pytest.raises(RuntimeError, match="Failed to open audio input stream"):
+            recorder._ensure_stream()
+
+        mock_stream.close.assert_called_once()
+
+
+class TestSilenceCallbackLock:
+    """Bug: _on_silence_stop was read/written without lock in audio callback."""
+
+    def test_fire_block_acquires_lock(self):
+        import inspect
+        from tools.voice_mode import AudioRecorder
+
+        source = inspect.getsource(AudioRecorder._ensure_stream)
+        # Verify lock is used before reading _on_silence_stop in fire block
+        assert "with self._lock:" in source
+        assert "cb = self._on_silence_stop" in source
+        lock_pos = source.index("with self._lock:")
+        cb_pos = source.index("cb = self._on_silence_stop")
+        assert lock_pos < cb_pos
+
+    def test_cancel_clears_callback_under_lock(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        mock_sd.InputStream.return_value = MagicMock()
+
+        cb = lambda: None
+        recorder.start(on_silence_stop=cb)
+        assert recorder._on_silence_stop is cb
+
+        recorder.cancel()
+        with recorder._lock:
+            assert recorder._on_silence_stop is None

@@ -550,12 +550,19 @@ class DiscordAdapter(BasePlatformAdapter):
     
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Clean up all active voice connections before closing the client
+        for guild_id in list(self._voice_clients.keys()):
+            try:
+                await self.leave_voice_channel(guild_id)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+
         if self._client:
             try:
                 await self._client.close()
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
-        
+
         self._running = False
         self._client = None
         self._ready_event.clear()

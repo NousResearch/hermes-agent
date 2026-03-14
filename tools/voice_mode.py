@@ -310,8 +310,9 @@ class AudioRecorder:
                     should_fire = True
 
                 if should_fire:
-                    cb = self._on_silence_stop
-                    self._on_silence_stop = None  # fire only once
+                    with self._lock:
+                        cb = self._on_silence_stop
+                        self._on_silence_stop = None  # fire only once
                     if cb:
                         def _safe_cb():
                             try:
@@ -321,6 +322,7 @@ class AudioRecorder:
                         threading.Thread(target=_safe_cb, daemon=True).start()
 
         # Create stream — may block on CoreAudio (first call only).
+        stream = None
         try:
             stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,
@@ -330,6 +332,11 @@ class AudioRecorder:
             )
             stream.start()
         except Exception as e:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             raise RuntimeError(
                 f"Failed to open audio input stream: {e}. "
                 "Check that a microphone is connected and accessible."
@@ -670,6 +677,12 @@ def play_audio_file(file_path: str) -> bool:
                 with _playback_lock:
                     _active_playback = None
                 return True
+            except subprocess.TimeoutExpired:
+                logger.warning("System player %s timed out, killing process", cmd[0])
+                proc.kill()
+                proc.wait()
+                with _playback_lock:
+                    _active_playback = None
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
                 with _playback_lock:

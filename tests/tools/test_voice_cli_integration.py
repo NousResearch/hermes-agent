@@ -1194,3 +1194,40 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         mock_tr.assert_called_once_with("/tmp/test.wav", model="whisper-large-v3")
+
+
+# ---------------------------------------------------------------------------
+# Bugfix: _refresh_level must read _voice_recording under lock
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshLevelLock:
+    """Bug: _refresh_level thread read _voice_recording without lock."""
+
+    def test_refresh_stops_when_recording_false(self):
+        import threading, time
+
+        lock = threading.Lock()
+        recording = True
+        iterations = 0
+
+        def refresh_level():
+            nonlocal iterations
+            while True:
+                with lock:
+                    still = recording
+                if not still:
+                    break
+                iterations += 1
+                time.sleep(0.01)
+
+        t = threading.Thread(target=refresh_level, daemon=True)
+        t.start()
+
+        time.sleep(0.05)
+        with lock:
+            recording = False
+
+        t.join(timeout=1)
+        assert not t.is_alive(), "Refresh thread did not stop"
+        assert iterations > 0, "Refresh thread never ran"

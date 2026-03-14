@@ -3611,7 +3611,11 @@ class HermesCLI:
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
-            while self._voice_recording:
+            while True:
+                with self._voice_lock:
+                    still_recording = self._voice_recording
+                if not still_recording:
+                    break
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
                 time.sleep(0.15)

@@ -1928,3 +1928,38 @@ class TestVoiceChannelAwareness:
     def test_context_empty_when_not_connected(self):
         adapter = self._make_adapter()
         assert adapter.get_voice_channel_context(111) == ""
+
+
+# ---------------------------------------------------------------------------
+# Bugfix: disconnect() must clean up voice state
+# ---------------------------------------------------------------------------
+
+
+class TestDisconnectVoiceCleanup:
+    """Bug: disconnect() left voice dicts populated after closing client."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_voice_state(self):
+        from unittest.mock import AsyncMock
+
+        adapter = MagicMock()
+        adapter._voice_clients = {111: MagicMock(), 222: MagicMock()}
+        adapter._voice_receivers = {111: MagicMock(), 222: MagicMock()}
+        adapter._voice_listen_tasks = {111: MagicMock(), 222: MagicMock()}
+        adapter._voice_timeout_tasks = {111: MagicMock(), 222: MagicMock()}
+        adapter._voice_text_channels = {111: 999, 222: 888}
+
+        async def mock_leave(guild_id):
+            adapter._voice_receivers.pop(guild_id, None)
+            adapter._voice_listen_tasks.pop(guild_id, None)
+            adapter._voice_clients.pop(guild_id, None)
+            adapter._voice_timeout_tasks.pop(guild_id, None)
+            adapter._voice_text_channels.pop(guild_id, None)
+
+        for gid in list(adapter._voice_clients.keys()):
+            await mock_leave(gid)
+
+        assert len(adapter._voice_clients) == 0
+        assert len(adapter._voice_receivers) == 0
+        assert len(adapter._voice_listen_tasks) == 0
+        assert len(adapter._voice_timeout_tasks) == 0

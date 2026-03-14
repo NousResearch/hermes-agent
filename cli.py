@@ -3571,48 +3571,51 @@ class HermesCLI:
         
         Called from the agent thread. Shows a selection UI similar to clarify
         with choices: once / session / always / deny.
+        
+        Uses _approval_lock to serialize concurrent requests (e.g. from
+        parallel delegation subtasks) so each prompt gets its own turn
+        and the shared _approval_state / _approval_deadline aren't clobbered.
         """
         import time as _time
 
-        timeout = 60
-        response_queue = queue.Queue()
-        choices = ["once", "session", "always", "deny"]
+        with self._approval_lock:
+            timeout = 60
+            response_queue = queue.Queue()
+            choices = ["once", "session", "always", "deny"]
 
-        self._approval_state = {
-            "command": command,
-            "description": description,
-            "choices": choices,
-            "selected": 0,
-            "response_queue": response_queue,
-        }
-        self._approval_deadline = _time.monotonic() + timeout
+            self._approval_state = {
+                "command": command,
+                "description": description,
+                "choices": choices,
+                "selected": 0,
+                "response_queue": response_queue,
+            }
+            self._approval_deadline = _time.monotonic() + timeout
 
-        self._invalidate()
+            self._invalidate()
 
-        # Same throttled countdown as _clarify_callback — repaint only
-        # every 5 s to avoid flicker in Kitty / ghostty / etc.
-        _last_countdown_refresh = _time.monotonic()
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._approval_state = None
-                self._approval_deadline = 0
-                self._invalidate()
-                return result
-            except queue.Empty:
-                remaining = self._approval_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                now = _time.monotonic()
-                if now - _last_countdown_refresh >= 5.0:
-                    _last_countdown_refresh = now
+            _last_countdown_refresh = _time.monotonic()
+            while True:
+                try:
+                    result = response_queue.get(timeout=1)
+                    self._approval_state = None
+                    self._approval_deadline = 0
                     self._invalidate()
+                    return result
+                except queue.Empty:
+                    remaining = self._approval_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
+                    now = _time.monotonic()
+                    if now - _last_countdown_refresh >= 5.0:
+                        _last_countdown_refresh = now
+                        self._invalidate()
 
-        self._approval_state = None
-        self._approval_deadline = 0
-        self._invalidate()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-        return "deny"
+            self._approval_state = None
+            self._approval_deadline = 0
+            self._invalidate()
+            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+            return "deny"
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
@@ -3920,6 +3923,7 @@ class HermesCLI:
         # Dangerous command approval state (similar mechanism to clarify)
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
+        self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race fix)
 
         # Slash command loading state
         self._command_running = False

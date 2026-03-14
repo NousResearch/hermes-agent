@@ -60,7 +60,7 @@ class HermesRadio:
         self._mic_break_active = False
         self._auto_mic_breaks = True
         self._mic_break_persona = "encyclopedic"
-        self._duck_volume = 30
+        self._duck_volume = 50
         self._duck_ramp_ms = 500
         self._tracks_since_break = 0
         self._break_every_n = 3
@@ -396,16 +396,18 @@ class HermesRadio:
                         logger.warning("Crate dig exhausted, stopping")
                         break
 
-                # Mic break between tracks
+                # Play the next track first, then mic break over it
+                await self._play_track(next_track)
+
+                # Short delay to let playback start before mic break
                 self._tracks_since_break += 1
                 if (
                     self._auto_mic_breaks
                     and self._tracks_since_break >= self._break_every_n
                 ):
+                    await asyncio.sleep(2.0)  # let the music establish
                     await self._do_mic_break(next_track)
                     self._tracks_since_break = 0
-
-                await self._play_track(next_track)
 
         except asyncio.CancelledError:
             pass
@@ -470,7 +472,8 @@ class HermesRadio:
             duration_ms=self._duck_ramp_ms,
         )
 
-        # Play the TTS clip
+        # Play the TTS clip at reduced volume (DJ shouldn't overpower music)
+        await self._voice.set_volume(65)
         await self._voice.loadfile(audio_path)
 
         # Wait for the voice clip to finish

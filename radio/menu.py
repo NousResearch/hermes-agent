@@ -55,10 +55,33 @@ class RadioMenuState:
         self.done = threading.Event()
         self.viewport_start = 0
 
-        # Mutable toggle state
-        self.active_decades: Set[int] = {1950, 1960, 1970, 1980, 1990}
-        self.active_moods: Set[str] = {"slow", "fast", "weird"}
-        self.mic_breaks: bool = True
+        # Load persisted toggle state
+        try:
+            from radio.config import get_decades, get_moods, get_mic_breaks
+            self.active_decades: Set[int] = get_decades()
+            self.active_moods: Set[str] = get_moods()
+            self.mic_breaks: bool = get_mic_breaks()
+        except Exception:
+            self.active_decades = {1950, 1960, 1970, 1980, 1990}
+            self.active_moods = {"slow", "fast", "weird"}
+            self.mic_breaks = True
+
+        # Sync toggle visual state with loaded config
+        for item in items:
+            if item.is_toggle:
+                tk = item.toggle_key
+                if tk.startswith("decade:"):
+                    item.toggled = int(tk.split(":")[1]) in self.active_decades
+                elif tk.startswith("mood:"):
+                    item.toggled = tk.split(":")[1] in self.active_moods
+                elif tk == "mic_breaks":
+                    item.toggled = self.mic_breaks
+
+        # Section boundaries (for left/right tab navigation)
+        self._sections: List[int] = []
+        for i, idx in enumerate(self.selectable):
+            if idx > 0 and self.items[idx - 1].is_header:
+                self._sections.append(i)
 
     @property
     def cursor_abs(self) -> int:
@@ -116,6 +139,15 @@ class RadioMenuState:
         elif tk == "mic_breaks":
             self.mic_breaks = not self.mic_breaks
             item.toggled = self.mic_breaks
+
+        # Persist to disk
+        try:
+            from radio import config as rc
+            rc.set_decades(self.active_decades)
+            rc.set_moods(self.active_moods)
+            rc.set_mic_breaks(self.mic_breaks)
+        except Exception:
+            pass
         return True
 
     def select_current(self):
@@ -226,13 +258,19 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
     fragments.append(("", "\n"))
     fragments.append(("class:radio-menu-border", "  " + "\u2500" * 54 + "\n"))
 
-    # Viewport calculation
+    # Viewport calculation -- keep cursor centered in view
     visible = VISIBLE_ROWS
     vp = state.viewport_start
-    if cursor_abs < vp:
-        vp = max(0, cursor_abs - 2)
-    elif cursor_abs >= vp + visible:
-        vp = cursor_abs - visible + 3
+
+    # Ensure cursor is always visible with 2 lines of margin
+    margin = 2
+    if cursor_abs < vp + margin:
+        vp = max(0, cursor_abs - margin)
+    elif cursor_abs >= vp + visible - margin:
+        vp = cursor_abs - visible + margin + 1
+
+    # Clamp
+    vp = max(0, min(len(items) - visible, vp))
     state.viewport_start = vp
 
     # Scroll indicator top

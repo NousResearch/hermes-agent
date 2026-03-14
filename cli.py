@@ -4288,12 +4288,16 @@ class HermesCLI:
                 event.app.invalidate()
 
         @kb.add('tab', filter=_radio_active)
+        @kb.add('right', filter=_radio_active)
+        @kb.add('l', filter=_radio_active)
         def radio_tab(event):
             if self._radio_menu_state:
                 self._radio_menu_state.jump_to_section(1)
                 event.app.invalidate()
 
         @kb.add('s-tab', filter=_radio_active)
+        @kb.add('left', filter=_radio_active)
+        @kb.add('h', filter=_radio_active)
         def radio_stab(event):
             if self._radio_menu_state:
                 self._radio_menu_state.jump_to_section(-1)

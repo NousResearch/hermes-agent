@@ -201,8 +201,9 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         # Do not fail hard here — allow custom model names but surface a
         # clear warning so misconfigurations show up in logs/metrics.
         logger.warning(
-            "Requested OpenAI STT model %r is not in SUPPORTED_OPENAI_MODELS; proceeding anyway",
+            "Requested OpenAI STT model %r is not in SUPPORTED_OPENAI_MODELS (%s); proceeding anyway",
             model_name,
+            ", ".join(sorted(SUPPORTED_OPENAI_MODELS)),
         )
     try:
         client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
@@ -272,8 +273,16 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
         # VOICE_TOOLS_STT_MODEL lets ops override the default OpenAI model
-        env_model = os.getenv("VOICE_TOOLS_STT_MODEL")
-        model_name = model or openai_cfg.get("model") or env_model or DEFAULT_OPENAI_MODEL
+        # Priority: explicit model param > env var > config > default
+        if model:
+            model_name = model
+        else:
+            env_model = os.getenv("VOICE_TOOLS_STT_MODEL")
+            if env_model:
+                model_name = env_model
+            else:
+                config_model = openai_cfg.get("model")
+                model_name = config_model if config_model else DEFAULT_OPENAI_MODEL
         return _transcribe_openai(file_path, model_name)
 
     # No provider available

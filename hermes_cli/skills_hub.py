@@ -1050,11 +1050,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "install":
         if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force]\n")
+            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force|--yes]\n")
             return
         identifier = args[0]
         category = ""
-        force = "--force" in args
+        force = any(flag in args for flag in ("--force", "--yes", "-y"))
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
                 category = args[i + 1]

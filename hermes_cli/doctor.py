@@ -56,6 +56,10 @@ def _has_provider_env_config(content: str) -> bool:
 
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
+    # Fix #961: Also check if the honcho binary exists in the system PATH
+    if shutil.which("honcho"):
+        return True
+        
     try:
         from honcho_integration.client import HonchoClientConfig
 

@@ -196,6 +196,11 @@ terminal:
 # Browser Tool Configuration
 # =============================================================================
 browser:
+  # Cloud browser provider (set via `hermes tools` or `hermes setup`).
+  # When unset, browser tools run locally via headless Chromium.
+  # Supported: "browserbase"  (add new providers in tools/browser_providers/)
+  # cloud_provider: "browserbase"
+
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120

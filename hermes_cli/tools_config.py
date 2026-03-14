@@ -190,6 +190,7 @@ TOOL_CATEGORIES = {
                 "name": "Local Browser",
                 "tag": "Free headless Chromium (no API key needed)",
                 "env_vars": [],
+                "browser_provider": None,
                 "post_setup": "browserbase",  # Same npm install for agent-browser
             },
             {
@@ -199,6 +200,16 @@ TOOL_CATEGORIES = {
                     {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
                     {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
                 ],
+                "browser_provider": "browserbase",
+                "post_setup": "browserbase",
+            },
+            {
+                "name": "Browser Use",
+                "tag": "Cloud browser with remote execution",
+                "env_vars": [
+                    {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
+                ],
+                "browser_provider": "browser-use",
                 "post_setup": "browserbase",
             },
         ],
@@ -548,10 +559,10 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
+                if _is_provider_active(p, config):
                     configured = " [active]"
                 elif not env_vars:
-                    configured = " [active]" if config.get("tts", {}).get("provider", "edge") == p.get("tts_provider", "") else ""
+                    configured = ""
                 else:
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
@@ -560,15 +571,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         provider_choices.append("Skip — keep defaults / configure later")
 
         # Detect current provider as default
-        default_idx = 0
-        for i, p in enumerate(providers):
-            if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
-                default_idx = i
-                break
-            env_vars = p.get("env_vars", [])
-            if env_vars and all(get_env_value(v["key"]) for v in env_vars):
-                default_idx = i
-                break
+        default_idx = _detect_active_provider_index(providers, config)
 
         provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
 
@@ -580,6 +583,28 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         _configure_provider(providers[provider_idx], config)
 
 
+def _is_provider_active(provider: dict, config: dict) -> bool:
+    """Check if a provider entry matches the currently active config."""
+    if provider.get("tts_provider"):
+        return config.get("tts", {}).get("provider") == provider["tts_provider"]
+    if "browser_provider" in provider:
+        current = config.get("browser", {}).get("cloud_provider")
+        return provider["browser_provider"] == current
+    return False
+
+
+def _detect_active_provider_index(providers: list, config: dict) -> int:
+    """Return the index of the currently active provider, or 0."""
+    for i, p in enumerate(providers):
+        if _is_provider_active(p, config):
+            return i
+        # Fallback: env vars present → likely configured
+        env_vars = p.get("env_vars", [])
+        if env_vars and all(get_env_value(v["key"]) for v in env_vars):
+            return i
+    return 0
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -587,6 +612,15 @@ def _configure_provider(provider: dict, config: dict):
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
+
+    # Set browser cloud provider in config if applicable
+    if "browser_provider" in provider:
+        bp = provider["browser_provider"]
+        if bp:
+            config.setdefault("browser", {})["cloud_provider"] = bp
+            _print_success(f"  Browser cloud provider set to: {bp}")
+        else:
+            config.get("browser", {}).pop("cloud_provider", None)
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -707,7 +741,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
             configured = ""
             env_vars = p.get("env_vars", [])
             if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
-                if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
+                if _is_provider_active(p, config):
                     configured = " [active]"
                 elif not env_vars:
                     configured = ""
@@ -715,15 +749,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
-        default_idx = 0
-        for i, p in enumerate(providers):
-            if p.get("tts_provider") and config.get("tts", {}).get("provider") == p["tts_provider"]:
-                default_idx = i
-                break
-            env_vars = p.get("env_vars", [])
-            if env_vars and all(get_env_value(v["key"]) for v in env_vars):
-                default_idx = i
-                break
+        default_idx = _detect_active_provider_index(providers, config)
 
         provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
         _reconfigure_provider(providers[provider_idx], config)
@@ -736,6 +762,15 @@ def _reconfigure_provider(provider: dict, config: dict):
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
+
+    if "browser_provider" in provider:
+        bp = provider["browser_provider"]
+        if bp:
+            config.setdefault("browser", {})["cloud_provider"] = bp
+            _print_success(f"  Browser cloud provider set to: {bp}")
+        else:
+            config.get("browser", {}).pop("cloud_provider", None)
+            _print_success(f"  Browser set to local mode")
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -930,9 +965,16 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                         for ts in sorted(removed):
                             label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                             print(color(f"    - {label}", Colors.RED))
-                    # Configure API keys for newly enabled tools
+                    # Configure newly enabled tools — always show the provider
+                    # chooser for TOOL_CATEGORIES entries (even when a free
+                    # provider exists) so the user can pick cloud vs local.
+                    # Simple env-var toolsets only need configuration when
+                    # keys are missing.
                     for ts_key in sorted(added):
-                        if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                        cat = TOOL_CATEGORIES.get(ts_key)
+                        if cat:
+                            _configure_toolset(ts_key, config)
+                        elif TOOLSET_ENV_REQUIREMENTS.get(ts_key):
                             if not _toolset_has_keys(ts_key):
                                 _configure_toolset(ts_key, config)
                     _save_platform_tools(config, pk, new_enabled)
@@ -970,9 +1012,14 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Configure newly enabled toolsets that need API keys
+            # Configure newly enabled tools — always show provider chooser
+            # for TOOL_CATEGORIES entries; only gate on missing keys for
+            # simple env-var toolsets.
             for ts_key in sorted(added):
-                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                cat = TOOL_CATEGORIES.get(ts_key)
+                if cat:
+                    _configure_toolset(ts_key, config)
+                elif TOOLSET_ENV_REQUIREMENTS.get(ts_key):
                     if not _toolset_has_keys(ts_key):
                         _configure_toolset(ts_key, config)
 

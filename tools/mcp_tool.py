@@ -831,6 +831,7 @@ class MCPServerTask:
                         "MCP server '%s' failed after %d reconnection attempts, "
                         "giving up: %s",
                         self.name, _MAX_RECONNECT_RETRIES, exc,
+                        exc_info=True
                     )
                     return
 
@@ -839,6 +840,7 @@ class MCPServerTask:
                     "reconnecting in %.0fs: %s",
                     self.name, retries, _MAX_RECONNECT_RETRIES,
                     backoff, exc,
+                    exc_info=True
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -934,7 +936,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             return {}
         return servers
     except Exception as exc:
-        logger.debug("Failed to load MCP config: %s", exc)
+        logger.error("Failed to load MCP config: %s", exc, exc_info=True)
         return {}
 
 
@@ -1004,6 +1006,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
+                exc_info=True
             )
             return json.dumps({
                 "error": _sanitize_error(
@@ -1046,6 +1049,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         except Exception as exc:
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
+                exc_info=True
             )
             return json.dumps({
                 "error": _sanitize_error(
@@ -1088,6 +1092,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         except Exception as exc:
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
+                exc_info=True
             )
             return json.dumps({
                 "error": _sanitize_error(
@@ -1135,6 +1140,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         except Exception as exc:
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
+                exc_info=True
             )
             return json.dumps({
                 "error": _sanitize_error(
@@ -1188,6 +1194,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         except Exception as exc:
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
+                exc_info=True
             )
             return json.dumps({
                 "error": _sanitize_error(
@@ -1659,7 +1666,7 @@ def shutdown_mcp_servers():
             future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
             future.result(timeout=15)
         except Exception as exc:
-            logger.debug("Error during MCP shutdown: %s", exc)
+            logger.error("Error during MCP shutdown: %s", exc, exc_info=True)
 
     _stop_mcp_loop()
 

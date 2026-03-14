@@ -508,6 +508,7 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             effective_key = api_key or resolve_anthropic_token() or ""
             self._anthropic_api_key = effective_key
+            self._anthropic_base_url = base_url
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -2625,7 +2626,7 @@ class AIAgent:
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
-                        self._anthropic_client = build_anthropic_client(self._anthropic_api_key)
+                        self._anthropic_client = build_anthropic_client(self._anthropic_api_key, getattr(self, "_anthropic_base_url", None))
                     else:
                         self.client = OpenAI(**self._client_kwargs)
                 except Exception:
@@ -2757,7 +2758,7 @@ class AIAgent:
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
-                        self._anthropic_client = build_anthropic_client(self._anthropic_api_key)
+                        self._anthropic_client = build_anthropic_client(self._anthropic_api_key, getattr(self, "_anthropic_base_url", None))
                     else:
                         self.client = OpenAI(**self._client_kwargs)
                 except Exception:
@@ -2823,7 +2824,8 @@ class AIAgent:
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
                 effective_key = fb_client.api_key or resolve_anthropic_token() or ""
                 self._anthropic_api_key = effective_key
-                self._anthropic_client = build_anthropic_client(effective_key)
+                self._anthropic_base_url = getattr(fb_client, "base_url", None)
+                self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
                 self.client = None
                 self._client_kwargs = {}
             else:
@@ -4436,7 +4438,7 @@ class AIAgent:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     cb = getattr(self, "_stream_callback", None)
-                    if cb is not None:
+                    if cb is not None and self.api_mode == "chat_completions":
                         response = self._streaming_api_call(api_kwargs, cb)
                     else:
                         response = self._interruptible_api_call(api_kwargs)
@@ -4770,7 +4772,7 @@ class AIAgent:
                         new_token = resolve_anthropic_token()
                         if new_token and new_token != self._anthropic_api_key:
                             self._anthropic_api_key = new_token
-                            self._anthropic_client = build_anthropic_client(new_token)
+                            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info

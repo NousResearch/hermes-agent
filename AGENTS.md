@@ -121,6 +121,23 @@ while api_call_count < self.max_iterations and self.iteration_budget.remaining >
 
 Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Reasoning content is stored in `assistant_msg["reasoning"]`.
 
+### Multi-Agent Collaboration & Subagents
+
+Hermes can spawn isolated sub-agents to parallelize work or handle distinct tasks without polluting the main context window. This is managed via the `delegate_task` tool.
+
+**Configuring Subagents (`role` parameter):**
+Sub-agents can adopt specific personas or sets of instructions via the `role` parameter in the `delegate_task` tool.
+When a sub-agent is spawned with a `role` (e.g., `role="kawaii"` or `role="security_auditor"`), Hermes searches `~/.hermes/config.yaml` under `agent.personalities` for a matching persona string to inject into the sub-agent's system prompt.
+If no matching personality is found in the config, the raw string provided in `role` is used directly as the persona overriding instruction.
+
+- **Single Task Delegation**: `delegate_task(task="Check logs for errors", role="sysadmin")`
+- **Batch Tasks**: When delegating an array of tasks (e.g., map-reduce), each task in the `tasks` array can override the parent delegation role:
+  `delegate_task(tasks=[{"task": "Design component", "role": "frontend_dev"}, {"task": "Write API", "role": "backend_dev"}])`
+
+**Subsystem Constraints:**
+- Sub-agents are prevented from calling `delegate_task` themselves to avoid infinite recursion.
+- Sub-agents have isolated Terminal Sessions (task IDs) and separate Context windows.
+
 ---
 
 ## CLI Architecture (cli.py)

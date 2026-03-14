@@ -48,13 +48,31 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
+def _build_child_system_prompt(goal: str, context: Optional[str] = None, role: Optional[str] = None) -> str:
     """Build a focused system prompt for a child agent."""
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
+    parts = []
+    
+    # Process role if provided
+    if role and role.strip():
+        role_str = role.strip()
+        # Look up role in config.yaml personalities if possible
+        cfg = _load_config()
+        # Fallback config structure lookup, _load_config gets just delegation section usually
+        try:
+            from cli import CLI_CONFIG
+            personalities = CLI_CONFIG.get("agent", {}).get("personalities", {})
+        except Exception:
+            personalities = {}
+            
+        persona = personalities.get(role_str, role_str)
+        parts.append(f"You are a focused subagent working on a specific delegated task. Your persona/role is:\n{persona}")
+    else:
+        parts.append("You are a focused subagent working on a specific delegated task.")
+
+    parts.extend([
         "",
         f"YOUR TASK:\n{goal}",
-    ]
+    ])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     parts.append(
@@ -166,11 +184,15 @@ def _run_single_child(
     max_iterations: int,
     parent_agent,
     task_count: int = 1,
+ feat/oss-forensics-skill-v2
+    role: Optional[str] = None,
+=======
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+ main
 ) -> Dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -194,7 +216,7 @@ def _run_single_child(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    child_prompt = _build_child_system_prompt(goal, context)
+    child_prompt = _build_child_system_prompt(goal, context, role=role)
 
     try:
         # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
@@ -373,6 +395,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    role: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -416,7 +439,7 @@ def delegate_task(
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "role": role}]
     else:
         return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
 
@@ -447,10 +470,14 @@ def delegate_task(
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
             task_count=1,
+ feat/oss-forensics-skill-v2
+            role=t.get("role") or role,
+
             override_provider=creds["provider"],
             override_base_url=creds["base_url"],
             override_api_key=creds["api_key"],
             override_api_mode=creds["api_mode"],
+ main
         )
         results.append(result)
     else:
@@ -476,10 +503,14 @@ def delegate_task(
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
+feat/oss-forensics-skill-v2
+                    role=t.get("role") or role,
+=======
                     override_provider=creds["provider"],
                     override_base_url=creds["base_url"],
                     override_api_key=creds["api_key"],
                     override_api_mode=creds["api_mode"],
+ main
                 )
                 futures[future] = i
 
@@ -674,6 +705,14 @@ DELEGATE_TASK_SCHEMA = {
                     "full-stack tasks."
                 ),
             },
+            "role": {
+                "type": "string",
+                "description": (
+                    "Optional role or persona for the subagent. "
+                    "Can be a predefined personality key (e.g., 'coder', 'helpful', 'kawaii') "
+                    "or custom instructions detailing how the agent should behave."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -686,6 +725,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
                         },
+                        "role": {
+                            "type": "string",
+                            "description": "Role/persona for this specific task",
+                        }
                     },
                     "required": ["goal"],
                 },
@@ -693,7 +736,7 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Batch mode: up to 3 tasks to run in parallel. Each gets "
                     "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
+                    "When provided, top-level goal/context/toolsets/role are ignored."
                 ),
             },
             "max_iterations": {
@@ -722,6 +765,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        role=args.get("role"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
 )

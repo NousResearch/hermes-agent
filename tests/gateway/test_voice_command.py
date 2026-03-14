@@ -38,6 +38,7 @@ def _make_runner(tmp_path):
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
+    runner._is_user_authorized = lambda source: True
     return runner
 
 
@@ -731,6 +732,7 @@ class TestVoiceChannelCommands:
         assert event.text == "Hello from VC"
         assert event.message_type == MessageType.VOICE
         assert event.source.chat_id == "123"
+        assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
     async def test_input_posts_transcript_in_text_channel(self, runner):

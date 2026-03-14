@@ -351,6 +351,8 @@ class BasePlatformAdapter(ABC):
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Chats where auto-TTS on voice input is disabled (set by /voice off)
+        self._auto_tts_disabled_chats: set = set()
     
     @property
     def name(self) -> str:
@@ -733,8 +735,12 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                # Skipped when the chat has voice mode disabled (/voice off)
                 _tts_path = None
-                if event.message_type == MessageType.VOICE and text_content and not media_files:
+                if (event.message_type == MessageType.VOICE
+                        and text_content
+                        and not media_files
+                        and event.source.chat_id not in self._auto_tts_disabled_chats):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():

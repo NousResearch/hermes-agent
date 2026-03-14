@@ -2119,9 +2119,13 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
 
+        adapter = self.adapters.get(event.source.platform)
+
         if args in ("on", "enable"):
             self._voice_mode[chat_id] = "voice_only"
             self._save_voice_modes()
+            if adapter:
+                adapter._auto_tts_disabled_chats.discard(chat_id)
             return (
                 "Voice mode enabled.\n"
                 "I'll reply with voice when you send voice messages.\n"
@@ -2130,10 +2134,14 @@ class GatewayRunner:
         elif args in ("off", "disable"):
             self._voice_mode.pop(chat_id, None)
             self._save_voice_modes()
+            if adapter:
+                adapter._auto_tts_disabled_chats.add(chat_id)
             return "Voice mode disabled. Text-only replies."
         elif args == "tts":
             self._voice_mode[chat_id] = "all"
             self._save_voice_modes()
+            if adapter:
+                adapter._auto_tts_disabled_chats.discard(chat_id)
             return (
                 "Auto-TTS enabled.\n"
                 "All replies will include a voice message."
@@ -2171,10 +2179,14 @@ class GatewayRunner:
             if current == "off":
                 self._voice_mode[chat_id] = "voice_only"
                 self._save_voice_modes()
+                if adapter:
+                    adapter._auto_tts_disabled_chats.discard(chat_id)
                 return "Voice mode enabled."
             else:
                 self._voice_mode.pop(chat_id, None)
                 self._save_voice_modes()
+                if adapter:
+                    adapter._auto_tts_disabled_chats.add(chat_id)
                 return "Voice mode disabled."
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
@@ -2211,6 +2223,7 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             self._voice_mode[event.source.chat_id] = "all"
             self._save_voice_modes()
+            adapter._auto_tts_disabled_chats.discard(event.source.chat_id)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
@@ -2265,21 +2278,28 @@ class GatewayRunner:
         if not text_ch_id:
             return
 
-        # Show transcript in text channel
-        try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                await channel.send(f"**[Voice]** <@{user_id}>: {transcript}")
-        except Exception:
-            pass
-
-        # Build a synthetic MessageEvent and feed through the normal pipeline
+        # Check authorization before processing voice input
         source = SessionSource(
             platform=Platform.DISCORD,
             chat_id=str(text_ch_id),
             user_id=str(user_id),
             user_name=str(user_id),
+            chat_type="channel",
         )
+        if not self._is_user_authorized(source):
+            logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
+            return
+
+        # Show transcript in text channel (after auth, with mention sanitization)
+        try:
+            channel = adapter._client.get_channel(text_ch_id)
+            if channel:
+                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+        except Exception:
+            pass
+
+        # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
         # guild_id and _send_voice_reply() plays audio in the voice channel.
         from types import SimpleNamespace

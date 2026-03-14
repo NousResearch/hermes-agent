@@ -408,7 +408,7 @@ class AIAgent:
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         from agent.redact import RedactingFormatter
-        _error_log_dir = Path.home() / ".hermes" / "logs"
+        _error_log_dir = _hermes_home / "logs"
         _error_log_dir.mkdir(parents=True, exist_ok=True)
         _error_log_path = _error_log_dir / "errors.log"
         from logging.handlers import RotatingFileHandler

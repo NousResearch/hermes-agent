@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import logging
 import sys
 
 from agent.prompt_builder import (
@@ -143,6 +144,23 @@ class TestParseSkillFile:
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
+
+    def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: broken\n---\n")
+
+        def boom(*args, **kwargs):
+            raise OSError("read exploded")
+
+        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+
+        assert is_compat is True
+        assert frontmatter == {}
+        assert desc == ""
+        assert "Failed to parse skill file" in caplog.text
+        assert str(skill_file) in caplog.text
 
     def test_incompatible_platform_returns_false(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
@@ -439,6 +457,21 @@ class TestReadSkillConditions:
     def test_missing_file_returns_empty(self, tmp_path):
         conditions = _read_skill_conditions(tmp_path / "missing.md")
         assert conditions == {}
+
+    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: broken\n---\n")
+
+        def boom(*args, **kwargs):
+            raise OSError("read exploded")
+
+        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            conditions = _read_skill_conditions(skill_file)
+
+        assert conditions == {}
+        assert "Failed to read skill conditions" in caplog.text
+        assert str(skill_file) in caplog.text
 
 
 class TestSkillShouldShow:

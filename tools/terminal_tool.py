@@ -26,6 +26,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -53,10 +54,11 @@ logger = logging.getLogger(__name__)
 from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
 
 
-# Add mini-swe-agent to path if not installed
-mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
-if mini_swe_path.exists():
-    sys.path.insert(0, str(mini_swe_path))
+# Add mini-swe-agent to path if not installed. In git worktrees the populated
+# submodule may live in the main checkout rather than the worktree itself.
+from minisweagent_path import ensure_minisweagent_on_path
+
+ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 
 
 # =============================================================================
@@ -1124,47 +1126,58 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met.
+
+    Important: local and singularity backends now use Hermes' own environment
+    wrappers directly and do not require the ``minisweagent`` Python package to
+    be installed. Docker and Modal still rely on mini-swe-agent internals.
+    """
     config = _get_env_config()
     env_type = config["env_type"]
-    
+
     try:
         if env_type == "local":
             # Local execution uses Hermes' own LocalEnvironment wrapper and does
             # not depend on minisweagent being importable.
             return True
+
         elif env_type == "docker":
-            from minisweagent.environments.docker import DockerEnvironment
+            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
+            if importlib.util.find_spec("minisweagent") is None:
+                logger.error("mini-swe-agent is required for docker terminal backend but is not importable")
+                return False
             # Check if docker is available (use find_docker for macOS PATH issues)
             from tools.environments.docker import find_docker
-            import subprocess
             docker = find_docker()
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
             return result.returncode == 0
+
         elif env_type == "singularity":
-            from minisweagent.environments.singularity import SingularityEnvironment
-            # Check if singularity/apptainer is available
-            import subprocess
-            import shutil
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
                 result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
                 return result.returncode == 0
             return False
+
         elif env_type == "ssh":
-            from tools.environments.ssh import SSHEnvironment
             # Check that host and user are configured
             return bool(config.get("ssh_host")) and bool(config.get("ssh_user"))
+
         elif env_type == "modal":
-            from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
+            if importlib.util.find_spec("minisweagent") is None:
+                logger.error("mini-swe-agent is required for modal terminal backend but is not importable")
+                return False
             # Check for modal token
             return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+
         elif env_type == "daytona":
             from daytona import Daytona
             return os.getenv("DAYTONA_API_KEY") is not None
+
         else:
             return False
     except Exception as e:

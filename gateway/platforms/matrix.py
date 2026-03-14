@@ -45,6 +45,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent as GatewayMessageEvent,
+    MessageType as GatewayMessageType,
     SendResult,
     cache_audio_from_bytes,
     cache_document_from_bytes,
@@ -327,6 +328,11 @@ class MatrixAdapter(BasePlatformAdapter):
         # Active SAS verification sessions keyed by transaction_id
         self._sas_sessions: dict[str, Any] = {}
 
+        # Typing indicator keepalive tasks keyed by room_id.
+        # Matrix typing notifications expire after 30 s, so we refresh them
+        # periodically while the agent is processing — same pattern as nanobot.
+        self._typing_tasks: dict[str, Any] = {}
+
         # Data directory
         self._data_dir = Path(os.path.expanduser("~/.hermes/matrix"))
 
@@ -381,6 +387,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
             self._client = None
             self._crypto = None
+        # Cancel all pending typing keepalive tasks
+        for _room_id in list(self._typing_tasks):
+            await self._stop_typing(_room_id, clear=False)
+
         if self._crypto_db is not None:
             try:
                 await self._crypto_db.stop()
@@ -442,50 +452,145 @@ class MatrixAdapter(BasePlatformAdapter):
                 formatted_body=formatted_body,
             )
             event_id = await self._client.send_message(RoomID(channel_id), content)
+            # Clear typing indicator now that the response has been sent
+            await self._stop_typing(channel_id)
             logger.info("Matrix: sent message (%d chars) to %s", len(text), channel_id)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             logger.error("Matrix: send_message failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
-    async def send_image(
-        self, channel_id: str, image_path: str,
-        caption: Optional[str] = None, **kwargs: Any,
-    ) -> SendResult:
-        return await self._send_media(channel_id, image_path, caption, MessageType.IMAGE)
+    # Matrix has no enforced message size limit in the spec; homeservers
+    # typically allow up to 65535 bytes. We set a generous default that
+    # matches homeserver defaults to prevent truncation on conservative servers.
+    MAX_MESSAGE_LENGTH: int = 65535
 
-    async def send_audio(
-        self, channel_id: str, audio_path: str,
-        caption: Optional[str] = None, **kwargs: Any,
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
     ) -> SendResult:
-        return await self._send_media(channel_id, audio_path, caption, MessageType.AUDIO)
+        """Upload and send an image file or URL as an m.image message."""
+        return await self._send_media_path_or_url(
+            chat_id, image_url, caption, MessageType.IMAGE
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Upload and send a local image file as an m.image message."""
+        return await self._send_media_path_or_url(
+            chat_id, image_path, caption, MessageType.IMAGE
+        )
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Upload and send an animated GIF as an m.image message.
+
+        Matrix has no native GIF type — m.image renders GIFs inline and
+        most clients auto-play them, matching the expected animation behavior.
+        """
+        return await self._send_media_path_or_url(
+            chat_id, animation_url, caption, MessageType.IMAGE
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Upload and send an audio file as an m.audio message."""
+        return await self._send_media_path_or_url(
+            chat_id, audio_path, caption, MessageType.AUDIO
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Upload and send a video file as an m.video message."""
+        return await self._send_media_path_or_url(
+            chat_id, video_path, caption, MessageType.VIDEO
+        )
 
     async def send_document(
-        self, channel_id: str, document_path: str,
-        caption: Optional[str] = None, **kwargs: Any,
-    ) -> SendResult:
-        return await self._send_media(channel_id, document_path, caption, MessageType.FILE)
-
-    async def _send_media(
         self,
-        channel_id: str,
+        chat_id: str,
         file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Upload and send a file as an m.file message."""
+        return await self._send_media_path_or_url(
+            chat_id, file_path, caption, MessageType.FILE,
+            override_name=file_name,
+        )
+
+    async def _send_media_path_or_url(
+        self,
+        chat_id: str,
+        path_or_url: str,
         caption: Optional[str],
         msgtype: MessageType,
+        override_name: Optional[str] = None,
     ) -> SendResult:
+        """Upload a local file (or pass-through an mxc:// URL) and send as Matrix media.
+
+        Accepts local filesystem paths or existing mxc:// Matrix content URIs.
+        Uploads local files to the homeserver's media repository, then sends
+        the appropriate typed message event (m.image, m.audio, m.video, m.file).
+        """
         if self._client is None:
             return SendResult(success=False, error="Not connected")
         try:
             import mimetypes
-            path = Path(file_path)
-            data = path.read_bytes()
-            mime, _ = mimetypes.guess_type(str(path))
-            mime = mime or "application/octet-stream"
-            mxc_url = await self._client.upload_media(data, mime_type=mime, filename=path.name)
+
+            if path_or_url.startswith("mxc://"):
+                # Already a Matrix content URI — send directly without re-uploading
+                mxc_url = path_or_url
+                filename = override_name or "media"
+                mime = "application/octet-stream"
+            else:
+                file_path = Path(path_or_url)
+                data = file_path.read_bytes()
+                filename = override_name or file_path.name
+                mime, _ = mimetypes.guess_type(str(file_path))
+                mime = mime or "application/octet-stream"
+                mxc_url = await self._client.upload_media(
+                    data, mime_type=mime, filename=filename
+                )
+
             content = MediaMessageEventContent(
-                msgtype=msgtype, body=caption or path.name, url=mxc_url
+                msgtype=msgtype,
+                body=caption or filename,
+                url=mxc_url,
             )
-            event_id = await self._client.send_message(RoomID(channel_id), content)
+            event_id = await self._client.send_message(RoomID(chat_id), content)
+            await self._stop_typing(chat_id)
+            logger.info("Matrix: sent %s (%s) to %s", msgtype, filename, chat_id)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             logger.error("Matrix: send_media failed: %s", exc)
@@ -774,32 +879,54 @@ class MatrixAdapter(BasePlatformAdapter):
         # Extract text and media URL
         text: Optional[str] = getattr(content, "body", None) or ""
         media_url: Optional[str] = None
-        msg_type = MessageType.TEXT
+        # Use GatewayMessageType (gateway enum) for the event, not mautrix's MessageType.
+        # Compare msgtype as a string to avoid importing mautrix MessageType enum here.
+        gw_msg_type = GatewayMessageType.TEXT
 
-        if hasattr(content, "msgtype"):
-            mt = content.msgtype
-            if mt == MessageType.IMAGE:
-                msg_type = MessageType.IMAGE
-                media_url = str(content.url) if getattr(content, "url", None) else None
-            elif mt == MessageType.AUDIO:
-                msg_type = MessageType.AUDIO
-                media_url = str(content.url) if getattr(content, "url", None) else None
-            elif mt in (MessageType.VIDEO, MessageType.FILE):
-                msg_type = MessageType.FILE
-                media_url = str(content.url) if getattr(content, "url", None) else None
+        msgtype_str = str(getattr(content, "msgtype", ""))
+
+        def _get_media_url(c: Any) -> Optional[str]:
+            """Extract mxc:// URL from content, handling both plain and E2EE-encrypted media.
+
+            Unencrypted media has a top-level `url` attribute.
+            Encrypted media (in E2EE rooms) has a `file` attribute (EncryptedFile)
+            with the URL inside it — `content.url` is None in that case.
+            """
+            # Top-level URL (unencrypted)
+            if getattr(c, "url", None):
+                return str(c.url)
+            # Encrypted file — URL is inside the `file` block
+            enc_file = getattr(c, "file", None)
+            if enc_file and getattr(enc_file, "url", None):
+                return str(enc_file.url)
+            return None
+
+        if msgtype_str in ("m.image", "m.sticker"):
+            gw_msg_type = GatewayMessageType.PHOTO
+            media_url = _get_media_url(content)
+        elif msgtype_str in ("m.audio",):
+            gw_msg_type = GatewayMessageType.VOICE
+            media_url = _get_media_url(content)
+        elif msgtype_str in ("m.video",):
+            gw_msg_type = GatewayMessageType.VIDEO
+            media_url = _get_media_url(content)
+        elif msgtype_str in ("m.file",):
+            gw_msg_type = GatewayMessageType.DOCUMENT
+            media_url = _get_media_url(content)
 
         if not text and not media_url:
             return
 
-        logger.debug(
-            "Matrix: message from %s in %s: %s",
-            _redact_matrix_id(sender), room_id, text[:60],
+        logger.info(
+            "Matrix: message from %s in %s type=%s media_url=%s text=%r",
+            _redact_matrix_id(sender), room_id, msgtype_str,
+            media_url[:40] if media_url else None,
+            (text or "")[:40],
         )
 
-        # Build gateway event
-        from gateway.session import SessionSource
-        source = SessionSource(
-            platform=Platform.MATRIX,
+        # Build gateway event using build_source() for proper normalization
+        # (str coercion, topic stripping, etc.) — same pattern as all other adapters.
+        source = self.build_source(
             chat_id=room_id,
             chat_name=room_id,
             chat_type="dm",
@@ -811,30 +938,74 @@ class MatrixAdapter(BasePlatformAdapter):
             source=source,
             raw_message=event,
             message_id=event_id,
+            message_type=gw_msg_type,
         )
 
-        # Download media
-        if media_url and msg_type == MessageType.IMAGE:
+        # Download inbound media and populate event.media_urls / event.media_types
+        # following the same pattern as the Telegram adapter so the gateway's
+        # vision tool and STT transcription pipeline work correctly.
+        if media_url:
+            import mimetypes as _mt
             try:
-                data = await self._client.download_media(media_url)
-                gateway_event.image_path = cache_image_from_bytes(data)
-                gateway_event.message_type = "image"
+                raw_data = await self._client.download_media(media_url)
+
+                # Decrypt if this is an encrypted media event (E2EE room).
+                # Encrypted media has content.file with key/iv/hashes — we use
+                # mautrix's decrypt_attachment utility to get the plaintext bytes.
+                enc_file = getattr(content, "file", None)
+                if enc_file and getattr(enc_file, "key", None):
+                    try:
+                        from mautrix.crypto.attachments import decrypt_attachment
+                        key_obj = enc_file.key
+                        key = key_obj.key if hasattr(key_obj, "key") else key_obj.get("k", "")
+                        iv = enc_file.iv
+                        sha256 = enc_file.hashes.get("sha256", "") if enc_file.hashes else ""
+                        data = decrypt_attachment(raw_data, key, sha256, iv)
+                    except Exception as dec_exc:
+                        logger.warning(
+                            "Matrix: failed to decrypt media from %s: %s — "
+                            "using raw bytes (may be unreadable)",
+                            _redact_matrix_id(sender), dec_exc,
+                        )
+                        data = raw_data
+                else:
+                    data = raw_data
+                # Matrix sets content.body to the original filename for files/audio/video.
+                # For images it's typically just "image" or a descriptive body.
+                filename: str = getattr(content, "body", None) or "media"
+                # Prefer MIME from the content info block (most accurate for Matrix)
+                mime: Optional[str] = None
+                info = getattr(content, "info", None)
+                if info:
+                    mime = getattr(info, "mimetype", None)
+                if not mime:
+                    mime, _ = _mt.guess_type(filename)
+                mime = mime or "application/octet-stream"
+
+                if gw_msg_type == GatewayMessageType.PHOTO:
+                    ext = _mt.guess_extension(mime) or ".jpg"
+                    cached = cache_image_from_bytes(data, ext=ext)
+                    gateway_event.media_urls = [cached]
+                    gateway_event.media_types = [mime]
+                elif gw_msg_type == GatewayMessageType.VOICE:
+                    ext = _mt.guess_extension(mime) or ".ogg"
+                    cached = cache_audio_from_bytes(data, ext=ext)
+                    gateway_event.media_urls = [cached]
+                    gateway_event.media_types = [mime]
+                else:
+                    # VIDEO and DOCUMENT both cache as documents so the agent can
+                    # read them via read_file / process the path
+                    cached = cache_document_from_bytes(data, filename)
+                    gateway_event.media_urls = [cached]
+                    gateway_event.media_types = [mime]
+                    gateway_event.message_type = gw_msg_type
+
+                logger.info(
+                    "Matrix: cached inbound %s (%s) from %s at %s",
+                    gw_msg_type, mime, _redact_matrix_id(sender), cached,
+                )
             except Exception as exc:
-                logger.warning("Matrix: image download failed: %s", exc)
-        elif media_url and msg_type == MessageType.AUDIO:
-            try:
-                data = await self._client.download_media(media_url)
-                gateway_event.audio_path = cache_audio_from_bytes(data)
-                gateway_event.message_type = "audio"
-            except Exception as exc:
-                logger.warning("Matrix: audio download failed: %s", exc)
-        elif media_url:
-            try:
-                data = await self._client.download_media(media_url)
-                gateway_event.document_path = cache_document_from_bytes(data)
-                gateway_event.message_type = "document"
-            except Exception as exc:
-                logger.warning("Matrix: media download failed: %s", exc)
+                logger.warning("Matrix: media download failed for %s: %s", media_url, exc)
 
         await self.handle_message(gateway_event)
 
@@ -1019,6 +1190,69 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Internal: SAS key verification (auto-accept)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Typing indicators
+    # ------------------------------------------------------------------
+
+    # Matrix typing notifications expire after 30 s. We keep them alive
+    # with a periodic refresh task while the agent is processing, then
+    # clear them when the response is sent. This matches nanobot's pattern.
+    _TYPING_TIMEOUT_MS: int = 30_000
+    _TYPING_KEEPALIVE_MS: int = 20_000  # refresh before the 30 s expiry
+
+    async def send_typing(self, chat_id: str, metadata: Any = None) -> None:
+        """Start a typing keepalive for the given room.
+
+        Called by the gateway before the agent runs. The keepalive loop
+        refreshes the typing indicator every 20 s so it doesn't expire
+        mid-response. The indicator is cleared when the response is sent
+        via ``_stop_typing(room_id)``.
+        """
+        await self._start_typing(chat_id)
+
+    async def _start_typing(self, room_id: str) -> None:
+        """Send a typing notification and start a periodic keepalive task."""
+        await self._stop_typing(room_id, clear=False)
+        if self._client is None:
+            return
+        try:
+            await self._client.set_typing(RoomID(room_id), timeout=self._TYPING_TIMEOUT_MS)
+        except Exception as exc:
+            logger.debug("Matrix: typing indicator failed for %s: %s", room_id, exc)
+            return
+
+        async def _keepalive() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(self._TYPING_KEEPALIVE_MS / 1000)
+                    if self._client is None:
+                        return
+                    try:
+                        await self._client.set_typing(
+                            RoomID(room_id), timeout=self._TYPING_TIMEOUT_MS
+                        )
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+
+        self._typing_tasks[room_id] = asyncio.create_task(_keepalive())
+
+    async def _stop_typing(self, room_id: str, *, clear: bool = True) -> None:
+        """Cancel the typing keepalive task and optionally clear the indicator."""
+        task = self._typing_tasks.pop(room_id, None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if clear and self._client is not None:
+            try:
+                await self._client.set_typing(RoomID(room_id), timeout=0)
+            except Exception:
+                pass
 
     def _register_verification_handlers(self) -> None:
         """Register handlers for both to-device and in-room verification events.

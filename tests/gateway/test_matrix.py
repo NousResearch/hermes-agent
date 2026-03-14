@@ -434,6 +434,276 @@ class TestSendMessage:
 
 
 # ---------------------------------------------------------------------------
+# Media send methods (outbound)
+# ---------------------------------------------------------------------------
+
+class TestMediaSend:
+    """Verify outbound media methods have correct base-class signatures and upload media."""
+
+    def _make_media_adapter(self, tmp_path):
+        adapter = _make_adapter()
+        mc = MagicMock()
+        mc.upload_media = AsyncMock(return_value="mxc://example.org/abc123")
+        mc.send_message = AsyncMock(return_value="$evt")
+        mc.set_typing = AsyncMock()
+        adapter._client = mc
+        # Write a temp file to use as media
+        p = tmp_path / "test.jpg"
+        p.write_bytes(b"\xff\xd8\xff" + b"\x00" * 10)  # minimal JPEG header
+        return adapter, mc, str(p)
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_chat_id_and_image_url(self, tmp_path):
+        """send_image signature must match base: (chat_id, image_url, caption, reply_to)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_image(chat_id="!room:example.org", image_url=path)
+        assert result.success is True
+        mc.upload_media.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uses_chat_id_and_image_path(self, tmp_path):
+        """send_image_file signature must match base: (chat_id, image_path, ...)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_image_file(chat_id="!room:example.org", image_path=path)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_voice_uses_chat_id_and_audio_path(self, tmp_path):
+        """send_voice signature must match base: (chat_id, audio_path, ...)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_voice(chat_id="!room:example.org", audio_path=path)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_video_uses_chat_id_and_video_path(self, tmp_path):
+        """send_video signature must match base: (chat_id, video_path, ...)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_video(chat_id="!room:example.org", video_path=path)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_document_uses_chat_id_and_file_path(self, tmp_path):
+        """send_document signature must match base: (chat_id, file_path, caption, file_name, ...)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_document(
+            chat_id="!room:example.org", file_path=path, file_name="test.jpg"
+        )
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_animation_uses_chat_id_and_animation_url(self, tmp_path):
+        """send_animation signature must match base: (chat_id, animation_url, ...)."""
+        adapter, mc, path = self._make_media_adapter(tmp_path)
+        result = await adapter.send_animation(chat_id="!room:example.org", animation_url=path)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_mxc_url_skips_upload(self, tmp_path):
+        """mxc:// URLs are sent directly without uploading."""
+        adapter, mc, _ = self._make_media_adapter(tmp_path)
+        result = await adapter.send_image(
+            chat_id="!room:example.org", image_url="mxc://example.org/existing"
+        )
+        assert result.success is True
+        mc.upload_media.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_when_not_connected(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._client = None
+        result = await adapter.send_image(chat_id="!room:example.org", image_url="/tmp/x.jpg")
+        assert result.success is False
+
+    def test_max_message_length_set(self):
+        adapter = _make_adapter()
+        assert hasattr(adapter, "MAX_MESSAGE_LENGTH")
+        assert adapter.MAX_MESSAGE_LENGTH > 0
+
+
+# ---------------------------------------------------------------------------
+# Inbound media (media_urls/media_types pattern)
+# ---------------------------------------------------------------------------
+
+class TestInboundMedia:
+    """Verify inbound media sets event.media_urls and event.media_types correctly."""
+
+    def _make_media_event(self, sender, room_id, event_id, msgtype_str, body, mxc_url):
+        event = MagicMock()
+        event.sender = sender
+        event.room_id = room_id
+        event.event_id = event_id
+        content = MagicMock()
+        content.body = body
+        mt = MagicMock()
+        mt.__str__ = lambda s: msgtype_str
+        mt.__eq__ = lambda s, o: str(s) == str(o)
+        content.msgtype = mt
+        content.url = mxc_url
+        content.info = None
+        event.content = content
+        return event
+
+    @pytest.mark.asyncio
+    async def test_inbound_image_sets_media_urls(self):
+        from mautrix.types import MessageType
+        adapter = _make_adapter()
+        adapter._allow_all = True
+        captured = {}
+
+        async def cap(evt):
+            captured["evt"] = evt
+
+        adapter.handle_message = cap
+        adapter._client = MagicMock()
+        adapter._client.download_media = AsyncMock(return_value=b"\xff\xd8\xff" + b"\x00" * 100)
+
+        event = self._make_media_event(
+            "@alice:example.org", "!room:example.org", "$img1",
+            "m.image", "photo.jpg", "mxc://example.org/img1",
+        )
+        await adapter._on_message(event)
+        ge = captured.get("evt")
+        assert ge is not None
+        assert hasattr(ge, "media_urls") and len(ge.media_urls) == 1
+        assert hasattr(ge, "media_types") and len(ge.media_types) == 1
+        assert "image" in ge.media_types[0]
+
+    @pytest.mark.asyncio
+    async def test_inbound_audio_sets_media_urls(self):
+        adapter = _make_adapter()
+        adapter._allow_all = True
+        captured = {}
+
+        async def cap(evt):
+            captured["evt"] = evt
+
+        adapter.handle_message = cap
+        adapter._client = MagicMock()
+        adapter._client.download_media = AsyncMock(return_value=b"\x00" * 100)
+
+        event = self._make_media_event(
+            "@alice:example.org", "!room:example.org", "$aud1",
+            "m.audio", "voice.ogg", "mxc://example.org/aud1",
+        )
+        await adapter._on_message(event)
+        ge = captured.get("evt")
+        assert ge is not None
+        assert hasattr(ge, "media_urls") and len(ge.media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_inbound_file_sets_media_urls(self):
+        adapter = _make_adapter()
+        adapter._allow_all = True
+        captured = {}
+
+        async def cap(evt):
+            captured["evt"] = evt
+
+        adapter.handle_message = cap
+        adapter._client = MagicMock()
+        adapter._client.download_media = AsyncMock(return_value=b"file content here")
+
+        event = self._make_media_event(
+            "@alice:example.org", "!room:example.org", "$doc1",
+            "m.file", "report.pdf", "mxc://example.org/doc1",
+        )
+        await adapter._on_message(event)
+        ge = captured.get("evt")
+        assert ge is not None
+        assert hasattr(ge, "media_urls") and len(ge.media_urls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Typing indicators
+# ---------------------------------------------------------------------------
+
+class TestTypingIndicators:
+    @pytest.mark.asyncio
+    async def test_send_typing_calls_set_typing(self):
+        """send_typing starts the keepalive which calls client.set_typing."""
+        adapter = _make_adapter()
+        mc = MagicMock()
+        mc.set_typing = AsyncMock()
+        mc.device_id = "TESTDEVICE"
+        adapter._client = mc
+
+        await adapter.send_typing("!room:example.org")
+
+        # Should have called set_typing at least once to start the indicator
+        mc.set_typing.assert_called()
+        # A keepalive task should now be running
+        assert "!room:example.org" in adapter._typing_tasks
+
+        # Cleanup
+        await adapter._stop_typing("!room:example.org", clear=False)
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_cancels_task_and_clears(self):
+        """_stop_typing cancels the keepalive and sends a clear notification."""
+        adapter = _make_adapter()
+        mc = MagicMock()
+        mc.set_typing = AsyncMock()
+        adapter._client = mc
+
+        await adapter._start_typing("!room:example.org")
+        assert "!room:example.org" in adapter._typing_tasks
+
+        await adapter._stop_typing("!room:example.org", clear=True)
+
+        # Task should be gone
+        assert "!room:example.org" not in adapter._typing_tasks
+        # The final call should have been set_typing with timeout=0 (clear)
+        last_call = mc.set_typing.call_args_list[-1]
+        assert last_call[1].get("timeout") == 0 or last_call[0][-1] == 0
+
+    @pytest.mark.asyncio
+    async def test_send_message_clears_typing(self):
+        """send_message automatically clears the typing indicator after sending."""
+        adapter = _make_adapter()
+        mc = MagicMock()
+        mc.set_typing = AsyncMock()
+        mc.send_message = AsyncMock(return_value="$event")
+        adapter._client = mc
+
+        # Simulate a typing indicator being active
+        adapter._typing_tasks["!room:example.org"] = asyncio.create_task(asyncio.sleep(60))
+
+        await adapter.send_message("!room:example.org", "hello")
+
+        # Typing task should be cleared after send
+        assert "!room:example.org" not in adapter._typing_tasks
+
+    @pytest.mark.asyncio
+    async def test_no_client_send_typing_silent(self):
+        """send_typing does nothing gracefully when not connected."""
+        adapter = _make_adapter()
+        adapter._client = None
+        await adapter.send_typing("!room:example.org")  # must not raise
+        assert "!room:example.org" not in adapter._typing_tasks
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_typing_tasks(self):
+        """disconnect() cancels all active typing keepalive tasks."""
+        adapter = _make_adapter()
+        mc = MagicMock()
+        mc.stop = MagicMock()
+        mc.syncing_task = None
+        mc.api = MagicMock()
+        mc.api.session = AsyncMock()
+        mc.api.session.close = AsyncMock()
+        mc.set_typing = AsyncMock()
+        adapter._client = mc
+
+        # Add a fake typing task
+        adapter._typing_tasks["!room:example.org"] = asyncio.create_task(asyncio.sleep(60))
+
+        await adapter.disconnect()
+
+        # All typing tasks should be gone after disconnect
+        assert len(adapter._typing_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
 # _on_message
 # ---------------------------------------------------------------------------
 

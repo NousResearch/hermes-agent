@@ -170,6 +170,90 @@ class TestTranscribeOpenAI:
         assert result["success"] is True
         assert result["transcript"] == "Hello from OpenAI"
 
+    def test_default_base_url(self, monkeypatch, tmp_path):
+        """Default base_url should be OpenAI when no override is set."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.delenv("STT_OPENAI_BASE_URL", raising=False)
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "ok"
+        mock_openai_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools.OpenAI", mock_openai_cls):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(str(audio_file), "whisper-1")
+
+        mock_openai_cls.assert_called_once_with(
+            api_key="sk-test", base_url="https://api.openai.com/v1"
+        )
+
+    def test_base_url_from_config(self, monkeypatch, tmp_path):
+        """stt.openai.base_url in config should override the default."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.delenv("STT_OPENAI_BASE_URL", raising=False)
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "ok"
+        mock_openai_cls = MagicMock(return_value=mock_client)
+
+        stt_config = {"openai": {"base_url": "http://127.0.0.1:9100/v1"}}
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools.OpenAI", mock_openai_cls):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(str(audio_file), "whisper-1", stt_config=stt_config)
+
+        mock_openai_cls.assert_called_once_with(
+            api_key="sk-test", base_url="http://127.0.0.1:9100/v1"
+        )
+
+    def test_base_url_from_env(self, monkeypatch, tmp_path):
+        """STT_OPENAI_BASE_URL env var should override the default."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.setenv("STT_OPENAI_BASE_URL", "http://localhost:8080/v1")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "ok"
+        mock_openai_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools.OpenAI", mock_openai_cls):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(str(audio_file), "whisper-1")
+
+        mock_openai_cls.assert_called_once_with(
+            api_key="sk-test", base_url="http://localhost:8080/v1"
+        )
+
+    def test_config_base_url_takes_precedence_over_env(self, monkeypatch, tmp_path):
+        """Config base_url should win over env var."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.setenv("STT_OPENAI_BASE_URL", "http://env-url/v1")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "ok"
+        mock_openai_cls = MagicMock(return_value=mock_client)
+
+        stt_config = {"openai": {"base_url": "http://config-url/v1"}}
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools.OpenAI", mock_openai_cls):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(str(audio_file), "whisper-1", stt_config=stt_config)
+
+        mock_openai_cls.assert_called_once_with(
+            api_key="sk-test", base_url="http://config-url/v1"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch

@@ -584,6 +584,13 @@ toolsets:
 stt:
   enabled: true
   model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # OpenAI provider settings:
+  # openai:
+  #   base_url: "https://api.openai.com/v1"  # Override for Whisper-compatible endpoints
+  #   # Examples:
+  #   #   http://127.0.0.1:9100/v1   — local Gladia/whisper proxy
+  #   #   http://localhost:8080/v1    — whisper-webservice or similar
+  #   # Can also be set via STT_OPENAI_BASE_URL environment variable.
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

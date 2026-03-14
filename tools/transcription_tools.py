@@ -175,8 +175,18 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using OpenAI Whisper API (paid)."""
+def _transcribe_openai(file_path: str, model_name: str, stt_config: Optional[dict] = None) -> Dict[str, Any]:
+    """Transcribe using OpenAI Whisper API or any compatible endpoint.
+
+    The base URL can be overridden via (in priority order):
+      1. ``stt.openai.base_url`` in config.yaml
+      2. ``STT_OPENAI_BASE_URL`` environment variable
+      3. Default: ``https://api.openai.com/v1``
+
+    This allows using alternative Whisper-compatible services such as
+    Gladia proxies, local whisper-webservice instances, or other
+    OpenAI-compatible transcription endpoints.
+    """
     api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "VOICE_TOOLS_OPENAI_KEY not set"}
@@ -184,8 +194,15 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
+    openai_cfg = (stt_config or {}).get("openai", {})
+    base_url = (
+        openai_cfg.get("base_url")
+        or os.getenv("STT_OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
+
     try:
-        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
+        client = OpenAI(api_key=api_key, base_url=base_url)
 
         with open(file_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
@@ -252,7 +269,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
         model_name = model or openai_cfg.get("model", DEFAULT_OPENAI_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_openai(file_path, model_name, stt_config=stt_config)
 
     # No provider available
     return {

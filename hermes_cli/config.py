@@ -200,6 +200,7 @@ DEFAULT_CONFIG = {
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            # "base_url": "https://api.openai.com/v1",  # Override for compatible endpoints
         },
     },
     

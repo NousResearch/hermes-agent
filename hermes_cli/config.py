@@ -1506,7 +1506,7 @@ def config_command(args):
         print("Available commands:")
         print("  hermes config           Show current configuration")
         print("  hermes config edit      Open config in editor")
-        print("  hermes config set K V   Set a config value")
+        print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")
         print("  hermes config migrate   Update config with new options")
         print("  hermes config path      Show config file path")

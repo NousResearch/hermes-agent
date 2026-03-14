@@ -436,6 +436,39 @@ terminal:
   container_persistent: true         # Persist filesystem across sessions
 ```
 
+### Common Terminal Backend Issues
+
+If terminal commands fail immediately or the terminal tool is reported as disabled, check the following:
+
+- **Local backend**
+  - No special requirements. This is the safest default when you are just getting started.
+
+- **Docker backend**
+  - Ensure Docker Desktop (or the Docker daemon) is installed and running.
+  - Hermes needs to be able to find the `docker` CLI. It checks your `$PATH` first and also probes common Docker Desktop install locations on macOS. Run:
+    ```bash
+    docker version
+    ```
+    If this fails, fix your Docker installation or switch back to the local backend:
+    ```bash
+    hermes config set terminal.backend local
+    ```
+
+- **SSH backend**
+  - Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set, for example:
+    ```bash
+    export TERMINAL_ENV=ssh
+    export TERMINAL_SSH_HOST=my-server.example.com
+    export TERMINAL_SSH_USER=ubuntu
+    ```
+  - If either value is missing, Hermes will log a clear error and refuse to use the SSH backend.
+
+- **Modal backend**
+  - You need either a `MODAL_TOKEN_ID` environment variable or a `~/.modal.toml` config file.
+  - If neither is present, the backend check fails and Hermes will report that the Modal backend is not available.
+
+When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
+
 ### Docker Volume Mounts
 
 When using the Docker backend, `docker_volumes` lets you share host directories with the container. Each entry uses standard Docker `-v` syntax: `host_path:container_path[:options]`.

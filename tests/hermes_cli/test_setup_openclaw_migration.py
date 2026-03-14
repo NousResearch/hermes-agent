@@ -180,6 +180,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "load_config", return_value={}),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             # User presses Enter to start
             patch("builtins.input", return_value=""),
@@ -214,6 +215,7 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "load_config", side_effect=tracking_load_config),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
@@ -244,6 +246,7 @@ class TestSetupWizardOpenclawIntegration:
             ),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", return_value=""),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),

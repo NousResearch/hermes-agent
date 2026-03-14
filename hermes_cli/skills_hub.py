@@ -13,7 +13,7 @@ handler are thin wrappers that parse args and delegate.
 import json
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -76,6 +76,70 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
+def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    if not extra:
+        return lines
+
+    if extra.get("repo_url"):
+        lines.append(f"[bold]Repo:[/] {extra['repo_url']}")
+    if extra.get("detail_url"):
+        lines.append(f"[bold]Detail Page:[/] {extra['detail_url']}")
+    if extra.get("index_url"):
+        lines.append(f"[bold]Index:[/] {extra['index_url']}")
+    if extra.get("endpoint"):
+        lines.append(f"[bold]Endpoint:[/] {extra['endpoint']}")
+    if extra.get("install_command"):
+        lines.append(f"[bold]Install Command:[/] {extra['install_command']}")
+    if extra.get("installs") is not None:
+        lines.append(f"[bold]Installs:[/] {extra['installs']}")
+    if extra.get("weekly_installs"):
+        lines.append(f"[bold]Weekly Installs:[/] {extra['weekly_installs']}")
+
+    security = extra.get("security_audits")
+    if isinstance(security, dict) and security:
+        ordered = ", ".join(f"{name}={status}" for name, status in sorted(security.items()))
+        lines.append(f"[bold]Security:[/] {ordered}")
+
+    return lines
+
+
+def _resolve_source_meta_and_bundle(identifier: str, sources):
+    """Resolve metadata and bundle for a specific identifier."""
+    meta = None
+    bundle = None
+    matched_source = None
+
+    for src in sources:
+        if meta is None:
+            try:
+                meta = src.inspect(identifier)
+                if meta:
+                    matched_source = src
+            except Exception:
+                meta = None
+        try:
+            bundle = src.fetch(identifier)
+        except Exception:
+            bundle = None
+        if bundle:
+            matched_source = src
+            if meta is None:
+                try:
+                    meta = src.inspect(identifier)
+                except Exception:
+                    meta = None
+            break
+
+    return meta, bundle, matched_source
+
+
+def _derive_category_from_install_path(install_path: str) -> str:
+    path = Path(install_path)
+    parent = str(path.parent)
+    return "" if parent == "." else parent
+
+
 def do_search(query: str, source: str = "all", limit: int = 10,
               console: Optional[Console] = None) -> None:
     """Search registries and display results as a Rich table."""
@@ -136,7 +200,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Collect results from all (or filtered) sources
     # Use empty query to get everything; per-source limits prevent overload
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "github": 100, "clawhub": 50,
+    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
                          "claude-marketplace": 50, "lobehub": 50}
 
     all_results: list = []
@@ -263,11 +327,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
-    bundle = None
-    for src in sources:
-        bundle = src.fetch(identifier)
-        if bundle:
-            break
+    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not bundle:
         c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
@@ -287,6 +347,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if not force:
             c.print("Use --force to reinstall.\n")
             return
+
+    extra_metadata = dict(getattr(meta, "extra", {}) or {})
+    extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
     # Quarantine the bundle
     q_path = quarantine_bundle(bundle)
@@ -308,6 +371,11 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
         return
+
+    if extra_metadata:
+        metadata_lines = _format_extra_metadata_lines(extra_metadata)
+        if metadata_lines:
+            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
     # Confirm with user — show appropriate warning based on source
     if not force:
@@ -361,22 +429,11 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         if not identifier:
             return
 
-    meta = None
-    for src in sources:
-        meta = src.inspect(identifier)
-        if meta:
-            break
+    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not meta:
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
         return
-
-    # Also fetch full content for preview
-    bundle = None
-    for src in sources:
-        bundle = src.fetch(identifier)
-        if bundle:
-            break
 
     c.print()
     trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
@@ -391,6 +448,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     ]
     if meta.tags:
         info_lines.append(f"[bold]Tags:[/] {', '.join(meta.tags)}")
+    info_lines.extend(_format_extra_metadata_lines(meta.extra))
 
     c.print(Panel("\n".join(info_lines), title=f"Skill: {meta.name}"))
 
@@ -462,6 +520,49 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     c.print(
         f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
     )
+
+
+def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
+    """Check hub-installed skills for upstream updates."""
+    from tools.skills_hub import check_for_skill_updates
+
+    c = console or _console
+    results = check_for_skill_updates(name=name)
+    if not results:
+        c.print("[dim]No hub-installed skills to check.[/]\n")
+        return
+
+    table = Table(title="Skill Updates")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Source", style="dim")
+    table.add_column("Status", style="dim")
+
+    for entry in results:
+        table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
+
+    c.print(table)
+    update_count = sum(1 for entry in results if entry.get("status") == "update_available")
+    c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+
+
+def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
+    """Update hub-installed skills with upstream changes."""
+    from tools.skills_hub import HubLockFile, check_for_skill_updates
+
+    c = console or _console
+    lock = HubLockFile()
+    updates = [entry for entry in check_for_skill_updates(name=name) if entry.get("status") == "update_available"]
+    if not updates:
+        c.print("[dim]No updates available.[/]\n")
+        return
+
+    for entry in updates:
+        installed = lock.get_installed(entry["name"])
+        category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
+        c.print(f"[bold]Updating:[/] {entry['name']}")
+        do_install(entry["identifier"], category=category, force=True, console=c)
+
+    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -827,6 +928,10 @@ def skills_command(args) -> None:
         do_inspect(args.identifier)
     elif action == "list":
         do_list(source_filter=args.source)
+    elif action == "check":
+        do_check(name=getattr(args, "name", None))
+    elif action == "update":
+        do_update(name=getattr(args, "name", None))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None))
     elif action == "uninstall":
@@ -853,7 +958,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -872,6 +977,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills inspect openai/skills/skill-creator
         /skills list
         /skills list --source hub
+        /skills check
+        /skills update
         /skills audit
         /skills audit my-skill
         /skills uninstall my-skill
@@ -920,7 +1027,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official] [--limit N]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
             return
         source = "all"
         limit = 10
@@ -966,6 +1073,14 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             if idx + 1 < len(args):
                 source_filter = args[idx + 1]
         do_list(source_filter=source_filter, console=c)
+
+    elif action == "check":
+        name = args[0] if args else None
+        do_check(name=name, console=c)
+
+    elif action == "update":
+        name = args[0] if args else None
+        do_update(name=name, console=c)
 
     elif action == "audit":
         name = args[0] if args else None
@@ -1029,6 +1144,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
+        "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
+        "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"

@@ -53,3 +53,30 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     assert "Gateway service is running" in out
     assert "Systemd linger is disabled" in out
     assert "loginctl enable-linger" in out
+
+
+def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
+    unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    gateway.systemd_install(force=False)
+
+    out = capsys.readouterr().out
+    assert unit_path.exists()
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", gateway.SERVICE_NAME],
+    ]
+    assert "Service installed and enabled" in out
+    assert "Systemd linger is disabled" in out
+    assert "loginctl enable-linger" in out

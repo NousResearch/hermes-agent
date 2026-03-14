@@ -973,6 +973,7 @@ def setup_model_provider(config: dict):
                 install_mlx_lm,
                 start_server,
                 installed_model_ids,
+                list_cached_model_ids,
                 DEFAULT_PORT,
             )
 
@@ -982,33 +983,53 @@ def setup_model_provider(config: dict):
                 print_info("You need at least 8GB RAM for the smallest model.")
                 selected_provider = None
             else:
-                installed = installed_model_ids([m["id"] for m in recommended])
-                if installed:
-                    print_info(f"Detected {len(installed)} installed model(s) in local cache.")
+                recommended_ids = [m["id"] for m in recommended]
+                installed_recommended = installed_model_ids(recommended_ids)
+                installed_all = set(list_cached_model_ids())
+                installed_extra = sorted(installed_all - set(recommended_ids))
+                installed_any = installed_recommended | set(installed_extra)
+                if installed_any:
+                    print_info(
+                        f"Detected {len(installed_any)} installed model(s) in local cache."
+                    )
+
+                model_entries = list(recommended)
+                for mid in installed_extra:
+                    model_entries.append(
+                        {
+                            "id": mid,
+                            "name": mid,
+                            "description": "Installed local model (not in recommendations)",
+                            "min_ram_gb": 0,
+                        }
+                    )
 
                 model_choices = []
-                for idx, m in enumerate(recommended):
+                for idx, m in enumerate(model_entries):
                     tags = []
                     if idx == 0:
                         tags.append("recommended")
-                    if m["id"] in installed:
+                    if m["id"] in installed_any:
                         tags.append("installed")
                     tag_text = f" [{' | '.join(tags)}]" if tags else ""
-                    model_choices.append(
-                        f"{m['name']} — {m['description']}{tag_text} (needs {m['min_ram_gb']}GB+ RAM)"
-                    )
+                    if m["id"] in installed_extra:
+                        model_choices.append(f"{m['name']} — {m['description']}{tag_text}")
+                    else:
+                        model_choices.append(
+                            f"{m['name']} — {m['description']}{tag_text} (needs {m['min_ram_gb']}GB+ RAM)"
+                        )
                 model_choices.append("Custom MLX model (enter HuggingFace ID)")
 
                 default_model_idx = next(
-                    (i for i, m in enumerate(recommended) if m["id"] in installed),
+                    (i for i, m in enumerate(model_entries) if m["id"] in installed_any),
                     0,
                 )
                 model_idx = prompt_choice(
                     "Select a model to run locally:", model_choices, default_model_idx
                 )
 
-                if model_idx < len(recommended):
-                    local_model_id = recommended[model_idx]["id"]
+                if model_idx < len(model_entries):
+                    local_model_id = model_entries[model_idx]["id"]
                 else:
                     local_model_id = prompt("  HuggingFace model ID (e.g. mlx-community/...)")
                     if not local_model_id:

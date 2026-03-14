@@ -134,6 +134,37 @@ def installed_model_ids(model_ids: list[str]) -> set[str]:
     return {mid for mid in model_ids if is_model_installed(mid)}
 
 
+def list_cached_model_ids(limit: int = 200) -> list[str]:
+    """Best-effort discovery of all cached HF model IDs with snapshots.
+
+    Returns model IDs decoded from hub directory names like:
+      models--org--model  -> org/model
+    """
+    hub_dir = _hf_hub_cache_dir()
+    if not hub_dir.exists():
+        return []
+
+    found: list[str] = []
+    try:
+        for child in hub_dir.iterdir():
+            name = child.name
+            if not name.startswith("models--"):
+                continue
+            snapshots = child / "snapshots"
+            if not snapshots.exists() or not any(snapshots.iterdir()):
+                continue
+            model_id = name[len("models--") :].replace("--", "/")
+            if model_id:
+                found.append(model_id)
+    except Exception:
+        return []
+
+    unique_sorted = sorted(set(found))
+    if limit > 0:
+        return unique_sorted[:limit]
+    return unique_sorted
+
+
 def _pid_file_path() -> Path:
     return get_hermes_home() / "local_server.pid"
 

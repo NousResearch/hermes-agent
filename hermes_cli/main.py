@@ -1095,6 +1095,7 @@ def _model_flow_local(config, current_model=""):
         install_mlx_lm,
         recommend_models,
         installed_model_ids,
+        list_cached_model_ids,
         start_server,
     )
 
@@ -1112,19 +1113,26 @@ def _model_flow_local(config, current_model=""):
     print(f"Hardware detected: {hw['chip']} / {hw['ram_gb']}GB")
     print()
 
-    model_ids = [m["id"] for m in recommended]
-    installed = installed_model_ids(model_ids)
-    if installed:
+    recommended_ids = [m["id"] for m in recommended]
+    installed_recommended = installed_model_ids(recommended_ids)
+    installed_all = set(list_cached_model_ids())
+    installed_extra = sorted(installed_all - set(recommended_ids))
+
+    selectable_model_ids = recommended_ids + installed_extra
+
+    if installed_recommended or installed_extra:
         print("Installed models detected:")
-        for mid in model_ids:
-            if mid in installed:
+        for mid in recommended_ids:
+            if mid in installed_recommended:
                 print(f"  - {mid}")
+        for mid in installed_extra:
+            print(f"  - {mid} (not in recommendations)")
         print()
 
-    print(f"Recommended for this hardware: {model_ids[0]}")
+    print(f"Recommended for this hardware: {recommended_ids[0]}")
     print()
 
-    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    selected = _prompt_model_selection(selectable_model_ids, current_model=current_model)
     if not selected:
         print("No change.")
         return

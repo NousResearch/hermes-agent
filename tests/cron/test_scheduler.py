@@ -106,6 +106,47 @@ class TestDeliverResultMirrorLogging:
         )
 
 
+class TestRunJobSessionPersistence:
+    def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["session_db"] is fake_db
+        assert kwargs["platform"] == "cron"
+        assert kwargs["session_id"].startswith("cron_test-job_")
+        fake_db.close.assert_called_once()
+
+
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
 

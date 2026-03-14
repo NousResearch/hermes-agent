@@ -163,7 +163,8 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
 )
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.delivery import DeliveryRouter
+from gateway.stream_consumer import GatewayStreamConsumer
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -1084,10 +1085,7 @@ class GatewayRunner:
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
             if command in quick_commands:
@@ -1662,6 +1660,10 @@ class GatewayRunner:
             # Auto voice reply: send TTS audio before the text response
             if self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
+
+            # If streaming already delivered the response, tell the base adapter
+            if agent_result.get("already_sent"):
+                return {"content": response, "already_sent": True}
 
             return response
             
@@ -3644,6 +3646,18 @@ class GatewayRunner:
             or "all"
         )
         tool_progress_enabled = progress_mode != "off"
+
+        # Streaming config — use self.config.streaming (no duplicate yaml reads)
+        _streaming_cfg = self.config.streaming
+        _streaming_enabled = _streaming_cfg.enabled
+        _adapter_for_stream = self.adapters.get(source.platform)
+        _platform_supports_streaming = (
+            _adapter_for_stream is not None
+            and getattr(_adapter_for_stream, "supports_streaming", False)
+        )
+        _do_streaming = _streaming_enabled and _platform_supports_streaming
+        if _do_streaming:
+            logger.info("[stream] Streaming enabled for %s (transport=%s)", source.platform, _streaming_cfg.transport)
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -3849,6 +3863,18 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("agent:step hook error: %s", _e)
 
+        # Streaming consumer setup
+        _stream_consumer = None
+        _stream_task = None
+        if _do_streaming:
+            _stream_consumer = GatewayStreamConsumer(
+                adapter=_adapter_for_stream,
+                chat_id=source.chat_id,
+                streaming_cfg=_streaming_cfg,
+                metadata=_progress_metadata,
+                loop=asyncio.get_event_loop(),
+            )
+
         def run_sync():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -3909,6 +3935,7 @@ class GatewayRunner:
                 provider_data_collection=pr.get("data_collection"),
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                stream_delta_callback=_stream_consumer.on_delta if _stream_consumer else None,
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
                 honcho_session_key=session_key,
@@ -3979,6 +4006,9 @@ class GatewayRunner:
                                 _history_media_paths.add(_p)
             
             result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+            # Signal stream consumer done
+            if _stream_consumer:
+                _stream_consumer.finish()
             result_holder[0] = result
             
             # Return final response, or a message if something went wrong
@@ -4071,6 +4101,10 @@ class GatewayRunner:
         progress_task = None
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
+
+        # Start streaming consumer task
+        if _stream_consumer:
+            _stream_task = asyncio.create_task(_stream_consumer.run_with_timeout())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -4110,6 +4144,20 @@ class GatewayRunner:
             # Run in thread pool to not block
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, run_sync)
+
+            # Wait for stream consumer to finish before checking already_sent
+            if _stream_task:
+                try:
+                    await _stream_task
+                except Exception as _st_err:
+                    logger.warning("[stream] consumer error: %s", _st_err)
+                _stream_task = None  # Already awaited, skip in finally
+
+            # Propagate streaming already_sent
+            if _stream_consumer and _stream_consumer.already_sent:
+                if isinstance(response, dict):
+                    response["already_sent"] = True
+                    logger.info("[stream] already_sent=True, base adapter will skip re-send")
             
             # Check if we were interrupted and have a pending message
             result = result_holder[0]
@@ -4152,6 +4200,11 @@ class GatewayRunner:
             # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()
+            if _stream_task:
+                try:
+                    await _stream_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             interrupt_monitor.cancel()
             
             # Clean up tracking
@@ -4160,7 +4213,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _stream_task]:
                 if task:
                     try:
                         await task

@@ -8,10 +8,15 @@ from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
     LobeHubSource,
+    SkillsShSource,
+    WellKnownSkillSource,
     SkillMeta,
     SkillBundle,
     HubLockFile,
     TapsManager,
+    bundle_content_hash,
+    check_for_skill_updates,
+    create_source_router,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -91,6 +96,387 @@ class TestTrustLevelFor:
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
         assert result in ("trusted", "community")
+
+
+# ---------------------------------------------------------------------------
+# SkillsShSource
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsShSource:
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        return SkillsShSource(auth=auth)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "skills": [
+                    {
+                        "id": "vercel-labs/agent-skills/vercel-react-best-practices",
+                        "skillId": "vercel-react-best-practices",
+                        "name": "vercel-react-best-practices",
+                        "installs": 207679,
+                        "source": "vercel-labs/agent-skills",
+                    }
+                ]
+            },
+        )
+
+        results = self._source().search("react", limit=5)
+
+        assert len(results) == 1
+        assert results[0].source == "skills.sh"
+        assert results[0].identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert "skills.sh" in results[0].description
+        assert results[0].repo == "vercel-labs/agent-skills"
+        assert results[0].path == "vercel-react-best-practices"
+        assert results[0].extra["installs"] == 207679
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_search_uses_featured_homepage_links(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices">React</a>
+                <a href="/anthropics/skills/pdf">PDF</a>
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices">React again</a>
+            ''',
+        )
+
+        results = self._source().search("", limit=10)
+
+        assert [r.identifier for r in results] == [
+            "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices",
+            "skills-sh/anthropics/skills/pdf",
+        ]
+        assert all(r.source == "skills.sh" for r in results)
+
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_delegates_to_github_source_and_relabels_bundle(self, mock_fetch):
+        mock_fetch.return_value = SkillBundle(
+            name="vercel-react-best-practices",
+            files={"SKILL.md": "# Test"},
+            source="github",
+            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
+            trust_level="community",
+        )
+
+        bundle = self._source().fetch("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert bundle is not None
+        assert bundle.source == "skills.sh"
+        assert bundle.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_delegates_to_github_source_and_relabels_meta(self, mock_inspect, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_inspect.return_value = SkillMeta(
+            name="vercel-react-best-practices",
+            description="React rules",
+            source="github",
+            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
+            trust_level="community",
+            repo="vercel-labs/agent-skills",
+            path="vercel-react-best-practices",
+        )
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <h1>vercel-react-best-practices</h1>
+                <code>$ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-best-practices</code>
+                <div class="prose"><h1>Vercel React Best Practices</h1><p>React rules.</p></div>
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices/security/socket">Socket</a> Pass
+                <a href="/vercel-labs/agent-skills/vercel-react-best-practices/security/snyk">Snyk</a> Pass
+            ''',
+        )
+
+        meta = self._source().inspect("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert meta is not None
+        assert meta.source == "skills.sh"
+        assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert meta.extra["install_command"].endswith("--skill vercel-react-best-practices")
+        assert meta.extra["security_audits"]["socket"] == "Pass"
+        mock_inspect.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
+
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_falls_back_to_repo_skill_catalog_when_slug_differs(self, mock_inspect, mock_list_skills):
+        resolved = SkillMeta(
+            name="vercel-react-best-practices",
+            description="React rules",
+            source="github",
+            identifier="vercel-labs/agent-skills/skills/react-best-practices",
+            trust_level="community",
+            repo="vercel-labs/agent-skills",
+            path="skills/react-best-practices",
+        )
+        mock_inspect.side_effect = lambda identifier: resolved if identifier == resolved.identifier else None
+        mock_list_skills.return_value = [resolved]
+
+        meta = self._source().inspect("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
+
+        assert meta is not None
+        assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
+        assert mock_list_skills.called
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "inspect")
+    def test_inspect_uses_detail_page_to_resolve_alias_skill(self, mock_inspect, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
+        resolved = SkillMeta(
+            name="react",
+            description="React renderer",
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+            repo="vercel-labs/json-render",
+            path="skills/react",
+        )
+        mock_inspect.side_effect = lambda identifier: resolved if identifier == resolved.identifier else None
+        mock_list_skills.return_value = [resolved]
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <h1>json-render-react</h1>
+                <code>$ npx skills add https://github.com/vercel-labs/json-render --skill json-render-react</code>
+                <div class="prose"><h1>@json-render/react</h1><p>React renderer.</p></div>
+            ''',
+        )
+
+        meta = self._source().inspect("skills-sh/vercel-labs/json-render/json-render-react")
+
+        assert meta is not None
+        assert meta.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
+        assert meta.path == "skills/react"
+        assert mock_get.called
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "_list_skills_in_repo")
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_uses_detail_page_to_resolve_alias_skill(self, mock_fetch, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
+        resolved_meta = SkillMeta(
+            name="react",
+            description="React renderer",
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+            repo="vercel-labs/json-render",
+            path="skills/react",
+        )
+        resolved_bundle = SkillBundle(
+            name="react",
+            files={"SKILL.md": "# react"},
+            source="github",
+            identifier="vercel-labs/json-render/skills/react",
+            trust_level="community",
+        )
+        mock_fetch.side_effect = lambda identifier: resolved_bundle if identifier == resolved_bundle.identifier else None
+        mock_list_skills.return_value = [resolved_meta]
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text='''
+                <h1>json-render-react</h1>
+                <code>$ npx skills add https://github.com/vercel-labs/json-render --skill json-render-react</code>
+                <div class="prose"><h1>@json-render/react</h1><p>React renderer.</p></div>
+            ''',
+        )
+
+        bundle = self._source().fetch("skills-sh/vercel-labs/json-render/json-render-react")
+
+        assert bundle is not None
+        assert bundle.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
+        assert bundle.files["SKILL.md"] == "# react"
+        assert mock_get.called
+
+
+class TestWellKnownSkillSource:
+    def _source(self):
+        return WellKnownSkillSource()
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_reads_index_from_well_known_url(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "skills": [
+                    {"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]},
+                    {"name": "code-review", "description": "Review code", "files": ["SKILL.md", "references/checklist.md"]},
+                ]
+            },
+        )
+
+        results = self._source().search("https://example.com/.well-known/skills/index.json", limit=10)
+
+        assert [r.identifier for r in results] == [
+            "well-known:https://example.com/.well-known/skills/git-workflow",
+            "well-known:https://example.com/.well-known/skills/code-review",
+        ]
+        assert all(r.source == "well-known" for r in results)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_accepts_domain_root_and_resolves_index(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"skills": [{"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]}]},
+        )
+
+        results = self._source().search("https://example.com", limit=10)
+
+        assert len(results) == 1
+        called_url = mock_get.call_args.args[0]
+        assert called_url == "https://example.com/.well-known/skills/index.json"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_fetches_skill_md_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/index.json"):
+                return MagicMock(status_code=200, json=lambda: {
+                    "skills": [{"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]}]
+                })
+            if url.endswith("/git-workflow/SKILL.md"):
+                return MagicMock(status_code=200, text="---\nname: git-workflow\ndescription: Git rules\n---\n\n# Git Workflow\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+
+        meta = self._source().inspect("well-known:https://example.com/.well-known/skills/git-workflow")
+
+        assert meta is not None
+        assert meta.name == "git-workflow"
+        assert meta.source == "well-known"
+        assert meta.extra["base_url"] == "https://example.com/.well-known/skills"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_downloads_skill_files_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/index.json"):
+                return MagicMock(status_code=200, json=lambda: {
+                    "skills": [{
+                        "name": "code-review",
+                        "description": "Review code",
+                        "files": ["SKILL.md", "references/checklist.md"],
+                    }]
+                })
+            if url.endswith("/code-review/SKILL.md"):
+                return MagicMock(status_code=200, text="# Code Review\n")
+            if url.endswith("/code-review/references/checklist.md"):
+                return MagicMock(status_code=200, text="- [ ] security\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+
+        bundle = self._source().fetch("well-known:https://example.com/.well-known/skills/code-review")
+
+        assert bundle is not None
+        assert bundle.source == "well-known"
+        assert bundle.files["SKILL.md"] == "# Code Review\n"
+        assert bundle.files["references/checklist.md"] == "- [ ] security\n"
+
+
+class TestCheckForSkillUpdates:
+    def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_reports_update_when_remote_hash_differs(self):
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "github",
+            "identifier": "owner/repo/demo-skill",
+            "content_hash": "oldhash",
+            "install_path": "demo-skill",
+        }]
+
+        source = MagicMock()
+        source.source_id.return_value = "github"
+        source.fetch.return_value = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "new content"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert len(results) == 1
+        assert results[0]["name"] == "demo-skill"
+        assert results[0]["status"] == "update_available"
+
+    def test_reports_up_to_date_when_hash_matches(self):
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "same content"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "github",
+            "identifier": "owner/repo/demo-skill",
+            "content_hash": bundle_content_hash(bundle),
+            "install_path": "demo-skill",
+        }]
+        source = MagicMock()
+        source.source_id.return_value = "github"
+        source.fetch.return_value = bundle
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert results[0]["status"] == "up_to_date"
+
+
+class TestCreateSourceRouter:
+    def test_includes_skills_sh_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, SkillsShSource) for src in sources)
+
+    def test_includes_well_known_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, WellKnownSkillSource) for src in sources)
 
 
 # ---------------------------------------------------------------------------

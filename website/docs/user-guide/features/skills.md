@@ -187,42 +187,98 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ## Skills Hub
 
-Browse, search, install, and manage skills from online registries and official optional skills:
+Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
+
+### Common commands
 
 ```bash
-hermes skills browse                     # Browse all hub skills (official first)
-hermes skills browse --source official   # Browse only official optional skills
-hermes skills search kubernetes          # Search all sources
-hermes skills install openai/skills/k8s  # Install with security scan
-hermes skills inspect openai/skills/k8s  # Preview before installing
-hermes skills list --source hub          # List hub-installed skills
-hermes skills audit                      # Re-scan all hub skills
-hermes skills uninstall k8s              # Remove a hub skill
+hermes skills browse                              # Browse all hub skills (official first)
+hermes skills browse --source official            # Browse only official optional skills
+hermes skills search kubernetes                   # Search all sources
+hermes skills search react --source skills-sh     # Search the skills.sh directory
+hermes skills search https://mintlify.com/docs --source well-known
+hermes skills inspect openai/skills/k8s           # Preview before installing
+hermes skills install openai/skills/k8s           # Install with security scan
+hermes skills install official/security/1password
+hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
+hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills list --source hub                   # List hub-installed skills
+hermes skills check                               # Check installed hub skills for upstream updates
+hermes skills update                              # Reinstall hub skills with upstream changes when needed
+hermes skills audit                               # Re-scan all hub skills for security
+hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills publish skills/my-skill --to github --repo owner/repo
-hermes skills snapshot export setup.json # Export skill config
-hermes skills tap add myorg/skills-repo  # Add a custom source
+hermes skills snapshot export setup.json          # Export skill config
+hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
 
-All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats.
+### Supported hub sources
 
-Official optional skills use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
+| Source | Example | Notes |
+|--------|---------|-------|
+| `official` | `official/security/1password` | Optional skills shipped with Hermes. |
+| `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
+| `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
+| `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
+| `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
 
-### Trust Levels
+### Security scanning and `--force`
+
+All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, supply-chain signals, and other threats.
+
+`hermes skills inspect ...` now also surfaces upstream metadata when available:
+- repo URL
+- skills.sh detail page URL
+- install command
+- weekly installs
+- upstream security audit statuses
+- well-known index/endpoint URLs
+
+Use `--force` when you have reviewed a third-party skill and want to override a non-dangerous policy block:
+
+```bash
+hermes skills install skills-sh/anthropics/skills/pdf --force
+```
+
+Important behavior:
+- `--force` can override policy blocks for caution/warn-style findings.
+- `--force` does **not** override a `dangerous` scan verdict.
+- Official optional skills (`official/...`) are treated as builtin trust and do not show the third-party warning panel.
+
+### Trust levels
 
 | Level | Source | Policy |
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
 | `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
-| `trusted` | openai/skills, anthropics/skills | Trusted sources |
-| `community` | Everything else | Any findings = blocked unless `--force` |
+| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills` | More permissive policy than community sources |
+| `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
-### Slash Commands (Inside Chat)
+### Update lifecycle
 
-All the same commands work with `/skills` prefix:
+The hub now tracks enough provenance to re-check upstream copies of installed skills:
 
+```bash
+hermes skills check          # Report which installed hub skills changed upstream
+hermes skills update         # Reinstall only the skills with updates available
+hermes skills update react   # Update one specific installed hub skill
 ```
+
+This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
+
+### Slash commands (inside chat)
+
+All the same commands work with `/skills`:
+
+```text
 /skills browse
-/skills search kubernetes
-/skills install openai/skills/skill-creator
+/skills search react --source skills-sh
+/skills search https://mintlify.com/docs --source well-known
+/skills inspect skills-sh/vercel-labs/json-render/json-render-react
+/skills install openai/skills/skill-creator --force
+/skills check
+/skills update
 /skills list
 ```
+
+Official optional skills still use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.

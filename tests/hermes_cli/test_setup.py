@@ -95,3 +95,50 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["base_url"] == "https://custom.example/v1"
     assert reloaded["model"]["default"] == "custom/model"
+
+
+def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+    config = load_config()
+
+    prompt_choices = iter([1, 0])
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_choice",
+        lambda *args, **kwargs: next(prompt_choices),
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("hermes_cli.auth._login_openai_codex", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-access-token",
+        },
+    )
+
+    captured = {}
+
+    def _fake_get_codex_model_ids(access_token=None):
+        captured["access_token"] = access_token
+        return ["gpt-5.2-codex", "gpt-5.2"]
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        _fake_get_codex_model_ids,
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+
+    assert captured["access_token"] == "codex-access-token"
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "openai-codex"
+    assert reloaded["model"]["default"] == "gpt-5.2-codex"
+    assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"

@@ -251,6 +251,34 @@ StandardError=journal
 WantedBy=default.target
 """
 
+
+def _normalize_service_definition(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def systemd_unit_is_current() -> bool:
+    unit_path = get_systemd_unit_path()
+    if not unit_path.exists():
+        return False
+
+    installed = unit_path.read_text(encoding="utf-8")
+    expected = generate_systemd_unit()
+    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+
+
+
+def refresh_systemd_unit_if_needed() -> bool:
+    """Rewrite the installed user unit when the generated definition has changed."""
+    unit_path = get_systemd_unit_path()
+    if not unit_path.exists() or systemd_unit_is_current():
+        return False
+
+    unit_path.write_text(generate_systemd_unit(), encoding="utf-8")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    print("↻ Updated gateway service definition to match the current Hermes install")
+    return True
+
+
 def systemd_install(force: bool = False):
     unit_path = get_systemd_unit_path()
     
@@ -289,16 +317,21 @@ def systemd_uninstall():
     print("✓ Service uninstalled")
 
 def systemd_start():
+    refresh_systemd_unit_if_needed()
     subprocess.run(["systemctl", "--user", "start", SERVICE_NAME], check=True)
     print("✓ Service started")
+
 
 def systemd_stop():
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=True)
     print("✓ Service stopped")
 
+
 def systemd_restart():
+    refresh_systemd_unit_if_needed()
     subprocess.run(["systemctl", "--user", "restart", SERVICE_NAME], check=True)
     print("✓ Service restarted")
+
 
 def systemd_status(deep: bool = False):
     # Check if service unit file exists
@@ -308,6 +341,11 @@ def systemd_status(deep: bool = False):
         print("  Run: hermes gateway install")
         return
 
+    if not systemd_unit_is_current():
+        print("⚠ Installed gateway service definition is outdated")
+        print("  Run: hermes gateway restart  # auto-refreshes the unit")
+        print()
+    
     # Show detailed status first
     subprocess.run(
         ["systemctl", "--user", "status", SERVICE_NAME, "--no-pager"],
@@ -1079,7 +1117,7 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "stop":
-        # Try service first, fall back to killing processes directly
+        # Try service first, then sweep any stray/manual gateway processes.
         service_available = False
         
         if is_linux() and get_systemd_unit_path().exists():
@@ -1094,14 +1132,15 @@ def gateway_command(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
-        
+
+        killed = kill_gateway_processes()
         if not service_available:
-            # Kill gateway processes directly
-            killed = kill_gateway_processes()
             if killed:
                 print(f"✓ Stopped {killed} gateway process(es)")
             else:
                 print("✗ No gateway processes found")
+        elif killed:
+            print(f"✓ Stopped {killed} additional manual gateway process(es)")
     
     elif subcmd == "restart":
         # Try service first, fall back to killing and restarting

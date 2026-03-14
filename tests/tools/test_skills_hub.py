@@ -345,8 +345,10 @@ class TestWellKnownSkillSource:
         called_url = mock_get.call_args.args[0]
         assert called_url == "https://example.com/.well-known/skills/index.json"
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
-    def test_inspect_fetches_skill_md_from_well_known_endpoint(self, mock_get):
+    def test_inspect_fetches_skill_md_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
                 return MagicMock(status_code=200, json=lambda: {
@@ -365,8 +367,10 @@ class TestWellKnownSkillSource:
         assert meta.source == "well-known"
         assert meta.extra["base_url"] == "https://example.com/.well-known/skills"
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_downloads_skill_files_from_well_known_endpoint(self, mock_get):
+    def test_fetch_downloads_skill_files_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
                 return MagicMock(status_code=200, json=lambda: {

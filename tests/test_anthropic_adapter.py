@@ -519,6 +519,28 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
+    def test_empty_cached_assistant_tool_turn_converts_without_empty_text_block(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Find the skill"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "skill_view", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ])
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assistant_turn = next(msg for msg in result if msg["role"] == "assistant")
+        assistant_blocks = assistant_turn["content"]
+
+        assert all(not (b.get("type") == "text" and b.get("text") == "") for b in assistant_blocks)
+        assert any(b.get("type") == "tool_use" for b in assistant_blocks)
+
 
 # ---------------------------------------------------------------------------
 # Build kwargs

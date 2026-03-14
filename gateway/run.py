@@ -468,23 +468,25 @@ class GatewayRunner:
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config or env var.
-        
-        Checks HERMES_REASONING_EFFORT env var first, then agent.reasoning_effort
-        in config.yaml. Valid: "xhigh", "high", "medium", "low", "minimal", "none".
-        Returns None to use default (medium).
+        """Load reasoning effort from config with env fallback.
+
+        Checks agent.reasoning_effort in config.yaml first, then
+        HERMES_REASONING_EFFORT as a fallback. Valid: "xhigh", "high",
+        "medium", "low", "minimal", "none". Returns None to use default
+        (medium).
         """
-        effort = os.getenv("HERMES_REASONING_EFFORT", "")
+        effort = ""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
+        except Exception:
+            pass
         if not effort:
-            try:
-                import yaml as _y
-                cfg_path = _hermes_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
-            except Exception:
-                pass
+            effort = os.getenv("HERMES_REASONING_EFFORT", "")
         if not effort:
             return None
         effort = effort.lower().strip()
@@ -933,7 +935,7 @@ class GatewayRunner:
         command = event.get_command()
         
         # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "status", "stop", "model",
+        _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
@@ -960,7 +962,10 @@ class GatewayRunner:
         
         if command == "model":
             return await self._handle_model_command(event)
-        
+
+        if command == "reasoning":
+            return await self._handle_reasoning_command(event)
+
         if command == "provider":
             return await self._handle_provider_command(event)
         
@@ -2203,6 +2208,8 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            reasoning_config = self._load_reasoning_config()
+            self._reasoning_config = reasoning_config
 
             def run_sync():
                 agent = AIAgent(
@@ -2212,7 +2219,7 @@ class GatewayRunner:
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
-                    reasoning_config=self._reasoning_config,
+                    reasoning_config=reasoning_config,
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
                     providers_order=pr.get("order"),
@@ -2310,6 +2317,8 @@ class GatewayRunner:
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
+        self._reasoning_config = self._load_reasoning_config()
+        self._show_reasoning = self._load_show_reasoning()
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -3368,6 +3377,8 @@ class GatewayRunner:
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
+            reasoning_config = self._load_reasoning_config()
+            self._reasoning_config = reasoning_config
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -3377,7 +3388,7 @@ class GatewayRunner:
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
-                reasoning_config=self._reasoning_config,
+                reasoning_config=reasoning_config,
                 providers_allowed=pr.get("only"),
                 providers_ignored=pr.get("ignore"),
                 providers_order=pr.get("order"),

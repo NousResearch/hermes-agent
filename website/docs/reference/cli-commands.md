@@ -246,6 +246,8 @@ Subcommands:
 | `install` | Install a skill. |
 | `inspect` | Preview a skill without installing it. |
 | `list` | List installed skills. |
+| `check` | Check installed hub skills for upstream updates. |
+| `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
 | `uninstall` | Remove a hub-installed skill. |
 | `publish` | Publish a skill to a registry. |
@@ -258,11 +260,22 @@ Common examples:
 ```bash
 hermes skills browse
 hermes skills browse --source official
-hermes skills search kubernetes
+hermes skills search react --source skills-sh
+hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect official/security/1password
+hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
 hermes skills install official/migration/openclaw-migration
+hermes skills install skills-sh/anthropics/skills/pdf --force
+hermes skills check
+hermes skills update
 hermes skills config
 ```
+
+Notes:
+- `--force` can override non-dangerous policy blocks for third-party/community skills.
+- `--force` does not override a `dangerous` scan verdict.
+- `--source skills-sh` searches the public `skills.sh` directory.
+- `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 
 ## `hermes honcho`
 

@@ -1540,6 +1540,14 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
             
+            # Send typing indicator so the user sees activity while the
+            # model thinks.  Without this there is dead silence between
+            # message receipt and the first tool-progress update.
+            _typing_adapter = self.adapters.get(source.platform)
+            if _typing_adapter:
+                _typing_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                await _typing_adapter.send_typing(source.chat_id, metadata=_typing_meta)
+            
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,

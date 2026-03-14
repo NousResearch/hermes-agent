@@ -1299,9 +1299,13 @@ def setup_model_provider(config: dict):
             _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
             _vm_choices = _oai_vision_models + ["Keep default (gpt-4o-mini)"]
             _vm_idx = prompt_choice("Select vision model:", _vm_choices, len(_vm_choices) - 1)
-            if _vm_idx < len(_oai_vision_models):
-                save_env_value("AUXILIARY_VISION_MODEL", _oai_vision_models[_vm_idx])
-                print_success(f"Vision model set to {_oai_vision_models[_vm_idx]}")
+            _selected_vision_model = (
+                _oai_vision_models[_vm_idx]
+                if _vm_idx < len(_oai_vision_models)
+                else "gpt-4o-mini"
+            )
+            save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+            print_success(f"Vision model set to {_selected_vision_model}")
             _vision_needs_setup = False
 
     # Even for providers without native vision, check if existing credentials
@@ -1366,11 +1370,13 @@ def setup_model_provider(config: dict):
                 _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                 _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
                 _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
-                if _vm_idx < len(_oai_vision_models):
-                    save_env_value("AUXILIARY_VISION_MODEL", _oai_vision_models[_vm_idx])
-                    print_success(f"Vision configured with OpenAI ({_oai_vision_models[_vm_idx]})")
-                else:
-                    print_success("Vision configured with OpenAI (gpt-4o-mini)")
+                _selected_vision_model = (
+                    _oai_vision_models[_vm_idx]
+                    if _vm_idx < len(_oai_vision_models)
+                    else "gpt-4o-mini"
+                )
+                save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
+                print_success(f"Vision configured with OpenAI ({_selected_vision_model})")
             else:
                 print_info("Skipped — vision won't be available")
         else:

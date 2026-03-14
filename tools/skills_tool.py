@@ -1081,15 +1081,46 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         )
         backend = _get_terminal_backend_name()
         env_snapshot = load_env()
+        is_gateway = _is_gateway_surface()
+        logger.debug(
+            "[skill_view:%s] backend=%r, is_gateway=%s, env_snapshot_keys=%s, "
+            "required_env_vars=%s",
+            skill_name, backend, is_gateway,
+            list(env_snapshot.keys()),
+            [e["name"] for e in required_env_vars],
+        )
+        for ev in required_env_vars:
+            ev_name = ev["name"]
+            in_snapshot = ev_name in env_snapshot
+            snapshot_val_truthy = bool(env_snapshot.get(ev_name))
+            in_os_env = bool(os.getenv(ev_name))
+            persisted = _is_env_var_persisted(ev_name, env_snapshot)
+            logger.debug(
+                "[skill_view:%s]   %s: in_snapshot=%s, snapshot_val_truthy=%s, "
+                "in_os_env=%s, persisted=%s, is_remote_backend=%s",
+                skill_name, ev_name, in_snapshot, snapshot_val_truthy,
+                in_os_env, persisted, backend in _REMOTE_ENV_BACKENDS,
+            )
         missing_required_env_vars = [
             e
             for e in required_env_vars
             if backend in _REMOTE_ENV_BACKENDS
             or not _is_env_var_persisted(e["name"], env_snapshot)
         ]
+        logger.debug(
+            "[skill_view:%s] missing_required_env_vars=%s, "
+            "callback_set=%s",
+            skill_name,
+            [e["name"] for e in missing_required_env_vars],
+            _secret_capture_callback is not None,
+        )
         capture_result = _capture_required_environment_variables(
             skill_name,
             missing_required_env_vars,
+        )
+        logger.debug(
+            "[skill_view:%s] capture_result=%s",
+            skill_name, capture_result,
         )
         if missing_required_env_vars:
             env_snapshot = load_env()
@@ -1098,6 +1129,11 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             capture_result,
             env_snapshot=env_snapshot,
             backend=backend,
+        )
+        logger.debug(
+            "[skill_view:%s] remaining_missing=%s, setup_needed=%s",
+            skill_name, remaining_missing_required_envs,
+            bool(remaining_missing_required_envs),
         )
         setup_needed = bool(remaining_missing_required_envs)
 

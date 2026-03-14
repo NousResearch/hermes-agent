@@ -4090,6 +4090,8 @@ class HermesCLI:
         Called from the agent thread. Shows a selection UI similar to clarify
         with choices: once / session / always / deny. When allow_permanent
         is False (tirith warnings present), the 'always' option is hidden.
+        Long commands also get a 'view' option so the full command can be
+        expanded before deciding.
 
         Uses _approval_lock to serialize concurrent requests (e.g. from
         parallel delegation subtasks) so each prompt gets its own turn
@@ -4100,12 +4102,11 @@ class HermesCLI:
         with self._approval_lock:
             timeout = 60
             response_queue = queue.Queue()
-            choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": choices,
+                "choices": self._approval_choices(command, allow_permanent=allow_permanent),
                 "selected": 0,
                 "response_queue": response_queue,
             }
@@ -4135,6 +4136,116 @@ class HermesCLI:
             self._invalidate()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
+
+    def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
+        """Return approval choices for a dangerous command prompt."""
+        choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
+        if len(command) > 70:
+            choices.append("view")
+        return choices
+
+    def _handle_approval_selection(self) -> None:
+        """Process the currently selected dangerous-command approval choice."""
+        state = self._approval_state
+        if not state:
+            return
+
+        selected = state.get("selected", 0)
+        choices = state.get("choices") or []
+        if not (0 <= selected < len(choices)):
+            return
+
+        chosen = choices[selected]
+        if chosen == "view":
+            state["show_full"] = True
+            state["choices"] = [choice for choice in choices if choice != "view"]
+            if state["selected"] >= len(state["choices"]):
+                state["selected"] = max(0, len(state["choices"]) - 1)
+            self._invalidate()
+            return
+
+        state["response_queue"].put(chosen)
+        self._approval_state = None
+        self._invalidate()
+
+    def _get_approval_display_fragments(self):
+        """Render the dangerous-command approval panel for the prompt_toolkit UI."""
+        state = self._approval_state
+        if not state:
+            return []
+
+        def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
+            term_cols = shutil.get_terminal_size((100, 20)).columns
+            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
+            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
+            return inner + 2
+
+        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
+            wrapped = textwrap.wrap(
+                text,
+                width=max(8, width),
+                replace_whitespace=False,
+                drop_whitespace=False,
+                subsequent_indent=subsequent_indent,
+            )
+            return wrapped or [""]
+
+        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
+            inner_width = max(0, box_width - 2)
+            lines.append((border_style, "│ "))
+            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((border_style, " │\n"))
+
+        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
+            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
+
+        command = state["command"]
+        description = state["description"]
+        choices = state["choices"]
+        selected = state.get("selected", 0)
+        show_full = state.get("show_full", False)
+
+        title = "⚠️  Dangerous Command"
+        cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
+        choice_labels = {
+            "once": "Allow once",
+            "session": "Allow for this session",
+            "always": "Add to permanent allowlist",
+            "deny": "Deny",
+            "view": "Show full command",
+        }
+
+        preview_lines = _wrap_panel_text(description, 60)
+        preview_lines.extend(_wrap_panel_text(cmd_display, 60))
+        for i, choice in enumerate(choices):
+            prefix = '❯ ' if i == selected else '  '
+            preview_lines.extend(_wrap_panel_text(
+                f"{prefix}{choice_labels.get(choice, choice)}",
+                60,
+                subsequent_indent="  ",
+            ))
+
+        box_width = _panel_box_width(title, preview_lines)
+        inner_text_width = max(8, box_width - 2)
+
+        lines = []
+        lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
+        _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
+        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        for wrapped in _wrap_panel_text(description, inner_text_width):
+            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+        for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
+            _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
+        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        for i, choice in enumerate(choices):
+            label = choice_labels.get(choice, choice)
+            style = 'class:approval-selected' if i == selected else 'class:approval-choice'
+            prefix = '❯ ' if i == selected else '  '
+            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+                _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
+        return lines
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
@@ -4727,22 +4838,7 @@ class HermesCLI:
 
             # --- Approval selection: confirm the highlighted choice ---
             if self._approval_state:
-                state = self._approval_state
-                selected = state["selected"]
-                choices = state["choices"]
-                if 0 <= selected < len(choices):
-                    chosen = choices[selected]
-                    if chosen == "view":
-                        # Toggle full command display without closing the prompt
-                        state["show_full"] = True
-                        # Remove the "view" option since it's been used
-                        state["choices"] = [c for c in choices if c != "view"]
-                        if state["selected"] >= len(state["choices"]):
-                            state["selected"] = len(state["choices"]) - 1
-                        event.app.invalidate()
-                        return
-                    state["response_queue"].put(chosen)
-                self._approval_state = None
+                self._handle_approval_selection()
                 event.app.invalidate()
                 return
 
@@ -5428,53 +5524,7 @@ class HermesCLI:
         # --- Dangerous command approval: display widget ---
 
         def _get_approval_display():
-            state = cli_ref._approval_state
-            if not state:
-                return []
-            command = state["command"]
-            description = state["description"]
-            choices = state["choices"]
-            selected = state.get("selected", 0)
-            show_full = state.get("show_full", False)
-
-            if show_full or len(command) <= 70:
-                cmd_display = command
-            else:
-                cmd_display = command[:70] + '...'
-            choice_labels = {
-                "once": "Allow once",
-                "session": "Allow for this session",
-                "always": "Add to permanent allowlist",
-                "deny": "Deny",
-                "view": "Show full command",
-            }
-            preview_lines = _wrap_panel_text(description, 60)
-            preview_lines.extend(_wrap_panel_text(cmd_display, 60))
-            for i, choice in enumerate(choices):
-                prefix = '❯ ' if i == selected else '  '
-                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice_labels.get(choice, choice)}", 60, subsequent_indent="  "))
-            box_width = _panel_box_width("⚠️  Dangerous Command", preview_lines)
-            inner_text_width = max(8, box_width - 2)
-
-            lines = []
-            lines.append(('class:approval-border', '╭─ '))
-            lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            lines.append(('class:approval-border', ' ' + ('─' * max(0, box_width - len("⚠️  Dangerous Command") - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
-            for wrapped in _wrap_panel_text(description, inner_text_width):
-                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
-            for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
-                _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
-            for i, choice in enumerate(choices):
-                label = choice_labels.get(choice, choice)
-                style = 'class:approval-selected' if i == selected else 'class:approval-choice'
-                prefix = '❯ ' if i == selected else '  '
-                for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
-                    _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
-            lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
-            return lines
+            return cli_ref._get_approval_display_fragments()
 
         approval_widget = ConditionalContainer(
             Window(

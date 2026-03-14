@@ -1002,14 +1002,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice listening (Phase 2)
     # ------------------------------------------------------------------
 
+    # UDP keepalive interval in seconds — prevents Discord from dropping
+    # the UDP route after ~60s of silence.
+    _KEEPALIVE_INTERVAL = 15
+
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
+        last_keepalive = time.monotonic()
         try:
             while receiver._running:
                 await asyncio.sleep(0.2)
+
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
+                now = time.monotonic()
+                if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
+                    last_keepalive = now
+                    try:
+                        vc = self._voice_clients.get(guild_id)
+                        if vc and vc.is_connected():
+                            vc._connection.send_packet(b'\xf8\xff\xfe')
+                    except Exception:
+                        pass
+
                 completed = receiver.check_silence()
                 for user_id, pcm_data in completed:
                     if not self._is_allowed_user(str(user_id)):

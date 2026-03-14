@@ -1,6 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import subprocess
 from unittest.mock import MagicMock, patch, AsyncMock
+from rich.text import Text
 import pytest
 
 
@@ -8,6 +9,12 @@ import pytest
 
 class TestCLIQuickCommands:
     """Test quick command dispatch in HermesCLI.process_command."""
+
+    @staticmethod
+    def _printed_plain(call_arg):
+        if isinstance(call_arg, Text):
+            return call_arg.plain
+        return str(call_arg)
 
     def _make_cli(self, quick_commands):
         from cli import HermesCLI
@@ -22,7 +29,9 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
         result = cli.process_command("/dn")
         assert result is True
-        cli.console.print.assert_called_once_with("daily-note")
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "daily-note"
 
     def test_exec_command_stderr_shown_on_no_stdout(self):
         cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
@@ -57,7 +66,9 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"mygif": {"type": "exec", "command": "echo overridden"}})
         with patch("cli._skill_commands", {"/mygif": {"name": "gif-search"}}):
             cli.process_command("/mygif")
-        cli.console.print.assert_called_once_with("overridden")
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "overridden"
 
     def test_unknown_command_still_shows_error(self):
         cli = self._make_cli({})

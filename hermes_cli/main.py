@@ -2920,148 +2920,148 @@ For more help on a command:
         try:
             action = args.sessions_action
 
-        if action == "list":
-            sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
-            if not sessions:
-                print("No sessions found.")
-                return
-            has_titles = any(s.get("title") for s in sessions)
-            if has_titles:
-                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 100)
-            else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 90)
-            for s in sessions:
-                last_active = _relative_time(s.get("last_active"))
-                preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
+            if action == "list":
+                sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
+                if not sessions:
+                    print("No sessions found.")
+                    return
+                has_titles = any(s.get("title") for s in sessions)
                 if has_titles:
-                    title = (s.get("title") or "—")[:20]
-                    sid = s["id"][:20]
-                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                    print("─" * 100)
                 else:
-                    sid = s["id"][:20]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print("─" * 90)
+                for s in sessions:
+                    last_active = _relative_time(s.get("last_active"))
+                    preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
+                    if has_titles:
+                        title = (s.get("title") or "—")[:20]
+                        sid = s["id"][:20]
+                        print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                    else:
+                        sid = s["id"][:20]
+                        print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
-        elif action == "export":
-            if args.session_id:
-                data = db.export_session(args.session_id)
-                if not data:
-                    print(f"Session '{args.session_id}' not found.")
-                    return
-                with open(args.output, "w", encoding="utf-8") as f:
-                    f.write(_json.dumps(data, ensure_ascii=False) + "\n")
-                print(f"Exported 1 session to {args.output}")
-            else:
-                sessions = db.export_all(source=args.source)
-                with open(args.output, "w", encoding="utf-8") as f:
-                    for s in sessions:
-                        f.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                print(f"Exported {len(sessions)} sessions to {args.output}")
-
-        elif action == "import":
-            input_path = args.input
-            if not os.path.isfile(input_path):
-                print(f"Error: File not found: {input_path}")
-                return
-            sessions_data = []
-            with open(input_path, "r", encoding="utf-8") as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        sessions_data.append(_json.loads(line))
-                    except _json.JSONDecodeError as e:
-                        print(f"Error: Invalid JSON on line {line_num}: {e}")
+            elif action == "export":
+                if args.session_id:
+                    data = db.export_session(args.session_id)
+                    if not data:
+                        print(f"Session '{args.session_id}' not found.")
                         return
-            if not sessions_data:
-                print("No sessions found in file.")
-                return
-            result = db.import_sessions(sessions_data, overwrite=args.overwrite)
-            print(f"Imported {result['imported']} session(s) ({result['messages_imported']} messages).")
-            if result["skipped"]:
-                print(f"Skipped {result['skipped']} duplicate(s) (use --overwrite to replace).")
-            if result["errors"]:
-                print(f"Errors ({len(result['errors'])}):")
-                for err in result["errors"]:
-                    print(f"  - {err}")
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(_json.dumps(data, ensure_ascii=False) + "\n")
+                    print(f"Exported 1 session to {args.output}")
+                else:
+                    sessions = db.export_all(source=args.source)
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        for s in sessions:
+                            f.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                    print(f"Exported {len(sessions)} sessions to {args.output}")
 
-        elif action == "delete":
-            if not args.yes:
-                confirm = input(f"Delete session '{args.session_id}' and all its messages? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
-                    print("Cancelled.")
+            elif action == "import":
+                input_path = args.input
+                if not os.path.isfile(input_path):
+                    print(f"Error: File not found: {input_path}")
                     return
-            if db.delete_session(args.session_id):
-                print(f"Deleted session '{args.session_id}'.")
-            else:
-                print(f"Session '{args.session_id}' not found.")
-
-        elif action == "prune":
-            days = args.older_than
-            source_msg = f" from '{args.source}'" if args.source else ""
-            if not args.yes:
-                confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
-                    print("Cancelled.")
+                sessions_data = []
+                with open(input_path, "r", encoding="utf-8") as f:
+                    for line_num, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            sessions_data.append(_json.loads(line))
+                        except _json.JSONDecodeError as e:
+                            print(f"Error: Invalid JSON on line {line_num}: {e}")
+                            return
+                if not sessions_data:
+                    print("No sessions found in file.")
                     return
-            count = db.prune_sessions(older_than_days=days, source=args.source)
-            print(f"Pruned {count} session(s).")
+                result = db.import_sessions(sessions_data, overwrite=args.overwrite)
+                print(f"Imported {result['imported']} session(s) ({result['messages_imported']} messages).")
+                if result["skipped"]:
+                    print(f"Skipped {result['skipped']} duplicate(s) (use --overwrite to replace).")
+                if result["errors"]:
+                    print(f"Errors ({len(result['errors'])}):")
+                    for err in result["errors"]:
+                        print(f"  - {err}")
 
-        elif action == "rename":
-            title = " ".join(args.title)
-            try:
-                if db.set_session_title(args.session_id, title):
-                    print(f"Session '{args.session_id}' renamed to: {title}")
+            elif action == "delete":
+                if not args.yes:
+                    confirm = input(f"Delete session '{args.session_id}' and all its messages? [y/N] ")
+                    if confirm.lower() not in ("y", "yes"):
+                        print("Cancelled.")
+                        return
+                if db.delete_session(args.session_id):
+                    print(f"Deleted session '{args.session_id}'.")
                 else:
                     print(f"Session '{args.session_id}' not found.")
-            except ValueError as e:
-                print(f"Error: {e}")
 
-        elif action == "browse":
-            limit = getattr(args, "limit", 50) or 50
-            source = getattr(args, "source", None)
-            sessions = db.list_sessions_rich(source=source, limit=limit)
-            if not sessions:
-                print("No sessions found.")
-                return
+            elif action == "prune":
+                days = args.older_than
+                source_msg = f" from '{args.source}'" if args.source else ""
+                if not args.yes:
+                    confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
+                    if confirm.lower() not in ("y", "yes"):
+                        print("Cancelled.")
+                        return
+                count = db.prune_sessions(older_than_days=days, source=args.source)
+                print(f"Pruned {count} session(s).")
 
-            selected_id = _session_browse_picker(sessions)
-            if not selected_id:
-                print("Cancelled.")
-                return
+            elif action == "rename":
+                title = " ".join(args.title)
+                try:
+                    if db.set_session_title(args.session_id, title):
+                        print(f"Session '{args.session_id}' renamed to: {title}")
+                    else:
+                        print(f"Session '{args.session_id}' not found.")
+                except ValueError as e:
+                    print(f"Error: {e}")
 
-            # Launch hermes --resume <id> by replacing the current process
-            print(f"Resuming session: {selected_id}")
-            import shutil
-            hermes_bin = shutil.which("hermes")
-            if hermes_bin:
-                os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
+            elif action == "browse":
+                limit = getattr(args, "limit", 50) or 50
+                source = getattr(args, "source", None)
+                sessions = db.list_sessions_rich(source=source, limit=limit)
+                if not sessions:
+                    print("No sessions found.")
+                    return
+
+                selected_id = _session_browse_picker(sessions)
+                if not selected_id:
+                    print("Cancelled.")
+                    return
+
+                # Launch hermes --resume <id> by replacing the current process
+                print(f"Resuming session: {selected_id}")
+                import shutil
+                hermes_bin = shutil.which("hermes")
+                if hermes_bin:
+                    os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
+                else:
+                    # Fallback: re-invoke via python -m
+                    os.execvp(
+                        sys.executable,
+                        [sys.executable, "-m", "hermes_cli.main", "--resume", selected_id],
+                    )
+                return  # won't reach here after execvp
+
+            elif action == "stats":
+                total = db.session_count()
+                msgs = db.message_count()
+                print(f"Total sessions: {total}")
+                print(f"Total messages: {msgs}")
+                for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
+                    c = db.session_count(source=src)
+                    if c > 0:
+                        print(f"  {src}: {c} sessions")
+                db_path = db.db_path
+                if db_path.exists():
+                    size_mb = os.path.getsize(db_path) / (1024 * 1024)
+                    print(f"Database size: {size_mb:.1f} MB")
+
             else:
-                # Fallback: re-invoke via python -m
-                os.execvp(
-                    sys.executable,
-                    [sys.executable, "-m", "hermes_cli.main", "--resume", selected_id],
-                )
-            return  # won't reach here after execvp
-
-        elif action == "stats":
-            total = db.session_count()
-            msgs = db.message_count()
-            print(f"Total sessions: {total}")
-            print(f"Total messages: {msgs}")
-            for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
-                c = db.session_count(source=src)
-                if c > 0:
-                    print(f"  {src}: {c} sessions")
-            db_path = db.db_path
-            if db_path.exists():
-                size_mb = os.path.getsize(db_path) / (1024 * 1024)
-                print(f"Database size: {size_mb:.1f} MB")
-
-        else:
-            sessions_parser.print_help()
+                sessions_parser.print_help()
         finally:
             db.close()
 
@@ -3122,91 +3122,91 @@ For more help on a command:
             action = getattr(args, "audit_action", None)
 
             def _fmt_ts(ts):
-            if not ts:
-                return "?"
-            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                if not ts:
+                    return "?"
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-        def _relative_time(ts):
-            if not ts:
-                return "?"
-            delta = _time.time() - ts
-            if delta < 60:
-                return "just now"
-            elif delta < 3600:
-                return f"{int(delta / 60)}m ago"
-            elif delta < 86400:
-                return f"{int(delta / 3600)}h ago"
-            elif delta < 172800:
-                return "yesterday"
-            elif delta < 604800:
-                return f"{int(delta / 86400)}d ago"
-            else:
-                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            def _relative_time(ts):
+                if not ts:
+                    return "?"
+                delta = _time.time() - ts
+                if delta < 60:
+                    return "just now"
+                elif delta < 3600:
+                    return f"{int(delta / 60)}m ago"
+                elif delta < 86400:
+                    return f"{int(delta / 3600)}h ago"
+                elif delta < 172800:
+                    return "yesterday"
+                elif delta < 604800:
+                    return f"{int(delta / 86400)}d ago"
+                else:
+                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
-        if action == "list":
-            since_ts = (_time.time() - args.since * 3600) if args.since else None
-            entries = db.query_audit_log(
-                session_id=getattr(args, "session", None),
-                tool_name=getattr(args, "tool", None),
-                since=since_ts,
-                errors_only=getattr(args, "errors", False),
-                limit=args.limit,
-            )
-
-            if not entries:
-                print("No audit log entries found.")
-                return
-
-            if getattr(args, "output_json", False):
-                print(_json.dumps(entries, indent=2, default=str))
-                return
-
-            # Table header
-            print(
-                f"{'When':<16} {'Tool':<24} {'ms':>5} {'E':<2} "
-                f"{'Session':<22} {'Result'}"
-            )
-            print("─" * 100)
-            for e in entries:
-                when = _relative_time(e.get("timestamp"))
-                tool = (e.get("tool_name") or "")[:23]
-                ms = e.get("duration_ms")
-                ms_str = str(ms) if ms is not None else "—"
-                err = "✗" if e.get("is_error") else " "
-                sid = (e.get("session_id") or "")[:21]
-                summary = (e.get("result_summary") or "").replace("\n", " ")[:45]
-                print(f"{when:<16} {tool:<24} {ms_str:>5} {err:<2} {sid:<22} {summary}")
-
-        elif action == "stats":
-            since_ts = (_time.time() - args.since * 3600) if args.since else None
-            rows = db.audit_log_stats(
-                session_id=getattr(args, "session", None),
-                since=since_ts,
-                limit=args.limit,
-            )
-
-            if not rows:
-                print("No audit log entries found.")
-                return
-
-            total_calls = sum(r["call_count"] for r in rows)
-            total_errors = sum(r["error_count"] or 0 for r in rows)
-            print(f"Total calls: {total_calls}  |  Errors: {total_errors}\n")
-            print(f"{'Tool':<30} {'Calls':>6} {'Errors':>7} {'Err%':>6} {'Avg ms':>7}")
-            print("─" * 62)
-            for r in rows:
-                calls = r["call_count"]
-                errors = r["error_count"] or 0
-                err_pct = f"{errors / calls * 100:.0f}%" if calls else "—"
-                avg_ms = r["avg_duration_ms"]
-                avg_ms_str = str(avg_ms) if avg_ms is not None else "—"
-                print(
-                    f"{r['tool_name']:<30} {calls:>6} {errors:>7} "
-                    f"{err_pct:>6} {avg_ms_str:>7}"
+            if action == "list":
+                since_ts = (_time.time() - args.since * 3600) if args.since else None
+                entries = db.query_audit_log(
+                    session_id=getattr(args, "session", None),
+                    tool_name=getattr(args, "tool", None),
+                    since=since_ts,
+                    errors_only=getattr(args, "errors", False),
+                    limit=args.limit,
                 )
 
-        else:
-            audit_parser.print_help()
+                if not entries:
+                    print("No audit log entries found.")
+                    return
+
+                if getattr(args, "output_json", False):
+                    print(_json.dumps(entries, indent=2, default=str))
+                    return
+
+                # Table header
+                print(
+                    f"{'When':<16} {'Tool':<24} {'ms':>5} {'E':<2} "
+                    f"{'Session':<22} {'Result'}"
+                )
+                print("─" * 100)
+                for e in entries:
+                    when = _relative_time(e.get("timestamp"))
+                    tool = (e.get("tool_name") or "")[:23]
+                    ms = e.get("duration_ms")
+                    ms_str = str(ms) if ms is not None else "—"
+                    err = "✗" if e.get("is_error") else " "
+                    sid = (e.get("session_id") or "")[:21]
+                    summary = (e.get("result_summary") or "").replace("\n", " ")[:45]
+                    print(f"{when:<16} {tool:<24} {ms_str:>5} {err:<2} {sid:<22} {summary}")
+
+            elif action == "stats":
+                since_ts = (_time.time() - args.since * 3600) if args.since else None
+                rows = db.audit_log_stats(
+                    session_id=getattr(args, "session", None),
+                    since=since_ts,
+                    limit=args.limit,
+                )
+
+                if not rows:
+                    print("No audit log entries found.")
+                    return
+
+                total_calls = sum(r["call_count"] for r in rows)
+                total_errors = sum(r["error_count"] or 0 for r in rows)
+                print(f"Total calls: {total_calls}  |  Errors: {total_errors}\n")
+                print(f"{'Tool':<30} {'Calls':>6} {'Errors':>7} {'Err%':>6} {'Avg ms':>7}")
+                print("─" * 62)
+                for r in rows:
+                    calls = r["call_count"]
+                    errors = r["error_count"] or 0
+                    err_pct = f"{errors / calls * 100:.0f}%" if calls else "—"
+                    avg_ms = r["avg_duration_ms"]
+                    avg_ms_str = str(avg_ms) if avg_ms is not None else "—"
+                    print(
+                        f"{r['tool_name']:<30} {calls:>6} {errors:>7} "
+                        f"{err_pct:>6} {avg_ms_str:>7}"
+                    )
+
+            else:
+                audit_parser.print_help()
         finally:
             db.close()
 

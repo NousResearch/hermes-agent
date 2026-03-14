@@ -284,8 +284,10 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
+    from tools.runtime import is_gateway_surface
+
     is_cli = os.getenv("HERMES_INTERACTIVE")
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_gateway = is_gateway_surface()
 
     if not is_cli and not is_gateway:
         return {"approved": True, "message": None}

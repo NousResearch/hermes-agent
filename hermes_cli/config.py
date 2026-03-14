@@ -29,6 +29,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 import yaml
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
@@ -68,6 +69,15 @@ def _secure_file(path):
         pass
 
 
+def _ensure_default_soul_md(home: Path) -> None:
+    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    soul_path = home / "SOUL.md"
+    if soul_path.exists():
+        return
+    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    _secure_file(soul_path)
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
@@ -77,6 +87,7 @@ def ensure_hermes_home():
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
+    _ensure_default_soul_md(home)
 
 
 # =============================================================================
@@ -879,6 +890,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
+    ensure_hermes_home()
     config_path = get_config_path()
     
     config = copy.deepcopy(DEFAULT_CONFIG)

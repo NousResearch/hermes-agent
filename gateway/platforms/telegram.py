@@ -311,6 +311,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:

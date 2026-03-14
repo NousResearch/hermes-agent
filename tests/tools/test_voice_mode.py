@@ -345,6 +345,10 @@ class TestPlayAudioFile:
         np = pytest.importorskip("numpy")
 
         mock_sd_obj = MagicMock()
+        # Simulate stream completing immediately (get_stream().active = False)
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd_obj.get_stream.return_value = mock_stream
 
         def _fake_import():
             return mock_sd_obj, np
@@ -357,7 +361,7 @@ class TestPlayAudioFile:
 
         assert result is True
         mock_sd_obj.play.assert_called_once()
-        mock_sd_obj.wait.assert_called_once()
+        mock_sd_obj.stop.assert_called_once()
 
     def test_returns_false_when_no_player(self, monkeypatch, sample_wav):
         def _fail_import():

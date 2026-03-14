@@ -478,10 +478,6 @@ The bot requires an @mention by default in server channels. Make sure you:
 - Edge TTS (free, no key) is the default fallback
 - Check logs for TTS errors
 
-### Web UI issues (firewall, mobile mic)
-
-See the [Web UI Troubleshooting](../messaging/web.md#troubleshooting) guide for firewall, HTTPS, and mobile microphone issues.
-
 ### Whisper returns garbage text
 
 The hallucination filter catches most cases automatically. If you're still getting phantom transcripts:

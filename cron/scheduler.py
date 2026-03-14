@@ -180,7 +180,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -191,10 +191,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _model_cfg = _cfg.get("model", {})
-                if isinstance(_model_cfg, str):
-                    model = _model_cfg
-                elif isinstance(_model_cfg, dict):
-                    model = _model_cfg.get("default", model)
+                if not job.get("model"):
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -240,7 +241,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         try:
             runtime = resolve_runtime_provider(
-                requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+                requested=job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+                explicit_api_key=job.get("api_key"),
+                explicit_base_url=job.get("base_url"),
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)

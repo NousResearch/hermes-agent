@@ -2,6 +2,7 @@
 
 import json
 import logging
+import types
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -162,3 +163,51 @@ class TestRunJobConfigLogging:
 
         assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
+
+
+class TestRunJobPerJobOverrides:
+    def test_job_level_model_and_provider_overrides_are_used(self, tmp_path):
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "model:\n"
+            "  default: gpt-5.4\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n"
+        )
+
+        job = {
+            "id": "briefing-job",
+            "name": "briefing",
+            "prompt": "hello",
+            "model": "perplexity-sonar-pro",
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:4000/v1",
+        }
+
+        fake_runtime = {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:4000/v1",
+            "api_key": "test-key",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime) as runtime_mock:
+            fake_run_agent = types.ModuleType("run_agent")
+            mock_agent_cls = MagicMock()
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            fake_run_agent.AIAgent = mock_agent_cls
+
+            with patch.dict("sys.modules", {"run_agent": fake_run_agent}):
+                run_job(job)
+
+        runtime_mock.assert_called_once_with(
+            requested="custom",
+            explicit_api_key=None,
+            explicit_base_url="http://127.0.0.1:4000/v1",
+        )
+        assert mock_agent_cls.call_args.kwargs["model"] == "perplexity-sonar-pro"

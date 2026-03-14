@@ -40,6 +40,7 @@ class PersistentShellMixin:
     def _cleanup_temp_files(self): ...
 
     _session_id: str = ""
+    _poll_interval: float = 0.01
 
     @property
     def _temp_prefix(self) -> str:
@@ -223,7 +224,7 @@ class PersistentShellMixin:
         )
         self._send_to_shell(ipc_script)
         deadline = time.monotonic() + timeout
-        poll_interval = 0.15
+        poll_interval = self._poll_interval
 
         while True:
             if is_interrupted():

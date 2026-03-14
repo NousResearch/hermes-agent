@@ -153,6 +153,33 @@ class TestGenerateSummaryNoneContent:
         assert len(result) < len(msgs)
 
 
+class TestSummaryPrompt:
+    def test_generate_summary_uses_handoff_compaction_prompt(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compacted"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, summary_target_tokens=1234)
+
+        messages = [
+            {"role": "user", "content": "Investigate the failing test"},
+            {"role": "assistant", "content": "I'll inspect the traceback."},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call_llm:
+            c._generate_summary(messages)
+
+        prompt = mock_call_llm.call_args.kwargs["messages"][0]["content"]
+        assert "CONTEXT CHECKPOINT COMPACTION" in prompt
+        assert "Current progress and key decisions made" in prompt
+        assert "Important context, constraints, or user preferences discovered" in prompt
+        assert "What remains to be done (clear next steps)" in prompt
+        assert "Tool calls made and their key results" in prompt
+        assert "Target roughly 1234 tokens." in prompt
+        assert 'Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix.' in prompt
+
+
 class TestNonStringContent:
     """Regression: content as dict (e.g., llama.cpp tool calls) must not crash."""
 

@@ -102,22 +102,24 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
-
-Write from a neutral perspective describing:
-1. What actions were taken (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
-
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content_to_summarize}
----
-
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+        prompt = (
+            "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff "
+            "summary for the AI assistant that will resume this conversation.\n\n"
+            "Include:\n"
+            "- Current progress and key decisions made\n"
+            "- Important context, constraints, or user preferences discovered\n"
+            "- What remains to be done (clear next steps)\n"
+            "- Any critical data: file paths, variable names, URLs, error messages, "
+            "or code snippets needed to continue\n"
+            "- Tool calls made and their key results\n\n"
+            "Be concise, structured, and focused on helping the assistant seamlessly "
+            "continue the work without re-doing what's already been done.\n\n"
+            f"Target roughly {self.summary_target_tokens} tokens.\n\n"
+            "---\n"
+            f"TURNS TO SUMMARIZE:\n{content_to_summarize}\n"
+            "---\n\n"
+            'Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix.'
+        )
 
         # Use the centralized LLM router — handles provider resolution,
         # auth, and fallback internally.

@@ -636,7 +636,13 @@ def play_audio_file(file_path: str) -> bool:
                 sample_rate = wf.getframerate()
 
             sd.play(audio_data, samplerate=sample_rate)
-            sd.wait()
+            # sd.wait() calls Event.wait() without timeout — hangs forever if
+            # the audio device stalls.  Poll with a ceiling and force-stop.
+            duration_secs = len(audio_data) / sample_rate
+            deadline = time.monotonic() + duration_secs + 2.0
+            while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
+                time.sleep(0.01)
+            sd.stop()
             return True
         except (ImportError, OSError):
             pass  # audio libs not available, fall through to system players

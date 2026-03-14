@@ -34,18 +34,9 @@ logger = logging.getLogger(__name__)
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
 
-try:
-    from faster_whisper import WhisperModel
-    _HAS_FASTER_WHISPER = True
-except ImportError:
-    _HAS_FASTER_WHISPER = False
-    WhisperModel = None  # type: ignore[assignment,misc]
-
-try:
-    from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-    _HAS_OPENAI = True
-except ImportError:
-    _HAS_OPENAI = False
+import importlib.util as _ilu
+_HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
+_HAS_OPENAI = _ilu.find_spec("openai") is not None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,7 +58,7 @@ OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Singleton for the local model — loaded once, reused across calls
-_local_model: Optional["WhisperModel"] = None
+_local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
 # ---------------------------------------------------------------------------
@@ -195,6 +186,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
+        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
@@ -235,6 +227,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         model_name = DEFAULT_GROQ_STT_MODEL
 
     try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
 
         with open(file_path, "rb") as audio_file:
@@ -282,6 +275,7 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         model_name = DEFAULT_STT_MODEL
 
     try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=30, max_retries=0)
 
         with open(file_path, "rb") as audio_file:

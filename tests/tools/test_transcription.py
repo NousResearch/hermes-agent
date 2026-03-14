@@ -125,7 +125,7 @@ class TestTranscribeLocal:
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", return_value=mock_model), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
@@ -164,7 +164,7 @@ class TestTranscribeOpenAI:
         mock_client.audio.transcriptions.create.return_value = "Hello from OpenAI"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(str(audio_file), "whisper-1")
 

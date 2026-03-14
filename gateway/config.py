@@ -31,7 +31,6 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
-    WEB = "web"
 
 
 @dataclass
@@ -176,9 +175,6 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
-                connected.append(platform)
-            # Web UI uses enabled flag only
-            elif platform == Platform.WEB:
                 connected.append(platform)
         return connected
     
@@ -469,18 +465,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
-
-    # Web UI
-    web_enabled = os.getenv("WEB_UI_ENABLED", "").lower() in ("true", "1", "yes")
-    if web_enabled:
-        if Platform.WEB not in config.platforms:
-            config.platforms[Platform.WEB] = PlatformConfig()
-        config.platforms[Platform.WEB].enabled = True
-        config.platforms[Platform.WEB].extra.update({
-            "port": int(os.getenv("WEB_UI_PORT", "8765")),
-            "host": os.getenv("WEB_UI_HOST", "") or "127.0.0.1",
-            "token": os.getenv("WEB_UI_TOKEN", ""),
-        })
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

@@ -160,7 +160,7 @@ class TestTranscribeGroq:
         mock_client.audio.transcriptions.create.return_value = "hello world"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
@@ -175,7 +175,7 @@ class TestTranscribeGroq:
         mock_client.audio.transcriptions.create.return_value = "  hello world  \n"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
@@ -188,7 +188,7 @@ class TestTranscribeGroq:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client) as mock_openai_cls:
+             patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls:
             from tools.transcription_tools import _transcribe_groq, GROQ_BASE_URL
             _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
@@ -202,7 +202,7 @@ class TestTranscribeGroq:
         mock_client.audio.transcriptions.create.side_effect = Exception("API error")
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
@@ -216,7 +216,7 @@ class TestTranscribeGroq:
         mock_client.audio.transcriptions.create.side_effect = PermissionError("denied")
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
@@ -244,7 +244,7 @@ class TestTranscribeOpenAIExtended:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client) as mock_openai_cls:
+             patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls:
             from tools.transcription_tools import _transcribe_openai, OPENAI_BASE_URL
             _transcribe_openai(sample_wav, "whisper-1")
 
@@ -258,7 +258,7 @@ class TestTranscribeOpenAIExtended:
         mock_client.audio.transcriptions.create.return_value = "  hello  \n"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(sample_wav, "whisper-1")
 
@@ -271,7 +271,7 @@ class TestTranscribeOpenAIExtended:
         mock_client.audio.transcriptions.create.side_effect = PermissionError("denied")
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(sample_wav, "whisper-1")
 
@@ -300,7 +300,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", mock_whisper_cls), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
@@ -326,7 +326,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", mock_whisper_cls), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
             from tools.transcription_tools import _transcribe_local
@@ -342,7 +342,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", mock_whisper_cls), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "large-v3")
@@ -366,7 +366,7 @@ class TestTranscribeLocalExtended:
         mock_model.transcribe.return_value = ([seg1, seg2], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", return_value=mock_model), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
@@ -387,7 +387,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "hello world"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
             _transcribe_groq(sample_wav, "whisper-1")
 
@@ -401,7 +401,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
             _transcribe_groq(sample_wav, "gpt-4o-transcribe")
 
@@ -415,7 +415,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "hello world"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai, DEFAULT_STT_MODEL
             _transcribe_openai(sample_wav, "whisper-large-v3-turbo")
 
@@ -429,7 +429,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai, DEFAULT_STT_MODEL
             _transcribe_openai(sample_wav, "distil-whisper-large-v3-en")
 
@@ -443,7 +443,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             _transcribe_groq(sample_wav, "whisper-large-v3")
 
@@ -457,7 +457,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             _transcribe_openai(sample_wav, "gpt-4o-mini-transcribe")
 
@@ -472,7 +472,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_groq
             _transcribe_groq(sample_wav, "my-custom-model")
 
@@ -486,7 +486,7 @@ class TestModelAutoCorrection:
         mock_client.audio.transcriptions.create.return_value = "test"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             _transcribe_openai(sample_wav, "my-custom-model")
 

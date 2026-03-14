@@ -136,6 +136,13 @@ class HermesRadio:
         if self._voice.running:
             await self._voice.stop()
 
+        # Stop level meter
+        try:
+            from radio.level_meter import stop as stop_meter
+            stop_meter()
+        except Exception:
+            pass
+
         if self._radiooooo:
             await self._radiooooo.close()
             self._radiooooo = None
@@ -159,6 +166,12 @@ class HermesRadio:
         self._now.station_name = station_name
         self._now.active = True
         await self._primary.loadfile(url)
+        # Start level meter for reactive visualizer
+        try:
+            from radio.level_meter import start as start_meter
+            start_meter(url)
+        except Exception:
+            pass
         self._notify_state_change()
         return f"Tuned to {station_name or url}"
 
@@ -315,6 +328,12 @@ class HermesRadio:
             logger.warning("Track has no audio URL: %s", track.id)
             return
         await self._primary.loadfile(url)
+        # Start level meter for reactive visualizer
+        try:
+            from radio.level_meter import start as start_meter
+            start_meter(url)
+        except Exception:
+            pass
         self._now.title = track.title
         self._now.artist = track.artist
         self._now.decade = track.decade

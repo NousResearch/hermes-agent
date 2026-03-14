@@ -33,15 +33,14 @@ def _noise(seed: int, idx: int) -> float:
 
 
 def _generate_bars(position: float, title: str, paused: bool) -> str:
-    """Generate animated bar characters driven by playback position.
+    """Generate animated bar characters.
 
-    Uses position-seeded noise with smooth attack/decay to create
-    the appearance of audio-reactive visualization.
+    Uses real audio RMS levels from the ffmpeg sidecar when available,
+    falling back to position-seeded noise.
     """
     global _bar_levels, _peak_levels, _peak_decay, _last_title, _last_render
 
     if paused:
-        # Decay all bars toward zero when paused
         for i in range(_NUM_BARS):
             _bar_levels[i] *= 0.85
             _peak_levels[i] *= 0.9
@@ -50,6 +49,16 @@ def _generate_bars(position: float, title: str, paused: bool) -> str:
             level = int(_bar_levels[i] * 7)
             bars.append(_BLOCKS[max(0, min(8, level))])
         return "".join(bars)
+
+    # Try real audio levels first
+    try:
+        from radio.level_meter import get_levels, is_active
+        if is_active():
+            real_levels = get_levels(_NUM_BARS)
+            if len(real_levels) >= 3:
+                return _render_real_levels(real_levels)
+    except ImportError:
+        pass
 
     # Reset state when track changes
     if title != _last_title:
@@ -114,6 +123,56 @@ def _generate_bars(position: float, title: str, paused: bool) -> str:
     for i in range(_NUM_BARS):
         level = int(_bar_levels[i] * 8)
         level = max(1, min(8, level))  # at least 1 when playing
+        bars.append(_BLOCKS[level])
+
+    return "".join(bars)
+
+
+def _render_real_levels(levels: List[float]) -> str:
+    """Render bars from real normalized audio levels [0.0-1.0].
+
+    Each bar reads from a different time offset in the level history,
+    creating a scrolling waveform effect. The most recent level drives
+    the rightmost bar; older levels scroll left.
+    """
+    global _bar_levels, _last_render
+
+    now = time.time()
+    dt = min(now - _last_render, 0.5) if _last_render > 0 else 0.3
+    _last_render = now
+
+    n = len(levels)
+
+    for i in range(_NUM_BARS):
+        # Each bar reads from a staggered time position
+        # Rightmost bar = most recent, leftmost = oldest
+        idx = max(0, n - _NUM_BARS + i)
+        if idx < n:
+            val = levels[idx]
+        else:
+            val = levels[-1] if levels else 0.0
+
+        # Add slight per-bar variation using hash of position
+        # This creates visual spread even when all levels are similar
+        jitter = _noise(int(now * 3), i) * 0.15
+        val = max(0.0, min(1.0, val + jitter - 0.07))
+
+        # Center-boost
+        center = 1.0 - abs(i - _NUM_BARS / 2) / (_NUM_BARS / 2) * 0.25
+        val *= center
+
+        # Smooth attack/decay
+        attack = 15.0
+        decay = 5.0
+        if val > _bar_levels[i]:
+            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, attack * dt)
+        else:
+            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, decay * dt)
+
+    bars = []
+    for i in range(_NUM_BARS):
+        level = int(_bar_levels[i] * 8)
+        level = max(1, min(8, level))
         bars.append(_BLOCKS[level])
 
     return "".join(bars)

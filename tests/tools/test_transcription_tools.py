@@ -73,7 +73,8 @@ def test_env_model_override_used_when_model_not_provided(tmp_path: Path, monkeyp
 def test_unknown_model_emits_warning_but_still_calls_api(tmp_path: Path, monkeypatch, caplog) -> None:
     from unittest.mock import patch
 
-    caplog.set_level("WARNING")
+    # Set log level for the transcription_tools logger specifically
+    caplog.set_level("WARNING", logger="tools.transcription_tools")
 
     # Force OpenAI provider
     monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "test-key")
@@ -84,7 +85,9 @@ def test_unknown_model_emits_warning_but_still_calls_api(tmp_path: Path, monkeyp
     audio_file = tmp_path / "audio.ogg"
     audio_file.write_bytes(b"fake-audio")
 
-    with patch("tools.transcription_tools.OpenAI") as MockClient:
+    # Mock the logger to verify warning is called
+    with patch("tools.transcription_tools.OpenAI") as MockClient, \
+         patch("tools.transcription_tools.logger") as mock_logger:
         instance = MockClient.return_value
         instance.audio.transcriptions.create.return_value = "ok"
 
@@ -96,7 +99,8 @@ def test_unknown_model_emits_warning_but_still_calls_api(tmp_path: Path, monkeyp
     assert result["success"] is True
     assert "ok" in result["transcript"]
     instance.audio.transcriptions.create.assert_called_once()
-    assert any(
-        "custom-whisper-x" in message for message in caplog.messages
-    ), "Expected warning about unsupported model name"
+    # Verify warning was called with the model name
+    mock_logger.warning.assert_called_once()
+    call_args = mock_logger.warning.call_args
+    assert "custom-whisper-x" in str(call_args), f"Expected 'custom-whisper-x' in warning call args: {call_args}"
 

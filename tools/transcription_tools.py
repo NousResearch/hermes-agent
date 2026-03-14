@@ -76,12 +76,22 @@ _local_model_name: Optional[str] = None
 
 
 def _load_stt_config() -> dict:
-    """Load the ``stt`` section from user config, falling back to defaults."""
+    """Load the ``stt`` section from user config, falling back to defaults.
+    
+    Environment variable HERMES_STT_PROVIDER can override the provider setting.
+    """
     try:
         from hermes_cli.config import load_config
-        return load_config().get("stt", {})
+        stt_config = load_config().get("stt", {})
     except Exception:
-        return {}
+        stt_config = {}
+    
+    # Allow HERMES_STT_PROVIDER env var to override config
+    env_provider = os.getenv("HERMES_STT_PROVIDER")
+    if env_provider:
+        stt_config["provider"] = env_provider
+    
+    return stt_config
 
 
 def _get_provider(stt_config: dict) -> str:

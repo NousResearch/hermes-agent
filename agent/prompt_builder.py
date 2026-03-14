@@ -177,7 +177,8 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
                 desc = desc[:57] + "..."
 
         return True, frontmatter, desc
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
 
 
@@ -194,7 +195,8 @@ def _read_skill_conditions(skill_file: Path) -> dict:
             "fallback_for_tools": hermes.get("fallback_for_tools", []),
             "requires_tools": hermes.get("requires_tools", []),
         }
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
 
 

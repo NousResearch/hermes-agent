@@ -1,24 +1,31 @@
 """
 Cron job management tools for Hermes Agent.
 
-These tools allow the agent to schedule, list, and remove automated tasks.
-Only available when running via CLI (hermes-cli toolset).
-
-IMPORTANT: Cronjobs run in isolated sessions with NO prior context.
-The prompt must contain ALL necessary information.
+Expose a single compressed action-oriented tool to avoid schema/context bloat.
+Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
 import json
 import os
 import re
-from typing import Optional
-
-# Import from cron module (will be available when properly installed)
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+# Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import create_job, get_job, list_jobs, remove_job
+from cron.jobs import (
+    create_job,
+    get_job,
+    list_jobs,
+    parse_schedule,
+    pause_job,
+    remove_job,
+    resume_job,
+    trigger_job,
+    update_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +63,183 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
-# =============================================================================
-# Tool: schedule_cronjob
-# =============================================================================
+def _origin_from_env() -> Optional[Dict[str, str]]:
+    origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
+    origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
+    if origin_platform and origin_chat_id:
+        return {
+            "platform": origin_platform,
+            "chat_id": origin_chat_id,
+            "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
+        }
+    return None
+
+
+def _repeat_display(job: Dict[str, Any]) -> str:
+    times = (job.get("repeat") or {}).get("times")
+    completed = (job.get("repeat") or {}).get("completed", 0)
+    if times is None:
+        return "forever"
+    if times == 1:
+        return "once" if completed == 0 else "1/1"
+    return f"{completed}/{times}" if completed else f"{times} times"
+
+
+def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = job.get("prompt", "")
+    return {
+        "job_id": job["id"],
+        "name": job["name"],
+        "skill": job.get("skill"),
+        "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
+        "schedule": job.get("schedule_display"),
+        "repeat": _repeat_display(job),
+        "deliver": job.get("deliver", "local"),
+        "next_run_at": job.get("next_run_at"),
+        "last_run_at": job.get("last_run_at"),
+        "last_status": job.get("last_status"),
+        "enabled": job.get("enabled", True),
+        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+        "paused_at": job.get("paused_at"),
+        "paused_reason": job.get("paused_reason"),
+    }
+
+
+def cronjob(
+    action: str,
+    job_id: Optional[str] = None,
+    prompt: Optional[str] = None,
+    schedule: Optional[str] = None,
+    name: Optional[str] = None,
+    repeat: Optional[int] = None,
+    deliver: Optional[str] = None,
+    include_disabled: bool = False,
+    skill: Optional[str] = None,
+    reason: Optional[str] = None,
+    task_id: str = None,
+) -> str:
+    """Unified cron job management tool."""
+    del task_id  # unused but kept for handler signature compatibility
+
+    try:
+        normalized = (action or "").strip().lower()
+
+        if normalized == "create":
+            if not schedule:
+                return json.dumps({"success": False, "error": "schedule is required for create"}, indent=2)
+            if not prompt and not skill:
+                return json.dumps({"success": False, "error": "create requires either prompt or skill"}, indent=2)
+            if prompt:
+                scan_error = _scan_cron_prompt(prompt)
+                if scan_error:
+                    return json.dumps({"success": False, "error": scan_error}, indent=2)
+
+            job = create_job(
+                prompt=prompt or "",
+                schedule=schedule,
+                name=name,
+                repeat=repeat,
+                deliver=deliver,
+                origin=_origin_from_env(),
+                skill=skill,
+            )
+            return json.dumps(
+                {
+                    "success": True,
+                    "job_id": job["id"],
+                    "name": job["name"],
+                    "skill": job.get("skill"),
+                    "schedule": job["schedule_display"],
+                    "repeat": _repeat_display(job),
+                    "deliver": job.get("deliver", "local"),
+                    "next_run_at": job["next_run_at"],
+                    "job": _format_job(job),
+                    "message": f"Cron job '{job['name']}' created.",
+                },
+                indent=2,
+            )
+
+        if normalized == "list":
+            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+
+        if not job_id:
+            return json.dumps({"success": False, "error": f"job_id is required for action '{normalized}'"}, indent=2)
+
+        job = get_job(job_id)
+        if not job:
+            return json.dumps(
+                {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                indent=2,
+            )
+
+        if normalized == "remove":
+            removed = remove_job(job_id)
+            if not removed:
+                return json.dumps({"success": False, "error": f"Failed to remove job '{job_id}'"}, indent=2)
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": f"Cron job '{job['name']}' removed.",
+                    "removed_job": {
+                        "id": job_id,
+                        "name": job["name"],
+                        "schedule": job.get("schedule_display"),
+                    },
+                },
+                indent=2,
+            )
+
+        if normalized == "pause":
+            updated = pause_job(job_id, reason=reason)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+
+        if normalized == "resume":
+            updated = resume_job(job_id)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+
+        if normalized in {"run", "run_now", "trigger"}:
+            updated = trigger_job(job_id)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+
+        if normalized == "update":
+            updates: Dict[str, Any] = {}
+            if prompt is not None:
+                scan_error = _scan_cron_prompt(prompt)
+                if scan_error:
+                    return json.dumps({"success": False, "error": scan_error}, indent=2)
+                updates["prompt"] = prompt
+            if name is not None:
+                updates["name"] = name
+            if deliver is not None:
+                updates["deliver"] = deliver
+            if skill is not None:
+                updates["skill"] = skill
+            if repeat is not None:
+                repeat_state = dict(job.get("repeat") or {})
+                repeat_state["times"] = repeat
+                updates["repeat"] = repeat_state
+            if schedule is not None:
+                parsed_schedule = parse_schedule(schedule)
+                updates["schedule"] = parsed_schedule
+                updates["schedule_display"] = parsed_schedule.get("display", schedule)
+                if job.get("state") != "paused":
+                    updates["state"] = "scheduled"
+                    updates["enabled"] = True
+            if not updates:
+                return json.dumps({"success": False, "error": "No updates provided."}, indent=2)
+            updated = update_job(job_id, updates)
+            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+
+        return json.dumps({"success": False, "error": f"Unknown cron action '{action}'"}, indent=2)
+
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility wrappers
+# ---------------------------------------------------------------------------
 
 def schedule_cronjob(
     prompt: str,
@@ -66,326 +247,92 @@ def schedule_cronjob(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
-    task_id: str = None
+    task_id: str = None,
 ) -> str:
-    """
-    Schedule an automated task to run the agent on a schedule.
-    
-    IMPORTANT: When the cronjob runs, it starts a COMPLETELY FRESH session.
-    The agent will have NO memory of this conversation or any prior context.
-    Therefore, the prompt MUST contain ALL necessary information:
-    - Full context of what needs to be done
-    - Specific file paths, URLs, or identifiers
-    - Clear success criteria
-    - Any relevant background information
-    
-    BAD prompt:  "Check on that server issue"
-    GOOD prompt: "SSH into server 192.168.1.100 as user 'deploy', check if nginx 
-                  is running with 'systemctl status nginx', and verify the site 
-                  https://example.com returns HTTP 200. Report any issues found."
-    
-    Args:
-        prompt: Complete, self-contained instructions for the future agent.
-                Must include ALL context needed - the agent won't remember anything.
-        schedule: When to run. Either:
-                  - Duration for one-shot: "30m", "2h", "1d" (runs once)
-                  - Interval: "every 30m", "every 2h" (recurring)
-                  - Cron expression: "0 9 * * *" (daily at 9am)
-                  - ISO timestamp: "2026-02-03T14:00:00" (one-shot at specific time)
-        name: Optional human-friendly name for the job (for listing/management)
-        repeat: How many times to run. Omit for default behavior:
-                - One-shot schedules default to repeat=1 (run once)
-                - Intervals/cron default to forever
-                - Set repeat=5 to run 5 times then auto-delete
-        deliver: Where to send the output. Options:
-                 - "origin": Back to where this job was created (default)
-                 - "local": Save to local files only (~/.hermes/cron/output/)
-                 - "telegram": Send to Telegram home channel
-                 - "discord": Send to Discord home channel
-                 - "signal": Send to Signal home channel
-                 - "telegram:123456": Send to specific chat ID
-                 - "signal:+15551234567": Send to specific Signal number
-    
-    Returns:
-        JSON with job_id, next_run time, and confirmation
-    """
-    # Scan prompt for critical threats before scheduling
-    scan_error = _scan_cron_prompt(prompt)
-    if scan_error:
-        return json.dumps({"success": False, "error": scan_error}, indent=2)
-
-    # Get origin info from environment if available
-    origin = None
-    origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
-    origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
-    if origin_platform and origin_chat_id:
-        origin = {
-            "platform": origin_platform,
-            "chat_id": origin_chat_id,
-            "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
-        }
-    
-    try:
-        job = create_job(
-            prompt=prompt,
-            schedule=schedule,
-            name=name,
-            repeat=repeat,
-            deliver=deliver,
-            origin=origin
-        )
-        
-        # Format repeat info for display
-        times = job["repeat"].get("times")
-        if times is None:
-            repeat_display = "forever"
-        elif times == 1:
-            repeat_display = "once"
-        else:
-            repeat_display = f"{times} times"
-        
-        return json.dumps({
-            "success": True,
-            "job_id": job["id"],
-            "name": job["name"],
-            "schedule": job["schedule_display"],
-            "repeat": repeat_display,
-            "deliver": job.get("deliver", "local"),
-            "next_run_at": job["next_run_at"],
-            "message": f"Cronjob '{job['name']}' created. It will run {repeat_display}, deliver to {job.get('deliver', 'local')}, next at {job['next_run_at']}."
-        }, indent=2)
-        
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
+    return cronjob(
+        action="create",
+        prompt=prompt,
+        schedule=schedule,
+        name=name,
+        repeat=repeat,
+        deliver=deliver,
+        task_id=task_id,
+    )
 
 
-SCHEDULE_CRONJOB_SCHEMA = {
-    "name": "schedule_cronjob",
-    "description": """Schedule an automated task to run the agent on a schedule.
+def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
+    return cronjob(action="list", include_disabled=include_disabled, task_id=task_id)
 
-⚠️ CRITICAL: The cronjob runs in a FRESH SESSION with NO CONTEXT from this conversation.
-The prompt must be COMPLETELY SELF-CONTAINED with ALL necessary information including:
-- Full context and background
-- Specific file paths, URLs, server addresses
-- Clear instructions and success criteria
-- Any credentials or configuration details
 
-The future agent will NOT remember anything from the current conversation.
+def remove_cronjob(job_id: str, task_id: str = None) -> str:
+    return cronjob(action="remove", job_id=job_id, task_id=task_id)
 
-SCHEDULE FORMATS:
-- One-shot: "30m", "2h", "1d" (runs once after delay)
-- Interval: "every 30m", "every 2h" (recurring)  
-- Cron: "0 9 * * *" (cron expression for precise scheduling)
-- Timestamp: "2026-02-03T14:00:00" (specific date/time)
 
-REPEAT BEHAVIOR:
-- One-shot schedules: run once by default
-- Intervals/cron: run forever by default
-- Set repeat=N to run exactly N times then auto-delete
+CRONJOB_SCHEMA = {
+    "name": "cronjob",
+    "description": """Manage scheduled cron jobs with a single compressed tool.
 
-DELIVERY OPTIONS (where output goes):
-- "origin": Back to current chat (default if in messaging platform)
-- "local": Save to local files only (default if in CLI)
-- "telegram": Send to Telegram home channel
-- "discord": Send to Discord home channel
-- "telegram:123456": Send to specific chat (if user provides ID)
+Use action='create' to schedule a new job from a prompt or a skill.
+Use action='list' to inspect jobs.
+Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
-NOTE: The agent's final response is auto-delivered to the target — do NOT use
-send_message in the prompt. Just have the agent compose its response normally.
+Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
+If skill is provided on create, the future cron run loads that skill first, then follows the prompt as the task instruction.
 
-Use for: reminders, periodic checks, scheduled reports, automated maintenance.""",
+Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "description": "One of: create, list, update, pause, resume, remove, run"
+            },
+            "job_id": {
+                "type": "string",
+                "description": "Required for update/pause/resume/remove/run"
+            },
             "prompt": {
                 "type": "string",
-                "description": "Complete, self-contained instructions. Must include ALL context - the future agent will have NO memory of this conversation."
+                "description": "For create: the full self-contained prompt. If skill is also provided, this becomes the task instruction paired with that skill."
             },
             "schedule": {
                 "type": "string",
-                "description": "When to run: '30m' (once in 30min), 'every 30m' (recurring), '0 9 * * *' (cron), or ISO timestamp"
+                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
             },
             "name": {
                 "type": "string",
-                "description": "Optional human-friendly name for the job"
+                "description": "Optional human-friendly name"
             },
             "repeat": {
                 "type": "integer",
-                "description": "How many times to run. Omit for default (once for one-shot, forever for recurring). Set to N for exactly N runs."
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
             },
             "deliver": {
                 "type": "string",
-                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', 'signal', or 'platform:chat_id'"
-            }
-        },
-        "required": ["prompt", "schedule"]
-    }
-}
-
-
-# =============================================================================
-# Tool: list_cronjobs
-# =============================================================================
-
-def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
-    """
-    List all scheduled cronjobs.
-    
-    Returns information about each job including:
-    - Job ID (needed for removal)
-    - Name
-    - Schedule (human-readable)
-    - Repeat status (completed/total or 'forever')
-    - Next scheduled run time
-    - Last run time and status (if any)
-    
-    Args:
-        include_disabled: Whether to include disabled/completed jobs
-    
-    Returns:
-        JSON array of all scheduled jobs
-    """
-    try:
-        jobs = list_jobs(include_disabled=include_disabled)
-        
-        formatted_jobs = []
-        for job in jobs:
-            # Format repeat status
-            times = job["repeat"].get("times")
-            completed = job["repeat"].get("completed", 0)
-            if times is None:
-                repeat_status = "forever"
-            else:
-                repeat_status = f"{completed}/{times}"
-            
-            formatted_jobs.append({
-                "job_id": job["id"],
-                "name": job["name"],
-                "prompt_preview": job["prompt"][:100] + "..." if len(job["prompt"]) > 100 else job["prompt"],
-                "schedule": job["schedule_display"],
-                "repeat": repeat_status,
-                "deliver": job.get("deliver", "local"),
-                "next_run_at": job.get("next_run_at"),
-                "last_run_at": job.get("last_run_at"),
-                "last_status": job.get("last_status"),
-                "enabled": job.get("enabled", True)
-            })
-        
-        return json.dumps({
-            "success": True,
-            "count": len(formatted_jobs),
-            "jobs": formatted_jobs
-        }, indent=2)
-        
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
-
-
-LIST_CRONJOBS_SCHEMA = {
-    "name": "list_cronjobs",
-    "description": """List all scheduled cronjobs with their IDs, schedules, and status.
-
-Use this to:
-- See what jobs are currently scheduled
-- Find job IDs for removal with remove_cronjob
-- Check job status and next run times
-
-Returns job_id, name, schedule, repeat status, next/last run times.""",
-    "parameters": {
-        "type": "object",
-        "properties": {
+                "description": "Delivery target: origin, local, telegram, discord, signal, or platform:chat_id"
+            },
             "include_disabled": {
                 "type": "boolean",
-                "description": "Include disabled/completed jobs in the list (default: false)"
-            }
-        },
-        "required": []
-    }
-}
-
-
-# =============================================================================
-# Tool: remove_cronjob
-# =============================================================================
-
-def remove_cronjob(job_id: str, task_id: str = None) -> str:
-    """
-    Remove a scheduled cronjob by its ID.
-    
-    Use list_cronjobs first to find the job_id of the job you want to remove.
-    
-    Args:
-        job_id: The ID of the job to remove (from list_cronjobs output)
-    
-    Returns:
-        JSON confirmation of removal
-    """
-    try:
-        job = get_job(job_id)
-        if not job:
-            return json.dumps({
-                "success": False,
-                "error": f"Job with ID '{job_id}' not found. Use list_cronjobs to see available jobs."
-            }, indent=2)
-        
-        removed = remove_job(job_id)
-        if removed:
-            return json.dumps({
-                "success": True,
-                "message": f"Cronjob '{job['name']}' (ID: {job_id}) has been removed.",
-                "removed_job": {
-                    "id": job_id,
-                    "name": job["name"],
-                    "schedule": job["schedule_display"]
-                }
-            }, indent=2)
-        else:
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to remove job '{job_id}'"
-            }, indent=2)
-            
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
-
-
-REMOVE_CRONJOB_SCHEMA = {
-    "name": "remove_cronjob",
-    "description": """Remove a scheduled cronjob by its ID.
-
-Use list_cronjobs first to find the job_id of the job you want to remove.
-Jobs that have completed their repeat count are auto-removed, but you can
-use this to cancel a job before it completes.""",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "job_id": {
+                "description": "For list: include paused/completed jobs"
+            },
+            "skill": {
                 "type": "string",
-                "description": "The ID of the cronjob to remove (from list_cronjobs output)"
+                "description": "Optional skill name to load before executing the cron prompt"
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional pause reason"
             }
         },
-        "required": ["job_id"]
+        "required": ["action"]
     }
 }
 
-
-# =============================================================================
-# Requirements check
-# =============================================================================
 
 def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
-    
+
     Available in interactive CLI mode and gateway/messaging platforms.
     Cronjobs are server-side scheduled tasks so they work from any interface.
     """
@@ -396,66 +343,30 @@ def check_cronjob_requirements() -> bool:
     )
 
 
-# =============================================================================
-# Exports
-# =============================================================================
-
 def get_cronjob_tool_definitions():
     """Return tool definitions for cronjob management."""
-    return [
-        SCHEDULE_CRONJOB_SCHEMA,
-        LIST_CRONJOBS_SCHEMA,
-        REMOVE_CRONJOB_SCHEMA
-    ]
-
-
-# For direct testing
-if __name__ == "__main__":
-    # Test the tools
-    print("Testing schedule_cronjob:")
-    result = schedule_cronjob(
-        prompt="Test prompt for cron job",
-        schedule="5m",
-        name="Test Job"
-    )
-    print(result)
-    
-    print("\nTesting list_cronjobs:")
-    result = list_cronjobs()
-    print(result)
+    return [CRONJOB_SCHEMA]
 
 
 # --- Registry ---
 from tools.registry import registry
 
 registry.register(
-    name="schedule_cronjob",
+    name="cronjob",
     toolset="cronjob",
-    schema=SCHEDULE_CRONJOB_SCHEMA,
-    handler=lambda args, **kw: schedule_cronjob(
-        prompt=args.get("prompt", ""),
-        schedule=args.get("schedule", ""),
+    schema=CRONJOB_SCHEMA,
+    handler=lambda args, **kw: cronjob(
+        action=args.get("action", ""),
+        job_id=args.get("job_id"),
+        prompt=args.get("prompt"),
+        schedule=args.get("schedule"),
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
-        task_id=kw.get("task_id")),
-    check_fn=check_cronjob_requirements,
-)
-registry.register(
-    name="list_cronjobs",
-    toolset="cronjob",
-    schema=LIST_CRONJOBS_SCHEMA,
-    handler=lambda args, **kw: list_cronjobs(
         include_disabled=args.get("include_disabled", False),
-        task_id=kw.get("task_id")),
-    check_fn=check_cronjob_requirements,
-)
-registry.register(
-    name="remove_cronjob",
-    toolset="cronjob",
-    schema=REMOVE_CRONJOB_SCHEMA,
-    handler=lambda args, **kw: remove_cronjob(
-        job_id=args.get("job_id", ""),
-        task_id=kw.get("task_id")),
+        skill=args.get("skill"),
+        reason=args.get("reason"),
+        task_id=kw.get("task_id"),
+    ),
     check_fn=check_cronjob_requirements,
 )

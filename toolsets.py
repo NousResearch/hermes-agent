@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # inference.sh CLI for running AI apps (image gen, video, LLMs, search)
+    "infsh", "infsh_install",
 ]
 
 
@@ -175,6 +177,12 @@ TOOLSETS = {
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
+        "includes": []
+    },
+
+    "inference": {
+        "description": "inference.sh CLI (infsh) - run 150+ AI apps: image generation (FLUX, Reve), video (Veo, Wan), LLMs, search (Tavily, Exa), 3D, and more",
+        "tools": ["infsh", "infsh_install"],
         "includes": []
     },
     

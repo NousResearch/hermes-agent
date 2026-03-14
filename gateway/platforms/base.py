@@ -346,6 +346,10 @@ class BasePlatformAdapter(ABC):
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
+        self._fatal_error_code: Optional[str] = None
+        self._fatal_error_message: Optional[str] = None
+        self._fatal_error_retryable = True
+        self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
@@ -353,6 +357,70 @@ class BasePlatformAdapter(ABC):
         self._pending_messages: Dict[str, MessageEvent] = {}
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+
+    @property
+    def has_fatal_error(self) -> bool:
+        return self._fatal_error_message is not None
+
+    @property
+    def fatal_error_message(self) -> Optional[str]:
+        return self._fatal_error_message
+
+    @property
+    def fatal_error_code(self) -> Optional[str]:
+        return self._fatal_error_code
+
+    @property
+    def fatal_error_retryable(self) -> bool:
+        return self._fatal_error_retryable
+
+    def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
+        self._fatal_error_handler = handler
+
+    def _mark_connected(self) -> None:
+        self._running = True
+        self._fatal_error_code = None
+        self._fatal_error_message = None
+        self._fatal_error_retryable = True
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
+        except Exception:
+            pass
+
+    def _mark_disconnected(self) -> None:
+        self._running = False
+        if self.has_fatal_error:
+            return
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
+        except Exception:
+            pass
+
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+        self._running = False
+        self._fatal_error_code = code
+        self._fatal_error_message = message
+        self._fatal_error_retryable = retryable
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state="fatal",
+                error_code=code,
+                error_message=message,
+            )
+        except Exception:
+            pass
+
+    async def _notify_fatal_error(self) -> None:
+        handler = self._fatal_error_handler
+        if not handler:
+            return
+        result = handler(self)
+        if asyncio.iscoroutine(result):
+            await result
     
     @property
     def name(self) -> str:

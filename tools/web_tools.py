@@ -168,7 +168,7 @@ async def process_content_with_llm(
         return processed_content
         
     except Exception as e:
-        logger.debug("Error processing content with LLM: %s", e)
+        logger.error("Error processing content with LLM: %s", e, exc_info=True)
         return f"[Failed to process content: {str(e)[:100]}. Content size: {len(content):,} chars]"
 
 
@@ -260,7 +260,7 @@ Create a markdown summary that captures all key information in a well-organized,
         except Exception as api_error:
             last_error = api_error
             if attempt < max_retries - 1:
-                logger.warning("LLM API call failed (attempt %d/%d): %s", attempt + 1, max_retries, str(api_error)[:100])
+                logger.warning("LLM API call failed (attempt %d/%d): %s", attempt + 1, max_retries, str(api_error)[:100], exc_info=True)
                 logger.warning("Retrying in %ds...", retry_delay)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
@@ -316,7 +316,7 @@ async def _process_large_content_chunked(
                 logger.info("Chunk %d/%d summarized: %d -> %d chars", chunk_idx + 1, len(chunks), len(chunk_content), len(summary))
             return chunk_idx, summary
         except Exception as e:
-            logger.warning("Chunk %d/%d failed: %s", chunk_idx + 1, len(chunks), str(e)[:50])
+            logger.warning("Chunk %d/%d failed: %s", chunk_idx + 1, len(chunks), str(e)[:50], exc_info=True)
             return chunk_idx, None
     
     # Run all chunk summarizations in parallel
@@ -386,7 +386,7 @@ Create a single, unified markdown summary."""
         return final_summary
         
     except Exception as e:
-        logger.warning("Synthesis failed: %s", str(e)[:100])
+        logger.warning("Synthesis failed: %s", str(e)[:100], exc_info=True)
         # Fall back to concatenated summaries with truncation
         fallback = "\n\n".join(summaries)
         if len(fallback) > max_output_size:
@@ -540,7 +540,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
-        logger.debug("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
@@ -804,7 +804,7 @@ async def web_extract_tool(
             
     except Exception as e:
         error_msg = f"Error extracting content: {str(e)}"
-        logger.debug("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_extract_tool", debug_call_data)
@@ -1093,7 +1093,7 @@ async def web_crawl_tool(
         
     except Exception as e:
         error_msg = f"Error crawling website: {str(e)}"
-        logger.debug("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_crawl_tool", debug_call_data)

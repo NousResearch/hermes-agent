@@ -780,7 +780,7 @@ def _run_browser_command(
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
-        logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+        logger.warning("Failed to create browser session for task=%s: %s", task_id, e, exc_info=True)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     
     # Build the command with the appropriate backend flag.
@@ -896,7 +896,7 @@ def _run_browser_command(
         # Check for errors
         if result.returncode != 0:
             error_msg = result.stderr.strip() if result.stderr else f"Command failed with code {result.returncode}"
-            logger.warning("browser '%s' failed (rc=%s): %s", command, result.returncode, error_msg[:300])
+            logger.warning("browser '%s' failed (rc=%s): %s", command, result.returncode, error_msg[:300], exc_info=True)
             return {"success": False, "error": error_msg}
         
         return {"success": True, "data": {}}

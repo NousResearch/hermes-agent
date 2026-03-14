@@ -8,8 +8,6 @@ Covers three static methods introduced in run_agent.py:
 
 import types
 
-import pytest
-
 from run_agent import AIAgent
 from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
 
@@ -23,15 +21,6 @@ def make_tc(name: str, arguments: str = "{}") -> types.SimpleNamespace:
     tc = types.SimpleNamespace()
     tc.function = types.SimpleNamespace(name=name, arguments=arguments)
     return tc
-
-
-def assistant_msg_with_calls(*tool_calls) -> dict:
-    """Build a dict-style assistant message carrying tool_calls."""
-    return {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": list(tool_calls),
-    }
 
 
 def tool_result(call_id: str, content: str = "ok") -> dict:
@@ -186,24 +175,20 @@ class TestCapDelegateTaskCalls:
 
     def test_interleaved_order_preserved(self):
         """Original ordering of delegate and non-delegate calls is preserved."""
-        d1 = make_tc("delegate_task", '{"task":"a"}')
+        # Build MAX_CONCURRENT_CHILDREN + 1 delegates interleaved with
+        # two non-delegate calls after the first and second delegates.
+        delegates = [make_tc("delegate_task", f'{{"task":"{i}"}}')
+                     for i in range(MAX_CONCURRENT_CHILDREN + 1)]
         t1 = make_tc("terminal", '{"cmd":"ls"}')
-        d2 = make_tc("delegate_task", '{"task":"b"}')
         w1 = make_tc("web_search", '{"q":"x"}')
-        d3 = make_tc("delegate_task", '{"task":"c"}')
-        d4 = make_tc("delegate_task", '{"task":"d"}')  # excess
-        tcs = [d1, t1, d2, w1, d3, d4]
+        # Interleave: d0, terminal, d1, web_search, d2, ..., d_excess
+        tcs = [delegates[0], t1, delegates[1], w1] + delegates[2:]
         out = AIAgent._cap_delegate_task_calls(tcs)
-        names = [tc.function.name for tc in out]
-        # Only first MAX_CONCURRENT_CHILDREN delegates kept, but relative
-        # order with non-delegates must be preserved.
-        assert names == ["delegate_task", "terminal", "delegate_task",
-                         "web_search", "delegate_task"]
-        assert out[0] is d1
-        assert out[1] is t1
-        assert out[2] is d2
-        assert out[3] is w1
-        assert out[4] is d3
+        # The last delegate should be dropped; everything else stays in order.
+        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:MAX_CONCURRENT_CHILDREN]
+        assert len(out) == len(expected)
+        for i, (actual, exp) in enumerate(zip(out, expected)):
+            assert actual is exp, f"mismatch at index {i}"
 
 
 # ---------------------------------------------------------------------------

@@ -4213,20 +4213,20 @@ class HermesCLI:
                     if text_queue is not None:
                         text_queue.put(delta)
 
-            # When voice mode is active, prepend a brief instruction to the
-            # user message so the model responds concisely.  This avoids
-            # modifying the system prompt (which would invalidate the prompt
-            # cache).  The original message in conversation_history stays clean.
-            agent_message = message
+            # When voice mode is active, prepend a brief instruction so the
+            # model responds concisely.  The prefix is API-call-local only —
+            # we strip it from the returned history so it never persists to
+            # session DB or resumed sessions.
+            _voice_prefix = ""
             if self._voice_mode and isinstance(message, str):
-                agent_message = (
+                _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
-                    + message
                 )
 
             def run_agent():
                 nonlocal result
+                agent_message = _voice_prefix + message if _voice_prefix else message
                 result = self.agent.run_conversation(
                     user_message=agent_message,
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
@@ -4297,6 +4297,13 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+
+            # Strip voice prefix from history so it never persists
+            if _voice_prefix and self.conversation_history:
+                for msg in self.conversation_history:
+                    if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                        if msg["content"].startswith(_voice_prefix):
+                            msg["content"] = msg["content"][len(_voice_prefix):]
 
             # Get the final response
             response = result.get("final_response", "") if result else ""

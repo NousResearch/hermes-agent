@@ -176,6 +176,36 @@ def print_error(text: str):
     print(color(f"✗ {text}", Colors.RED))
 
 
+def is_interactive_stdin() -> bool:
+    """Return True when stdin looks like a usable interactive TTY."""
+    stdin = getattr(sys, "stdin", None)
+    if stdin is None:
+        return False
+    try:
+        return bool(stdin.isatty())
+    except Exception:
+        return False
+
+
+def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
+    """Print guidance for headless/non-interactive setup flows."""
+    print()
+    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print()
+    if reason:
+        print_info(reason)
+    print_info("The interactive wizard cannot be used here.")
+    print()
+    print_info("Configure Hermes using environment variables or config commands:")
+    print_info("  hermes config set model.provider custom")
+    print_info("  hermes config set model.base_url http://localhost:8080/v1")
+    print_info("  hermes config set model.default your-model-name")
+    print()
+    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
+    print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
+    print()
+
+
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     if default:
@@ -2340,24 +2370,13 @@ def run_setup_wizard(args):
 
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
-    if not non_interactive and not sys.stdin.isatty():
+    if not non_interactive and not is_interactive_stdin():
         non_interactive = True
 
     if non_interactive:
-        print()
-        print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
-        print()
-        print_info("Running in a non-interactive environment (no TTY detected).")
-        print_info("The interactive wizard cannot be used here.")
-        print()
-        print_info("Configure Hermes using environment variables or config commands:")
-        print_info("  hermes config set model.provider custom")
-        print_info("  hermes config set model.base_url http://localhost:8080/v1")
-        print_info("  hermes config set model.default your-model-name")
-        print()
-        print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-        print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
-        print()
+        print_noninteractive_setup_guidance(
+            "Running in a non-interactive environment (no TTY detected)."
+        )
         return
 
     # Check if a specific section was requested

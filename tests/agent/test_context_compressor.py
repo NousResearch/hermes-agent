@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 
 
 @pytest.fixture()
@@ -138,7 +138,7 @@ class TestGenerateSummaryNoneContent:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
         assert isinstance(summary, str)
-        assert "CONTEXT SUMMARY" in summary
+        assert summary.startswith(SUMMARY_PREFIX)
 
     def test_none_content_in_system_message_compress(self):
         """System message with content=None should not crash during compress."""
@@ -172,7 +172,7 @@ class TestNonStringContent:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
         assert isinstance(summary, str)
-        assert "CONTEXT SUMMARY" in summary
+        assert summary.startswith(SUMMARY_PREFIX)
 
     def test_none_content_coerced_to_empty(self):
         mock_response = MagicMock()
@@ -189,9 +189,19 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → "[CONTEXT SUMMARY]: " prefix added
+        # None content → empty string → standardized compaction handoff prefix added
         assert summary is not None
-        assert "CONTEXT SUMMARY" in summary
+        assert summary == SUMMARY_PREFIX
+
+
+class TestSummaryPrefixNormalization:
+    def test_legacy_prefix_is_replaced(self):
+        summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
+        assert summary == f"{SUMMARY_PREFIX}\ndid work"
+
+    def test_existing_new_prefix_is_not_duplicated(self):
+        summary = ContextCompressor._with_summary_prefix(f"{SUMMARY_PREFIX}\ndid work")
+        assert summary == f"{SUMMARY_PREFIX}\ndid work"
 
 
 class TestCompressWithClient:
@@ -211,7 +221,7 @@ class TestCompressWithClient:
 
         # Should have summary message in the middle
         contents = [m.get("content", "") for m in result]
-        assert any("CONTEXT SUMMARY" in c for c in contents)
+        assert any(c.startswith(SUMMARY_PREFIX) for c in contents)
         assert len(result) < len(msgs)
 
     def test_summarization_does_not_split_tool_call_pairs(self):
@@ -283,7 +293,9 @@ class TestCompressWithClient:
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
-        summary_msg = [m for m in result if "CONTEXT SUMMARY" in (m.get("content") or "")]
+        summary_msg = [
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        ]
         assert len(summary_msg) == 1
         assert summary_msg[0]["role"] == "user"
 
@@ -311,7 +323,9 @@ class TestCompressWithClient:
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
-        summary_msg = [m for m in result if "CONTEXT SUMMARY" in (m.get("content") or "")]
+        summary_msg = [
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        ]
         assert len(summary_msg) == 1
         assert summary_msg[0]["role"] == "assistant"
 

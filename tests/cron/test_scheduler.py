@@ -203,3 +203,48 @@ class TestRunJobConfigLogging:
 
         assert any("failed to parse prefill messages" in r.message for r in caplog.records), \
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
+
+
+class TestRunJobSkillBacked:
+    def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
+        job = {
+            "id": "skill-job",
+            "name": "skill test",
+            "prompt": "Check the feeds and summarize anything new.",
+            "skill": "blogwatcher",
+        }
+
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.skills_tool.skill_view", return_value=json.dumps({"success": True, "content": "# Blogwatcher\nFollow this skill."})), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+
+        prompt_arg = mock_agent.run_conversation.call_args.args[0]
+        assert "blogwatcher" in prompt_arg
+        assert "Follow this skill" in prompt_arg
+        assert "Check the feeds and summarize anything new." in prompt_arg

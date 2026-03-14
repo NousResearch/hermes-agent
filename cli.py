@@ -428,8 +428,8 @@ from hermes_cli.commands import COMMANDS, SlashCommandCompleter
 from hermes_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
-# Cron job system for scheduled tasks (CRUD only — execution is handled by the gateway)
-from cron import create_job, list_jobs, remove_job, get_job
+# Cron job system for scheduled tasks (execution is handled by the gateway)
+from cron import create_job, list_jobs, remove_job, get_job, pause_job, resume_job, trigger_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
@@ -2601,6 +2601,9 @@ class HermesCLI:
             print("    /cron                     - List scheduled jobs")
             print("    /cron list                - List scheduled jobs")
             print('    /cron add <schedule> <prompt>  - Add a new job')
+            print("    /cron pause <job_id>      - Pause a job")
+            print("    /cron resume <job_id>     - Resume a job")
+            print("    /cron run <job_id>        - Run a job on the next tick")
             print("    /cron remove <job_id>     - Remove a job")
             print()
             print("  Schedule formats:")
@@ -2700,27 +2703,47 @@ class HermesCLI:
             except Exception as e:
                 print(f"(x_x) Failed to create job: {e}")
         
-        elif subcommand == "remove" or subcommand == "rm" or subcommand == "delete":
-            # /cron remove <job_id>
+        elif subcommand in {"pause", "resume", "run", "remove", "rm", "delete"}:
             if len(parts) < 3:
-                print("(._.) Usage: /cron remove <job_id>")
+                print(f"(._.) Usage: /cron {subcommand} <job_id>")
                 return
-            
+
             job_id = parts[2].strip()
             job = get_job(job_id)
-            
+
             if not job:
                 print(f"(._.) Job not found: {job_id}")
                 return
-            
-            if remove_job(job_id):
-                print(f"(^_^)b Removed job: {job['name']} ({job_id})")
+
+            if subcommand == "pause":
+                updated = pause_job(job_id, reason="paused from /cron")
+                if updated:
+                    print(f"(^_^)b Paused job: {updated['name']} ({job_id})")
+                else:
+                    print(f"(x_x) Failed to pause job: {job_id}")
+            elif subcommand == "resume":
+                updated = resume_job(job_id)
+                if updated:
+                    print(f"(^_^)b Resumed job: {updated['name']} ({job_id})")
+                    print(f"  Next run: {updated.get('next_run_at')}")
+                else:
+                    print(f"(x_x) Failed to resume job: {job_id}")
+            elif subcommand == "run":
+                updated = trigger_job(job_id)
+                if updated:
+                    print(f"(^_^)b Triggered job: {updated['name']} ({job_id})")
+                    print("  It will run on the next scheduler tick.")
+                else:
+                    print(f"(x_x) Failed to trigger job: {job_id}")
             else:
-                print(f"(x_x) Failed to remove job: {job_id}")
-        
+                if remove_job(job_id):
+                    print(f"(^_^)b Removed job: {job['name']} ({job_id})")
+                else:
+                    print(f"(x_x) Failed to remove job: {job_id}")
+
         else:
             print(f"(._.) Unknown cron command: {subcommand}")
-            print("  Available: list, add, remove")
+            print("  Available: list, add, pause, resume, run, remove")
     
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""

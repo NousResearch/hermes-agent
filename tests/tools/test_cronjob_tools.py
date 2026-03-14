@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
+    cronjob,
     schedule_cronjob,
     list_cronjobs,
     remove_cronjob,
@@ -180,3 +181,67 @@ class TestRemoveCronjob:
         result = json.loads(remove_cronjob("nonexistent_id"))
         assert result["success"] is False
         assert "not found" in result["error"].lower()
+
+
+class TestUnifiedCronjobTool:
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_create_and_list(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Server Check",
+            )
+        )
+        assert created["success"] is True
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["success"] is True
+        assert listing["count"] == 1
+        assert listing["jobs"][0]["name"] == "Server Check"
+        assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_pause_and_resume(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        paused = json.loads(cronjob(action="pause", job_id=job_id))
+        assert paused["success"] is True
+        assert paused["job"]["state"] == "paused"
+
+        resumed = json.loads(cronjob(action="resume", job_id=job_id))
+        assert resumed["success"] is True
+        assert resumed["job"]["state"] == "scheduled"
+
+    def test_update_schedule_recomputes_display(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, schedule="every 2h", name="New Name")
+        )
+        assert updated["success"] is True
+        assert updated["job"]["name"] == "New Name"
+        assert updated["job"]["schedule"] == "every 120m"
+
+    def test_create_skill_backed_job(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                skill="blogwatcher",
+                prompt="Check the configured feeds and summarize anything new.",
+                schedule="every 1h",
+                name="Morning feeds",
+            )
+        )
+        assert result["success"] is True
+        assert result["skill"] == "blogwatcher"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["skill"] == "blogwatcher"

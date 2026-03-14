@@ -1289,11 +1289,41 @@ class HermesCLI:
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
         self._app = None
+
+        # State shared by interactive run() and single-query chat mode.
+        # These must exist before any direct chat() call because single-query
+        # mode does not go through run().
+        self._agent_running = False
+        self._pending_input = queue.Queue()
+        self._interrupt_queue = queue.Queue()
+        self._should_exit = False
+        self._last_ctrl_c_time = 0
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = 0
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._approval_state = None
+        self._approval_deadline = 0
+        self._approval_lock = threading.Lock()
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._command_running = False
         self._command_status = ""
+        self._attached_images: list[Path] = []
+        self._image_counter = 0
+
+        # Voice mode state (also reinitialized inside run() for interactive TUI).
+        self._voice_lock = threading.Lock()
+        self._voice_mode = False
+        self._voice_tts = False
+        self._voice_recorder = None
+        self._voice_recording = False
+        self._voice_processing = False
+        self._voice_continuous = False
+        self._voice_tts_done = threading.Event()
+        self._voice_tts_done.set()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}

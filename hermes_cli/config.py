@@ -202,6 +202,14 @@ DEFAULT_CONFIG = {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
         },
     },
+
+    "voice": {
+        "record_key": "ctrl+b",
+        "max_recording_seconds": 120,
+        "auto_tts": False,
+        "silence_threshold": 200,     # RMS below this = silence (0-32767)
+        "silence_duration": 3.0,      # Seconds of silence before auto-stop
+    },
     
     "human_delay": {
         "mode": "off",

@@ -2183,15 +2183,63 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
-    def reset_conversation(self):
-        """Reset the conversation history."""
+    def new_session(self, silent=False):
+        """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
             except Exception:
                 pass
+
+        old_session_id = self.session_id
+        if self._session_db and old_session_id:
+            try:
+                self._session_db.end_session(old_session_id, "new_session")
+            except Exception:
+                pass
+
+        self.session_start = datetime.now()
+        timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        self.session_id = f"{timestamp_str}_{short_uuid}"
         self.conversation_history = []
-        print("(^_^)b Conversation reset!")
+        self._pending_title = None
+        self._resumed = False
+
+        if self.agent:
+            self.agent.session_id = self.session_id
+            self.agent.session_start = self.session_start
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = 0
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+            if self._session_db:
+                try:
+                    self._session_db.create_session(
+                        session_id=self.session_id,
+                        source="cli",
+                        model=self.model,
+                        model_config={
+                            "max_iterations": self.max_turns,
+                            "reasoning_config": self.reasoning_config,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        if not silent:
+            print("(^_^)v New session started!")
+
+    def reset_conversation(self):
+        """Reset the conversation by starting a new session."""
+        self.new_session()
     
     def save_conversation(self):
         """Save the current conversation to a file."""
@@ -2675,12 +2723,7 @@ class HermesCLI:
         elif cmd_lower == "/config":
             self.show_config()
         elif cmd_lower == "/clear":
-            # Flush memories before clearing
-            if self.agent and self.conversation_history:
-                try:
-                    self.agent.flush_memories(self.conversation_history)
-                except Exception:
-                    pass
+            self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
             # screen-clear escape sequences.  Use prompt_toolkit's output
@@ -2692,8 +2735,6 @@ class HermesCLI:
                 out.flush()
             else:
                 self.console.clear()
-            # Reset conversation
-            self.conversation_history = []
             # Show fresh banner.  Inside the TUI we must route Rich output
             # through ChatConsole (which uses prompt_toolkit's native ANSI
             # renderer) instead of self.console (which writes raw to stdout
@@ -2796,7 +2837,7 @@ class HermesCLI:
                 else:
                     _cprint("  Session database not available.")
         elif cmd_lower in ("/reset", "/new"):
-            self.reset_conversation()
+            self.new_session()
         elif cmd_lower.startswith("/model"):
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)

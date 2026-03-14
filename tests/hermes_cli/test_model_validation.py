@@ -7,6 +7,7 @@ from hermes_cli.models import (
     fetch_api_models,
     normalize_provider,
     parse_model_input,
+    provider_label,
     provider_model_ids,
     validate_requested_model,
 )
@@ -109,6 +110,16 @@ class TestNormalizeProvider:
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
+
+
+class TestProviderLabel:
+    def test_known_labels_and_auto(self):
+        assert provider_label("anthropic") == "Anthropic"
+        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("auto") == "Auto"
+
+    def test_unknown_provider_preserves_original_name(self):
+        assert provider_label("my-custom-provider") == "my-custom-provider"
 
 
 # -- provider_model_ids ------------------------------------------------------

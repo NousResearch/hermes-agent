@@ -71,8 +71,13 @@ class EvidenceStore:
             "chain_of_custody": [],
         }
         if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    self.data = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Error loading evidence store '{filepath}': {e}", file=sys.stderr)
+                print("Hint: The file might be corrupted. Check for manual edits or syntax errors.", file=sys.stderr)
+                sys.exit(1)
 
     def _save(self):
         self.data["metadata"]["last_updated"] = _now_iso()
@@ -222,6 +227,7 @@ def main():
     add_p.add_argument("--ioc-type", choices=IOC_TYPES, help="IOC subtype (for --type ioc)")
     add_p.add_argument("--verification", choices=VERIFICATION_STATES, default="unverified")
     add_p.add_argument("--notes", help="Additional investigator notes")
+    add_p.add_argument("--quiet", action="store_true", help="Suppress success message")
 
     # --- list ---
     list_p = subparsers.add_parser("list", help="List all evidence entries")
@@ -261,7 +267,8 @@ def main():
             verification=args.verification,
             notes=args.notes,
         )
-        print(f"✓ Added evidence: {eid}")
+        if not getattr(args, "quiet", False):
+            print(f"✓ Added evidence: {eid}")
 
     elif args.command == "list":
         items = store.list_evidence(

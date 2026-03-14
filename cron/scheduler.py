@@ -269,6 +269,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             quiet_mode=True,
+            platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
             session_db=_session_db,
         )
@@ -325,6 +326,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Clean up injected env vars so they don't leak to other jobs
         for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME"):
             os.environ.pop(key, None)
+        if _session_db:
+            try:
+                _session_db.close()
+            except Exception as e:
+                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
 def tick(verbose: bool = True) -> int:

@@ -654,6 +654,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider,
         _login_openai_codex,
         get_codex_auth_status,
+        resolve_codex_runtime_credentials,
         DEFAULT_CODEX_BASE_URL,
         detect_external_credentials,
     )
@@ -1266,7 +1267,14 @@ def setup_model_provider(config: dict):
         elif selected_provider == "openai-codex":
             from hermes_cli.codex_models import get_codex_model_ids
 
-            codex_models = get_codex_model_ids()
+            codex_token = None
+            try:
+                codex_creds = resolve_codex_runtime_credentials()
+                codex_token = codex_creds.get("api_key")
+            except Exception as exc:
+                logger.debug("Could not resolve Codex runtime credentials for model list: %s", exc)
+
+            codex_models = get_codex_model_ids(access_token=codex_token)
             model_choices = codex_models + [f"Keep current ({current_model})"]
             default_codex = 0
             if current_model in codex_models:

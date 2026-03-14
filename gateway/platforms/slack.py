@@ -260,6 +260,30 @@ class SlackAdapter(BasePlatformAdapter):
                 return metadata["thread_ts"]
         return reply_to
 
+    async def _upload_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a local file to Slack."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        result = await self._app.client.files_upload_v2(
+            channel=chat_id,
+            file=file_path,
+            filename=os.path.basename(file_path),
+            initial_comment=caption or "",
+            thread_ts=self._resolve_thread_ts(reply_to, metadata),
+        )
+        return SendResult(success=True, raw_response=result)
+
     # ----- Markdown → mrkdwn conversion -----
 
     def format_message(self, content: str) -> str:
@@ -417,23 +441,10 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file to Slack by uploading it."""
-        if not self._app:
-            return SendResult(success=False, error="Not connected")
-
         try:
-            import os
-            if not os.path.exists(image_path):
-                return SendResult(success=False, error=f"Image file not found: {image_path}")
-
-            result = await self._app.client.files_upload_v2(
-                channel=chat_id,
-                file=image_path,
-                filename=os.path.basename(image_path),
-                initial_comment=caption or "",
-                thread_ts=self._resolve_thread_ts(reply_to, metadata),
-            )
-            return SendResult(success=True, raw_response=result)
-
+            return await self._upload_file(chat_id, image_path, caption, reply_to, metadata)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send local Slack image %s: %s",
@@ -497,19 +508,10 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an audio file to Slack."""
-        if not self._app:
-            return SendResult(success=False, error="Not connected")
-
         try:
-            result = await self._app.client.files_upload_v2(
-                channel=chat_id,
-                file=audio_path,
-                filename=os.path.basename(audio_path),
-                initial_comment=caption or "",
-                thread_ts=self._resolve_thread_ts(reply_to, metadata),
-            )
-            return SendResult(success=True, raw_response=result)
-
+            return await self._upload_file(chat_id, audio_path, caption, reply_to, metadata)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[Slack] Failed to send audio file %s: %s",

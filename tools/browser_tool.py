@@ -67,6 +67,12 @@ from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
 
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services)
+_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Throttle screenshot cleanup to avoid repeated full directory scans.
+_last_screenshot_cleanup_by_dir: dict[str, float] = {}
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -846,7 +852,6 @@ def _run_browser_command(
         
         browser_env = {**os.environ}
         # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
-        _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         if "/usr/bin" not in browser_env.get("PATH", "").split(":"):
             browser_env["PATH"] = f"{browser_env.get('PATH', '')}:{_SANE_PATH}"
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
@@ -1578,8 +1583,17 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
-    """Remove browser screenshots older than max_age_hours to prevent disk bloat."""
-    import time
+    """Remove browser screenshots older than max_age_hours to prevent disk bloat.
+
+    Throttled to run at most once per hour per directory to avoid repeated
+    scans on screenshot-heavy workflows.
+    """
+    key = str(screenshots_dir)
+    now = time.time()
+    if now - _last_screenshot_cleanup_by_dir.get(key, 0.0) < 3600:
+        return
+    _last_screenshot_cleanup_by_dir[key] = now
+
     try:
         cutoff = time.time() - (max_age_hours * 3600)
         for f in screenshots_dir.glob("browser_screenshot_*.png"):

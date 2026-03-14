@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     check_all_command_guards,
@@ -35,15 +36,17 @@ def _clean_state():
     """Clear approval state and relevant env vars between tests."""
     key = os.getenv("HERMES_SESSION_KEY", "default")
     clear_session(key)
+    approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
     clear_session(key)
+    approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
         os.environ.pop(k, None)
 
 
@@ -76,8 +79,15 @@ class TestContainerSkip:
 class TestTirithAllowSafeCommand:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_both_allow(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
         result = check_all_command_guards("echo hello", "local")
         assert result["approved"] is True
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_noninteractive_skips_external_scan(self, mock_tirith):
+        result = check_all_command_guards("echo hello", "local")
+        assert result["approved"] is True
+        mock_tirith.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +98,7 @@ class TestTirithBlock:
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("block", summary="homograph detected"))
     def test_tirith_block_safe_command(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
         result = check_all_command_guards("curl http://gооgle.com", "local")
         assert result["approved"] is False
         assert "BLOCKED" in result["message"]
@@ -97,6 +108,7 @@ class TestTirithBlock:
            return_value=_tirith_result("block", summary="terminal injection"))
     def test_tirith_block_plus_dangerous(self, mock_tirith):
         """tirith block takes precedence even if command is also dangerous."""
+        os.environ["HERMES_INTERACTIVE"] = "1"
         result = check_all_command_guards("rm -rf / | curl http://evil", "local")
         assert result["approved"] is False
         assert "BLOCKED" in result["message"]
@@ -308,5 +320,6 @@ class TestProgrammingErrorsPropagateFromWrapper:
     @patch(_TIRITH_PATCH, side_effect=AttributeError("bug in wrapper"))
     def test_attribute_error_propagates(self, mock_tirith):
         """Non-ImportError exceptions from tirith wrapper should propagate."""
+        os.environ["HERMES_INTERACTIVE"] = "1"
         with pytest.raises(AttributeError, match="bug in wrapper"):
             check_all_command_guards("echo hello", "local")

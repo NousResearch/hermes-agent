@@ -151,6 +151,9 @@ class GatewayConfig:
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+
+    # User-defined quick commands (slash commands that bypass the agent loop)
+    quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -218,6 +221,7 @@ class GatewayConfig:
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
             },
             "reset_triggers": self.reset_triggers,
+            "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
         }
@@ -252,12 +256,17 @@ class GatewayConfig:
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
+        quick_commands = data.get("quick_commands", {})
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
+            quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
         )
@@ -298,6 +307,16 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge quick commands from config.yaml into gateway runtime config.
+            # config.yaml is the user-facing config source, so when present it
+            # should override gateway.json for this setting.
+            qc = yaml_cfg.get("quick_commands")
+            if qc is not None:
+                if isinstance(qc, dict):
+                    config.quick_commands = qc
+                else:
+                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

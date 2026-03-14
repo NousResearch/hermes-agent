@@ -25,3 +25,77 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() is None
         assert not pid_path.exists()
+
+
+class TestGatewayRuntimeStatus:
+    def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="telegram conflict",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_polling_conflict",
+            error_message="another poller is active",
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "startup_failed"
+        assert payload["exit_reason"] == "telegram conflict"
+        assert payload["platforms"]["telegram"]["state"] == "fatal"
+        assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
+        assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+
+class TestScopedLocks:
+    def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is False
+        assert existing["pid"] == 99999
+
+    def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+
+        def fake_kill(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
+    def test_release_scoped_lock_only_removes_current_owner(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        assert acquired is True
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        assert lock_path.exists()
+
+        status.release_scoped_lock("telegram-bot-token", "secret")
+        assert not lock_path.exists()

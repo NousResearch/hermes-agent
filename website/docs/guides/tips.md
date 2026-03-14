@@ -192,13 +192,13 @@ with open("results.txt", "w", encoding="utf-8") as f:
     f.write("✓ All good\n")
 ```
 
-- In PowerShell, you can also set UTF-8 as the default output encoding for your session:
+- In PowerShell, you can also switch the current session to UTF-8 for console and native command output:
 
 ```powershell
-$PSStyle.OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 ```
 
-This matches how the CI environment behaves and helps avoid Windows-only failures.
+This keeps PowerShell and child processes on UTF-8 and helps avoid Windows-only failures.
 
 ### Review Before Choosing "Always"
 

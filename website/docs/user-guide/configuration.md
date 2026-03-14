@@ -445,7 +445,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 
 - **Docker backend**
   - Ensure Docker Desktop (or the Docker daemon) is installed and running.
-  - The `docker` CLI must be available in your `$PATH`. Run:
+  - Hermes needs to be able to find the `docker` CLI. It checks your `$PATH` first and also probes common Docker Desktop install locations on macOS. Run:
     ```bash
     docker version
     ```

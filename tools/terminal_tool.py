@@ -923,10 +923,10 @@ def terminal_tool(
                         ssh_config = None
                         if env_type == "ssh":
                             ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
+                                "host": overrides.get("ssh_host") or config.get("ssh_host", ""),
+                                "user": overrides.get("ssh_user") or config.get("ssh_user", ""),
+                                "port": overrides.get("ssh_port") or config.get("ssh_port", 22),
+                                "key": overrides.get("ssh_key") or config.get("ssh_key", ""),
                             }
 
                         container_config = None

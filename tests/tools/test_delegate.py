@@ -64,6 +64,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("provider", task_props)
         self.assertIn("terminal_backend", task_props)
         self.assertIn("max_iterations", task_props)
+        self.assertIn("ssh_host", task_props)
 
 
 class TestChildSystemPrompt(unittest.TestCase):

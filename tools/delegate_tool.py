@@ -500,8 +500,10 @@ def delegate_task(
             from tools.terminal_tool import register_task_env_overrides
             task_id = f"delegate_{id(parent_agent)}_{task_index}"
             overrides = {"terminal_backend": backend}
-            # Also forward any per-task image overrides
-            for key in ("docker_image", "modal_image", "singularity_image", "daytona_image", "cwd"):
+            # Forward per-task image, cwd, and SSH connection overrides
+            for key in ("docker_image", "modal_image", "singularity_image",
+                        "daytona_image", "cwd",
+                        "ssh_host", "ssh_user", "ssh_port", "ssh_key"):
                 if task.get(key):
                     overrides[key] = task[key]
             register_task_env_overrides(task_id, overrides)
@@ -801,6 +803,26 @@ DELEGATE_TASK_SCHEMA = {
                                 "starvation. Falls back to the top-level "
                                 "max_iterations if unset."
                             ),
+                        },
+                        "ssh_host": {
+                            "type": "string",
+                            "description": (
+                                "SSH hostname or IP for this task (only used "
+                                "when terminal_backend is 'ssh'). Allows routing "
+                                "different tasks to different remote machines."
+                            ),
+                        },
+                        "ssh_user": {
+                            "type": "string",
+                            "description": "SSH username for this task.",
+                        },
+                        "ssh_port": {
+                            "type": "integer",
+                            "description": "SSH port for this task (default: 22).",
+                        },
+                        "ssh_key": {
+                            "type": "string",
+                            "description": "Path to SSH private key for this task.",
                         },
                     },
                     "required": ["goal"],

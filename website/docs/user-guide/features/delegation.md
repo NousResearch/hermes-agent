@@ -171,6 +171,31 @@ Available `terminal_backend` values: `local`, `docker`, `modal`, `ssh`, `singula
 
 When `max_iterations` is set on a task, the child gets its own independent iteration budget instead of sharing the parent's. This prevents starvation where one slow child exhausts the shared budget before siblings finish. If omitted, the child shares the parent's budget (original behavior).
 
+#### SSH: Routing Tasks to Different Remote Machines
+
+When using `terminal_backend: "ssh"`, each task can specify its own SSH connection details. This allows routing different tasks to different remote machines:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Run training on the GPU server",
+        "terminal_backend": "ssh",
+        "ssh_host": "gpu-server.lab.internal",
+        "ssh_user": "researcher",
+        "ssh_key": "~/.ssh/gpu_key"
+    },
+    {
+        "goal": "Run data preprocessing on the CPU cluster",
+        "terminal_backend": "ssh",
+        "ssh_host": "cpu-cluster.lab.internal",
+        "ssh_user": "researcher",
+        "ssh_key": "~/.ssh/cluster_key"
+    }
+])
+```
+
+If SSH fields are omitted, the task falls back to the global `TERMINAL_SSH_HOST` / `TERMINAL_SSH_USER` / `TERMINAL_SSH_KEY` environment variables.
+
 ### Configurable Limits
 
 Delegation depth and concurrency are configurable in `config.yaml`:

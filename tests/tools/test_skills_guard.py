@@ -46,9 +46,9 @@ from tools.skills_guard import (
 
 
 class TestResolveTrustLevel:
-    def test_builtin_not_exposed(self):
-        # builtin is only used internally, not resolved from source string
-        assert _resolve_trust_level("openai/skills") == "trusted"
+    def test_official_sources_resolve_to_builtin(self):
+        assert _resolve_trust_level("official") == "builtin"
+        assert _resolve_trust_level("official/email/agentmail") == "builtin"
 
     def test_trusted_repos(self):
         assert _resolve_trust_level("openai/skills") == "trusted"
@@ -116,10 +116,16 @@ class TestShouldAllowInstall:
         allowed, _ = should_allow_install(self._result("trusted", "caution", f))
         assert allowed is True
 
-    def test_dangerous_blocked_even_trusted(self):
+    def test_trusted_dangerous_blocked_without_force(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, _ = should_allow_install(self._result("trusted", "dangerous", f))
         assert allowed is False
+
+    def test_builtin_dangerous_allowed_without_force(self):
+        f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
+        allowed, reason = should_allow_install(self._result("builtin", "dangerous", f))
+        assert allowed is True
+        assert "builtin source" in reason
 
     def test_force_overrides_caution(self):
         f = [Finding("x", "high", "c", "f", 1, "m", "d")]
@@ -132,22 +138,21 @@ class TestShouldAllowInstall:
         allowed, _ = should_allow_install(self._result("community", "dangerous", f), force=False)
         assert allowed is False
 
-    def test_force_never_overrides_dangerous(self):
-        """--force must not bypass dangerous verdict (regression test)."""
+    def test_force_overrides_dangerous_for_community(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("community", "dangerous", f), force=True
         )
-        assert allowed is False
-        assert "DANGEROUS" in reason
+        assert allowed is True
+        assert "Force-installed" in reason
 
-    def test_force_never_overrides_dangerous_trusted(self):
-        """--force must not bypass dangerous even for trusted sources."""
+    def test_force_overrides_dangerous_for_trusted(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
-        allowed, _ = should_allow_install(
+        allowed, reason = should_allow_install(
             self._result("trusted", "dangerous", f), force=True
         )
-        assert allowed is False
+        assert allowed is True
+        assert "Force-installed" in reason
 
 
 # ---------------------------------------------------------------------------

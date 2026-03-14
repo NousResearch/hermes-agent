@@ -267,8 +267,6 @@ class SessionDB:
         if not title:
             return None
 
-        import re
-
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
@@ -373,7 +371,6 @@ class SessionDB:
         Strips any existing " #N" suffix to find the base name, then finds
         the highest existing number and increments.
         """
-        import re
         # Strip existing #N suffix to find the true base
         match = re.match(r'^(.*?) #(\d+)$', base_title)
         if match:

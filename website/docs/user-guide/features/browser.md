@@ -7,11 +7,16 @@ sidebar_position: 5
 
 # Browser Automation
 
-Hermes Agent includes a full browser automation toolset powered by [Browserbase](https://browserbase.com), enabling the agent to navigate websites, interact with page elements, fill forms, and extract information — all running in cloud-hosted browsers with built-in anti-bot stealth features.
+Hermes Agent includes a full browser automation toolset that can run in two modes:
+
+- **Browserbase cloud mode** via [Browserbase](https://browserbase.com) for managed cloud browsers and anti-bot tooling
+- **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
+
+In both modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
 
 ## Overview
 
-The browser tools use the `agent-browser` CLI with Browserbase cloud execution. Pages are represented as **accessibility trees** (text-based snapshots), making them ideal for LLM agents. Interactive elements get ref IDs (like `@e1`, `@e2`) that the agent uses for clicking and typing.
+The browser tools use the `agent-browser` CLI. In Browserbase mode, `agent-browser` connects to Browserbase cloud sessions. In local mode, it drives a local Chromium installation. Pages are represented as **accessibility trees** (text-based snapshots), making them ideal for LLM agents. Interactive elements get ref IDs (like `@e1`, `@e2`) that the agent uses for clicking and typing.
 
 Key capabilities:
 
@@ -23,15 +28,21 @@ Key capabilities:
 
 ## Setup
 
-### Required Environment Variables
+### Browserbase cloud mode
+
+To use Browserbase-managed cloud browsers, add:
 
 ```bash
 # Add to ~/.hermes/.env
-BROWSERBASE_API_KEY=your-api-key-here
+BROWSERBASE_API_KEY=***
 BROWSERBASE_PROJECT_ID=your-project-id-here
 ```
 
 Get your credentials at [browserbase.com](https://browserbase.com).
+
+### Local browser mode
+
+If you do **not** set Browserbase credentials, Hermes can still use the browser tools through a local Chromium install driven by `agent-browser`.
 
 ### Optional Environment Variables
 

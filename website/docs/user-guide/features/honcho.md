@@ -298,7 +298,7 @@ hermes honcho peer --user NAME             # Set user peer name
 hermes honcho peer --ai NAME               # Set AI peer name
 hermes honcho peer --reasoning LEVEL       # Set dialectic reasoning level
 hermes honcho mode                         # Show current memory mode
-hermes honcho mode [hybrid|honcho]         # Set memory mode
+hermes honcho mode [hybrid|honcho|local]   # Set memory mode
 hermes honcho tokens                       # Show token budget settings
 hermes honcho tokens --context N           # Set context token cap
 hermes honcho tokens --dialectic N         # Set dialectic char cap

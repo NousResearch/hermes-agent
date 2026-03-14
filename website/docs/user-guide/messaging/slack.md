@@ -20,7 +20,7 @@ the steps below.
 
 | Component | Value |
 |-----------|-------|
-| **Library** | `@slack/bolt` (Socket Mode) |
+| **Library** | `slack-bolt` / `slack_sdk` for Python (Socket Mode) |
 | **Connection** | WebSocket — no public URL required |
 | **Auth tokens needed** | Bot Token (`xoxb-`) + App-Level Token (`xapp-`) |
 | **User identification** | Slack Member IDs (e.g., `U01ABC2DEF3`) |

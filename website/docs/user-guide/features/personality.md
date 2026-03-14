@@ -216,13 +216,17 @@ The system prompt is assembled in layers (from `agent/prompt_builder.py` and `ru
 **SOUL.md vs agent.system_prompt**: SOUL.md is part of the "Project Context" section and coexists with the default identity. The `agent.system_prompt` (set via `/personality` or config) is an ephemeral overlay. Both can be active simultaneously — SOUL.md for tone/personality, system_prompt for additional instructions.
 :::
 
-## Display Personality (CLI Banner)
+## CLI Appearance vs Conversational Personality
 
-The `display.personality` config option controls the CLI's **visual** personality (banner art, spinner messages), independent of the agent's conversational personality:
+Conversational personality and CLI appearance are separate:
+
+- `agent.system_prompt`, `/personality`, and `SOUL.md` affect how Hermes **speaks**.
+- `display.skin` and `/skin` affect how Hermes **looks in the terminal**.
 
 ```yaml
 display:
-  personality: kawaii  # Affects CLI banner and spinner art
+  skin: default
+  # personality: kawaii   # legacy cosmetic setting still shown in some summaries
 ```
 
-This is purely cosmetic and doesn't affect the agent's responses — only the ASCII art and loading messages shown in the terminal.
+For the full theming system — built-in skins, custom YAML skins, spinner branding, and `/skin` — see [Skins & Themes](./skins.md).

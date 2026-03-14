@@ -161,6 +161,8 @@ Tools appear alongside built-in tools — the agent calls them like any other to
 
 :::info
 In addition to the server's own tools, each MCP server also gets 4 utility tools auto-registered: `list_resources`, `read_resource`, `list_prompts`, and `get_prompt`. These allow the agent to discover and use MCP resources and prompts exposed by the server.
+
+Each configured server also creates a **runtime toolset** named `mcp-<server>`. This means you can filter or reason about MCP servers at the toolset level in the same way you do with built-in toolsets.
 :::
 
 ### Reconnection

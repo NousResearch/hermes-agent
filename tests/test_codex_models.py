@@ -54,6 +54,47 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
 
 
+def test_model_command_warns_when_gpt_5_4_is_unavailable_for_codex(monkeypatch, capsys):
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": True},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {"api_key": "codex-access-token"},
+    )
+
+    def _fake_get_codex_model_ids(access_token=None):
+        captured["access_token"] = access_token
+        return ["gpt-5.2-codex", "gpt-5.2"]
+
+    def _fake_prompt_model_selection(model_ids, current_model=""):
+        captured["model_ids"] = list(model_ids)
+        captured["current_model"] = current_model
+        return None
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        _fake_get_codex_model_ids,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        _fake_prompt_model_selection,
+    )
+
+    _model_flow_openai_codex({}, current_model="openai/gpt-5.4")
+    output = capsys.readouterr().out
+
+    assert captured["access_token"] == "codex-access-token"
+    assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2"]
+    assert "not currently supported for ChatGPT/Codex OAuth accounts" in output
+    assert "Use OpenRouter if you need GPT-5.4 specifically." in output
+
+
 # ── Tests for _normalize_model_for_provider ──────────────────────────
 
 

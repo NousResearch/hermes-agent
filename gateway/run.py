@@ -248,14 +248,21 @@ class GatewayRunner:
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         
         # Track pending exec approvals per session
-        # Key: session_key, Value: {"command": str, "pattern_key": str}
-        self._pending_approvals: Dict[str, Dict[str, str]] = {}
+        # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
+        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
+
+        # Ensure tirith security scanner is available (downloads if needed)
+        try:
+            from tools.tirith_security import ensure_installed
+            ensure_installed()
+        except Exception:
+            pass  # Non-fatal — fail-open at scan time if unavailable
         
         # Initialize session database for session_search tool support
         self._session_db = None
@@ -1049,11 +1056,15 @@ class GatewayRunner:
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
                 approval = self._pending_approvals.pop(session_key_preview)
                 cmd = approval["command"]
-                pattern_key = approval.get("pattern_key", "")
+                pattern_keys = approval.get("pattern_keys", [])
+                if not pattern_keys:
+                    pk = approval.get("pattern_key", "")
+                    pattern_keys = [pk] if pk else []
                 logger.info("User approved dangerous command: %s...", cmd[:60])
                 from tools.terminal_tool import terminal_tool
                 from tools.approval import approve_session
-                approve_session(session_key_preview, pattern_key)
+                for pk in pattern_keys:
+                    approve_session(session_key_preview, pk)
                 result = terminal_tool(command=cmd, force=True)
                 return f"✅ Command approved and executed.\n\n```\n{result[:3500]}\n```"
             elif user_text in ("no", "n", "deny", "cancel", "nope"):

@@ -132,6 +132,7 @@ def set_approval_callback(cb):
 from tools.approval import (
     detect_dangerous_command as _detect_dangerous_command,
     check_dangerous_command as _check_dangerous_command_impl,
+    check_all_command_guards as _check_all_guards_impl,
     load_permanent_allowlist as _load_permanent_allowlist,
     DANGEROUS_PATTERNS,
 )
@@ -141,6 +142,12 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
     """Delegate to the consolidated approval module, passing the CLI callback."""
     return _check_dangerous_command_impl(command, env_type,
                                          approval_callback=_approval_callback)
+
+
+def _check_all_guards(command: str, env_type: str) -> dict:
+    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+    return _check_all_guards_impl(command, env_type,
+                                  approval_callback=_approval_callback)
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
@@ -951,10 +958,10 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        # Check for dangerous commands (only for local/ssh in interactive modes)
+        # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         if not force:
-            approval = _check_dangerous_command(command, env_type)
+            approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":
@@ -964,13 +971,13 @@ def terminal_tool(
                         "error": approval.get("message", "Waiting for user approval"),
                         "status": "approval_required",
                         "command": approval.get("command", command),
-                        "description": approval.get("description", "dangerous command"),
+                        "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
                     }, ensure_ascii=False)
-                # Command was blocked - include the pattern category so the caller knows why
-                desc = approval.get("description", "potentially dangerous operation")
+                # Command was blocked
+                desc = approval.get("description", "command flagged")
                 fallback_msg = (
-                    f"Command denied: matches '{desc}' pattern. "
+                    f"Command denied: {desc}. "
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
                 return json.dumps({

@@ -179,6 +179,20 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
+# Security Scanning (tirith)
+# =============================================================================
+# Optional pre-exec command security scanning via tirith.
+# Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
+# Install: brew install sheeki03/tap/tirith
+# Docs: https://github.com/sheeki03/tirith
+#
+# security:
+#   tirith_enabled: true        # Enable/disable tirith scanning
+#   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
+#   tirith_timeout: 5           # Scan timeout in seconds
+#   tirith_fail_open: true      # Allow commands if tirith unavailable
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

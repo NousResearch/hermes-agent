@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import time
 
 logger = logging.getLogger(__name__)
@@ -432,7 +433,7 @@ async def _send_email(extra, chat_id, message):
         msg["Subject"] = "Hermes Agent"
 
         server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
         server.quit()

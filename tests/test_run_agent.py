@@ -1928,6 +1928,24 @@ class TestSafeWriter:
         assert inner.getvalue() == "test"
 
 
+class TestSaveSessionLogAtomicWrite:
+    def test_uses_shared_atomic_json_helper(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        messages = [{"role": "user", "content": "hello"}]
+
+        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
+            agent._save_session_log(messages)
+
+        mock_atomic_write.assert_called_once()
+        call_args = mock_atomic_write.call_args
+        assert call_args.args[0] == agent.session_log_file
+        payload = call_args.args[1]
+        assert payload["session_id"] == agent.session_id
+        assert payload["messages"] == messages
+        assert call_args.kwargs["indent"] == 2
+        assert call_args.kwargs["default"] is str
+
+
 # ===================================================================
 # Anthropic adapter integration fixes
 # ===================================================================

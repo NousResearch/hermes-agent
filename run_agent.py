@@ -28,7 +28,6 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
-import tempfile
 import random
 import re
 import sys
@@ -101,6 +100,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from utils import atomic_json_write
 
 HONCHO_TOOL_NAMES = {
     "honcho_context",
@@ -1399,17 +1399,12 @@ class AIAgent:
                 "messages": cleaned,
             }
 
-            tmp_dir = str(self.session_log_file.parent) if hasattr(self.session_log_file, 'parent') else os.path.dirname(str(self.session_log_file))
-            fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, suffix='.tmp', prefix='.session_')
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(entry, f, indent=2, ensure_ascii=False, default=str)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(self.session_log_file))
-            except:
-                os.unlink(tmp_path)
-                raise
+            atomic_json_write(
+                self.session_log_file,
+                entry,
+                indent=2,
+                default=str,
+            )
 
         except Exception as e:
             if self.verbose_logging:

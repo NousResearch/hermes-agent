@@ -97,6 +97,17 @@ class TestAtomicJsonWrite:
         text = target.read_text()
         assert '    "a"' in text  # 4-space indent
 
+    def test_accepts_json_dump_default_hook(self, tmp_path):
+        class CustomValue:
+            def __str__(self):
+                return "custom-value"
+
+        target = tmp_path / "custom_default.json"
+        atomic_json_write(target, {"value": CustomValue()}, default=str)
+
+        result = json.loads(target.read_text(encoding="utf-8"))
+        assert result == {"value": "custom-value"}
+
     def test_unicode_content(self, tmp_path):
         target = tmp_path / "unicode.json"
         data = {"emoji": "🎉", "japanese": "日本語"}

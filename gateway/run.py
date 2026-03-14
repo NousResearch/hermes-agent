@@ -3577,6 +3577,7 @@ class GatewayRunner:
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
+            _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
@@ -3587,7 +3588,7 @@ class GatewayRunner:
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
-                    "model": agent_holder[0].model if agent_holder[0] else None,
+                    "model": _resolved_model,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -3650,7 +3651,7 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": len(agent_history),
                 "last_prompt_tokens": _last_prompt_toks,
-                "model": agent_holder[0].model if agent_holder[0] else None,
+                "model": _resolved_model,
                 "session_id": effective_session_id,
             }
         

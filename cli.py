@@ -56,6 +56,7 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+from collections import deque
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -1296,6 +1297,8 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._visible_followups: deque[str] = deque()
+        self._visible_followups_lock = threading.Lock()
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -1336,6 +1339,60 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    @staticmethod
+    def _summarize_followup_payload(payload: Any) -> str:
+        """Return a compact user-facing preview for a queued follow-up."""
+        text = ""
+        image_count = 0
+        if isinstance(payload, tuple):
+            text = str(payload[0] or "").strip()
+            images = payload[1] if len(payload) > 1 else []
+            image_count = len(images or [])
+        else:
+            text = str(payload or "").strip()
+
+        preview = text.splitlines()[0].strip() if text else ""
+        if len(preview) > 72:
+            preview = preview[:69].rstrip() + "..."
+
+        if image_count and preview:
+            suffix = "image" if image_count == 1 else "images"
+            return f"{preview} [+{image_count} {suffix}]"
+        if image_count:
+            suffix = "image" if image_count == 1 else "images"
+            return f"[{image_count} {suffix} attached]"
+        return preview or "[empty follow-up]"
+
+    def _enqueue_visible_followup(self, payload: Any) -> None:
+        """Track queued follow-ups so the TUI can render them like Codex."""
+        preview = self._summarize_followup_payload(payload)
+        with self._visible_followups_lock:
+            self._visible_followups.append(preview)
+        self._invalidate(min_interval=0.0)
+
+    def _consume_visible_followup(self) -> None:
+        """Drop the oldest rendered follow-up once processing starts."""
+        with self._visible_followups_lock:
+            if self._visible_followups:
+                self._visible_followups.popleft()
+        self._invalidate(min_interval=0.0)
+
+    def _visible_followup_snapshot(self) -> list[str]:
+        """Return queued follow-up previews in FIFO order."""
+        with self._visible_followups_lock:
+            return list(self._visible_followups)
+
+    def _pending_followup_preview_lines(self) -> list[str]:
+        """Build the TUI preview lines for queued follow-up messages."""
+        queued = self._visible_followup_snapshot()
+        if not queued:
+            return []
+
+        lines = ["Queued follow-up messages"]
+        lines.extend(f"{idx}. {item}" for idx, item in enumerate(queued, start=1))
+        lines.append("Esc interrupts now; Enter keeps queuing.")
+        return lines
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Strip provider prefixes and swap the default model for Codex.
@@ -4754,8 +4811,11 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
+                if self._agent_running:
+                    self._enqueue_visible_followup(payload)
                 self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
+                event.app.invalidate()
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
@@ -5223,6 +5283,37 @@ class HermesCLI:
             height=get_spinner_height,
         )
 
+        def _get_pending_followups_display():
+            queued_lines = cli_ref._pending_followup_preview_lines()
+            if not queued_lines:
+                return []
+
+            box_width = _panel_box_width("Queued follow-up messages", queued_lines, min_width=54, max_width=88)
+            inner_text_width = max(8, box_width - 2)
+            lines = []
+            lines.append(('class:queued-border', '╭─ '))
+            lines.append(('class:queued-title', 'Queued follow-up messages'))
+            lines.append(('class:queued-border', ' ' + ('─' * max(0, box_width - len("Queued follow-up messages") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            for idx, entry in enumerate(queued_lines[1:-1], start=1):
+                style = 'class:queued-item' if idx > 1 else 'class:queued-item-first'
+                for wrapped in _wrap_panel_text(entry, inner_text_width, subsequent_indent="   "):
+                    _append_panel_line(lines, 'class:queued-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            for wrapped in _wrap_panel_text(queued_lines[-1], inner_text_width):
+                _append_panel_line(lines, 'class:queued-border', 'class:queued-hint', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            lines.append(('class:queued-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        queued_followups_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_pending_followups_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: bool(cli_ref._visible_followup_snapshot())),
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -5516,6 +5607,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 spinner_widget,
+                queued_followups_widget,
                 spacer,
                 input_rule_top,
                 image_bar,
@@ -5550,6 +5642,11 @@ class HermesCLI:
             'clarify-selected': '#FFD700 bold',
             'clarify-active-other': '#FFD700 italic',
             'clarify-countdown': '#CD7F32',
+            'queued-border': '#CD7F32',
+            'queued-title': '#FFD700 bold',
+            'queued-item': '#FFF8DC',
+            'queued-item-first': '#FFF8DC bold',
+            'queued-hint': '#AAAAAA italic',
             # Sudo password panel
             'sudo-prompt': '#FF6B6B bold',
             'sudo-border': '#CD7F32',
@@ -5607,6 +5704,8 @@ class HermesCLI:
                     
                     if not user_input:
                         continue
+
+                    self._consume_visible_followup()
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []

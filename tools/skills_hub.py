@@ -498,6 +498,246 @@ class GitHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# skills.sh source adapter
+# ---------------------------------------------------------------------------
+
+class SkillsShSource(SkillSource):
+    """Discover skills via skills.sh and fetch content from the underlying GitHub repo."""
+
+    BASE_URL = "https://skills.sh"
+    SEARCH_URL = f"{BASE_URL}/api/search"
+    _SKILL_LINK_RE = re.compile(r'href=["\']/(?P<id>(?!agents/|_next/|api/)[^"\'/]+/[^"\'/]+/[^"\'/]+)["\']')
+
+    def __init__(self, auth: GitHubAuth):
+        self.auth = auth
+        self.github = GitHubSource(auth=auth)
+
+    def source_id(self) -> str:
+        return "skills-sh"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return self.github.trust_level_for(self._normalize_identifier(identifier))
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        if not query.strip():
+            return self._featured_skills(limit)
+
+        cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**item) for item in cached][:limit]
+
+        try:
+            resp = httpx.get(
+                self.SEARCH_URL,
+                params={"q": query, "limit": limit},
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+
+        items = data.get("skills", []) if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            return []
+
+        results: List[SkillMeta] = []
+        for item in items[:limit]:
+            meta = self._meta_from_search_item(item)
+            if meta:
+                results.append(meta)
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])
+        return results
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        canonical = self._normalize_identifier(identifier)
+        for candidate in self._candidate_identifiers(canonical):
+            bundle = self.github.fetch(candidate)
+            if bundle:
+                bundle.source = "skills.sh"
+                bundle.identifier = self._wrap_identifier(canonical)
+                return bundle
+
+        resolved = self._discover_identifier(canonical)
+        if resolved:
+            bundle = self.github.fetch(resolved)
+            if bundle:
+                bundle.source = "skills.sh"
+                bundle.identifier = self._wrap_identifier(canonical)
+                return bundle
+        return None
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        canonical = self._normalize_identifier(identifier)
+        for candidate in self._candidate_identifiers(canonical):
+            meta = self.github.inspect(candidate)
+            if meta:
+                meta.source = "skills.sh"
+                meta.identifier = self._wrap_identifier(canonical)
+                meta.trust_level = self.trust_level_for(canonical)
+                return meta
+
+        resolved = self._discover_identifier(canonical)
+        if resolved:
+            meta = self.github.inspect(resolved)
+            if meta:
+                meta.source = "skills.sh"
+                meta.identifier = self._wrap_identifier(canonical)
+                meta.trust_level = self.trust_level_for(canonical)
+                return meta
+        return None
+
+    def _featured_skills(self, limit: int) -> List[SkillMeta]:
+        cache_key = "skills_sh_featured"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**item) for item in cached][:limit]
+
+        try:
+            resp = httpx.get(self.BASE_URL, timeout=20)
+            if resp.status_code != 200:
+                return []
+        except httpx.HTTPError:
+            return []
+
+        seen: set[str] = set()
+        results: List[SkillMeta] = []
+        for match in self._SKILL_LINK_RE.finditer(resp.text):
+            canonical = match.group("id")
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            parts = canonical.split("/", 2)
+            if len(parts) < 3:
+                continue
+            repo = f"{parts[0]}/{parts[1]}"
+            skill_path = parts[2]
+            results.append(SkillMeta(
+                name=skill_path.split("/")[-1],
+                description=f"Featured on skills.sh from {repo}",
+                source="skills.sh",
+                identifier=self._wrap_identifier(canonical),
+                trust_level=self.github.trust_level_for(canonical),
+                repo=repo,
+                path=skill_path,
+            ))
+            if len(results) >= limit:
+                break
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])
+        return results
+
+    def _meta_from_search_item(self, item: dict) -> Optional[SkillMeta]:
+        if not isinstance(item, dict):
+            return None
+
+        canonical = item.get("id")
+        repo = item.get("source")
+        skill_path = item.get("skillId")
+        if not isinstance(canonical, str) or canonical.count("/") < 2:
+            if not (isinstance(repo, str) and isinstance(skill_path, str)):
+                return None
+            canonical = f"{repo}/{skill_path}"
+
+        parts = canonical.split("/", 2)
+        if len(parts) < 3:
+            return None
+
+        repo = f"{parts[0]}/{parts[1]}"
+        skill_path = parts[2]
+        installs = item.get("installs")
+        installs_label = f" · {int(installs):,} installs" if isinstance(installs, int) else ""
+
+        return SkillMeta(
+            name=str(item.get("name") or skill_path.split("/")[-1]),
+            description=f"Indexed by skills.sh from {repo}{installs_label}",
+            source="skills.sh",
+            identifier=self._wrap_identifier(canonical),
+            trust_level=self.github.trust_level_for(canonical),
+            repo=repo,
+            path=skill_path,
+        )
+
+    def _discover_identifier(self, identifier: str) -> Optional[str]:
+        parts = identifier.split("/", 2)
+        if len(parts) < 3:
+            return None
+
+        repo = f"{parts[0]}/{parts[1]}"
+        skill_token = parts[2]
+        for base_path in ("skills/", ".agents/skills/", ".claude/skills/"):
+            try:
+                skills = self.github._list_skills_in_repo(repo, base_path)
+            except Exception:
+                continue
+            for meta in skills:
+                if self._matches_skill_token(meta, skill_token):
+                    return meta.identifier
+        return None
+
+    @staticmethod
+    def _matches_skill_token(meta: SkillMeta, skill_token: str) -> bool:
+        target = skill_token.strip("/").lower()
+        target_base = target.split("/")[-1]
+
+        def variants(value: Optional[str]) -> set[str]:
+            if not value:
+                return set()
+            normalized = value.strip("/").lower()
+            base = normalized.split("/")[-1]
+            return {
+                normalized,
+                base,
+                normalized.replace("_", "-"),
+                base.replace("_", "-"),
+            }
+
+        candidates = set()
+        candidates.update(variants(meta.name))
+        candidates.update(variants(meta.path))
+        candidates.update(variants(meta.identifier.split("/", 2)[-1] if meta.identifier else None))
+        return target in candidates or target_base in candidates
+
+    @staticmethod
+    def _normalize_identifier(identifier: str) -> str:
+        if identifier.startswith("skills-sh/"):
+            return identifier[len("skills-sh/"):]
+        if identifier.startswith("skills.sh/"):
+            return identifier[len("skills.sh/"):]
+        return identifier
+
+    @staticmethod
+    def _candidate_identifiers(identifier: str) -> List[str]:
+        parts = identifier.split("/", 2)
+        if len(parts) < 3:
+            return [identifier]
+
+        repo = f"{parts[0]}/{parts[1]}"
+        skill_path = parts[2].lstrip("/")
+        candidates = [
+            f"{repo}/{skill_path}",
+            f"{repo}/skills/{skill_path}",
+            f"{repo}/.agents/skills/{skill_path}",
+            f"{repo}/.claude/skills/{skill_path}",
+        ]
+
+        seen = set()
+        deduped: List[str] = []
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                deduped.append(candidate)
+        return deduped
+
+    @staticmethod
+    def _wrap_identifier(identifier: str) -> str:
+        return f"skills-sh/{identifier}"
+
+
+# ---------------------------------------------------------------------------
 # ClawHub source adapter
 # ---------------------------------------------------------------------------
 
@@ -1453,6 +1693,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
 
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Official optional skills (highest priority)
+        SkillsShSource(auth=auth),
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

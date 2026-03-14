@@ -136,7 +136,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Collect results from all (or filtered) sources
     # Use empty query to get everything; per-source limits prevent overload
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-    _PER_SOURCE_LIMIT = {"official": 100, "github": 100, "clawhub": 50,
+    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "github": 100, "clawhub": 50,
                          "claude-marketplace": 50, "lobehub": 50}
 
     all_results: list = []

@@ -3094,8 +3094,33 @@ class HermesCLI:
                 else:
                     self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
-                self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                # Prefix matching: if input uniquely identifies one command, execute it.
+                # Matches against both built-in COMMANDS and installed skill commands so
+                # that execution-time resolution agrees with tab-completion.
+                from hermes_cli.commands import COMMANDS
+                typed_base = cmd_lower.split()[0]
+                all_known = set(COMMANDS) | set(_skill_commands)
+                matches = [c for c in all_known if c.startswith(typed_base)]
+                if len(matches) == 1:
+                    # Expand the prefix to the full command name, preserving arguments.
+                    # Guard against redispatching the same token to avoid infinite
+                    # recursion when the expanded name still doesn't hit an exact branch
+                    # (e.g. /config with extra args that are not yet handled above).
+                    full_name = matches[0]
+                    if full_name == typed_base:
+                        # Already an exact token — no expansion possible; fall through
+                        self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
+                        self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                    else:
+                        remainder = cmd_original.strip()[len(typed_base):]
+                        full_cmd = full_name + remainder
+                        return self.process_command(full_cmd)
+                elif len(matches) > 1:
+                    self.console.print(f"[bold yellow]Ambiguous command: {cmd_lower}[/]")
+                    self.console.print(f"[dim]Did you mean: {', '.join(sorted(matches))}?[/]")
+                else:
+                    self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
+                    self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     

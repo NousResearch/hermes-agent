@@ -251,7 +251,6 @@ StandardError=journal
 WantedBy=default.target
 """
 
-
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
@@ -279,6 +278,65 @@ def refresh_systemd_unit_if_needed() -> bool:
     return True
 
 
+
+def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
+    print()
+    print("⚠ Linger not enabled — gateway may stop when you close this terminal.")
+    if detail:
+        print(f"  Auto-enable failed: {detail}")
+    print()
+    print("  On headless servers (VPS, cloud instances) run:")
+    print(f"    sudo loginctl enable-linger {username}")
+    print()
+    print("  Then restart the gateway:")
+    print(f"    systemctl --user restart {SERVICE_NAME}.service")
+    print()
+
+
+
+def _ensure_linger_enabled() -> None:
+    """Enable linger when possible so the user gateway survives logout."""
+    if not is_linux():
+        return
+
+    import getpass
+    import shutil
+
+    username = getpass.getuser()
+    linger_file = Path(f"/var/lib/systemd/linger/{username}")
+    if linger_file.exists():
+        print("✓ Systemd linger is enabled (service survives logout)")
+        return
+
+    linger_enabled, linger_detail = get_systemd_linger_status()
+    if linger_enabled is True:
+        print("✓ Systemd linger is enabled (service survives logout)")
+        return
+
+    if not shutil.which("loginctl"):
+        _print_linger_enable_warning(username, linger_detail or "loginctl not found")
+        return
+
+    print("Enabling linger so the gateway survives SSH logout...")
+    try:
+        result = subprocess.run(
+            ["loginctl", "enable-linger", username],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        _print_linger_enable_warning(username, str(e))
+        return
+
+    if result.returncode == 0:
+        print("✓ Linger enabled — gateway will persist after logout")
+        return
+
+    detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    _print_linger_enable_warning(username, detail or linger_detail)
+
+
 def systemd_install(force: bool = False):
     unit_path = get_systemd_unit_path()
     
@@ -302,7 +360,7 @@ def systemd_install(force: bool = False):
     print(f"  hermes gateway status             # Check status")
     print(f"  journalctl --user -u {SERVICE_NAME} -f  # View logs")
     print()
-    print_systemd_linger_guidance()
+    _ensure_linger_enabled()
 
 def systemd_uninstall():
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)

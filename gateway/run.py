@@ -985,36 +985,26 @@ class GatewayRunner:
                         )
             return None
         
-        # Explicit interrupts still bypass normal command handling so stop/interrupt
+        # Explicit stop still bypasses normal command handling so interruption
         # reaches the running agent quickly. Plain follow-ups are queued by the
         # platform adapter and should not preempt by default.
         _quick_key = build_session_key(source)
         if _quick_key in self._running_agents:
             command = event.get_command()
-            if command not in {"interrupt", "stop"}:
+            if command != "stop":
                 self._pending_messages[_quick_key] = event.text
                 return None
 
-            interrupt_text = (
-                event.get_command_args().strip() or None
-                if command == "interrupt"
-                else None
-            )
             running_agent = self._running_agents[_quick_key]
-            logger.debug("PRIORITY explicit interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(interrupt_text)
-            if interrupt_text:
-                existing = self._pending_messages.get(_quick_key)
-                self._pending_messages[_quick_key] = (
-                    f"{existing}\n{interrupt_text}" if existing else interrupt_text
-                )
+            logger.debug("PRIORITY stop for session %s", _quick_key[:20])
+            running_agent.interrupt()
             return None
         
         # Check for commands
         command = event.get_command()
         
         # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "status", "stop", "interrupt", "model", "reasoning",
+        _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
@@ -1039,9 +1029,6 @@ class GatewayRunner:
         if command == "stop":
             return await self._handle_stop_command(event)
 
-        if command == "interrupt":
-            return await self._handle_interrupt_command(event)
-        
         if command == "model":
             return await self._handle_model_command(event)
 
@@ -1763,22 +1750,6 @@ class GatewayRunner:
         else:
             return "No active task to stop."
 
-    async def _handle_interrupt_command(self, event: MessageEvent) -> str:
-        """Handle /interrupt command - preempt the current task with a new prompt."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
-        message = event.get_command_args().strip()
-
-        if session_key not in self._running_agents:
-            return "No active task to interrupt."
-        if not message:
-            self._running_agents[session_key].interrupt()
-            return "⚡ Interrupting the current task..."
-
-        self._running_agents[session_key].interrupt(message)
-        return "⚡ Interrupting the current task and prioritizing your new message..."
-    
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         lines = [
@@ -1787,7 +1758,6 @@ class GatewayRunner:
             "`/reset` — Reset conversation history",
             "`/status` — Show session info",
             "`/stop` — Interrupt the running agent",
-            "`/interrupt <message>` — Preempt the current task with a new prompt",
             "`/model [provider:model]` — Show/change model (or switch provider)",
             "`/provider` — Show available providers and auth status",
             "`/personality [name]` — Set a personality",

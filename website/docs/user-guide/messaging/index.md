@@ -70,7 +70,6 @@ hermes gateway status       # Check service status
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
 | `/stop` | Stop the running agent |
-| `/interrupt <message>` | Preempt the running agent with a new prompt |
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |
@@ -148,12 +147,11 @@ Pairing codes expire after 1 hour, are rate-limited, and use cryptographic rando
 
 ## Interrupting the Agent
 
-Send a normal message while the agent is working to queue it for later. Use `/interrupt <message>` only when you need to preempt the current task. Key behaviors:
+Send a normal message while the agent is working to queue it for later. Use `/stop` if you need Hermes to stop the current task. Key behaviors:
 
 - **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
 - **Queued follow-ups preserve order** — messages sent while Hermes is busy run after the current task finishes
-- **Multiple `/interrupt` messages are combined** — interrupt prompts sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
 
 ## Tool Progress Notifications

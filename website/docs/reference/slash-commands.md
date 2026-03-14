@@ -93,7 +93,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info. |
 | `/stop` | Interrupt the running agent without queuing a follow-up prompt. |
-| `/interrupt <message>` | Preempt the running agent with a new prompt. |
 | `/model [provider:model]` | Show or change the model, including provider switches. |
 | `/provider` | Show provider availability and auth status. |
 | `/personality [name]` | Set a personality overlay for the session. |
@@ -116,5 +115,5 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 ## Notes
 
 - `/skin`, `/tools`, `/toolsets`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, and `/verbose` are **CLI-only** commands.
-- `/status`, `/stop`, `/interrupt`, `/sethome`, `/resume`, `/background`, and `/update` are **messaging-only** commands.
+- `/status`, `/stop`, `/sethome`, `/resume`, `/background`, and `/update` are **messaging-only** commands.
 - `/reload-mcp` and `/rollback` work in **both** the CLI and the messaging gateway.

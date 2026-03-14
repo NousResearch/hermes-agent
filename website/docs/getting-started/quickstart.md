@@ -97,7 +97,7 @@ Press `Alt+Enter` or `Ctrl+J` to add a new line. Great for pasting code or writi
 
 ### Interrupt the agent
 
-If the agent is taking too long, type a new message and press Enter to queue it for the next turn. Use `/interrupt <message>` to preempt the current task with a new instruction, or `Ctrl+C` to stop the current operation.
+If the agent is taking too long, type a new message and press Enter to queue it for the next turn. Press `Esc` to preempt the current task, or `Ctrl+C` to stop the current operation.
 
 ### Resume a session
 

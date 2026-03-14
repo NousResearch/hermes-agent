@@ -2800,13 +2800,6 @@ class HermesCLI:
         
         if cmd_lower in ("/quit", "/exit", "/q"):
             return False
-        elif cmd_lower.startswith("/interrupt"):
-            interrupt_message = self._extract_interrupt_message(cmd_original)
-            if not self._agent_running or not self.agent:
-                _cprint("  No active task to interrupt.")
-            else:
-                self.agent.interrupt(interrupt_message or None)
-                _cprint("  Interrupt requested.")
         elif cmd_lower == "/help":
             self.show_help()
         elif cmd_lower == "/tools":
@@ -4146,15 +4139,6 @@ class HermesCLI:
             except Exception:
                 pass
 
-    @staticmethod
-    def _extract_interrupt_message(text: str) -> Optional[str]:
-        stripped = (text or "").strip()
-        if not stripped.lower().startswith("/interrupt"):
-            return None
-        parts = stripped.split(maxsplit=1)
-        return parts[1].strip() if len(parts) > 1 else ""
-
-
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -4164,7 +4148,7 @@ class HermesCLI:
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring.
-        Explicit /interrupt prompts go to _interrupt_queue; ordinary follow-ups
+        Explicit interrupt requests go to _interrupt_queue; ordinary follow-ups
         queue in _pending_input until the current task finishes.
         
         Args:
@@ -4693,8 +4677,7 @@ class HermesCLI:
             - Approval selection: selected choice goes to approval response queue
             - Clarify freetext mode: answer goes to the clarify response queue
             - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running + /interrupt: goes to _interrupt_queue (chat() monitors this)
-            - Agent running + any other input: queues in _pending_input
+            - Agent running: queues in _pending_input
             - Agent idle: goes to _pending_input (process_loop monitors this)
             """
             # --- Sudo password prompt: submit the typed password ---
@@ -4771,17 +4754,23 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                interrupt_message = self._extract_interrupt_message(text) if isinstance(text, str) else None
-                if self._agent_running and interrupt_message is not None:
-                    self._interrupt_queue.put(interrupt_message)
-                else:
-                    self._pending_input.put(payload)
+                self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
+
+        @kb.add('escape')
+        def handle_escape(event):
+            """OpenCode-style interrupt: Escape preempts the running task."""
+            if self._agent_running and self.agent and not (
+                self._sudo_state or self._secret_state or self._approval_state or self._clarify_state
+            ):
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+                event.app.invalidate()
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
@@ -5158,7 +5147,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "Enter queues follow-up, /interrupt preempts, Ctrl+C cancels"
+                return "Enter queues follow-up, Esc preempts, Ctrl+C cancels"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

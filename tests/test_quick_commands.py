@@ -189,7 +189,7 @@ class TestGatewayQuickCommands:
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_running_agent_interrupts_for_explicit_interrupt_command(self):
+    async def test_running_agent_interrupts_for_stop_command(self):
         from gateway.run import GatewayRunner
         from gateway.session import build_session_key
 
@@ -200,12 +200,12 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
         runner.hooks = SimpleNamespace(emit=AsyncMock())
 
-        event = self._make_event("interrupt", "urgent follow up")
-        event.text = "/interrupt urgent follow up"
+        event = self._make_event("stop")
+        event.text = "/stop"
 
         running_agent = MagicMock()
         runner._running_agents[build_session_key(event.source)] = running_agent
 
         result = await runner._handle_message(event)
         assert result is None
-        running_agent.interrupt.assert_called_once_with("urgent follow up")
+        running_agent.interrupt.assert_called_once_with()

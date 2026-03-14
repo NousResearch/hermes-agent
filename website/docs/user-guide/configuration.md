@@ -73,6 +73,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Credentials are stored at `~/.codex/auth.json` and auto-refresh. No Codex CLI installation required.
+
+Hermes traffic routed through the Codex provider appears as **"Other"** in the [ChatGPT Codex usage dashboard](https://chatgpt.com/codex/settings/usage). This is expected — the dashboard categories (CLI, Exec, Extension, etc.) reflect the official Codex clients, and Hermes uses the same underlying API without a matching attribution header. Usage is still counted correctly; only the category label differs.
 :::
 
 :::warning

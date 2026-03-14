@@ -53,6 +53,10 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 |----------|-------------|
 | `FIRECRAWL_API_KEY` | Web scraping ([firecrawl.dev](https://firecrawl.dev/)) |
 | `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |
+| `FIRECRAWL_GATEWAY_URL` | Exact Firecrawl tool-gateway origin override for Nous Subscribers only, for example `https://firecrawl-gateway.nousresearch.com` |
+| `TOOL_GATEWAY_DOMAIN` | Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, for example `nousresearch.com` -> `firecrawl-gateway.nousresearch.com` |
+| `TOOL_GATEWAY_SCHEME` | Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts, `https` by default and `http` for local gateway testing |
+| `TOOL_GATEWAY_USER_TOKEN` | Explicit Nous Subscriber access token for tool-gateway calls (optional; otherwise Hermes reads `~/.hermes/auth.json`) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |

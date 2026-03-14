@@ -311,3 +311,54 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "Warning:" in output
     assert "falling back to auto provider detection" in output.lower()
     assert "No change." in output
+
+
+def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-5", "provider": "nous"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "nous")
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider_id: None)
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices: 0)
+
+    captured = {}
+
+    def _fake_login(login_args, provider_config):
+        captured["portal_url"] = login_args.portal_url
+        captured["inference_url"] = login_args.inference_url
+        captured["client_id"] = login_args.client_id
+        captured["scope"] = login_args.scope
+        captured["no_browser"] = login_args.no_browser
+        captured["timeout"] = login_args.timeout
+        captured["ca_bundle"] = login_args.ca_bundle
+        captured["insecure"] = login_args.insecure
+
+    monkeypatch.setattr("hermes_cli.auth._login_nous", _fake_login)
+
+    hermes_main.cmd_model(
+        SimpleNamespace(
+            portal_url="https://portal.nousresearch.com",
+            inference_url="https://inference.nousresearch.com/v1",
+            client_id="hermes-local",
+            scope="openid profile",
+            no_browser=True,
+            timeout=7.5,
+            ca_bundle="/tmp/local-ca.pem",
+            insecure=True,
+        )
+    )
+
+    assert captured == {
+        "portal_url": "https://portal.nousresearch.com",
+        "inference_url": "https://inference.nousresearch.com/v1",
+        "client_id": "hermes-local",
+        "scope": "openid profile",
+        "no_browser": True,
+        "timeout": 7.5,
+        "ca_bundle": "/tmp/local-ca.pem",
+        "insecure": True,
+    }

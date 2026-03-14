@@ -3396,12 +3396,14 @@ class GatewayRunner:
         """Set environment variables for the current session."""
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
+        if context.source.thread_id:
+            os.environ["HERMES_SESSION_THREAD_ID"] = context.source.thread_id
         if context.source.chat_name:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME"]:
+        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_THREAD_ID", "HERMES_SESSION_CHAT_NAME"]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -3552,6 +3554,7 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        thread_id = watcher.get("thread_id", "")
         notify_mode = self._load_background_notifications_mode()
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s)",
@@ -3599,7 +3602,8 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
-                            await adapter.send(chat_id, message_text)
+                            send_metadata = {"thread_id": thread_id} if thread_id else None
+                            await adapter.send(chat_id, message_text, metadata=send_metadata)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
@@ -3618,7 +3622,8 @@ class GatewayRunner:
                         break
                 if adapter and chat_id:
                     try:
-                        await adapter.send(chat_id, message_text)
+                        send_metadata = {"thread_id": thread_id} if thread_id else None
+                        await adapter.send(chat_id, message_text, metadata=send_metadata)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
 

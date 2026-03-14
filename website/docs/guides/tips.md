@@ -181,6 +181,25 @@ TERMINAL_BACKEND=docker
 TERMINAL_DOCKER_IMAGE=hermes-sandbox:latest
 ```
 
+### Avoid Windows Encoding Pitfalls
+
+On Windows, some default encodings (such as `cp125x`) cannot represent all Unicode characters, which can cause `UnicodeEncodeError` when writing files in tests or scripts.
+
+- Prefer opening files with an explicit UTF-8 encoding:
+
+```python
+with open("results.txt", "w", encoding="utf-8") as f:
+    f.write("✓ All good\n")
+```
+
+- In PowerShell, you can also switch the current session to UTF-8 for console and native command output:
+
+```powershell
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+```
+
+This keeps PowerShell and child processes on UTF-8 and helps avoid Windows-only failures.
+
 ### Review Before Choosing "Always"
 
 When the agent triggers a dangerous command approval (`rm -rf`, `DROP TABLE`, etc.), you get four options: **once**, **session**, **always**, **deny**. Think carefully before choosing "always" — it permanently allowlists that pattern. Start with "session" until you're comfortable.

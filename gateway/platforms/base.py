@@ -432,12 +432,30 @@ class BasePlatformAdapter(ABC):
         """Whether this platform supports native draft streaming (Bot API 9.3+)."""
         return False
 
-    async def send_draft(self, chat_id: str, draft_id: int, text: str, metadata: dict = None) -> bool:
-        """Push a draft text update. Override in subclasses."""
+    async def send_draft(
+        self, chat_id: str, draft_id: int, text: str, metadata: dict = None
+    ) -> "Union[str, bool]":
+        """Push a draft text update.
+
+        Returns the message_id string on first success (so callers can cache it
+        for in-place edits), True on subsequent updates, or False on failure.
+        Override in platform subclasses.
+        """
         return False
 
-    async def finalize_draft(self, chat_id: str, content: str, metadata: dict = None) -> "SendResult":
-        """Finalize a draft stream with the completed message."""
+    async def finalize_draft(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: dict = None,
+        draft_message_id: str = None,
+        draft_id: int = None,
+    ) -> "SendResult":
+        """Finalize a draft stream with the completed message.
+
+        Subclasses may use draft_message_id (edit in-place) or draft_id
+        (commit the ephemeral preview as a permanent sendMessage).
+        """
         return SendResult(success=False, error="Not supported")
 
     async def delete_message(self, chat_id: str, message_id: str) -> SendResult:

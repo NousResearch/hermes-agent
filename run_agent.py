@@ -2060,12 +2060,20 @@ class AIAgent:
                                 arguments = str(arguments)
                             arguments = arguments.strip() or "{}"
 
-                            items.append({
+                            # Include the original response_item_id as "id" so
+                            # Codex can correlate this function_call with the
+                            # encrypted reasoning item from Turn 1. Without this
+                            # "id", Codex produces reasoning-only output on Turn 2.
+                            response_item_id = tc.get("response_item_id")
+                            fc_item = {
                                 "type": "function_call",
                                 "call_id": call_id,
                                 "name": fn_name,
                                 "arguments": arguments,
-                            })
+                            }
+                            if isinstance(response_item_id, str) and response_item_id.strip():
+                                fc_item["id"] = response_item_id.strip()
+                            items.append(fc_item)
                     continue
 
                 items.append({"role": role, "content": content_text})
@@ -2112,14 +2120,18 @@ class AIAgent:
                     arguments = str(arguments)
                 arguments = arguments.strip() or "{}"
 
-                normalized.append(
-                    {
-                        "type": "function_call",
-                        "call_id": call_id.strip(),
-                        "name": name.strip(),
-                        "arguments": arguments,
-                    }
-                )
+                fc_normalized = {
+                    "type": "function_call",
+                    "call_id": call_id.strip(),
+                    "name": name.strip(),
+                    "arguments": arguments,
+                }
+                # Preserve the original response-item id so Codex can
+                # correlate this function call with its encrypted reasoning.
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id.strip():
+                    fc_normalized["id"] = item_id.strip()
+                normalized.append(fc_normalized)
                 continue
 
             if item_type == "function_call_output":
@@ -2453,6 +2465,7 @@ class AIAgent:
             if isinstance(out_text, str):
                 final_text = out_text.strip()
 
+        _reasoning_only = bool(not final_text and reasoning_parts and not tool_calls)
         assistant_message = SimpleNamespace(
             content=final_text,
             tool_calls=tool_calls,
@@ -2460,6 +2473,7 @@ class AIAgent:
             reasoning_content=None,
             reasoning_details=None,
             codex_reasoning_items=reasoning_items_raw or None,
+            reasoning_only=_reasoning_only,
         )
 
         if tool_calls:
@@ -2471,14 +2485,93 @@ class AIAgent:
         return assistant_message, finish_reason
 
     def _run_codex_stream(self, api_kwargs: dict):
-        """Execute one streaming Responses API request and return the final response."""
+        """Execute one streaming Responses API request and return the final response.
+
+        Fires self.stream_delta_callback(text) for each output_text.delta event
+        so the GatewayStreamConsumer can deliver tokens progressively to Telegram.
+        """
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
             try:
-                with self.client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
-                    return stream.get_final_response()
+                collected_text: list = []
+                import os as _os
+                _codex_stream_timeout = float(_os.getenv("HERMES_CODEX_STREAM_TIMEOUT", "120.0"))
+                with self.client.responses.stream(**api_kwargs, timeout=_codex_stream_timeout) as stream:
+                    for event in stream:
+                        # Responses API emits response.output_text.delta for text tokens
+                        event_type = getattr(event, "type", None)
+                        if event_type == "response.output_text.delta":
+                            delta_text = getattr(event, "delta", None)
+                            if delta_text:
+                                # Always collect regardless of callback presence
+                                collected_text.append(delta_text)
+                                if self.stream_delta_callback:
+                                    try:
+                                        self.stream_delta_callback(delta_text)
+                                    except Exception:
+                                        pass
+                    response = stream.get_final_response()
+
+                # Guard: Codex sometimes fires output_text.delta streaming events
+                # but either (a) omits the message item from response.output entirely,
+                # or (b) includes a message item whose content list is empty/has no text.
+                # In both cases _normalize_codex_response returns content="" and triggers
+                # expensive empty-content retries (each potentially minutes long).
+                # Patch the output so the normaliser always has real text to extract.
+                output = getattr(response, "output", None)
+                if isinstance(output, list) and collected_text:
+                    synthetic_text = "".join(collected_text)
+                    msg_idx = next(
+                        (i for i, item in enumerate(output)
+                         if getattr(item, "type", None) == "message"),
+                        -1,
+                    )
+                    if msg_idx == -1:
+                        # Case (a): no message item — append a synthetic one
+                        synthetic_item = SimpleNamespace(
+                            type="message",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=synthetic_text)],
+                        )
+                        try:
+                            output.append(synthetic_item)
+                        except (AttributeError, TypeError):
+                            new_output = list(output) + [synthetic_item]
+                            try:
+                                object.__setattr__(response, "output", new_output)
+                            except (AttributeError, TypeError):
+                                pass  # best-effort; normaliser fallback will use output_text
+                    else:
+                        # Case (b): message item exists — check if content is empty
+                        existing = output[msg_idx]
+                        existing_content = getattr(existing, "content", None)
+                        has_text = False
+                        if isinstance(existing_content, list):
+                            for part in existing_content:
+                                if getattr(part, "type", None) in {"output_text", "text"}:
+                                    part_text = getattr(part, "text", None)
+                                    if isinstance(part_text, str) and part_text.strip():
+                                        has_text = True
+                                        break
+                        if not has_text:
+                            # Replace the empty message item with streamed content
+                            patched = SimpleNamespace(
+                                type="message",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=synthetic_text)],
+                            )
+                            try:
+                                output[msg_idx] = patched
+                            except (TypeError, AttributeError):
+                                try:
+                                    object.__setattr__(
+                                        existing, "content",
+                                        [SimpleNamespace(type="output_text", text=synthetic_text)],
+                                    )
+                                except (TypeError, AttributeError):
+                                    pass  # normaliser fallback will use output_text
+
+                return response
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -4608,7 +4701,9 @@ class AIAgent:
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
-                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+                        # Use streaming preflight when a delta callback is registered
+                        _codex_allow_stream = bool(self.stream_delta_callback)
+                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=_codex_allow_stream)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -4627,6 +4722,9 @@ class AIAgent:
 
                         response = self._interruptible_streaming_api_call(
                             api_kwargs, on_first_delta=_stop_spinner)
+                    elif self.stream_delta_callback and self.api_mode == "codex_responses":
+                        # Codex Responses API streaming — deltas fired inside _run_codex_stream
+                        response = self._run_codex_stream(api_kwargs)
                     else:
                         response = self._interruptible_api_call(api_kwargs)
                         # Forward full response to TTS callback for non-streaming providers
@@ -5568,6 +5666,13 @@ class AIAgent:
                             content_preview = final_response[:80] + "..." if len(final_response) > 80 else final_response
                             self._vprint(f"{self.log_prefix}   Content: '{content_preview}'")
                         
+                        # Skip retries for reasoning-only responses (model produced reasoning
+                        # but no final text — retrying wastes 3×120s for no gain).
+                        if getattr(assistant_message, "reasoning_only", False):
+                            print(f"{self.log_prefix}🧠 Reasoning-only response — skipping retries, resetting counter.")
+                            self._empty_content_retries = 0
+                            break
+
                         if self._empty_content_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
                             continue

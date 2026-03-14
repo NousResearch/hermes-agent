@@ -151,6 +151,12 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
+    # Provide a minimal config so _run_agent can access self.config.streaming
+    from gateway.config import GatewayConfig, StreamingConfig
+    from unittest.mock import MagicMock as _MagicMock
+    _mock_cfg = _MagicMock(spec=GatewayConfig)
+    _mock_cfg.streaming = StreamingConfig()  # defaults: enabled=False, transport="edit"
+    runner.config = _mock_cfg
     from unittest.mock import MagicMock, AsyncMock
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()

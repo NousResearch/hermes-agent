@@ -414,7 +414,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -490,7 +490,7 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     assert function_output["call_id"] == "call_pair123"
 
 
-def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
+def test_preflight_codex_api_kwargs_preserves_optional_function_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     preflight = agent._preflight_codex_api_kwargs(
         {
@@ -513,7 +513,8 @@ def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch
 
     fn_call = next(item for item in preflight["input"] if item.get("type") == "function_call")
     assert fn_call["call_id"] == "call_good"
-    assert "id" not in fn_call
+    # id field is preserved so Codex can correlate function calls with reasoning
+    assert fn_call["id"] == "call_bad"
 
 
 def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id(monkeypatch):
@@ -588,7 +589,9 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     function_call = next(item for item in replay_input if item.get("type") == "function_call")
     function_output = next(item for item in replay_input if item.get("type") == "function_call_output")
     assert function_call["call_id"] == "call_1"
-    assert "id" not in function_call
+    # id is the original response_item_id ("fc_1") so Codex can correlate
+    # the function call with its encrypted reasoning from Turn 1.
+    assert function_call["id"] == "fc_1"
     assert function_output["call_id"] == "call_1"
 
 
@@ -750,3 +753,426 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+# ---------------------------------------------------------------------------
+# Regression: Codex Responses API streaming → stream_delta_callback
+# ---------------------------------------------------------------------------
+
+class TestRegressionCodexStreamingDeltaCallback:
+    """
+    Guards:
+      - _run_codex_stream fires stream_delta_callback for every
+        response.output_text.delta event.
+      - The main loop routes to _run_codex_stream (streaming) when
+        stream_delta_callback is set and api_mode == codex_responses.
+    Before the fixes, _run_codex_stream discarded all events via
+    `for _ in stream: pass` and the dispatch unconditionally used
+    _interruptible_api_call for codex_responses regardless of whether a
+    callback was registered.
+    """
+
+    def _build_codex_agent(self, monkeypatch, callback=None):
+        _patch_agent_bootstrap(monkeypatch)
+        agent = run_agent.AIAgent(
+            model="gpt-5.3-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            quiet_mode=True,
+            max_iterations=4,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=callback,
+        )
+        agent._cleanup_task_resources = lambda task_id: None
+        agent._persist_session = lambda messages, history=None: None
+        agent._save_trajectory = lambda messages, user_message, completed: None
+        agent._save_session_log = lambda messages: None
+        return agent
+
+    # ------------------------------------------------------------------
+    # 1. _run_codex_stream fires stream_delta_callback for delta events
+    # ------------------------------------------------------------------
+
+    def test_run_codex_stream_fires_callback_for_output_text_delta(self, monkeypatch):
+        """_run_codex_stream must call stream_delta_callback for each
+        response.output_text.delta event — not silently discard them."""
+        from types import SimpleNamespace
+        import contextlib
+
+        received = []
+        agent = self._build_codex_agent(monkeypatch, callback=received.append)
+
+        # Build a fake stream that emits two delta events then a completion event
+        delta_events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_text.delta", delta=", world!"),
+            SimpleNamespace(type="response.done"),           # non-delta, must be ignored
+        ]
+        final_response = _codex_message_response("Hello, world!")
+
+        class _FakeStream:
+            def __iter__(self):
+                return iter(delta_events)
+            def get_final_response(self):
+                return final_response
+
+        @contextlib.contextmanager
+        def _fake_stream_ctx(**kwargs):
+            yield _FakeStream()
+
+        # Patch client.responses.stream
+        agent.client = SimpleNamespace(
+            responses=SimpleNamespace(stream=_fake_stream_ctx)
+        )
+
+        api_kwargs = agent._preflight_codex_api_kwargs(
+            {"model": "gpt-5.3-codex", "instructions": "You are helpful.", "input": [], "tools": []},
+            allow_stream=True,
+        )
+        result = agent._run_codex_stream(api_kwargs)
+
+        assert result is final_response, "Should return the final response object"
+        assert received == ["Hello", ", world!"], (
+            "_run_codex_stream must fire stream_delta_callback for every "
+            "response.output_text.delta event; non-delta events must be skipped. "
+            f"Got: {received!r}"
+        )
+
+    def test_run_codex_stream_no_callback_does_not_raise(self, monkeypatch):
+        """_run_codex_stream must work fine when stream_delta_callback is None."""
+        from types import SimpleNamespace
+        import contextlib
+
+        agent = self._build_codex_agent(monkeypatch, callback=None)
+
+        delta_events = [
+            SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        ]
+        final_response = _codex_message_response("hi")
+
+        class _FakeStream:
+            def __iter__(self):
+                return iter(delta_events)
+            def get_final_response(self):
+                return final_response
+
+        @contextlib.contextmanager
+        def _fake_stream_ctx(**kwargs):
+            yield _FakeStream()
+
+        agent.client = SimpleNamespace(
+            responses=SimpleNamespace(stream=_fake_stream_ctx)
+        )
+
+        api_kwargs = agent._preflight_codex_api_kwargs(
+            {"model": "gpt-5.3-codex", "instructions": "You are helpful.", "input": [], "tools": []},
+            allow_stream=True,
+        )
+        result = agent._run_codex_stream(api_kwargs)
+        assert result is final_response
+
+    # ------------------------------------------------------------------
+    # 2. Main loop dispatch: codex_responses + callback → _run_codex_stream
+    # ------------------------------------------------------------------
+
+    def test_dispatch_uses_run_codex_stream_when_callback_set(self, monkeypatch):
+        """When stream_delta_callback is registered the main API dispatch
+        must call _run_codex_stream, not _interruptible_api_call.
+        Before the fix, codex_responses always used _interruptible_api_call."""
+        received = []
+        agent = self._build_codex_agent(monkeypatch, callback=received.append)
+
+        calls = {"codex_stream": 0, "blocking": 0}
+
+        def _fake_codex_stream(api_kwargs):
+            calls["codex_stream"] += 1
+            return _codex_message_response("streamed")
+
+        def _fake_blocking(api_kwargs):
+            calls["blocking"] += 1
+            return _codex_message_response("blocked")
+
+        monkeypatch.setattr(agent, "_run_codex_stream", _fake_codex_stream)
+        monkeypatch.setattr(agent, "_interruptible_api_call", _fake_blocking)
+
+        result = agent.run_conversation("hello")
+
+        assert calls["codex_stream"] >= 1, (
+            "_run_codex_stream must be called when stream_delta_callback is set "
+            "and api_mode == codex_responses. "
+            f"codex_stream={calls['codex_stream']} blocking={calls['blocking']}"
+        )
+        assert calls["blocking"] == 0, (
+            "_interruptible_api_call must NOT be called when stream_delta_callback "
+            "is set and api_mode == codex_responses. "
+            f"codex_stream={calls['codex_stream']} blocking={calls['blocking']}"
+        )
+        assert result["final_response"] == "streamed"
+
+    def test_dispatch_uses_blocking_call_when_no_callback(self, monkeypatch):
+        """Without a stream_delta_callback the codex_responses path must
+        still use the blocking _interruptible_api_call (unchanged behaviour)."""
+        agent = self._build_codex_agent(monkeypatch, callback=None)
+
+        calls = {"codex_stream": 0, "blocking": 0}
+
+        def _fake_codex_stream(api_kwargs):
+            calls["codex_stream"] += 1
+            return _codex_message_response("streamed")
+
+        def _fake_blocking(api_kwargs):
+            calls["blocking"] += 1
+            return _codex_message_response("blocked")
+
+        monkeypatch.setattr(agent, "_run_codex_stream", _fake_codex_stream)
+        monkeypatch.setattr(agent, "_interruptible_api_call", _fake_blocking)
+
+        result = agent.run_conversation("hello")
+
+        assert calls["blocking"] >= 1, (
+            "Without stream_delta_callback, codex_responses must use "
+            "_interruptible_api_call. "
+            f"codex_stream={calls['codex_stream']} blocking={calls['blocking']}"
+        )
+        assert result["final_response"] == "blocked"
+
+    # ------------------------------------------------------------------
+    # 3. Source: stream_consumer accepts StreamingConfig dataclass
+    #    (mirrors TestRegressionStreamingConfigLoading but from run_agent side)
+    # ------------------------------------------------------------------
+
+    def test_stream_delta_callback_attribute_exists_on_agent(self, monkeypatch):
+        """AIAgent must expose stream_delta_callback as a public attribute
+        so GatewayStreamConsumer can pass .on_delta to it."""
+        received = []
+        agent = self._build_codex_agent(monkeypatch, callback=received.append)
+        assert callable(agent.stream_delta_callback), (
+            "stream_delta_callback must be a callable attribute on AIAgent"
+        )
+        agent.stream_delta_callback("test")
+        assert received == ["test"]
+
+    def test_stream_delta_callback_none_when_not_set(self, monkeypatch):
+        """stream_delta_callback must be None when not provided — the
+        dispatch guards rely on truthiness of this attribute."""
+        agent = self._build_codex_agent(monkeypatch, callback=None)
+        assert agent.stream_delta_callback is None, (
+            "stream_delta_callback must be None when no callback is provided"
+        )
+
+# ─── Regression tests for Codex streaming delta-collection fix ────────────────
+# These go at the end of test_run_agent_codex_responses.py
+
+
+class TestCodexStreamDeltaCollection:
+    """
+    Regression suite for the bug where Codex fires output_text.delta streaming
+    events but returns a final response.output list with no 'message' item
+    (observed with reasoning enabled).  _run_codex_stream must synthesise a
+    message item from the collected deltas so _normalize_codex_response always
+    produces non-empty content.
+    """
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _build(self, monkeypatch):
+        _patch_agent_bootstrap(monkeypatch)
+        agent = run_agent.AIAgent(
+            model="gpt-5.3-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            quiet_mode=True,
+            max_iterations=2,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cleanup_task_resources = lambda task_id: None
+        agent._persist_session = lambda messages, history=None: None
+        agent._save_trajectory = lambda messages, user_message, completed: None
+        agent._save_session_log = lambda messages: None
+        return agent
+
+    def _delta_event(self, text):
+        return SimpleNamespace(type="response.output_text.delta", delta=text)
+
+    def _response_no_message(self, reasoning_text="thinking..."):
+        """Final response with only a reasoning item — no message item."""
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    status="completed",
+                    encrypted_content="enc-abc",
+                    summary=[],
+                )
+            ],
+            status="completed",
+            model="gpt-5.3-codex",
+            output_text="",
+        )
+
+    def _response_with_message(self, text):
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=text)],
+                )
+            ],
+            status="completed",
+            model="gpt-5.3-codex",
+            output_text=text,
+        )
+
+    # ------------------------------------------------------------------
+    # stream helper that yields delta events and returns a fixed response
+    # ------------------------------------------------------------------
+
+    def _make_stream_with_deltas(self, deltas, final_response):
+        events = [self._delta_event(d) for d in deltas]
+
+        class _Stream:
+            def __init__(self):
+                self._events = events
+                self._final = final_response
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                return iter(self._events)
+
+            def get_final_response(self):
+                return self._final
+
+        return _Stream()
+
+    # ------------------------------------------------------------------
+    # tests
+    # ------------------------------------------------------------------
+
+    def test_deltas_collected_and_message_synthesised_when_output_has_no_message(
+        self, monkeypatch
+    ):
+        """
+        Core regression: deltas fire, final response has no message item.
+        _run_codex_stream must append a synthetic message item.
+        """
+        agent = self._build(monkeypatch)
+        final = self._response_no_message()
+        stream = self._make_stream_with_deltas(["Hello", " world", "!"], final)
+
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        # Synthetic message item must have been appended
+        message_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert len(message_items) == 1, "Expected exactly one synthetic message item"
+        assert message_items[0].content[0].text == "Hello world!"
+
+    def test_normalize_codex_response_extracts_text_from_synthesised_item(
+        self, monkeypatch
+    ):
+        """
+        End-to-end: after _run_codex_stream patches the response,
+        _normalize_codex_response must extract non-empty content.
+        """
+        agent = self._build(monkeypatch)
+        final = self._response_no_message()
+        stream = self._make_stream_with_deltas(["Hi there!"], final)
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+        assistant_msg, finish_reason = agent._normalize_codex_response(response)
+
+        assert assistant_msg.content == "Hi there!"
+        assert finish_reason == "stop"
+
+    def test_no_synthesis_when_message_item_already_present(self, monkeypatch):
+        """
+        When the final response already has a message item, the collected deltas
+        must NOT produce a duplicate — the real item wins.
+        """
+        agent = self._build(monkeypatch)
+        final = self._response_with_message("Real answer.")
+        stream = self._make_stream_with_deltas(["Real", " answer."], final)
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        message_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert len(message_items) == 1, "Should not duplicate message items"
+        assert message_items[0].content[0].text == "Real answer."
+
+    def test_no_synthesis_when_no_deltas_collected(self, monkeypatch):
+        """
+        When no deltas were collected (tool-call-only turn), no synthesis
+        should happen — output stays as-is.
+        """
+        agent = self._build(monkeypatch)
+        tool_response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    id="fc_1",
+                    call_id="call_1",
+                    name="terminal",
+                    arguments="{}",
+                    status="completed",
+                )
+            ],
+            status="completed",
+            model="gpt-5.3-codex",
+        )
+        # Stream with no delta events
+        stream = self._make_stream_with_deltas([], tool_response)
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        message_items = [i for i in response.output if getattr(i, "type", None) == "message"]
+        assert len(message_items) == 0, "No message item should be synthesised for tool-call turns"
+
+    def test_stream_delta_callback_still_fires_for_each_token(self, monkeypatch):
+        """
+        The stream_delta_callback must still receive every delta token even
+        in the synthesis path.
+        """
+        agent = self._build(monkeypatch)
+        final = self._response_no_message()
+        tokens = ["Token1", " Token2", " Token3"]
+        stream = self._make_stream_with_deltas(tokens, final)
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        received = []
+        agent.stream_delta_callback = received.append
+
+        agent._run_codex_stream(_codex_request_kwargs())
+
+        assert received == tokens, f"Expected {tokens}, got {received}"
+
+    def test_synthetic_item_has_correct_structure_for_normaliser(self, monkeypatch):
+        """
+        The synthesised item must have type='message', status='completed', and
+        content as a list with one part of type='output_text'.
+        """
+        agent = self._build(monkeypatch)
+        final = self._response_no_message()
+        stream = self._make_stream_with_deltas(["check"], final)
+        monkeypatch.setattr(agent.client.responses, "stream", lambda **kw: stream)
+
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+        synth = next(i for i in response.output if getattr(i, "type", None) == "message")
+        assert synth.status == "completed"
+        assert len(synth.content) == 1
+        assert synth.content[0].type == "output_text"
+        assert synth.content[0].text == "check"

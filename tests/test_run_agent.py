@@ -2384,6 +2384,41 @@ class TestStreamCallbackNonStreamingProvider:
 
 
 # ---------------------------------------------------------------------------
+# Bugfix: API-only user message prefixes must not persist
+# ---------------------------------------------------------------------------
+
+
+class TestPersistUserMessageOverride:
+    """Synthetic API-only user prefixes should never leak into transcripts."""
+
+    def test_persist_session_rewrites_current_turn_user_message(self, agent):
+        agent._session_db = MagicMock()
+        agent.session_id = "session-123"
+        agent._last_flushed_db_idx = 0
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = "Hello there"
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "[Voice input — respond concisely and conversationally, "
+                    "2-3 sentences max. No code blocks or markdown.] Hello there"
+                ),
+            },
+            {"role": "assistant", "content": "Hi!"},
+        ]
+
+        with patch.object(agent, "_save_session_log") as mock_save:
+            agent._persist_session(messages, [])
+
+        assert messages[0]["content"] == "Hello there"
+        saved_messages = mock_save.call_args.args[0]
+        assert saved_messages[0]["content"] == "Hello there"
+        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
+        assert first_db_write["content"] == "Hello there"
+
+
+# ---------------------------------------------------------------------------
 # Bugfix: _vprint force=True on error messages during TTS
 # ---------------------------------------------------------------------------
 

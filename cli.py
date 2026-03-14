@@ -4218,9 +4218,8 @@ class HermesCLI:
                         text_queue.put(delta)
 
             # When voice mode is active, prepend a brief instruction so the
-            # model responds concisely.  The prefix is API-call-local only —
-            # we strip it from the returned history so it never persists to
-            # session DB or resumed sessions.
+            # model responds concisely. The prefix is API-call-local only —
+            # run_conversation persists the original clean user message.
             _voice_prefix = ""
             if self._voice_mode and isinstance(message, str):
                 _voice_prefix = (
@@ -4236,6 +4235,7 @@ class HermesCLI:
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                     stream_callback=stream_callback,
                     task_id=self.session_id,
+                    persist_user_message=message if _voice_prefix else None,
                 )
 
             # Start agent in background thread
@@ -4301,13 +4301,6 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
-
-            # Strip voice prefix from history so it never persists
-            if _voice_prefix and self.conversation_history:
-                for msg in self.conversation_history:
-                    if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                        if msg["content"].startswith(_voice_prefix):
-                            msg["content"] = msg["content"][len(_voice_prefix):]
 
             # Get the final response
             response = result.get("final_response", "") if result else ""

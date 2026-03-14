@@ -497,6 +497,12 @@ class AIAgent:
         # Initialized here so _vprint can reference it before run_conversation.
         self._stream_callback = None
 
+        # Optional current-turn user-message override used when the API-facing
+        # user message intentionally differs from the persisted transcript
+        # (e.g. CLI voice mode adds a temporary prefix for the live call only).
+        self._persist_user_message_idx = None
+        self._persist_user_message_override = None
+
         # Initialize LLM client via centralized provider router.
         # The router handles auth resolution, base URL, headers, and
         # Codex/Anthropic wrapping for all known providers.
@@ -998,11 +1004,30 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
+    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
+        """Rewrite the current-turn user message before persistence/return.
+
+        Some call paths need an API-only user-message variant without letting
+        that synthetic text leak into persisted transcripts or resumed session
+        history. When an override is configured for the active turn, mutate the
+        in-memory messages list in place so both persistence and returned
+        history stay clean.
+        """
+        idx = getattr(self, "_persist_user_message_idx", None)
+        override = getattr(self, "_persist_user_message_override", None)
+        if override is None or idx is None:
+            return
+        if 0 <= idx < len(messages):
+            msg = messages[idx]
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                msg["content"] = override
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
         """
+        self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
@@ -1016,6 +1041,7 @@ class AIAgent:
         """
         if not self._session_db:
             return
+        self._apply_persist_user_message_override(messages)
         try:
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
@@ -4065,6 +4091,7 @@ class AIAgent:
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -4077,6 +4104,9 @@ class AIAgent:
             stream_callback: Optional callback invoked with each text delta during streaming.
                 Used by the TTS pipeline to start audio generation before the full response.
                 When None (default), API calls use the standard non-streaming path.
+            persist_user_message: Optional clean user message to store in
+                transcripts/history when user_message contains API-only
+                synthetic prefixes.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -4087,6 +4117,8 @@ class AIAgent:
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
+        self._persist_user_message_idx = None
+        self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -4121,7 +4153,7 @@ class AIAgent:
 
         # Preserve the original user message before nudge injection.
         # Honcho should receive the actual user input, not system nudges.
-        original_user_message = user_message
+        original_user_message = persist_user_message if persist_user_message is not None else user_message
 
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
@@ -4159,7 +4191,7 @@ class AIAgent:
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and _recall_mode != "tools":
             try:
-                prefetched_context = self._honcho_prefetch(user_message)
+                prefetched_context = self._honcho_prefetch(original_user_message)
                 if prefetched_context:
                     if not conversation_history:
                         self._honcho_context = prefetched_context
@@ -4172,6 +4204,7 @@ class AIAgent:
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
+        self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")

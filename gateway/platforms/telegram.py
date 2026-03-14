@@ -200,7 +200,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
     
     async def disconnect(self) -> None:
-        """Stop polling and disconnect."""
+        """Stop polling, cancel pending album flushes, and disconnect."""
+        pending_media_group_tasks = list(self._media_group_tasks.values())
+        for task in pending_media_group_tasks:
+            task.cancel()
+        if pending_media_group_tasks:
+            await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
+        self._media_group_tasks.clear()
+        self._media_group_events.clear()
+
         if self._app:
             try:
                 await self._app.updater.stop()

@@ -371,6 +371,24 @@ class TestMediaGroups:
         assert event.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
         assert len(event.media_types) == 2
 
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_media_group_flush(self, adapter):
+        first_photo = _make_photo(_make_file_obj(b"first"))
+        msg = _make_message(caption="two images", media_group_id="album-2", photo=[first_photo])
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/one.jpg"):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert "album-2" in adapter._media_group_events
+        assert "album-2" in adapter._media_group_tasks
+
+        await adapter.disconnect()
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        assert adapter._media_group_events == {}
+        assert adapter._media_group_tasks == {}
+        adapter.handle_message.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # TestSendDocument — outbound file attachment delivery

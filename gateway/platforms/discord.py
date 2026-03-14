@@ -87,8 +87,9 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client):
+    def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
+        self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
         # Decryption
@@ -274,19 +275,21 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
-            if user_id == 0:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE skip: unknown user for ssrc=%d", ssrc)
-                return  # unknown user, can't DAVE-decrypt
-            try:
-                import davey
-                decrypted = self._dave_session.decrypt(
-                    user_id, davey.MediaType.audio, decrypted
-                )
-            except Exception as e:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                return
+            if user_id:
+                try:
+                    import davey
+                    decrypted = self._dave_session.decrypt(
+                        user_id, davey.MediaType.audio, decrypted
+                    )
+                except Exception as e:
+                    # Unencrypted passthrough — use NaCl-decrypted data as-is
+                    if "Unencrypted" not in str(e):
+                        if self._packet_debug_count <= 10:
+                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                        return
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
 
         # --- Opus decode -> PCM ---
         try:
@@ -303,6 +306,32 @@ class VoiceReceiver:
     # ------------------------------------------------------------------
     # Silence detection
     # ------------------------------------------------------------------
+
+    def _infer_user_for_ssrc(self, ssrc: int) -> int:
+        """Try to infer user_id for an unmapped SSRC.
+
+        When the bot rejoins a voice channel, Discord may not resend
+        SPEAKING events for users already speaking.  If exactly one
+        allowed user is in the channel, map the SSRC to them.
+        """
+        try:
+            channel = self._vc.channel
+            if not channel:
+                return 0
+            bot_id = self._vc.user.id if self._vc.user else 0
+            allowed = self._allowed_user_ids
+            candidates = [
+                m.id for m in channel.members
+                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+            ]
+            if len(candidates) == 1:
+                uid = candidates[0]
+                self._ssrc_to_user[ssrc] = uid
+                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
+                return uid
+        except Exception:
+            pass
+        return 0
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
@@ -322,6 +351,10 @@ class VoiceReceiver:
 
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
+                        # Infer from allowed users in the voice channel.
+                        user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
@@ -806,7 +839,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Start voice receiver (Phase 2: listen to users)
         try:
-            receiver = VoiceReceiver(vc)
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
             receiver.start()
             self._voice_receivers[guild_id] = receiver
             self._voice_listen_tasks[guild_id] = asyncio.ensure_future(

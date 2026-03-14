@@ -3684,8 +3684,7 @@ class HermesCLI:
                             self.agent.interrupt(interrupt_msg)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
-                                import pathlib as _pl
-                                _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                                _dbg = _hermes_home / "interrupt_debug.log"
                                 with open(_dbg, "a") as _f:
                                     import time as _t
                                     _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
@@ -3993,8 +3992,7 @@ class HermesCLI:
                     self._interrupt_queue.put(payload)
                     # Debug: log to file when message enters interrupt queue
                     try:
-                        import pathlib as _pl
-                        _dbg = _pl.Path.home() / ".hermes" / "interrupt_debug.log"
+                        _dbg = _hermes_home / "interrupt_debug.log"
                         with open(_dbg, "a") as _f:
                             import time as _t
                             _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "

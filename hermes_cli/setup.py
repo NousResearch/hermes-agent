@@ -2155,7 +2155,7 @@ def setup_gateway(config: dict):
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack"
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/"
         )
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)

@@ -123,6 +123,7 @@ def schedule_cronjob(
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
+            "thread_id": os.getenv("HERMES_SESSION_THREAD_ID"),
         }
     
     try:

@@ -265,6 +265,28 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _send_file_attachment(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Send a local file as a Discord attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        channel = self._client.get_channel(int(chat_id))
+        if not channel:
+            channel = await self._client.fetch_channel(int(chat_id))
+        if not channel:
+            return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+        filename = os.path.basename(file_path)
+        with open(file_path, "rb") as fh:
+            file = discord.File(fh, filename=filename)
+            msg = await channel.send(content=caption if caption else None, file=file)
+        return SendResult(success=True, message_id=str(msg.id))
+
     async def send_voice(
         self,
         chat_id: str,
@@ -274,36 +296,14 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        
         try:
-            import io
-            
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-            
-            if not os.path.exists(audio_path):
-                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
-            
-            # Determine filename from path
-            filename = os.path.basename(audio_path)
-            
-            with open(audio_path, "rb") as f:
-                file = discord.File(io.BytesIO(f.read()), filename=filename)
-                msg = await channel.send(
-                    content=caption if caption else None,
-                    file=file,
-                )
-                return SendResult(success=True, message_id=str(msg.id))
-        
+            return await self._send_file_attachment(chat_id, audio_path, caption)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to)
-    
+            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -313,34 +313,13 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        
         try:
-            import io
-            
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-            
-            if not os.path.exists(image_path):
-                return SendResult(success=False, error=f"Image file not found: {image_path}")
-            
-            filename = os.path.basename(image_path)
-            
-            with open(image_path, "rb") as f:
-                file = discord.File(io.BytesIO(f.read()), filename=filename)
-                msg = await channel.send(
-                    content=caption if caption else None,
-                    file=file,
-                )
-                return SendResult(success=True, message_id=str(msg.id))
-        
+            return await self._send_file_attachment(chat_id, image_path, caption)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send local image, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def send_image(
         self,
@@ -528,7 +507,22 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         # Discord markdown is fairly standard, no special escaping needed
         return content
-    
+
+    async def _run_simple_slash(
+        self,
+        interaction: discord.Interaction,
+        command_text: str,
+        followup_msg: str = "Done~",
+    ) -> None:
+        """Common handler for simple slash commands that dispatch a command string."""
+        await interaction.response.defer(ephemeral=True)
+        event = self._build_slash_event(interaction, command_text)
+        await self.handle_message(event)
+        try:
+            await interaction.followup.send(followup_msg, ephemeral=True)
+        except Exception as e:
+            logger.debug("Discord followup failed: %s", e)
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -551,34 +545,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/reset")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("New conversation started~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/reset", "New conversation started~")
 
         @tree.command(name="reset", description="Reset your Hermes session")
         async def slash_reset(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/reset")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Session reset~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/reset", "Session reset~")
 
         @tree.command(name="model", description="Show or change the model")
         @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
         async def slash_model(interaction: discord.Interaction, name: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/model {name}".strip())
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, f"/model {name}".strip())
 
         @tree.command(name="reasoning", description="Show or change reasoning effort")
         @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
@@ -594,156 +570,66 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
         async def slash_personality(interaction: discord.Interaction, name: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/personality {name}".strip())
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, f"/personality {name}".strip())
 
         @tree.command(name="retry", description="Retry your last message")
         async def slash_retry(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/retry")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Retrying~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/retry", "Retrying~")
 
         @tree.command(name="undo", description="Remove the last exchange")
         async def slash_undo(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/undo")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/undo")
 
         @tree.command(name="status", description="Show Hermes session status")
         async def slash_status(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/status")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Status sent~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/status", "Status sent~")
 
         @tree.command(name="sethome", description="Set this chat as the home channel")
         async def slash_sethome(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/sethome")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/sethome")
 
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/stop")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Stop requested~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/compress")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/compress")
 
         @tree.command(name="title", description="Set or show the session title")
         @discord.app_commands.describe(name="Session title. Leave empty to show current.")
         async def slash_title(interaction: discord.Interaction, name: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/title {name}".strip())
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, f"/title {name}".strip())
 
         @tree.command(name="resume", description="Resume a previously-named session")
         @discord.app_commands.describe(name="Session name to resume. Leave empty to list sessions.")
         async def slash_resume(interaction: discord.Interaction, name: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/resume {name}".strip())
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, f"/resume {name}".strip())
 
         @tree.command(name="usage", description="Show token usage for this session")
         async def slash_usage(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/usage")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/usage")
 
         @tree.command(name="provider", description="Show available providers")
         async def slash_provider(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/provider")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/provider")
 
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/help")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/help")
 
         @tree.command(name="insights", description="Show usage insights and analytics")
         @discord.app_commands.describe(days="Number of days to analyze (default: 7)")
         async def slash_insights(interaction: discord.Interaction, days: int = 7):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/insights {days}")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, f"/insights {days}")
 
         @tree.command(name="reload-mcp", description="Reload MCP servers from config")
         async def slash_reload_mcp(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/reload-mcp")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/reload-mcp")
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, "/update")
-            await self.handle_message(event)
-            try:
-                await interaction.followup.send("Update initiated~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+            await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(

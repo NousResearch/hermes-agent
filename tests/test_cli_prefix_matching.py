@@ -9,6 +9,8 @@ def _make_cli():
     cli_obj.console = MagicMock()
     cli_obj.agent = None
     cli_obj.conversation_history = []
+    cli_obj.session_id = None
+    cli_obj._pending_input = MagicMock()
     return cli_obj
 
 

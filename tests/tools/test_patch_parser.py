@@ -1,7 +1,10 @@
 """Tests for the V4A patch format parser."""
 
+from types import SimpleNamespace
+
 from tools.patch_parser import (
     OperationType,
+    apply_v4a_operations,
     parse_v4a_patch,
 )
 
@@ -137,3 +140,48 @@ class TestParseInvalidPatch:
         assert ops[0].operation == OperationType.ADD
         assert ops[1].operation == OperationType.DELETE
         assert ops[2].operation == OperationType.UPDATE
+
+
+class TestApplyUpdate:
+    def test_preserves_non_prefix_pipe_characters_in_unmodified_lines(self):
+        patch = """\
+*** Begin Patch
+*** Update File: sample.py
+@@ result @@
+     result = 1
+-    return result
++    return result + 1
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def __init__(self):
+                self.written = None
+
+            def read_file(self, path, offset=1, limit=500):
+                return SimpleNamespace(
+                    content=(
+                        'def run():\n'
+                        '    cmd = "echo a | sed s/a/b/"\n'
+                        '    result = 1\n'
+                        '    return result'
+                    ),
+                    error=None,
+                )
+
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+
+        result = apply_v4a_operations(operations, file_ops)
+
+        assert result.success is True
+        assert file_ops.written == (
+            'def run():\n'
+            '    cmd = "echo a | sed s/a/b/"\n'
+            '    result = 1\n'
+            '    return result + 1'
+        )

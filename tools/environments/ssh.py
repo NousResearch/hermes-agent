@@ -77,10 +77,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
-    # ------------------------------------------------------------------
-    # PersistentShellMixin: backend-specific implementations
-    # ------------------------------------------------------------------
-
     @property
     def _temp_prefix(self) -> str:
         return f"/tmp/hermes-ssh-{self._session_id}"
@@ -92,12 +88,11 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
 
     def _read_temp_files(self, *paths: str) -> list[str]:
-        """Read remote files via ControlMaster one-shot SSH calls."""
         if len(paths) == 1:
             cmd = self._build_ssh_command()
             cmd.append(f"cat {paths[0]} 2>/dev/null")
@@ -135,7 +130,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             pass
 
     def _cleanup_temp_files(self):
-        """Remove remote temp files via SSH."""
         try:
             cmd = self._build_ssh_command()
             cmd.append(f"rm -f {self._temp_prefix}-*")
@@ -143,20 +137,14 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except (OSError, subprocess.SubprocessError):
             pass
 
-    # ------------------------------------------------------------------
-    # One-shot execution (original behavior)
-    # ------------------------------------------------------------------
-
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
                          stdin_data: str | None = None) -> dict:
-        """Execute a command via a fresh one-shot SSH invocation."""
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
         wrapped = f'cd {work_dir} && {exec_command}'
         effective_timeout = timeout or self.timeout
 
-        # Merge sudo password (if any) with caller-supplied stdin_data.
         if sudo_stdin is not None and stdin_data is not None:
             effective_stdin = sudo_stdin + stdin_data
         elif sudo_stdin is not None:
@@ -169,11 +157,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
         try:
             kwargs = self._build_run_kwargs(timeout, effective_stdin)
-            # Remove timeout from kwargs -- we handle it in the poll loop
             kwargs.pop("timeout", None)
-
             _output_chunks = []
-
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -224,10 +209,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except Exception as e:
             return {"output": f"SSH execution error: {str(e)}", "returncode": 1}
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
@@ -240,11 +221,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         )
 
     def cleanup(self):
-        # Persistent shell teardown (via mixin)
         if self.persistent:
             self._cleanup_persistent_shell()
-
-        # ControlMaster cleanup
         if self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",

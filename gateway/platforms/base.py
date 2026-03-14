@@ -288,8 +288,13 @@ class MessageEvent:
     message_id: Optional[str] = None
     
     # Media attachments
+    # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # media_cdn_urls: permanent cloud storage URLs (e.g. Cloudflare R2 public URL)
+    # Parallel list to media_urls — index i corresponds to media_urls[i].
+    # Empty string means the upload was skipped or R2 is not configured.
+    media_cdn_urls: List[str] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None

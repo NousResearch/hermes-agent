@@ -1392,6 +1392,7 @@ class GatewayRunner:
         message_text = event.text or ""
         if event.media_urls:
             image_paths = []
+            image_cdn_urls = []
             for i, path in enumerate(event.media_urls):
                 # Check media_types if available; otherwise infer from message type
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
@@ -1401,9 +1402,11 @@ class GatewayRunner:
                 )
                 if is_image:
                     image_paths.append(path)
+                    cdn_url = event.media_cdn_urls[i] if i < len(event.media_cdn_urls) else ""
+                    image_cdn_urls.append(cdn_url)
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
+                    message_text, image_paths, image_cdn_urls=image_cdn_urls
                 )
         
         # -----------------------------------------------------------------
@@ -2931,6 +2934,7 @@ class GatewayRunner:
         self,
         user_text: str,
         image_paths: List[str],
+        image_cdn_urls: List[str] | None = None,
     ) -> str:
         """
         Auto-analyze user-attached images with the vision tool and prepend
@@ -2941,9 +2945,15 @@ class GatewayRunner:
           1. Immediately understand what the user sent (no extra tool call).
           2. Re-examine the image with vision_analyze if it needs more detail.
 
+        If image_cdn_urls is provided (parallel list), the permanent R2 CDN URL
+        is included in the annotation so the agent can use it directly in
+        Athabasca DB calls (e.g. as imageUrl in a research report).
+
         Args:
-            user_text:   The user's original caption / message text.
-            image_paths: List of local file paths to cached images.
+            user_text:      The user's original caption / message text.
+            image_paths:    List of local file paths to cached images.
+            image_cdn_urls: Optional parallel list of permanent CDN URLs (R2).
+                            Empty string means not available for that index.
 
         Returns:
             The enriched message string with vision descriptions prepended.
@@ -2958,7 +2968,8 @@ class GatewayRunner:
         )
 
         enriched_parts = []
-        for path in image_paths:
+        for idx, path in enumerate(image_paths):
+            cdn_url = (image_cdn_urls[idx] if image_cdn_urls and idx < len(image_cdn_urls) else "") or ""
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
                 result_json = await vision_analyze_tool(
@@ -2968,10 +2979,16 @@ class GatewayRunner:
                 result = _json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
+                    cdn_note = (
+                        f"\n[Permanent R2 URL (use as imageUrl in Athabasca): {cdn_url} ~]"
+                        if cdn_url else
+                        "\n[R2 not configured — no permanent URL available for this image]"
+                    )
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
+                        f"{cdn_note}"
                     )
                 else:
                     enriched_parts.append(

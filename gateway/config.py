@@ -158,6 +158,10 @@ class GatewayConfig:
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
     
+    # User-defined quick commands (bypass agent loop, no LLM call)
+    # Config example: quick_commands: {limits: {type: exec, command: "./limits.sh"}}
+    quick_commands: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -312,6 +316,11 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Load quick_commands from config.yaml
+            qc = yaml_cfg.get("quick_commands")
+            if qc and isinstance(qc, dict):
+                config.quick_commands = qc
     except Exception:
         pass
 

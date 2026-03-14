@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from honcho_integration.client import HonchoClientConfig
-from run_agent import AIAgent
+from run_agent import AIAgent, _inject_honcho_turn_context
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -1440,6 +1440,53 @@ class TestSystemPromptStability:
         recall_mode = "hybrid"
         should_prefetch = bool(conversation_history) and recall_mode != "tools"
         assert should_prefetch is True
+
+    def test_inject_honcho_turn_context_appends_system_note(self):
+        content = _inject_honcho_turn_context("hello", "## Honcho Memory\nprior context")
+        assert "hello" in content
+        assert "Honcho memory was retrieved from prior sessions" in content
+        assert "## Honcho Memory" in content
+
+    def test_honcho_continuing_session_keeps_turn_context_out_of_system_prompt(self, agent):
+        captured = {}
+
+        def _fake_api_call(api_kwargs):
+            captured.update(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent._honcho = object()
+        agent._honcho_session_key = "session-1"
+        agent._honcho_config = SimpleNamespace(
+            ai_peer="hermes",
+            memory_mode="hybrid",
+            write_frequency="async",
+            recall_mode="hybrid",
+        )
+        agent._use_prompt_caching = False
+        conversation_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with (
+            patch.object(agent, "_honcho_prefetch", return_value="## Honcho Memory\nprior context"),
+            patch.object(agent, "_queue_honcho_prefetch"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        ):
+            result = agent.run_conversation("what were we doing?", conversation_history=conversation_history)
+
+        assert result["completed"] is True
+        api_messages = captured["messages"]
+        assert api_messages[0]["role"] == "system"
+        assert "prior context" not in api_messages[0]["content"]
+        current_user = api_messages[-1]
+        assert current_user["role"] == "user"
+        assert "what were we doing?" in current_user["content"]
+        assert "prior context" in current_user["content"]
+        assert "Honcho memory was retrieved from prior sessions" in current_user["content"]
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""

@@ -157,3 +157,55 @@ class TestParseResultContract:
                 assert tc.id is not None
                 assert isinstance(tc.function.name, str)
                 assert isinstance(tc.function.arguments, str)
+
+
+# ─── DeepSeek V3 parser tests ───────────────────────────────────────────
+
+class TestDeepSeekV3Parser:
+    @pytest.fixture
+    def parser(self):
+        return get_parser("deepseek_v3")
+
+    def test_no_tool_call(self, parser):
+        text = "Hello, how can I help you?"
+        content, tool_calls = parser.parse(text)
+        assert content == text
+        assert tool_calls is None
+
+    def test_single_tool_call(self, parser):
+        text = (
+            '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n'
+            '```json\n{"city": "London"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "get_weather"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["city"] == "London"
+
+    def test_multiple_tool_calls(self, parser):
+        text = (
+            '<｜tool▁calls▁begin｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n'
+            '```json\n{"city": "London"}\n```<｜tool▁call▁end｜>'
+            '<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_time\n'
+            '```json\n{"timezone": "UTC"}\n```<｜tool▁call▁end｜>'
+            '<｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 2, f"Expected 2 tool calls, got {len(tool_calls)}"
+        names = [tc.function.name for tc in tool_calls]
+        assert "get_weather" in names
+        assert "get_time" in names
+
+    def test_tool_call_with_preceding_text(self, parser):
+        text = (
+            'Let me check that for you.\n'
+            '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>terminal\n'
+            '```json\n{"command": "ls"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1

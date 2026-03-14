@@ -92,7 +92,7 @@ _PROVIDER_LABELS = {
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
-    "anthropic": "Anthropic",
+    "anthropic": "Anthropic / Claude Code Max",
     "deepseek": "DeepSeek",
     "custom": "Custom endpoint",
 }
@@ -109,6 +109,8 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
+    "claude-max": "anthropic",
+    "claude-code-max": "anthropic",
 }
 
 

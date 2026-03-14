@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import types
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -354,6 +355,7 @@ class TestRunJobPerJobOverrides:
         assert "ok" in output
         runtime_mock.assert_called_once_with(
             requested="custom",
+            explicit_api_key=None,
             explicit_base_url="http://127.0.0.1:4000/v1",
         )
         assert mock_agent_cls.call_args.kwargs["model"] == "perplexity/sonar-pro"

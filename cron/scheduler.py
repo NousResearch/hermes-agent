@@ -261,6 +261,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
+
         model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
@@ -322,12 +323,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         try:
-            runtime_kwargs = {
-                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
-            }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
-            runtime = resolve_runtime_provider(**runtime_kwargs)
+            runtime = resolve_runtime_provider(
+                requested=job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+                explicit_api_key=job.get("api_key"),
+                explicit_base_url=job.get("base_url"),
+            )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc

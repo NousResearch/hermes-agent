@@ -782,7 +782,7 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
-        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
+        ("anthropic", "Anthropic / Claude Code Max (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),

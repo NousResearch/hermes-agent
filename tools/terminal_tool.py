@@ -1130,7 +1130,8 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
+            # Local execution uses Hermes' own LocalEnvironment wrapper and does
+            # not depend on minisweagent being importable.
             return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment

@@ -1,15 +1,4 @@
-"""Tests for the SSH remote execution environment backend.
-
-Unit tests (no SSH required) cover pure logic: command building, output merging,
-config plumbing.
-
-Integration tests require a real SSH target. Set TERMINAL_SSH_HOST and
-TERMINAL_SSH_USER to enable them. In CI, start an sshd container or enable
-the localhost SSH service.
-
-    TERMINAL_SSH_HOST=localhost TERMINAL_SSH_USER=$(whoami) \
-        pytest tests/tools/test_ssh_environment.py -v
-"""
+"""Tests for the SSH remote execution environment backend."""
 
 import json
 import os
@@ -19,11 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools.environments.ssh import SSHEnvironment
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")
@@ -39,7 +23,6 @@ requires_ssh = pytest.mark.skipif(
 
 
 def _run(command, task_id="ssh_test", **kwargs):
-    """Call terminal_tool like an LLM would, return parsed JSON."""
     from tools.terminal_tool import terminal_tool
     return json.loads(terminal_tool(command, task_id=task_id, **kwargs))
 
@@ -49,12 +32,7 @@ def _cleanup(task_id="ssh_test"):
     cleanup_vm(task_id)
 
 
-# ---------------------------------------------------------------------------
-# Unit tests — no SSH connection needed
-# ---------------------------------------------------------------------------
-
 class TestBuildSSHCommand:
-    """Pure logic: verify the ssh command list is assembled correctly."""
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
@@ -100,12 +78,7 @@ class TestTerminalToolConfig:
         assert _get_env_config()["ssh_persistent"] is True
 
 
-# ---------------------------------------------------------------------------
-# Integration tests — real SSH, through terminal_tool() interface
-# ---------------------------------------------------------------------------
-
 def _setup_ssh_env(monkeypatch, persistent: bool):
-    """Configure env vars for SSH integration tests."""
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)
     monkeypatch.setenv("TERMINAL_SSH_USER", _SSH_USER)
@@ -118,7 +91,6 @@ def _setup_ssh_env(monkeypatch, persistent: bool):
 
 @requires_ssh
 class TestOneShotSSH:
-    """One-shot mode: each command is a fresh ssh invocation."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
@@ -136,7 +108,6 @@ class TestOneShotSSH:
         assert r["exit_code"] == 42
 
     def test_state_does_not_persist(self):
-        """Env vars set in one command should NOT survive to the next."""
         _run("export HERMES_ONESHOT_TEST=yes")
         r = _run("echo $HERMES_ONESHOT_TEST")
         assert r["output"].strip() == ""
@@ -144,7 +115,6 @@ class TestOneShotSSH:
 
 @requires_ssh
 class TestPersistentSSH:
-    """Persistent mode: single long-lived shell, state persists."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
@@ -184,7 +154,6 @@ class TestPersistentSSH:
     def test_timeout_then_recovery(self):
         r = _run("sleep 999", timeout=2)
         assert r["exit_code"] == 124
-        # Shell should survive — next command works
         r = _run("echo alive")
         assert r["exit_code"] == 0
         assert "alive" in r["output"]

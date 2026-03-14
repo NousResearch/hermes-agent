@@ -146,17 +146,20 @@ def list_cached_model_ids(limit: int = 200) -> list[str]:
 
     found: list[str] = []
     try:
-        for child in hub_dir.iterdir():
-            name = child.name
-            if not name.startswith("models--"):
+        for entry in sorted(hub_dir.glob("models--*")):
+            snapshots = entry / "snapshots"
+            if not snapshots.exists():
                 continue
-            snapshots = child / "snapshots"
-            if not snapshots.exists() or not any(snapshots.iterdir()):
+            try:
+                if not any(snapshots.iterdir()):
+                    continue
+            except OSError:
                 continue
-            model_id = name[len("models--") :].replace("--", "/")
+
+            model_id = entry.name[len("models--") :].replace("--", "/")
             if model_id:
                 found.append(model_id)
-    except Exception:
+    except OSError:
         return []
 
     unique_sorted = sorted(set(found))

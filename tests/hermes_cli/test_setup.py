@@ -194,19 +194,28 @@ def test_local_setup_updates_llm_model_env(tmp_path, monkeypatch):
     assert get_env_value("LLM_MODEL") == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
 
 
-def test_local_setup_allows_selecting_cached_non_recommended_model(tmp_path, monkeypatch):
+def test_local_setup_includes_and_selects_non_curated_cached_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 
     config = load_config()
 
-    # provider=local, model index=1 (cached non-recommended model)
-    prompt_choices = iter([4, 1])
-    monkeypatch.setattr(
-        "hermes_cli.setup.prompt_choice",
-        lambda *args, **kwargs: next(prompt_choices),
-    )
+    captured_choices = {}
+
+    def _fake_prompt_choice(question, choices, default=0):
+        if "Select your inference provider" in question:
+            return next(i for i, choice in enumerate(choices) if "Local (Apple Silicon)" in choice)
+        if "Select a model to run locally" in question:
+            captured_choices["choices"] = choices
+            return next(
+                i
+                for i, choice in enumerate(choices)
+                if choice.startswith("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
+            )
+        return default
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", _fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: True)
 
     monkeypatch.setattr(
@@ -217,17 +226,23 @@ def test_local_setup_allows_selecting_cached_non_recommended_model(tmp_path, mon
         "hermes_cli.local_provider.recommend_models",
         lambda ram_gb: [
             {
-                "id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-                "name": "Qwen 2.5 Coder 7B (4-bit)",
-                "description": "Good coding, fast",
+                "id": "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+                "name": "Hermes 3 8B (4-bit)",
+                "description": "Stable Nous baseline",
                 "min_ram_gb": 8,
             }
         ],
     )
-    monkeypatch.setattr("hermes_cli.local_provider.installed_model_ids", lambda mids: set())
+    monkeypatch.setattr(
+        "hermes_cli.local_provider.installed_model_ids",
+        lambda mids: {"mlx-community/Hermes-3-Llama-3.1-8B-4bit"},
+    )
     monkeypatch.setattr(
         "hermes_cli.local_provider.list_cached_model_ids",
-        lambda limit=200: ["mlx-community/My-Custom-Model-4bit"],
+        lambda limit=200: [
+            "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+            "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+        ],
     )
     monkeypatch.setattr("hermes_cli.local_provider.check_mlx_lm_installed", lambda: True)
     monkeypatch.setattr(
@@ -239,7 +254,10 @@ def test_local_setup_allows_selecting_cached_non_recommended_model(tmp_path, mon
     save_config(config)
 
     reloaded = load_config()
+    assert any(
+        choice.startswith("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
+        for choice in captured_choices["choices"]
+    )
     assert reloaded["model"]["provider"] == "local"
-    assert reloaded["model"]["default"] == "mlx-community/My-Custom-Model-4bit"
-    assert reloaded["local"]["model_id"] == "mlx-community/My-Custom-Model-4bit"
-    assert get_env_value("LLM_MODEL") == "mlx-community/My-Custom-Model-4bit"
+    assert reloaded["model"]["default"] == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    assert reloaded["local"]["model_id"] == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"

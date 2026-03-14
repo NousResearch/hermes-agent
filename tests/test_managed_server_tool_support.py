@@ -1,11 +1,10 @@
 """
-Tests for ManagedServer tool_call_parser integration.
+Tests for ManagedServer / tool-parser integration.
 
 Validates that:
-1. ManagedServer accepts tool_call_parser parameter (tool_call_support branch)
-2. ServerManager.managed_server() passes tool_call_parser through
-3. The parser's parse() output is correctly attached to ChatCompletion responses
-4. hermes-agent's tool_call_parsers are compatible with ManagedServer's expectations
+1. The installed atroposlib API still matches Hermes's expectations
+2. Hermes's parser registry remains compatible with ManagedServer parsing
+3. HermesAgentBaseEnv wires the selected parser into ServerManager correctly
 
 These tests verify the contract between hermes-agent's environments/ code
 and atroposlib's ManagedServer. They detect API incompatibilities early.
@@ -142,37 +141,38 @@ class TestParserCompatibility:
 
 
 class TestBaseEnvCompatibility:
-    """Test that hermes_base_env.py's managed_server() call matches the API."""
+    """Test that hermes_base_env.py's tool-parser wiring matches the current API."""
 
-    def test_hermes_base_env_managed_server_call_pattern(self):
-        """
-        Verify that hermes_base_env.py passes tool_call_parser to managed_server().
-        This is a source-level check — the actual managed_server() call must match.
-        """
+    def test_hermes_base_env_sets_server_manager_tool_parser(self):
+        """Hermes wires parser selection through ServerManager.tool_parser."""
         import ast
 
         base_env_path = Path(__file__).parent.parent / "environments" / "hermes_base_env.py"
         source = base_env_path.read_text()
         tree = ast.parse(source)
 
-        # Find the managed_server() call
-        found_tool_call_parser_kwarg = False
+        found_assignment = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                # Look for self.server.managed_server(...)
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "managed_server":
-                    for kw in node.keywords:
-                        if kw.arg == "tool_call_parser":
-                            found_tool_call_parser_kwarg = True
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr == "tool_parser":
+                        parent = target.value
+                        if (
+                            isinstance(parent, ast.Attribute)
+                            and parent.attr == "server"
+                            and isinstance(parent.value, ast.Name)
+                            and parent.value.id == "self"
+                        ):
+                            found_assignment = True
 
-        assert found_tool_call_parser_kwarg, (
-            "hermes_base_env.py should pass tool_call_parser= to managed_server()"
+        assert found_assignment, (
+            "hermes_base_env.py should set self.server.tool_parser from config.tool_call_parser"
         )
 
-    def test_hermes_base_env_uses_get_parser(self):
-        """Verify hermes_base_env imports and uses get_parser from tool_call_parsers."""
+    def test_hermes_base_env_uses_config_tool_call_parser(self):
+        """Verify hermes_base_env uses the config field rather than a local parser instance."""
         base_env_path = Path(__file__).parent.parent / "environments" / "hermes_base_env.py"
         source = base_env_path.read_text()
 
-        assert "from environments.tool_call_parsers import get_parser" in source
-        assert "get_parser(" in source
+        assert 'tool_call_parser: str = Field(' in source
+        assert 'self.server.tool_parser = config.tool_call_parser' in source

@@ -309,6 +309,7 @@ async def _handle_http(request: web.Request, state: _RelayState, path: str) -> w
         "params": params,
         "body": body,
     }
+    logger.info(">>> %s %s body=%s", method, path, json.dumps(body) if body else "{}")
 
     # Register a future *before* sending so we never miss the reply
     future = state.loop.create_future()

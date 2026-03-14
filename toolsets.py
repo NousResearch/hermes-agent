@@ -202,6 +202,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "radio": {
+        "description": "CLI pirate radio player with Radiooooo crate-digging, live streams, and AI mic breaks",
+        "tools": ["radio_play", "radio_pause", "radio_stop", "radio_skip", "radio_status", "radio_volume", "radio_mic_break", "radio_search"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

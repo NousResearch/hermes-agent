@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import importlib.util
 import json
 import os
 import queue
@@ -206,9 +207,11 @@ class TestAutoVoiceReply:
       2. gateway _send_voice_reply: fires based on voice_mode setting
 
     To prevent double audio, _send_voice_reply is skipped when voice input
-    already triggered base adapter auto-TTS (skip_double = is_voice_input).
-    Exception: Discord voice channel — both auto-TTS and Discord play_tts
-    override skip, so the runner must handle it via play_in_voice_channel.
+    already triggered base adapter auto-TTS.
+
+    For Discord voice channels, the base adapter now routes play_tts directly
+    into VC playback, so the runner should still skip voice-input follow-ups to
+    avoid double playback.
     """
 
     @pytest.fixture
@@ -733,6 +736,24 @@ class TestVoiceChannelCommands:
         runner.adapters[event.source.platform] = mock_adapter
         result = await runner._handle_voice_channel_join(event)
         assert "failed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_join_missing_voice_dependencies(self, runner):
+        """Missing PyNaCl/davey should return a user-actionable install hint."""
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(
+            side_effect=RuntimeError("PyNaCl library needed in order to use voice")
+        )
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        event = self._make_discord_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_channel_join(event)
+
+        assert "voice dependencies are missing" in result.lower()
+        assert "hermes-agent[messaging]" in result
 
     # -- _handle_voice_channel_leave --
 
@@ -2044,6 +2065,10 @@ class TestDisconnectVoiceCleanup:
 # =====================================================================
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("nacl") is None,
+    reason="PyNaCl not installed",
+)
 class TestVoiceReception:
     """Audio reception: SSRC mapping, DAVE passthrough, buffer lifecycle."""
 

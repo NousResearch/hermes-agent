@@ -91,6 +91,25 @@ class TestProviderEnvBlocklist:
         for var in registry_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_non_registry_provider_vars_are_stripped(self):
+        """Extra provider vars not in PROVIDER_REGISTRY must also be blocked."""
+        extra_provider_vars = {
+            "GOOGLE_API_KEY": "google-key",
+            "DEEPSEEK_API_KEY": "deepseek-key",
+            "MISTRAL_API_KEY": "mistral-key",
+            "GROQ_API_KEY": "groq-key",
+            "TOGETHER_API_KEY": "together-key",
+            "PERPLEXITY_API_KEY": "perplexity-key",
+            "COHERE_API_KEY": "cohere-key",
+            "FIREWORKS_API_KEY": "fireworks-key",
+            "XAI_API_KEY": "xai-key",
+            "HELICONE_API_KEY": "helicone-key",
+        }
+        result_env = _run_with_env(extra_os_env=extra_provider_vars)
+
+        for var in extra_provider_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
         result_env = _run_with_env()
@@ -170,4 +189,19 @@ class TestBlocklistCoverage:
         """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)
         must also be in the blocklist."""
         extras = {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_non_registry_provider_vars_are_in_blocklist(self):
+        extras = {
+            "GOOGLE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "MISTRAL_API_KEY",
+            "GROQ_API_KEY",
+            "TOGETHER_API_KEY",
+            "PERPLEXITY_API_KEY",
+            "COHERE_API_KEY",
+            "FIREWORKS_API_KEY",
+            "XAI_API_KEY",
+            "HELICONE_API_KEY",
+        }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)

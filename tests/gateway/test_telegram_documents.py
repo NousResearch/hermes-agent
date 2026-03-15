@@ -353,6 +353,26 @@ class TestDocumentDownloadBlock:
 
 class TestMediaGroups:
     @pytest.mark.asyncio
+    async def test_non_album_photo_burst_is_buffered_and_combined(self, adapter):
+        first_photo = _make_photo(_make_file_obj(b"first"))
+        second_photo = _make_photo(_make_file_obj(b"second"))
+
+        msg1 = _make_message(caption="two images", photo=[first_photo])
+        msg2 = _make_message(photo=[second_photo])
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+            await adapter._handle_media_message(_make_update(msg1), MagicMock())
+            await adapter._handle_media_message(_make_update(msg2), MagicMock())
+            assert adapter.handle_message.await_count == 0
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "two images"
+        assert event.media_urls == ["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]
+        assert len(event.media_types) == 2
+
+    @pytest.mark.asyncio
     async def test_photo_album_is_buffered_and_combined(self, adapter):
         first_photo = _make_photo(_make_file_obj(b"first"))
         second_photo = _make_photo(_make_file_obj(b"second"))

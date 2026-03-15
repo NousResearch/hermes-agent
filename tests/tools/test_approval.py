@@ -2,12 +2,14 @@
 
 from unittest.mock import patch as mock_patch
 
+import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     clear_session,
     detect_dangerous_command,
     has_pending,
     is_approved,
+    load_permanent,
     pop_pending,
     prompt_dangerous_approval,
     submit_pending,
@@ -367,6 +369,20 @@ class TestPatternKeyUniqueness:
             "approving find -exec rm should not auto-approve find -delete"
         )
         clear_session(session)
+
+    def test_legacy_find_key_still_approves_find_exec(self):
+        """Old allowlist entry 'find' should keep approving the matching command."""
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"find"})
+            assert is_approved("legacy-find", key_exec) is True
+
+    def test_legacy_find_key_still_approves_find_delete(self):
+        """Old colliding allowlist entry 'find' should remain backwards compatible."""
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"find"})
+            assert is_approved("legacy-find", key_delete) is True
 
 
 class TestViewFullCommand:

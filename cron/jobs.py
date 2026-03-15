@@ -292,6 +292,9 @@ def create_job(
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -305,6 +308,9 @@ def create_job(
         origin: Source info where job was created (for "origin" delivery)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
+        model: Optional per-job model override
+        provider: Optional per-job provider override
+        base_url: Optional per-job base URL override
 
     Returns:
         The created job dict
@@ -323,6 +329,13 @@ def create_job(
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
+    normalized_model = str(model).strip() if isinstance(model, str) else None
+    normalized_provider = str(provider).strip() if isinstance(provider, str) else None
+    normalized_base_url = str(base_url).strip().rstrip("/") if isinstance(base_url, str) else None
+    normalized_model = normalized_model or None
+    normalized_provider = normalized_provider or None
+    normalized_base_url = normalized_base_url or None
+
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
         "id": job_id,
@@ -330,6 +343,9 @@ def create_job(
         "prompt": prompt,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,
+        "model": normalized_model,
+        "provider": normalized_provider,
+        "base_url": normalized_base_url,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {

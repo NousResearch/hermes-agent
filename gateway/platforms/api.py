@@ -59,6 +59,8 @@ class APIPlatformAdapter(BasePlatformAdapter):
             ssl_kwargs["ssl_certfile"] = self._ssl_cert
             ssl_kwargs["ssl_keyfile"] = self._ssl_key
             logger.info("TLS enabled (cert=%s)", self._ssl_cert)
+        elif self._ssl_cert or self._ssl_key:
+            logger.warning("Both API_SSL_CERT and API_SSL_KEY must be set for TLS. Running without HTTPS.")
 
         config = uvicorn.Config(
             app,

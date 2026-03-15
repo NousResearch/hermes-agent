@@ -460,33 +460,15 @@ def _print_setup_summary(config: dict, hermes_home):
 
     tool_status = []
 
-    # Vision — works with OpenRouter, Nous OAuth, Codex OAuth, or OpenAI endpoint
-    _has_vision = False
-    if get_env_value("OPENROUTER_API_KEY"):
-        _has_vision = True
-    else:
-        try:
-            _vauth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
-            if _vauth_path.is_file():
-                import json as _vjson
+    # Vision — use the same runtime resolver as the actual vision tools
+    try:
+        from agent.auxiliary_client import get_available_vision_backends
 
-                _vauth = _vjson.loads(_vauth_path.read_text())
-                if _vauth.get("active_provider") == "nous":
-                    _np = _vauth.get("providers", {}).get("nous", {})
-                    if _np.get("agent_key") or _np.get("access_token"):
-                        _has_vision = True
-                elif _vauth.get("active_provider") == "openai-codex":
-                    _cp = _vauth.get("providers", {}).get("openai-codex", {})
-                    if _cp.get("tokens", {}).get("access_token"):
-                        _has_vision = True
-        except Exception:
-            pass
-    if not _has_vision:
-        _oai_base = get_env_value("OPENAI_BASE_URL") or ""
-        if get_env_value("OPENAI_API_KEY") and "api.openai.com" in _oai_base.lower():
-            _has_vision = True
+        _vision_backends = get_available_vision_backends()
+    except Exception:
+        _vision_backends = []
 
-    if _has_vision:
+    if _vision_backends:
         tool_status.append(("Vision (image analysis)", True, None))
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
@@ -1276,58 +1258,20 @@ def setup_model_provider(config: dict):
             selected_provider = "openrouter"
 
     # ── Vision & Image Analysis Setup ──
-    # Vision requires a multimodal-capable provider. Check whether the user's
-    # chosen provider already covers it — if so, skip the prompt entirely.
-    _vision_needs_setup = True
+    # Keep setup aligned with the actual runtime resolver the vision tools use.
+    try:
+        from agent.auxiliary_client import get_available_vision_backends
 
-    if selected_provider == "openrouter":
-        # OpenRouter → Gemini for vision, already configured
-        _vision_needs_setup = False
-    elif selected_provider == "nous":
-        # Nous Portal OAuth → Gemini via Nous, already configured
-        _vision_needs_setup = False
-    elif selected_provider == "openai-codex":
-        # Codex OAuth → gpt-5.3-codex supports vision
-        _vision_needs_setup = False
-    elif selected_provider == "custom":
-        _custom_base = (get_env_value("OPENAI_BASE_URL") or "").lower()
-        if "api.openai.com" in _custom_base:
-            # Direct OpenAI endpoint — show vision model picker
-            print()
-            print_header("Vision Model")
-            print_info("Your OpenAI endpoint supports vision. Pick a model for image analysis:")
-            _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-            _vm_choices = _oai_vision_models + ["Keep default (gpt-4o-mini)"]
-            _vm_idx = prompt_choice("Select vision model:", _vm_choices, len(_vm_choices) - 1)
-            _selected_vision_model = (
-                _oai_vision_models[_vm_idx]
-                if _vm_idx < len(_oai_vision_models)
-                else "gpt-4o-mini"
-            )
-            save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
-            print_success(f"Vision model set to {_selected_vision_model}")
-            _vision_needs_setup = False
+        _vision_backends = set(get_available_vision_backends())
+    except Exception:
+        _vision_backends = set()
 
-    # Even for providers without native vision, check if existing credentials
-    # from a previous setup already cover it (e.g. user had OpenRouter before
-    # switching to z.ai)
-    if _vision_needs_setup:
-        if get_env_value("OPENROUTER_API_KEY"):
-            _vision_needs_setup = False
-        else:
-            # Check for Nous Portal OAuth in auth.json
-            try:
-                _auth_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
-                if _auth_path.is_file():
-                    import json as _json
+    _vision_needs_setup = not bool(_vision_backends)
 
-                    _auth_data = _json.loads(_auth_path.read_text())
-                    if _auth_data.get("active_provider") == "nous":
-                        _nous_p = _auth_data.get("providers", {}).get("nous", {})
-                        if _nous_p.get("agent_key") or _nous_p.get("access_token"):
-                            _vision_needs_setup = False
-            except Exception:
-                pass
+    if selected_provider in _vision_backends:
+        # If the user just selected a backend Hermes can already use for
+        # vision, treat it as covered. Auth/setup failure returns earlier.
+        _vision_needs_setup = False
 
     if _vision_needs_setup:
         _prov_names = {
@@ -1343,44 +1287,54 @@ def setup_model_provider(config: dict):
 
         print()
         print_header("Vision & Image Analysis (optional)")
-        print_info(f"Vision requires a multimodal-capable provider. {_prov_display}")
-        print_info("doesn't natively support it. Choose how to enable vision,")
-        print_info("or skip to configure later.")
+        print_info(f"Vision uses a separate multimodal backend. {_prov_display}")
+        print_info("doesn't currently provide one Hermes can auto-use for vision,")
+        print_info("so choose a backend now or skip and configure later.")
         print()
 
         _vision_choices = [
             "OpenRouter — uses Gemini (free tier at openrouter.ai/keys)",
-            "OpenAI — enter API key & choose a vision model",
+            "OpenAI-compatible endpoint — base URL, API key, and vision model",
             "Skip for now",
         ]
         _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
 
         if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True)
+            _or_key = prompt("  OpenRouter API key", password=True).strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
                 print_success("OpenRouter key saved — vision will use Gemini")
             else:
                 print_info("Skipped — vision won't be available")
-        elif _vision_idx == 1:  # OpenAI
-            _oai_key = prompt("  OpenAI API key", password=True)
+        elif _vision_idx == 1:  # OpenAI-compatible endpoint
+            _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+            _api_key_label = "  API key"
+            if "api.openai.com" in _base_url.lower():
+                _api_key_label = "  OpenAI API key"
+            _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-                save_env_value("OPENAI_BASE_URL", "https://api.openai.com/v1")
-                _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-                _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
-                _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
-                _selected_vision_model = (
-                    _oai_vision_models[_vm_idx]
-                    if _vm_idx < len(_oai_vision_models)
-                    else "gpt-4o-mini"
-                )
+                save_env_value("OPENAI_BASE_URL", _base_url)
+                if "api.openai.com" in _base_url.lower():
+                    _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
+                    _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
+                    _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
+                    _selected_vision_model = (
+                        _oai_vision_models[_vm_idx]
+                        if _vm_idx < len(_oai_vision_models)
+                        else "gpt-4o-mini"
+                    )
+                else:
+                    _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
                 save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
-                print_success(f"Vision configured with OpenAI ({_selected_vision_model})")
+                print_success(
+                    f"Vision configured with {_base_url}"
+                    + (f" ({_selected_vision_model})" if _selected_vision_model else "")
+                )
             else:
                 print_info("Skipped — vision won't be available")
         else:
-            print_info("Skipped — add later with 'hermes config set OPENROUTER_API_KEY ...'")
+            print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
 
     # ── Model Selection (adapts based on provider) ──
     if selected_provider != "custom":  # Custom already prompted for model name
@@ -2186,20 +2140,22 @@ def setup_gateway(config: dict):
         print_info("      • Create an App-Level Token with 'connections:write' scope")
         print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
         print_info("      Required scopes: chat:write, app_mentions:read,")
-        print_info("      channels:history, channels:read, groups:history,")
-        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("      channels:history, channels:read, im:history,")
+        print_info("      im:read, im:write, users:read, files:write")
+        print_info("      Optional for private channels: groups:history")
         print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-        print_info("      Required events: message.im, message.channels,")
-        print_info("      message.groups, app_mention")
-        print_warning("   ⚠ Without message.channels/message.groups events,")
-        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("      Required events: message.im, message.channels, app_mention")
+        print_info("      Optional for private channels: message.groups")
+        print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
+        print_warning("     not public channels.")
         print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. Reinstall the app after any scope or event changes")
         print_info(
-            "   6. After installing, invite the bot to channels: /invite @YourBot"
+            "   7. After installing, invite the bot to channels: /invite @YourBot"
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack"
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/"
         )
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
@@ -2217,14 +2173,17 @@ def setup_gateway(config: dict):
             )
             print()
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
             else:
+                print_warning(
+                    "⚠️  No Slack allowlist set - unpaired users will be denied by default."
+                )
                 print_info(
-                    "⚠️  No allowlist set - anyone in your workspace can use the bot!"
+                    "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
     # ── WhatsApp ──
@@ -2284,7 +2243,9 @@ def setup_gateway(config: dict):
         from hermes_cli.gateway import (
             _is_service_installed,
             _is_service_running,
-            systemd_install,
+            has_conflicting_systemd_units,
+            install_linux_gateway_from_setup,
+            print_systemd_scope_conflict_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
@@ -2296,6 +2257,10 @@ def setup_gateway(config: dict):
         service_running = _is_service_running()
 
         print()
+        if _is_linux and has_conflicting_systemd_units():
+            print_systemd_scope_conflict_warning()
+            print()
+
         if service_running:
             if prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
@@ -2321,15 +2286,18 @@ def setup_gateway(config: dict):
                 True,
             ):
                 try:
+                    installed_scope = None
+                    did_install = False
                     if _is_linux:
-                        systemd_install(force=False)
+                        installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                     else:
                         launchd_install(force=False)
+                        did_install = True
                     print()
-                    if prompt_yes_no("  Start the service now?", True):
+                    if did_install and prompt_yes_no("  Start the service now?", True):
                         try:
                             if _is_linux:
-                                systemd_start()
+                                systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
                         except Exception as e:
@@ -2339,6 +2307,8 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
+                if _is_linux:
+                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
             print_info("Start the gateway to bring your bots online:")

@@ -40,9 +40,7 @@ This page documents the built-in Hermes tool registry as it exists in code. Avai
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `list_cronjobs` | List all scheduled cronjobs with their IDs, schedules, and status. Use this to: - See what jobs are currently scheduled - Find job IDs for removal with remove_cronjob - Check job status and next run times Returns job_id, name, schedule, re… | — |
-| `remove_cronjob` | Remove a scheduled cronjob by its ID. Use list_cronjobs first to find the job_id of the job you want to remove. Jobs that have completed their repeat count are auto-removed, but you can use this to cancel a job before it completes. | — |
-| `schedule_cronjob` | Schedule an automated task to run the agent on a schedule. ⚠️ CRITICAL: The cronjob runs in a FRESH SESSION with NO CONTEXT from this conversation. The prompt must be COMPLETELY SELF-CONTAINED with ALL necessary information including: - Fu… | — |
+| `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
 
 ## `delegation` toolset
 

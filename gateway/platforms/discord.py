@@ -87,8 +87,9 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client):
+    def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
+        self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
         # Decryption
@@ -274,19 +275,21 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
-            if user_id == 0:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE skip: unknown user for ssrc=%d", ssrc)
-                return  # unknown user, can't DAVE-decrypt
-            try:
-                import davey
-                decrypted = self._dave_session.decrypt(
-                    user_id, davey.MediaType.audio, decrypted
-                )
-            except Exception as e:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                return
+            if user_id:
+                try:
+                    import davey
+                    decrypted = self._dave_session.decrypt(
+                        user_id, davey.MediaType.audio, decrypted
+                    )
+                except Exception as e:
+                    # Unencrypted passthrough — use NaCl-decrypted data as-is
+                    if "Unencrypted" not in str(e):
+                        if self._packet_debug_count <= 10:
+                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                        return
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
 
         # --- Opus decode -> PCM ---
         try:
@@ -303,6 +306,32 @@ class VoiceReceiver:
     # ------------------------------------------------------------------
     # Silence detection
     # ------------------------------------------------------------------
+
+    def _infer_user_for_ssrc(self, ssrc: int) -> int:
+        """Try to infer user_id for an unmapped SSRC.
+
+        When the bot rejoins a voice channel, Discord may not resend
+        SPEAKING events for users already speaking.  If exactly one
+        allowed user is in the channel, map the SSRC to them.
+        """
+        try:
+            channel = self._vc.channel
+            if not channel:
+                return 0
+            bot_id = self._vc.user.id if self._vc.user else 0
+            allowed = self._allowed_user_ids
+            candidates = [
+                m.id for m in channel.members
+                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+            ]
+            if len(candidates) == 1:
+                uid = candidates[0]
+                self._ssrc_to_user[ssrc] = uid
+                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
+                return uid
+        except Exception:
+            pass
+        return 0
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
@@ -322,6 +351,10 @@ class VoiceReceiver:
 
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
+                        # Infer from allowed users in the voice channel.
+                        user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
@@ -400,6 +433,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Track threads where the bot has participated so follow-up messages
+        # in those threads don't require @mention.
+        self._bot_participated_threads: set = set()
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -580,7 +616,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a message to a Discord channel."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             # Get the channel
             channel = self._client.get_channel(int(chat_id))
@@ -605,10 +641,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
             
             for i, chunk in enumerate(chunks):
-                msg = await channel.send(
-                    content=chunk,
-                    reference=reference if i == 0 else None,
-                )
+                chunk_reference = reference if i == 0 else None
+                try:
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                    )
+                except Exception as e:
+                    err_text = str(e)
+                    if (
+                        chunk_reference is not None
+                        and "error code: 50035" in err_text
+                        and "Cannot reply to a system message" in err_text
+                    ):
+                        logger.warning(
+                            "[%s] Reply target %s is a Discord system message; retrying send without reply reference",
+                            self.name,
+                            reply_to,
+                        )
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                        )
+                    else:
+                        raise
                 message_ids.append(str(msg.id))
             
             return SendResult(
@@ -649,6 +705,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         file_path: str,
         caption: Optional[str] = None,
+        file_name: Optional[str] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment."""
         if not self._client:
@@ -660,7 +717,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-        filename = os.path.basename(file_path)
+        filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
             msg = await channel.send(content=caption if caption else None, file=file)
@@ -674,13 +731,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Play auto-TTS audio.
 
-        When the bot is in a voice channel for this chat's guild, skip the
-        file attachment — the gateway runner plays audio in the VC instead.
+        When the bot is in a voice channel for this chat's guild, play
+        directly in the VC instead of sending as a file attachment.
         """
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.debug("[%s] Skipping play_tts for %s — VC playback handled by runner", self.name, chat_id)
-                return SendResult(success=True)
+                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
     async def send_voice(
@@ -784,7 +842,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Start voice receiver (Phase 2: listen to users)
         try:
-            receiver = VoiceReceiver(vc)
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
             receiver.start()
             self._voice_receivers[guild_id] = receiver
             self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -980,14 +1038,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice listening (Phase 2)
     # ------------------------------------------------------------------
 
+    # UDP keepalive interval in seconds — prevents Discord from dropping
+    # the UDP route after ~60s of silence.
+    _KEEPALIVE_INTERVAL = 15
+
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
+        last_keepalive = time.monotonic()
         try:
             while receiver._running:
                 await asyncio.sleep(0.2)
+
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
+                now = time.monotonic()
+                if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
+                    last_keepalive = now
+                    try:
+                        vc = self._voice_clients.get(guild_id)
+                        if vc and vc.is_connected():
+                            vc._connection.send_packet(b'\xf8\xff\xfe')
+                    except Exception:
+                        pass
+
                 completed = receiver.check_silence()
                 for user_id, pcm_data in completed:
                     if not self._is_allowed_user(str(user_id)):
@@ -1121,6 +1197,41 @@ class DiscordAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_image(chat_id, image_url, caption, reply_to)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a local video file natively as a Discord attachment."""
+        try:
+            return await self._send_file_attachment(chat_id, video_path, caption)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"Video file not found: {video_path}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send local video, falling back to base adapter: %s", self.name, e, exc_info=True)
+            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an arbitrary file natively as a Discord attachment."""
+        try:
+            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"File not found: {file_path}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
     
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator."""
@@ -1690,14 +1801,13 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
-        # UNLESS the channel is in the free-response list.
+        # UNLESS the channel is in the free-response list or the message is
+        # in a thread where the bot has already participated.
         #
-        # Config:
-        #   DISCORD_FREE_RESPONSE_CHANNELS: Comma-separated channel IDs where the
-        #       bot responds to every message without needing a mention.
-        #   DISCORD_REQUIRE_MENTION: Set to "false" to disable mention requirement
-        #       globally (all channels become free-response). Default: "true".
-        #       Can also be set via discord.require_mention in config.yaml.
+        # Config (all settable via discord.* in config.yaml):
+        #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
         parent_channel_id = None
@@ -1716,7 +1826,11 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
             is_free_channel = bool(channel_ids & free_channels)
 
-            if require_mention and not is_free_channel:
+            # Skip the mention check if the message is in a thread where
+            # the bot has previously participated (auto-created or replied in).
+            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+
+            if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions:
                     return
 
@@ -1725,17 +1839,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
         # Auto-thread: when enabled, automatically create a thread for every
-        # new message in a text channel so each conversation is isolated.
+        # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "").lower() in ("true", "1", "yes")
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             if auto_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
+                    self._bot_participated_threads.add(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -1835,7 +1950,12 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
         )
-        
+
+        # Track thread participation so the bot won't require @mention for
+        # follow-up messages in threads it has already engaged in.
+        if thread_id:
+            self._bot_participated_threads.add(thread_id)
+
         await self.handle_message(event)
 
 

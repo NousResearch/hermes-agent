@@ -12,7 +12,7 @@ The hooks system lets you run custom code at key points in the agent lifecycle �
 
 Each hook is a directory under `~/.hermes/hooks/` containing two files:
 
-```
+```text
 ~/.hermes/hooks/
 └── my-hook/
     ├── HOOK.yaml      # Declares which events to listen for

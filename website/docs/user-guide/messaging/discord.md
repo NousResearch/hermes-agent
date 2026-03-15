@@ -210,7 +210,7 @@ Replace the ID with the actual channel ID (right-click → Copy Channel ID with 
 
 Hermes Agent supports Discord voice messages:
 
-- **Incoming voice messages** are automatically transcribed using Whisper (requires `GROQ_API_KEY` or `VOICE_TOOLS_OPENAI_KEY` to be set in your environment).
+- **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 

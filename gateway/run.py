@@ -232,16 +232,25 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
     Tries in order:
     1. ``shutil.which("hermes")`` — standard PATH lookup
-    2. ``sys.executable -m hermes_cli.main`` — fallback when Hermes is running
-       from a venv/module invocation and the ``hermes`` shim is not on PATH
+    2. a sibling ``hermes`` executable next to ``sys.executable`` — useful when
+       the gateway is running from a venv but the shim is not on PATH
+    3. ``sys.executable -m hermes_cli.main`` — final fallback when Hermes is
+       importable but no executable shim is available
 
-    Returns argv parts ready for quoting/joining, or ``None`` if neither works.
+    Returns argv parts ready for quoting/joining, or ``None`` if none work.
     """
     import shutil
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return [hermes_bin]
+
+    try:
+        sibling = Path(sys.executable).resolve().parent / "hermes"
+        if sibling.exists() and os.access(sibling, os.X_OK):
+            return [str(sibling)]
+    except Exception:
+        pass
 
     try:
         import importlib.util
@@ -3350,6 +3359,11 @@ class GatewayRunner:
         )
         try:
             systemd_run = shutil.which("systemd-run")
+            hermes_bin_dir = str(Path(sys.executable).resolve().parent)
+            update_env = {
+                **os.environ,
+                "PATH": f"{hermes_bin_dir}:{os.environ.get('PATH', '')}",
+            }
             if systemd_run:
                 subprocess.Popen(
                     [systemd_run, "--user", "--scope",
@@ -3358,6 +3372,7 @@ class GatewayRunner:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
+                    env=update_env,
                 )
             else:
                 # Fallback: best-effort detach with start_new_session
@@ -3366,6 +3381,7 @@ class GatewayRunner:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
+                    env=update_env,
                 )
         except Exception as e:
             pending_path.unlink(missing_ok=True)

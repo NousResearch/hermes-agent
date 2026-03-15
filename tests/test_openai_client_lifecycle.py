@@ -111,16 +111,19 @@ def test_closed_shared_client_is_recreated_before_request(monkeypatch):
 
 def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monkeypatch):
     first_started = threading.Event()
+    second_can_finish = threading.Event()
     first_closed = threading.Event()
 
     def first_responder(**kwargs):
         first_started.set()
+        assert second_can_finish.wait(timeout=2)
         first_client.close()
         first_closed.set()
         raise _connection_error()
 
     def second_responder(**kwargs):
         assert first_started.wait(timeout=2)
+        second_can_finish.set()
         assert first_closed.wait(timeout=2)
         return {"ok": "second"}
 
@@ -141,6 +144,7 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     thread_one = threading.Thread(target=run_call, args=("first",), daemon=True)
     thread_two = threading.Thread(target=run_call, args=("second",), daemon=True)
     thread_one.start()
+    assert first_started.wait(timeout=2)
     thread_two.start()
     thread_one.join(timeout=5)
     thread_two.join(timeout=5)

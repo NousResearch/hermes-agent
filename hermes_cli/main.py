@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1944,19 +1945,7 @@ def _update_via_zip(args):
         sys.exit(1)
     
     # Reinstall Python dependencies
-    print("→ Updating Python dependencies...")
-    import subprocess
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        subprocess.run(
-            [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-            cwd=PROJECT_ROOT, check=True,
-            env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        )
-    else:
-        venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-        if venv_pip.exists():
-            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+    _update_python_dependencies(PROJECT_ROOT)
     
     # Sync skills
     try:
@@ -2034,6 +2023,56 @@ def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] 
         print(f"  Remove it with: git stash drop {stash_selector}")
     else:
         print(f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}")
+
+
+
+def _venv_bin_dir(venv_dir: Path) -> Path:
+    return venv_dir / ("Scripts" if sys.platform == "win32" else "bin")
+
+
+
+def _find_project_venv(project_root: Path) -> Optional[Path]:
+    for name in (".venv", "venv"):
+        candidate = project_root / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+
+def _update_python_dependencies(project_root: Path) -> None:
+    print("→ Updating Python dependencies...")
+
+    uv_bin = shutil.which("uv")
+    project_venv = _find_project_venv(project_root)
+
+    if project_venv is not None:
+        venv_bin = _venv_bin_dir(project_venv)
+        venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python")
+        venv_pip = venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
+
+        if uv_bin and venv_python.exists():
+            subprocess.run(
+                [uv_bin, "pip", "install", "--python", str(venv_python), "-e", ".", "--quiet"],
+                cwd=project_root,
+                check=True,
+            )
+            return
+
+        if venv_pip.exists():
+            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=project_root, check=True)
+            return
+
+        if venv_python.exists():
+            subprocess.run([str(venv_python), "-m", "ensurepip", "--upgrade"], cwd=project_root, check=True)
+            subprocess.run([str(venv_python), "-m", "pip", "install", "-e", ".", "--quiet"], cwd=project_root, check=True)
+            return
+
+    if uv_bin and (project_root / "pyproject.toml").exists():
+        subprocess.run([uv_bin, "sync", "--quiet"], cwd=project_root, check=True)
+        return
+
+    subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"], cwd=project_root, check=True)
 
 
 
@@ -2191,21 +2230,8 @@ def cmd_update(args):
                     prompt_user=prompt_for_restore,
                 )
         
-        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
-        print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
-        if uv_bin:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True,
-                env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            )
-        else:
-            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            if venv_pip.exists():
-                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            else:
-                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        # Reinstall Python dependencies
+        _update_python_dependencies(PROJECT_ROOT)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():

@@ -841,47 +841,69 @@ class ShellFileOperations(FileOperations):
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
-        # Check if find is available (not on Windows without Git Bash/WSL)
-        if not self._has_command('find'):
-            return SearchResult(
-                error="File search requires 'find' command. "
-                      "On Windows, use Git Bash, WSL, or install Unix tools."
-            )
-        
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
         else:
             search_pattern = pattern.split('/')[-1]
-        
-        # Use find with modification time sorting
-        # -printf '%T@ %p\n' outputs: timestamp path
-        # sort -rn sorts by timestamp descending (newest first)
+
+        # Prefer ripgrep for file search -- respects .gitignore, parallel
+        # traversal, and avoids walking node_modules and other ignored dirs.
+        # This is ~200x faster than find on wide directory trees.
+        if self._has_command('rg'):
+            return self._search_files_rg(search_pattern, path, limit, offset)
+
+        # Fallback: find (slower but works without rg)
+        if not self._has_command('find'):
+            return SearchResult(
+                error="File search requires 'rg' or 'find'. "
+                      "Install ripgrep for best results: "
+                      "https://github.com/BurntSushi/ripgrep#installation"
+            )
+
         cmd = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
-        
+              f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
+
         result = self._exec(cmd, timeout=60)
-        
-        if not result.stdout.strip():
-            # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
-            result = self._exec(cmd_simple, timeout=60)
-        
-        files = []
-        for line in result.stdout.strip().split('\n'):
-            if not line:
-                continue
-            # Parse "timestamp path" format
-            parts = line.split(' ', 1)
-            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
-            else:
-                files.append(line)
-        
+
+        files = [f for f in result.stdout.strip().split('\n') if f]
+
         return SearchResult(
             files=files,
             total_count=len(files)
+        )
+
+    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+        """Search for files by name using ripgrep.
+
+        Uses rg --files which respects .gitignore, .ignore, and has
+        parallel directory traversal. Falls back to find if rg is unavailable.
+        """
+        # rg --files -g supports glob patterns; wrap simple names in *
+        # so "SKILL.md" matches at any depth (equivalent to find -name).
+        if '/' not in pattern and not pattern.startswith('*'):
+            glob_pattern = f"*{pattern}"
+        else:
+            glob_pattern = pattern
+
+        cmd_parts = ["rg", "--files", "-g", self._escape_shell_arg(glob_pattern)]
+        cmd_parts.append(self._escape_shell_arg(path))
+
+        # Fetch generously so we can compute total before slicing
+        fetch_limit = limit + offset
+        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+
+        cmd = " ".join(cmd_parts)
+        result = self._exec(cmd, timeout=60)
+
+        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        total = len(all_files)
+        page = all_files[offset:offset + limit]
+
+        return SearchResult(
+            files=page,
+            total_count=total,
+            truncated=total > offset + limit
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],

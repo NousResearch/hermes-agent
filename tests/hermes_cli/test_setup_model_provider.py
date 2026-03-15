@@ -39,6 +39,8 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
+    save_env_value("OPENAI_BASE_URL", "https://example.invalid/v1")
+    save_env_value("OPENAI_API_KEY", "custom-key")
 
     config = load_config()
     config["model"] = {
@@ -55,10 +57,6 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
         if calls["count"] == 1:
             assert choices[-1] == "Keep current (Custom: https://example.invalid/v1)"
             return len(choices) - 1
-        if calls["count"] == 2:
-            assert question == "Configure vision:"
-            assert choices[-1] == "Skip for now"
-            return len(choices) - 1
         raise AssertionError("Model menu should not appear for keep-current custom")
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
@@ -74,7 +72,7 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["default"] == "custom/model"
     assert reloaded["model"]["base_url"] == "https://example.invalid/v1"
-    assert calls["count"] == 2
+    assert calls["count"] == 1
 
 
 def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):
@@ -214,7 +212,7 @@ def test_setup_summary_marks_codex_auth_as_vision_available(tmp_path, monkeypatc
     _clear_provider_env(monkeypatch)
 
     (tmp_path / "auth.json").write_text(
-        '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"tok"}}}}'
+        '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token": "***", "refresh_token": "***"}}}}'
     )
 
     monkeypatch.setattr("shutil.which", lambda _name: None)

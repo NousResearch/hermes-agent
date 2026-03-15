@@ -1,4 +1,4 @@
-"""Shared auxiliary OpenAI client for cheap/fast side tasks.
+"""Shared auxiliary client router for side tasks.
 
 Provides a single resolution chain so every consumer (context compression,
 session search, web extraction, vision analysis, browser vision) picks up
@@ -10,21 +10,21 @@ Resolution order for text tasks (auto mode):
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
-  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-     — checked via PROVIDER_REGISTRY entries with auth_type='api_key'
-  6. None
+  5. Native Anthropic
+  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  7. None
 
 Resolution order for vision/multimodal tasks (auto mode):
-  1. OpenRouter
-  2. Nous Portal
-  3. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
-  4. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  5. None  (API-key providers like z.ai/Kimi/MiniMax are skipped —
-     they may not support multimodal)
+  1. Selected main provider, if it is one of the supported vision backends below
+  2. OpenRouter
+  3. Nous Portal
+  4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
+  5. Native Anthropic
+  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  7. None
 
 Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
-CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task:
-"openrouter", "nous", "codex", or "main" (= steps 3-5).
+CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task.
 Default "auto" follows the chains above.
 
 Per-task model overrides (e.g. AUXILIARY_VISION_MODEL,
@@ -78,6 +78,7 @@ auxiliary_is_nous: bool = False
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
+_ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
@@ -313,6 +314,114 @@ class AsyncCodexAuxiliaryClient:
         self.base_url = sync_wrapper.base_url
 
 
+class _AnthropicCompletionsAdapter:
+    """OpenAI-client-compatible adapter for Anthropic Messages API."""
+
+    def __init__(self, real_client: Any, model: str):
+        self._client = real_client
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+        tool_choice = kwargs.get("tool_choice")
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
+        temperature = kwargs.get("temperature")
+
+        normalized_tool_choice = None
+        if isinstance(tool_choice, str):
+            normalized_tool_choice = tool_choice
+        elif isinstance(tool_choice, dict):
+            choice_type = str(tool_choice.get("type", "")).lower()
+            if choice_type == "function":
+                normalized_tool_choice = tool_choice.get("function", {}).get("name")
+            elif choice_type in {"auto", "required", "none"}:
+                normalized_tool_choice = choice_type
+
+        anthropic_kwargs = build_anthropic_kwargs(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            reasoning_config=None,
+            tool_choice=normalized_tool_choice,
+        )
+        if temperature is not None:
+            anthropic_kwargs["temperature"] = temperature
+
+        response = self._client.messages.create(**anthropic_kwargs)
+        assistant_message, finish_reason = normalize_anthropic_response(response)
+
+        usage = None
+        if hasattr(response, "usage") and response.usage:
+            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            usage = SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+
+        choice = SimpleNamespace(
+            index=0,
+            message=assistant_message,
+            finish_reason=finish_reason,
+        )
+        return SimpleNamespace(
+            choices=[choice],
+            model=model,
+            usage=usage,
+        )
+
+
+class _AnthropicChatShim:
+    def __init__(self, adapter: _AnthropicCompletionsAdapter):
+        self.completions = adapter
+
+
+class AnthropicAuxiliaryClient:
+    """OpenAI-client-compatible wrapper over a native Anthropic client."""
+
+    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str):
+        self._real_client = real_client
+        adapter = _AnthropicCompletionsAdapter(real_client, model)
+        self.chat = _AnthropicChatShim(adapter)
+        self.api_key = api_key
+        self.base_url = base_url
+
+    def close(self):
+        close_fn = getattr(self._real_client, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
+class _AsyncAnthropicCompletionsAdapter:
+    def __init__(self, sync_adapter: _AnthropicCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncAnthropicChatShim:
+    def __init__(self, adapter: _AsyncAnthropicCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncAnthropicAuxiliaryClient:
+    def __init__(self, sync_wrapper: "AnthropicAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncAnthropicCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncAnthropicChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _read_nous_auth() -> Optional[dict]:
     """Read and validate ~/.hermes/auth.json for an active Nous provider.
 
@@ -384,6 +493,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 break
         if not api_key:
             continue
+        if provider_id == "anthropic":
+            return _try_anthropic()
+
         # Resolve base URL (with optional env-var override)
         # Kimi Code keys (sk-kimi-) need api.kimi.com/coding/v1
         env_url = ""
@@ -534,6 +646,22 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
+def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
+    try:
+        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+    except ImportError:
+        return None, None
+
+    token = resolve_anthropic_token()
+    if not token:
+        return None, None
+
+    model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
+    logger.debug("Auxiliary client: Anthropic native (%s)", model)
+    real_client = build_anthropic_client(token, _ANTHROPIC_DEFAULT_BASE_URL)
+    return AnthropicAuxiliaryClient(real_client, model, token, _ANTHROPIC_DEFAULT_BASE_URL), model
+
+
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
     if forced == "openrouter":
@@ -596,6 +724,8 @@ def _to_async_client(sync_client, model: str):
 
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, AnthropicAuxiliaryClient):
+        return AsyncAnthropicAuxiliaryClient(sync_client), model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -756,6 +886,14 @@ def resolve_provider_client(
         return None, None
 
     if pconfig.auth_type == "api_key":
+        if provider == "anthropic":
+            client, default_model = _try_anthropic()
+            if client is None:
+                logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                return None, None
+            final_model = model or default_model
+            return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+
         # Find the first configured API key
         api_key = ""
         for env_var in pconfig.api_key_env_vars:
@@ -849,6 +987,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
     "openai-codex",
+    "anthropic",
     "custom",
 )
 
@@ -870,6 +1009,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_nous()
     if provider == "openai-codex":
         return _try_codex()
+    if provider == "anthropic":
+        return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
@@ -879,19 +1020,36 @@ def _strict_vision_backend_available(provider: str) -> bool:
     return _resolve_strict_vision_backend(provider)[0] is not None
 
 
+def _preferred_main_vision_provider() -> Optional[str]:
+    """Return the selected main provider when it is also a supported vision backend."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            provider = _normalize_vision_provider(model_cfg.get("provider", ""))
+            if provider in _VISION_AUTO_PROVIDER_ORDER:
+                return provider
+    except Exception:
+        pass
+    return None
+
+
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
     This is the single source of truth for setup, tool gating, and runtime
-    auto-routing of vision tasks. Phase 1 keeps the auto list conservative:
-    OpenRouter, Nous Portal, Codex OAuth, then custom OpenAI-compatible
-    endpoints. Explicit provider overrides can still route elsewhere.
+    auto-routing of vision tasks. The selected main provider is preferred when
+    it is also a known-good vision backend; otherwise Hermes falls back through
+    the standard conservative order.
     """
-    return [
-        provider
-        for provider in _VISION_AUTO_PROVIDER_ORDER
-        if _strict_vision_backend_available(provider)
-    ]
+    ordered = list(_VISION_AUTO_PROVIDER_ORDER)
+    preferred = _preferred_main_vision_provider()
+    if preferred in ordered:
+        ordered.remove(preferred)
+        ordered.insert(0, preferred)
+    return [provider for provider in ordered if _strict_vision_backend_available(provider)]
 
 
 def resolve_vision_provider_client(

@@ -102,30 +102,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
 
 
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read credentials from Claude Code's config files.
+    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
-    Checks two locations (in order):
-      1. ~/.claude.json — top-level primaryApiKey (native binary, v2.x)
-      2. ~/.claude/.credentials.json — claudeAiOauth block (npm/legacy installs)
+    This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
+    subscription flow is OAuth/setup-token based with refreshable credentials,
+    and native direct Anthropic provider usage should follow that path rather
+    than auto-detecting Claude's first-party managed key.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # 1. Native binary (v2.x): ~/.claude.json with top-level primaryApiKey
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if primary_key:
-                return {
-                    "accessToken": primary_key,
-                    "refreshToken": "",
-                    "expiresAt": 0,  # Managed keys don't have a user-visible expiry
-                }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
-
-    # 2. Legacy/npm installs: ~/.claude/.credentials.json
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -138,10 +123,25 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                         "accessToken": access_token,
                         "refreshToken": oauth_data.get("refreshToken", ""),
                         "expiresAt": oauth_data.get("expiresAt", 0),
+                        "source": "claude_code_credentials_file",
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
+    return None
+
+
+def read_claude_managed_key() -> Optional[str]:
+    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = json.loads(claude_json.read_text(encoding="utf-8"))
+            primary_key = data.get("primaryApiKey", "")
+            if isinstance(primary_key, str) and primary_key.strip():
+                return primary_key.strip()
+        except (json.JSONDecodeError, OSError, IOError) as e:
+            logger.debug("Failed to read ~/.claude.json: %s", e)
     return None
 
 
@@ -273,6 +273,35 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def get_anthropic_token_source(token: Optional[str] = None) -> str:
+    """Best-effort source classification for an Anthropic credential token."""
+    token = (token or "").strip()
+    if not token:
+        return "none"
+
+    env_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    if env_token and env_token == token:
+        return "anthropic_token_env"
+
+    cc_env_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if cc_env_token and cc_env_token == token:
+        return "claude_code_oauth_token_env"
+
+    creds = read_claude_code_credentials()
+    if creds and creds.get("accessToken") == token:
+        return str(creds.get("source") or "claude_code_credentials")
+
+    managed_key = read_claude_managed_key()
+    if managed_key and managed_key == token:
+        return "claude_json_primary_api_key"
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key and api_key == token:
+        return "anthropic_api_key_env"
+
+    return "unknown"
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -391,6 +420,68 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert an OpenAI-style image block to Anthropic's image source format."""
+    image_data = part.get("image_url", {})
+    url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+
+    if url.startswith("data:"):
+        header, sep, data = url.partition(",")
+        if sep and ";base64" in header:
+            media_type = header[5:].split(";", 1)[0] or "image/png"
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            }
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": url,
+            },
+        }
+
+    return None
+
+
+def _convert_user_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(part, dict):
+        ptype = part.get("type")
+        if ptype == "text":
+            block = {"type": "text", "text": part.get("text", "")}
+            if isinstance(part.get("cache_control"), dict):
+                block["cache_control"] = dict(part["cache_control"])
+            return block
+        if ptype == "image_url":
+            return _convert_openai_image_part_to_anthropic(part)
+        if ptype == "image" and part.get("source"):
+            return dict(part)
+        if ptype == "image" and part.get("data"):
+            media_type = part.get("mimeType") or part.get("media_type") or "image/png"
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": part.get("data", ""),
+                },
+            }
+        if ptype == "tool_result":
+            return dict(part)
+    elif part is not None:
+        return {"type": "text", "text": str(part)}
+    return None
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -495,7 +586,15 @@ def convert_messages_to_anthropic(
             continue
 
         # Regular user message
-        result.append({"role": "user", "content": content})
+        if isinstance(content, list):
+            converted_blocks = []
+            for part in content:
+                converted = _convert_user_content_part_to_anthropic(part)
+                if converted is not None:
+                    converted_blocks.append(converted)
+            result.append({"role": "user", "content": converted_blocks or [{"type": "text", "text": ""}]})
+        else:
+            result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()

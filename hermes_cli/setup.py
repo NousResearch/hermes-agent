@@ -1268,11 +1268,9 @@ def setup_model_provider(config: dict):
 
     _vision_needs_setup = not bool(_vision_backends)
 
-    if selected_provider in {"openrouter", "nous", "openai-codex"}:
-        # If the user just selected one of our known-good vision backends during
-        # setup, treat vision as covered. Auth/setup failure returns earlier.
-        _vision_needs_setup = False
-    elif selected_provider == "custom" and "custom" in _vision_backends:
+    if selected_provider in _vision_backends:
+        # If the user just selected a backend Hermes can already use for
+        # vision, treat it as covered. Auth/setup failure returns earlier.
         _vision_needs_setup = False
 
     if _vision_needs_setup:

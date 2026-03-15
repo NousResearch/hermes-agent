@@ -68,6 +68,22 @@ class TestAtomicJsonWrite:
         tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
         assert len(tmp_files) == 0
 
+    def test_cleans_up_temp_file_on_baseexception(self, tmp_path):
+        class SimulatedAbort(BaseException):
+            pass
+
+        target = tmp_path / "data.json"
+        original = {"preserved": True}
+        target.write_text(json.dumps(original), encoding="utf-8")
+
+        with patch("utils.json.dump", side_effect=SimulatedAbort):
+            with pytest.raises(SimulatedAbort):
+                atomic_json_write(target, {"new": True})
+
+        tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
+        assert len(tmp_files) == 0
+        assert json.loads(target.read_text(encoding="utf-8")) == original
+
     def test_accepts_string_path(self, tmp_path):
         target = str(tmp_path / "string_path.json")
         atomic_json_write(target, {"string": True})

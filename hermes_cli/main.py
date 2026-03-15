@@ -2056,7 +2056,15 @@ def cmd_update(args):
             check=True
         )
         branch = result.stdout.strip()
-        
+
+        # Fall back to main if the current branch doesn't exist on the remote
+        verify = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", f"origin/{branch}"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            branch = "main"
+
         # Check if there are updates
         result = subprocess.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],

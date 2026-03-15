@@ -215,6 +215,33 @@ def _resolve_gateway_model() -> str:
     return model
 
 
+def _resolve_hermes_bin() -> Optional[list[str]]:
+    """Resolve the Hermes update command as argv parts.
+
+    Tries in order:
+    1. ``shutil.which("hermes")`` — standard PATH lookup
+    2. ``sys.executable -m hermes_cli.main`` — fallback when Hermes is running
+       from a venv/module invocation and the ``hermes`` shim is not on PATH
+
+    Returns argv parts ready for quoting/joining, or ``None`` if neither works.
+    """
+    import shutil
+
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
+
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main"]
+    except Exception:
+        pass
+
+    return None
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -3222,9 +3249,14 @@ class GatewayRunner:
         if not git_dir.exists():
             return "✗ Not a git repository — cannot update."
 
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return "✗ `hermes` command not found on PATH."
+        hermes_cmd = _resolve_hermes_bin()
+        if not hermes_cmd:
+            return (
+                "✗ Could not locate the `hermes` command. "
+                "Hermes is running, but the update command could not find the "
+                "executable on PATH or via the current Python interpreter. "
+                "Try running `hermes update` manually in your terminal."
+            )
 
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
@@ -3240,8 +3272,9 @@ class GatewayRunner:
 
         # Spawn `hermes update` in a separate cgroup so it survives gateway
         # restart. systemd-run --user --scope creates a transient scope unit.
+        hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
         update_cmd = (
-            f"{shlex.quote(hermes_bin)} update > {shlex.quote(str(output_path))} 2>&1; "
+            f"{hermes_cmd_str} update > {shlex.quote(str(output_path))} 2>&1; "
             f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
         )
         try:

@@ -234,7 +234,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
-    delivery_target = _resolve_delivery_target(job)
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -245,11 +244,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-    if delivery_target:
-        os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-        os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-        if delivery_target.get("thread_id") is not None:
-            os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -259,6 +253,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+
+        delivery_target = _resolve_delivery_target(job)
+        if delivery_target:
+            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            if delivery_target.get("thread_id") is not None:
+                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
         model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 

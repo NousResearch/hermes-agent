@@ -1,17 +1,42 @@
-"""Skill slash commands — scan installed skills and build invocation messages.
+"""Shared slash command helpers for skills and built-in prompt-style modes.
 
 Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
-can invoke skills via /skill-name commands.
+can invoke skills via /skill-name commands and prompt-only built-ins like
+/plan.
 """
 
 import json
 import logging
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def build_plan_path(
+    user_instruction: str = "",
+    *,
+    now: datetime | None = None,
+) -> Path:
+    """Return the default workspace-relative markdown path for a /plan invocation.
+
+    Relative paths are intentional: file tools are task/backend-aware and resolve
+    them against the active working directory for local, docker, ssh, modal,
+    daytona, and similar terminal backends. That keeps the plan with the active
+    workspace instead of the Hermes host's global home directory.
+    """
+    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
+    slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
+    if slug:
+        slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
+    slug = slug or "conversation-plan"
+    timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
+    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -56,6 +81,7 @@ def _build_skill_message(
     skill_dir: Path | None,
     activation_note: str,
     user_instruction: str = "",
+    runtime_note: str = "",
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
@@ -115,6 +141,10 @@ def _build_skill_message(
         parts.append("")
         parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
 
+    if runtime_note:
+        parts.append("")
+        parts.append(f"[Runtime note: {runtime_note}]")
+
     return "\n".join(parts)
 
 
@@ -172,6 +202,7 @@ def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
     task_id: str | None = None,
+    runtime_note: str = "",
 ) -> Optional[str]:
     """Build the user message content for a skill slash command invocation.
 
@@ -201,6 +232,7 @@ def build_skill_invocation_message(
         skill_dir,
         activation_note,
         user_instruction=user_instruction,
+        runtime_note=runtime_note,
     )
 
 

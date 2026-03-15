@@ -12,29 +12,33 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 
 ## Architecture
 
-```text
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                  Hermes Gateway                                       │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐           │
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │           │
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│           │
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘           │
-│       │             │           │           │         │         │        │            │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘            │
-│                                     │                                                 │
-│                            ┌────────▼────────┐                                        │
-│                            │  Session Store  │                                        │
-│                            │  (per-chat)     │                                        │
-│                            └────────┬────────┘                                        │
-│                                     │                                                 │
-│                            ┌────────▼────────┐                                        │
-│                            │   AIAgent       │                                        │
-│                            │   (run_agent)   │                                        │
-│                            └─────────────────┘                                        │
-│                                                                                       │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Gateway["Hermes Gateway"]
+        subgraph Adapters["Platform adapters"]
+            tg[Telegram]
+            dc[Discord]
+            wa[WhatsApp]
+            sl[Slack]
+            sig[Signal]
+            em[Email]
+            ha[Home Assistant]
+        end
+
+        store["Session store<br/>per chat"]
+        agent["AIAgent<br/>run_agent.py"]
+        cron["Cron scheduler<br/>ticks every 60s"]
+    end
+
+    tg --> store
+    dc --> store
+    wa --> store
+    sl --> store
+    sig --> store
+    em --> store
+    ha --> store
+    store --> agent
+    cron --> store
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
@@ -54,10 +58,12 @@ This walks you through configuring each platform with arrow-key selection, shows
 ```bash
 hermes gateway              # Run in foreground
 hermes gateway setup        # Configure messaging platforms interactively
-hermes gateway install      # Install as systemd service (Linux) / launchd (macOS)
-hermes gateway start        # Start the service
-hermes gateway stop         # Stop the service
-hermes gateway status       # Check service status
+hermes gateway install      # Install as a user service (Linux) / launchd service (macOS)
+sudo hermes gateway install --system   # Linux only: install a boot-time system service
+hermes gateway start        # Start the default service
+hermes gateway stop         # Stop the default service
+hermes gateway status       # Check default service status
+hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
 ## Chat Commands (Inside Messaging)
@@ -188,7 +194,17 @@ journalctl --user -u hermes-gateway -f
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
+
+# Or install a boot-time system service that still runs as your user
+sudo hermes gateway install --system
+sudo hermes gateway start --system
+sudo hermes gateway status --system
+journalctl -u hermes-gateway -f
 ```
+
+Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
+
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 ### macOS (launchd)
 

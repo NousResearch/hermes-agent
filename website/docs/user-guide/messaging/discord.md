@@ -8,6 +8,21 @@ description: "Set up Hermes Agent as a Discord bot"
 
 Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, voice messages, file attachments, and slash commands.
 
+Before setup, here's the part most people want to know: how Hermes behaves once it's in your server.
+
+## How Hermes Behaves
+
+| Context | Behavior |
+|---------|----------|
+| **DMs** | Hermes responds to every message. No `@mention` needed. |
+| **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
+| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
+| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. |
+
+:::tip
+If you want a normal shared bot channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
+:::
+
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
 
 ## Step 1: Create a Discord Application
@@ -199,12 +214,6 @@ DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 ```
 
 Replace the ID with the actual channel ID (right-click → Copy Channel ID with Developer Mode on).
-
-## Bot Behavior
-
-- **Server channels**: By default the bot requires an `@mention` before it responds in server channels. You can disable that globally with `DISCORD_REQUIRE_MENTION=false` or allow specific channels to be mention-free via `DISCORD_FREE_RESPONSE_CHANNELS`.
-- **Direct messages**: DMs always work, even without the Message Content Intent enabled (Discord exempts DMs from this requirement). However, you should still enable the intent for server channel support.
-- **Conversations**: Each channel or DM maintains its own conversation context.
 
 ## Voice Messages
 

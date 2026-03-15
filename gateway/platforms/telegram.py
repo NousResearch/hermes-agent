@@ -275,8 +275,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if self._app:
             try:
-                await self._app.updater.stop()
-                await self._app.stop()
+                # Only stop the updater if it's running
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                if self._app.running:
+                    await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)

@@ -2,12 +2,14 @@
 
 from unittest.mock import patch as mock_patch
 
+import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     clear_session,
     detect_dangerous_command,
     has_pending,
     is_approved,
+    load_permanent,
     pop_pending,
     prompt_dangerous_approval,
     submit_pending,
@@ -342,6 +344,47 @@ class TestFindExecFullPathRm:
         assert key is None
 
 
+class TestPatternKeyUniqueness:
+    """Bug: pattern_key is derived by splitting on \\b and taking [1], so
+    patterns starting with the same word (e.g. find -exec rm and find -delete)
+    produce the same key. Approving one silently approves the other."""
+
+    def test_find_exec_rm_and_find_delete_have_different_keys(self):
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        assert key_exec != key_delete, (
+            f"find -exec rm and find -delete share key {key_exec!r} — "
+            "approving one silently approves the other"
+        )
+
+    def test_approving_find_exec_does_not_approve_find_delete(self):
+        """Session approval for find -exec rm must not carry over to find -delete."""
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        session = "test_find_collision"
+        clear_session(session)
+        approve_session(session, key_exec)
+        assert is_approved(session, key_exec) is True
+        assert is_approved(session, key_delete) is False, (
+            "approving find -exec rm should not auto-approve find -delete"
+        )
+        clear_session(session)
+
+    def test_legacy_find_key_still_approves_find_exec(self):
+        """Old allowlist entry 'find' should keep approving the matching command."""
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"find"})
+            assert is_approved("legacy-find", key_exec) is True
+
+    def test_legacy_find_key_still_approves_find_delete(self):
+        """Old colliding allowlist entry 'find' should remain backwards compatible."""
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"find"})
+            assert is_approved("legacy-find", key_delete) is True
+
+
 class TestViewFullCommand:
     """Tests for the 'view full command' option in prompt_dangerous_approval."""
 
@@ -412,4 +455,21 @@ class TestViewFullCommand:
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
         # After first 'v', is_truncated becomes False, so second 'v' -> deny
         assert result == "deny"
+
+
+class TestForkBombDetection:
+    """The fork bomb regex must match the classic :(){ :|:& };: pattern."""
+
+    def test_classic_fork_bomb(self):
+        dangerous, key, desc = detect_dangerous_command(":(){ :|:& };:")
+        assert dangerous is True, "classic fork bomb not detected"
+        assert "fork bomb" in desc.lower()
+
+    def test_fork_bomb_with_spaces(self):
+        dangerous, key, desc = detect_dangerous_command(":()  {  : | :&  } ; :")
+        assert dangerous is True, "fork bomb with extra spaces not detected"
+
+    def test_colon_in_safe_command_not_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("echo hello:world")
+        assert dangerous is False
 

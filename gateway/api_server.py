@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+import tempfile
+
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -196,6 +198,115 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
             "session_id": session_id,
             "reason": "no active session",
         }
+
+    # ── File upload ────────────────────────────────────────────────────
+
+    _UPLOAD_DIR = Path(
+        os.getenv("HERMES_HOME", Path.home() / ".hermes")
+    ) / "api_uploads"
+    _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
+    @app.post("/v1/upload")
+    async def upload_file(
+        file: UploadFile = File(...),
+        _: None = Depends(verify_api_key),
+    ) -> Dict[str, Any]:
+        """Upload a file and return a download URL.
+
+        Accepted for any file type. Max 25 MB.
+        Use the returned ``url`` in chat messages or for voice input.
+        """
+        data = await file.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+
+        _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = Path(file.filename).suffix if file.filename else ""
+        dest = _UPLOAD_DIR / f"upload_{uuid4().hex[:12]}{suffix}"
+        dest.write_bytes(data)
+
+        url = adapter._register_media(str(dest))
+        return {
+            "url": url,
+            "filename": file.filename,
+            "size": len(data),
+            "content_type": file.content_type,
+        }
+
+    # ── Voice message (upload + transcribe + chat) ────────────────────
+
+    @app.post("/v1/chat/voice")
+    async def chat_voice(
+        file: UploadFile = File(...),
+        session_id: Optional[str] = Form(None),
+        _: None = Depends(verify_api_key),
+    ) -> ChatResponse:
+        """Upload a voice recording, transcribe it, and send to the agent.
+
+        Works like POST /v1/chat but accepts an audio file instead of text.
+        The audio is transcribed via the configured STT provider, then the
+        transcript is sent to the agent as a voice message.
+        """
+        data = await file.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+
+        # Save to temp file for transcription
+        suffix = Path(file.filename).suffix if file.filename else ".webm"
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, prefix="api_voice_", delete=False)
+        tmp.write(data)
+        tmp.close()
+
+        try:
+            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
+            stt_model = get_stt_model_from_config()
+            result = await asyncio.to_thread(transcribe_audio, tmp.name, model=stt_model)
+
+            if not result.get("success"):
+                raise HTTPException(422, f"Transcription failed: {result.get('error', 'unknown')}")
+
+            transcript = result.get("transcript", "").strip()
+            if not transcript:
+                raise HTTPException(422, "Could not transcribe audio (empty result)")
+
+            logger.info("API voice input: %s (lang=%s, prob=%.2f)",
+                        transcript[:80],
+                        result.get("language", "?"),
+                        result.get("language_probability", 0.0))
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+        # Send transcript to agent as voice message
+        sid = session_id or str(uuid4())
+        queue = adapter.register_queue(sid)
+
+        try:
+            await adapter.handle_request(sid, transcript)
+
+            text_parts: list[str] = []
+            media: list[dict] = []
+
+            while True:
+                msg = await asyncio.wait_for(queue.get(), timeout=RESPONSE_TIMEOUT)
+                if msg["type"] == "done":
+                    break
+                elif msg["type"] == "message":
+                    text_parts.append(msg["content"])
+                else:
+                    media.append(msg)
+        except asyncio.TimeoutError:
+            logger.warning("API voice chat timeout for session %s", sid)
+        finally:
+            adapter.unregister_queue(sid)
+
+        return ChatResponse(
+            response="\n".join(text_parts),
+            session_id=sid,
+            media=media,
+        )
 
     # ── Sessions ─────────────────────────────────────────────────────
 

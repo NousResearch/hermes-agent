@@ -36,13 +36,19 @@
   .msg .media-label { font-size: 11px; color: #8b949e; margin-top: 4px; }
 
   /* Input */
-  .input-area { padding: 12px 20px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; }
-  .input-area input { flex: 1; padding: 10px 14px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #c9d1d9; font-size: 14px; outline: none; }
-  .input-area input:focus { border-color: #1f6feb; }
-  .input-area input:disabled { opacity: 0.5; }
-  .input-area button { padding: 10px 20px; background: #1f6feb; border: none; border-radius: 8px; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; }
+  .input-area { padding: 12px 20px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; align-items: center; }
+  .input-area input[type="text"] { flex: 1; padding: 10px 14px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #c9d1d9; font-size: 14px; outline: none; }
+  .input-area input[type="text"]:focus { border-color: #1f6feb; }
+  .input-area input[type="text"]:disabled { opacity: 0.5; }
+  .input-area button { padding: 10px 16px; background: #1f6feb; border: none; border-radius: 8px; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; min-width: 44px; }
   .input-area button:hover { background: #388bfd; }
   .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .input-area .icon-btn { background: #21262d; border: 1px solid #30363d; padding: 10px; border-radius: 8px; font-size: 18px; line-height: 1; }
+  .input-area .icon-btn:hover { background: #30363d; }
+  .input-area .icon-btn.recording { background: #da3633; border-color: #f85149; animation: pulse 1s infinite; }
+  .input-area .file-input { display: none; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .mic-timer { font-size: 12px; color: #f85149; font-variant-numeric: tabular-nums; min-width: 35px; }
 
   /* Loading */
   .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
@@ -68,7 +74,11 @@
 <div class="messages" id="messages"></div>
 
 <div class="input-area">
+  <button class="icon-btn" id="micBtn" onclick="toggleMic()" disabled title="Push to talk">&#127908;</button>
+  <span class="mic-timer" id="micTimer"></span>
   <input type="text" id="input" placeholder="Type a message..." disabled onkeydown="if(event.key==='Enter')sendMessage()" />
+  <input type="file" id="fileInput" class="file-input" onchange="uploadFile(this)" />
+  <button class="icon-btn" id="attachBtn" onclick="document.getElementById('fileInput').click()" disabled title="Upload file">&#128206;</button>
   <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
 </div>
 
@@ -77,6 +87,11 @@ const API_BASE = window.location.origin;
 let apiKey = '';
 let sessionId = '';
 let connected = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let micActive = false;
+let micStartTime = 0;
+let micTimerInterval = null;
 
 // Check health on load
 fetch(`${API_BASE}/v1/health`)
@@ -118,6 +133,8 @@ function connect() {
       connected = true;
       document.getElementById('input').disabled = false;
       document.getElementById('sendBtn').disabled = false;
+      document.getElementById('micBtn').disabled = false;
+      document.getElementById('attachBtn').disabled = false;
       document.getElementById('sessionInfo').textContent = `Session: ${sessionId}`;
       document.getElementById('status').textContent = 'connected';
       addMessage('system', 'Connected to Hermes Agent API');
@@ -252,6 +269,152 @@ async function sendMessage() {
     input.disabled = false;
     document.getElementById('sendBtn').disabled = false;
     input.focus();
+  }
+}
+
+// ── Microphone (push-to-talk) ──────────────────────────────────────
+
+async function toggleMic() {
+  if (micActive) {
+    stopMic();
+  } else {
+    startMic();
+  }
+}
+
+async function startMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType() });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(micTimerInterval);
+      document.getElementById('micTimer').textContent = '';
+
+      if (audioChunks.length === 0) return;
+
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+      const ext = mediaRecorder.mimeType.includes('webm') ? '.webm' : '.ogg';
+      await sendVoice(blob, `voice${ext}`);
+    };
+
+    mediaRecorder.start();
+    micActive = true;
+    micStartTime = Date.now();
+    document.getElementById('micBtn').classList.add('recording');
+    document.getElementById('micBtn').title = 'Stop recording';
+
+    micTimerInterval = setInterval(() => {
+      const sec = Math.floor((Date.now() - micStartTime) / 1000);
+      document.getElementById('micTimer').textContent = `${sec}s`;
+    }, 200);
+
+  } catch (e) {
+    addMessage('error', 'Microphone access denied: ' + e.message);
+  }
+}
+
+function stopMic() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  micActive = false;
+  document.getElementById('micBtn').classList.remove('recording');
+  document.getElementById('micBtn').title = 'Push to talk';
+}
+
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+  for (const t of types) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+async function sendVoice(blob, filename) {
+  addMessage('user', '[Voice message]');
+  showTyping();
+
+  const input = document.getElementById('input');
+  input.disabled = true;
+  document.getElementById('sendBtn').disabled = true;
+
+  try {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    form.append('session_id', sessionId);
+
+    const resp = await fetch(`${API_BASE}/v1/chat/voice`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
+    });
+
+    removeTyping();
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      addMessage('error', `Voice error: ${err.detail || JSON.stringify(err)}`);
+      return;
+    }
+
+    const data = await resp.json();
+    let response = data.response || '';
+    if (response.includes('No home channel is set')) {
+      const lines = response.split('\n');
+      const idx = lines.findIndex(l => l.includes('/sethome'));
+      if (idx >= 0) response = lines.slice(idx + 1).join('\n').trim();
+    }
+    if (response) addMessage('bot', response, data.media);
+  } catch (e) {
+    removeTyping();
+    addMessage('error', 'Voice request failed: ' + e.message);
+  } finally {
+    input.disabled = false;
+    document.getElementById('sendBtn').disabled = false;
+    input.focus();
+  }
+}
+
+// ── File upload ────────────────────────────────────────────────────
+
+async function uploadFile(inputEl) {
+  const file = inputEl.files[0];
+  if (!file || !connected) return;
+  inputEl.value = '';
+
+  addMessage('user', `[File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)]`);
+  showTyping();
+
+  try {
+    const form = new FormData();
+    form.append('file', file);
+
+    const resp = await fetch(`${API_BASE}/v1/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
+    });
+
+    removeTyping();
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      addMessage('error', `Upload error: ${err.detail || JSON.stringify(err)}`);
+      return;
+    }
+
+    const data = await resp.json();
+    addMessage('system', `Uploaded: ${data.filename} (${data.url})`);
+  } catch (e) {
+    removeTyping();
+    addMessage('error', 'Upload failed: ' + e.message);
   }
 }
 

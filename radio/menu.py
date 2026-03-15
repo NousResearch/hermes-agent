@@ -251,7 +251,7 @@ def build_menu_items(
 
 # -- Render helpers ------------------------------------------------------------
 
-MENU_WIDTH = 56
+MENU_WIDTH = 58
 INNER_WIDTH = MENU_WIDTH - 4  # inside borders: "│  " ... " │"
 
 
@@ -286,7 +286,7 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
 
     # │  HERMES RADIO  ...keybinds...  │
     title_line = "HERMES RADIO"
-    keys_hint = "\u2191\u2193 nav  Spc toggle  \u21b5 sel  Tab \u00a7  q close"
+    keys_hint = "\u2191\u2193 nav  Spc toggle  \u21b5 select  q close"
     gap = INNER_WIDTH - len(title_line) - len(keys_hint)
     if gap < 2:
         gap = 2
@@ -298,7 +298,7 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
     fragments.append(("class:radio-menu-border", f" {BOX_V}\n"))
 
     # ├─ separator ─┤
-    fragments.append(("class:radio-menu-border", f"  {BOX_V}{BOX_H * (MENU_WIDTH - 2)}{BOX_V}\n"))
+    fragments.append(("class:radio-menu-border", f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524\n"))
 
     # Viewport calculation -- keep cursor centered in view
     visible = VISIBLE_ROWS
@@ -385,7 +385,7 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
         fragments.append(("class:radio-menu-border", f" {BOX_V}\n"))
 
     # ├─ footer separator ─┤
-    fragments.append(("class:radio-menu-border", f"  {BOX_V}{BOX_H * (MENU_WIDTH - 2)}{BOX_V}\n"))
+    fragments.append(("class:radio-menu-border", f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524\n"))
 
     # Footer: current crate dig config
     decades_str = ", ".join(f"{d}s" for d in sorted(state.active_decades)) or "none"
@@ -422,7 +422,7 @@ def radio_menu_fallback(
         w = MENU_WIDTH - 4
         print(f"\n  {BOX_TL}{BOX_H * (MENU_WIDTH - 2)}{BOX_TR}")
         print(f"  {BOX_V} {'HERMES RADIO':{w}} {BOX_V}")
-        print(f"  {BOX_V}{BOX_H * (MENU_WIDTH - 2)}{BOX_V}")
+        print(f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524")
 
         num = 0
         idx_map = {}
@@ -444,7 +444,7 @@ def radio_menu_fallback(
             line = f"{num:2d}. {label}{sub}"
             print(f"  {BOX_V} {line:{w}} {BOX_V}")
 
-        print(f"  {BOX_V}{BOX_H * (MENU_WIDTH - 2)}{BOX_V}")
+        print(f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524")
         decades_str = ", ".join(f"{d}s" for d in sorted(active_decades))
         moods_str = ", ".join(sorted(active_moods))
         mic_str = "on" if mic_breaks else "off"
@@ -497,7 +497,7 @@ def search_menu(results: List[Dict[str, Any]], title: str = "Search Results") ->
     w = MENU_WIDTH - 4
     print(f"\n  {BOX_TL}{BOX_H * (MENU_WIDTH - 2)}{BOX_TR}")
     print(f"  {BOX_V} {title:{w}} {BOX_V}")
-    print(f"  {BOX_V}{BOX_H * (MENU_WIDTH - 2)}{BOX_V}")
+    print(f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524")
 
     for i, r in enumerate(results, 1):
         name = r.get("name") or r.get("title") or "?"

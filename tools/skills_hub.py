@@ -1156,11 +1156,118 @@ class ClawHubSource(SkillSource):
     def trust_level_for(self, identifier: str) -> str:
         return "community"
 
+    @staticmethod
+    def _normalize_tags(tags: Any) -> List[str]:
+        if isinstance(tags, list):
+            return [str(t) for t in tags]
+        if isinstance(tags, dict):
+            return [str(k) for k in tags.keys() if str(k) != "latest"]
+        return []
+
+    @staticmethod
+    def _coerce_skill_payload(data: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return None
+        nested = data.get("skill")
+        if isinstance(nested, dict):
+            merged = dict(nested)
+            latest_version = data.get("latestVersion")
+            if latest_version is not None and "latestVersion" not in merged:
+                merged["latestVersion"] = latest_version
+            return merged
+        return data
+
+    @staticmethod
+    def _query_terms(query: str) -> List[str]:
+        return [term for term in re.split(r"[^a-z0-9]+", query.lower()) if term]
+
+    @classmethod
+    def _search_score(cls, query: str, meta: SkillMeta) -> int:
+        query_norm = query.strip().lower()
+        if not query_norm:
+            return 1
+
+        identifier = (meta.identifier or "").lower()
+        name = (meta.name or "").lower()
+        description = (meta.description or "").lower()
+        score = 0
+
+        if query_norm == identifier:
+            score += 100
+        if query_norm == name:
+            score += 95
+        if query_norm in identifier:
+            score += 40
+        if query_norm in name:
+            score += 35
+        if query_norm in description:
+            score += 10
+
+        for term in cls._query_terms(query_norm):
+            if term in identifier:
+                score += 15
+            if term in name:
+                score += 12
+            if term in description:
+                score += 3
+
+        return score
+
+    @staticmethod
+    def _dedupe_results(results: List[SkillMeta]) -> List[SkillMeta]:
+        seen: set[str] = set()
+        deduped: List[SkillMeta] = []
+        for result in results:
+            key = (result.identifier or result.name).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(result)
+        return deduped
+
+    def _exact_slug_meta(self, query: str) -> Optional[SkillMeta]:
+        slug = query.strip().split("/")[-1]
+        if not slug or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
+            return None
+        return self.inspect(slug)
+
+    def _finalize_search_results(self, query: str, results: List[SkillMeta], limit: int) -> List[SkillMeta]:
+        query_norm = query.strip()
+        if not query_norm:
+            return self._dedupe_results(results)[:limit]
+
+        filtered = [meta for meta in results if self._search_score(query_norm, meta) > 0]
+        filtered.sort(
+            key=lambda meta: (
+                -self._search_score(query_norm, meta),
+                meta.name.lower(),
+                meta.identifier.lower(),
+            )
+        )
+        filtered = self._dedupe_results(filtered)
+
+        exact = self._exact_slug_meta(query_norm)
+        if exact:
+            filtered = [meta for meta in filtered if self._search_score(query_norm, meta) >= 20]
+            filtered = self._dedupe_results([exact] + filtered)
+
+        if filtered:
+            return filtered[:limit]
+
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", query_norm):
+            return []
+
+        return self._dedupe_results(results)[:limit]
+
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         cache_key = f"clawhub_search_{hashlib.md5(query.encode()).hexdigest()}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
-            return [SkillMeta(**s) for s in cached][:limit]
+            return self._finalize_search_results(
+                query,
+                [SkillMeta(**s) for s in cached],
+                limit,
+            )
 
         try:
             resp = httpx.get(
@@ -1185,20 +1292,19 @@ class ClawHubSource(SkillSource):
                 continue
             display_name = item.get("displayName") or item.get("name") or slug
             summary = item.get("summary") or item.get("description") or ""
-            tags = item.get("tags", [])
-            if not isinstance(tags, list):
-                tags = []
+            tags = self._normalize_tags(item.get("tags", []))
             results.append(SkillMeta(
                 name=display_name,
                 description=summary,
                 source="clawhub",
                 identifier=slug,
                 trust_level="community",
-                tags=[str(t) for t in tags],
+                tags=tags,
             ))
 
-        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
-        return results
+        final_results = self._finalize_search_results(query, results, limit)
+        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in final_results])
+        return final_results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         slug = identifier.split("/")[-1]
@@ -1244,13 +1350,11 @@ class ClawHubSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         slug = identifier.split("/")[-1]
-        data = self._get_json(f"{self.BASE_URL}/skills/{slug}")
+        data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
         if not isinstance(data, dict):
             return None
 
-        tags = data.get("tags", [])
-        if not isinstance(tags, list):
-            tags = []
+        tags = self._normalize_tags(data.get("tags", []))
 
         return SkillMeta(
             name=data.get("displayName") or data.get("name") or data.get("slug") or slug,
@@ -1258,7 +1362,7 @@ class ClawHubSource(SkillSource):
             source="clawhub",
             identifier=data.get("slug") or slug,
             trust_level="community",
-            tags=[str(t) for t in tags],
+            tags=tags,
         )
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:

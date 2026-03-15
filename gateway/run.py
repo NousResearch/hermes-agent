@@ -1114,7 +1114,7 @@ class GatewayRunner:
         
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
-                          "personality", "retry", "undo", "sethome", "set-home",
+                          "personality", "plan", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
                           "background", "reasoning", "voice"}
@@ -1149,6 +1149,27 @@ class GatewayRunner:
         
         if command == "personality":
             return await self._handle_personality_command(event)
+
+        if command == "plan":
+            try:
+                from agent.skill_commands import build_plan_path, build_skill_invocation_message
+
+                user_instruction = event.get_command_args().strip()
+                plan_path = build_plan_path(user_instruction)
+                event.text = build_skill_invocation_message(
+                    "/plan",
+                    user_instruction,
+                    task_id=_quick_key,
+                    runtime_note=(
+                        f"Save the markdown plan with write_file to this exact path: {plan_path}"
+                    ),
+                )
+                if not event.text:
+                    return "Failed to load the bundled /plan skill."
+                command = None
+            except Exception as e:
+                logger.exception("Failed to prepare /plan command")
+                return f"Failed to enter plan mode: {e}"
         
         if command == "retry":
             return await self._handle_retry_command(event)

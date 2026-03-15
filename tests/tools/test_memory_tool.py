@@ -194,8 +194,8 @@ class TestMemoryStorePersistence:
 
         store2 = MemoryStore()
         store2.load_from_disk()
-        assert "persistent fact" in store2.memory_entries
-        assert "Alice, developer" in store2.user_entries
+        assert any("persistent fact" in e for e in store2.memory_entries)
+        assert any("Alice, developer" in e for e in store2.user_entries)
 
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path)

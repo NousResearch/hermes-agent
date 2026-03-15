@@ -412,6 +412,15 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Install
     install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     from tools.skills_hub import SKILLS_DIR
+    # Add provenance metadata to SKILL.md frontmatter
+    skill_md_path = install_dir / "SKILL.md"
+    if skill_md_path.exists():
+        import datetime as _dt
+        skill_content = skill_md_path.read_text(encoding="utf-8")
+        ts = _dt.datetime.now().isoformat(timespec="seconds")
+        provenance_comment = f"<!-- installed:{ts}|source:{identifier} -->\n"
+        if not skill_content.startswith("<!-- installed:"):
+            skill_md_path.write_text(provenance_comment + skill_content, encoding="utf-8")
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 

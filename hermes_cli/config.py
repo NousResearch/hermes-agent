@@ -249,6 +249,8 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "ttl_days": None,             # Optional: auto-expire entries after N days (null = never)
+        "approval_mode": False,       # If true, agent must get user approval before saving memory
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

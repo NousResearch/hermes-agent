@@ -69,7 +69,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
+| **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -157,9 +157,11 @@ hermes model
 ```bash
 # Add to ~/.hermes/.env
 OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=your-key-or-dummy
+OPENAI_API_KEY=***
 LLM_MODEL=your-model-name
 ```
+
+`hermes model` and the manual `.env` approach end up in the same runtime path. If you save a custom endpoint through `hermes model`, Hermes persists the provider + base URL in `config.yaml` so later sessions keep using that endpoint even if `OPENAI_BASE_URL` is not exported in your current shell.
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
@@ -594,7 +596,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
 | `"nous"` | Force Nous Portal | `hermes login` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
-| `"main"` | Use your custom endpoint (`OPENAI_BASE_URL` + `OPENAI_API_KEY`). Works with OpenAI, local models, or any OpenAI-compatible API. | `OPENAI_BASE_URL` + `OPENAI_API_KEY` |
+| `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. | Custom endpoint credentials + base URL |
 
 ### Common Setups
 
@@ -630,9 +632,11 @@ auxiliary:
 ```yaml
 auxiliary:
   vision:
-    provider: "main"      # uses your OPENAI_BASE_URL endpoint
+    provider: "main"      # uses your active custom endpoint
     model: "my-local-model"
 ```
+
+`provider: "main"` follows the same custom endpoint Hermes uses for normal chat. That endpoint can be set directly with `OPENAI_BASE_URL`, or saved once through `hermes model` and persisted in `config.yaml`.
 
 :::tip
 If you use Codex OAuth as your main model provider, vision works automatically — no extra configuration needed. Codex is included in the auto-detection chain for vision.

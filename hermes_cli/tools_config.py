@@ -354,9 +354,24 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
 
 
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
-    """Save the selected toolset keys for a platform to config."""
+    """Save the selected toolset keys for a platform to config.
+
+    Preserve dynamic MCP toolsets (``mcp-<server>``) that were already set for
+    the platform. These entries are not exposed in the tools configurator UI,
+    but they should survive when the user changes the configurable toolsets.
+    """
     config.setdefault("platform_toolsets", {})
-    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys)
+
+    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
+    if not isinstance(existing_toolsets, list):
+        existing_toolsets = []
+
+    preserved_entries = {
+        entry for entry in existing_toolsets
+        if isinstance(entry, str) and entry.startswith("mcp-")
+    }
+
+    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
     save_config(config)
 
 

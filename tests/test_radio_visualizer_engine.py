@@ -39,3 +39,50 @@ def test_feature_snapshot_resamples_recent_levels_and_computes_motion(monkeypatc
     assert snap.transient > 0.0
     assert snap.decay >= 0.0
     assert snap.active is True
+
+
+def test_render_rows_returns_requested_dimensions():
+    from radio.visualizer_engine import render_rows
+
+    rows = render_rows(
+        preset_name='braille',
+        width=16,
+        rows=3,
+        paused=False,
+        position=0.0,
+        title_seed='test-track',
+    )
+
+    assert len(rows) == 3
+    assert all(len(row) == 16 for row in rows)
+
+
+def test_render_rows_returns_strings_even_when_meter_inactive(monkeypatch):
+    from radio import visualizer_engine
+
+    monkeypatch.setattr(
+        visualizer_engine,
+        'get_feature_snapshot',
+        lambda width, smoothing=0.0: level_meter.VisualizerFeatures(
+            levels=[0.0] * width,
+            energy=0.0,
+            peak=0.0,
+            transient=0.0,
+            motion=0.0,
+            decay=0.0,
+            active=False,
+        ),
+    )
+
+    rows = visualizer_engine.render_rows(
+        preset_name='braille',
+        width=12,
+        rows=2,
+        paused=False,
+        position=4.2,
+        title_seed='fallback-seed',
+    )
+
+    assert len(rows) == 2
+    assert all(isinstance(row, str) for row in rows)
+    assert all(len(row) == 12 for row in rows)

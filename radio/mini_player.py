@@ -103,89 +103,18 @@ def _noise(seed: int, idx: int) -> float:
 
 
 def _generate_bars(position: float, title: str, paused: bool) -> str:
-    """Generate animated bar characters.
+    """Generate compact visualizer bars via the shared visualizer engine."""
+    from radio.visualizer_engine import render_rows
 
-    Uses real audio RMS levels from the ffmpeg sidecar when available,
-    falling back to position-seeded noise.
-    """
-    global _bar_levels, _peak_levels, _peak_decay, _last_title, _last_render
-
-    if paused:
-        for i in range(_NUM_BARS):
-            _bar_levels[i] *= 0.85
-            _peak_levels[i] *= 0.9
-        return "".join(_braille_bar(_bar_levels[i]) for i in range(_NUM_BARS))
-
-    # Try real audio levels first
-    try:
-        from radio.level_meter import get_levels, is_active
-        if is_active():
-            real_levels = get_levels(_NUM_BARS)
-            if len(real_levels) >= 3:
-                return _render_real_levels(real_levels)
-    except ImportError:
-        pass
-
-    # Reset state when track changes
-    if title != _last_title:
-        _last_title = title
-        _bar_levels = [0.0] * _NUM_BARS
-        _peak_levels = [0.0] * _NUM_BARS
-        _peak_decay = [0.0] * _NUM_BARS
-
-    now = time.time()
-    dt = min(now - _last_render, 0.5) if _last_render > 0 else 0.3
-    _last_render = now
-
-    # Derive a track-specific seed from the title
-    title_seed = int(hashlib.md5((title or "x").encode()).hexdigest()[:8], 16)
-
-    # Use position to create time-varying noise at different rates per bar
-    # Lower bars = lower freq (slower variation), higher bars = higher freq
-    pos = position if position and position > 0 else now
-
-    for i in range(_NUM_BARS):
-        # Each bar samples noise at a different rate
-        # Lower indices = bass (slow), higher = treble (fast)
-        freq = 1.5 + i * 0.8  # frequency multiplier
-        phase = title_seed + i * 137  # phase offset per bar
-
-        # Multi-octave noise for organic feel
-        val = 0.0
-        val += _noise(int(pos * freq) + phase, i) * 0.5
-        val += _noise(int(pos * freq * 2.7) + phase + 1000, i) * 0.3
-        val += _noise(int(pos * freq * 6.1) + phase + 2000, i) * 0.2
-
-        # Shape: center-heavy (mids louder, like real music)
-        center_boost = 0.6 + 0.4 * (1.0 - abs(i - _NUM_BARS / 2) / (_NUM_BARS / 2))
-        val *= center_boost
-
-        # Overall energy envelope -- slow sine wave so bars breathe
-        energy = 0.6 + 0.4 * math.sin(pos * 0.4 + title_seed * 0.001)
-        val *= energy
-
-        # Boost everything up -- we want lively bars
-        val = val * 1.6 + 0.15
-
-        # Smooth attack/decay
-        attack = 8.0   # fast attack
-        decay = 3.0     # slower decay
-        if val > _bar_levels[i]:
-            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, attack * dt)
-        else:
-            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, decay * dt)
-
-        # Peak hold with decay
-        if _bar_levels[i] > _peak_levels[i]:
-            _peak_levels[i] = _bar_levels[i]
-            _peak_decay[i] = 0.0
-        else:
-            _peak_decay[i] += dt
-            if _peak_decay[i] > 0.8:  # hold for 0.8s then decay
-                _peak_levels[i] *= 0.92
-
-    # Render as braille
-    return "".join(_braille_bar(_bar_levels[i]) for i in range(_NUM_BARS))
+    rows = render_rows(
+        preset_name=None,
+        width=_NUM_BARS,
+        rows=1,
+        paused=paused,
+        position=position,
+        title_seed=title,
+    )
+    return rows[0] if rows else ""
 
 
 def _render_real_levels(levels: List[float]) -> str:
@@ -515,94 +444,23 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
 
 
 def _generate_bars_expanded(position: float, title: str, paused: bool) -> List[str]:
-    """Generate 3 rows of wide braille visualizer bars for expanded mode."""
-    global _bar_levels_exp
+    """Generate expanded visualizer rows via the shared visualizer engine."""
+    from radio.visualizer_engine import render_rows
+    from radio.visualizers import load_preset
 
-    n = _BARS_EXPANDED
-
-    # Get real or synthetic levels
-    levels = [0.0] * n
     try:
-        from radio.level_meter import get_levels, is_active
-        if is_active():
-            raw = get_levels(n)
-            if len(raw) >= 3:
-                for i in range(n):
-                    idx = min(i, len(raw) - 1)
-                    levels[i] = raw[idx]
-                    # Add jitter for visual spread
-                    j = _noise(int(time.time() * 3), i) * 0.12
-                    levels[i] = max(0.0, min(1.0, levels[i] + j - 0.06))
-    except ImportError:
-        pass
-
-    # If no real levels, use position-seeded noise
-    if all(l == 0.0 for l in levels) and not paused:
-        pos = position if position and position > 0 else time.time()
-        title_seed = int(hashlib.md5((title or "x").encode()).hexdigest()[:8], 16)
-        for i in range(n):
-            freq = 1.2 + i * 0.5
-            phase = title_seed + i * 137
-            val = _noise(int(pos * freq) + phase, i) * 0.5
-            val += _noise(int(pos * freq * 2.7) + phase + 1000, i) * 0.3
-            val += _noise(int(pos * freq * 6.1) + phase + 2000, i) * 0.2
-            center = 0.6 + 0.4 * (1.0 - abs(i - n / 2) / (n / 2))
-            energy = 0.6 + 0.4 * math.sin(pos * 0.4 + title_seed * 0.001)
-            levels[i] = val * center * energy * 1.6 + 0.15
-
-    # Load visualizer preset for attack/decay/rows/mirror
-    try:
-        from radio.visualizers import load_preset
         preset = load_preset()
     except Exception:
-        preset = {"attack": 12.0, "decay": 4.0, "rows": 3, "mirror": False,
-                  "center_boost": 0.25, "chars": "braille"}
+        preset = {"rows": 3}
 
-    atk = preset.get("attack", 12.0)
-    dec = preset.get("decay", 4.0)
-    num_rows = preset.get("rows", 3)
-    do_mirror = preset.get("mirror", False)
-    char_set = preset.get("chars", "braille")
-    cb = preset.get("center_boost", 0.25)
-
-    if paused:
-        for i in range(n):
-            _bar_levels_exp[i] *= 0.85
-    else:
-        dt = 0.3
-        for i in range(n):
-            val = levels[i]
-            # Apply center boost from preset
-            if cb > 0:
-                center = 1.0 - abs(i - n / 2) / (n / 2) * cb
-                val *= center
-            if val > _bar_levels_exp[i]:
-                _bar_levels_exp[i] += (val - _bar_levels_exp[i]) * min(1.0, atk * dt)
-            else:
-                _bar_levels_exp[i] += (val - _bar_levels_exp[i]) * min(1.0, dec * dt)
-
-    # Mirror mode: duplicate bars symmetrically
-    bar_data = list(_bar_levels_exp[:n])
-    if do_mirror:
-        half = bar_data[:n // 2]
-        bar_data = list(reversed(half)) + half
-
-    # Render stacked rows
-    num_rows = max(1, min(6, num_rows))
-    rows = [""] * num_rows
-    for i in range(len(bar_data)):
-        level = max(0.0, min(1.0, bar_data[i]))
-        if char_set == "blocks":
-            # Use block characters (single row)
-            idx = max(0, min(8, int(level * 8)))
-            ch_stack = [_BLOCKS[idx]] * num_rows
-        else:
-            # Use braille (default)
-            ch_stack = _braille_bar_stack(level, rows=num_rows)
-        for row_idx, ch in enumerate(ch_stack):
-            rows[row_idx] += ch
-
-    return rows
+    return render_rows(
+        preset_name=None,
+        width=_BARS_EXPANDED,
+        rows=max(1, min(6, int(preset.get("rows", 3)))),
+        paused=paused,
+        position=position,
+        title_seed=title,
+    )
 
 
 def get_mini_player_height() -> int:

@@ -272,6 +272,8 @@ class GatewayRunner:
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._exit_cleanly = False
+        self._exit_reason: Optional[str] = None
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -490,6 +492,41 @@ class GatewayRunner:
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._flush_memories_for_session, old_session_id)
+
+    @property
+    def should_exit_cleanly(self) -> bool:
+        return self._exit_cleanly
+
+    @property
+    def exit_reason(self) -> Optional[str]:
+        return self._exit_reason
+
+    async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
+        """React to a non-retryable adapter failure after startup."""
+        logger.error(
+            "Fatal %s adapter error (%s): %s",
+            adapter.platform.value,
+            adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+
+        existing = self.adapters.get(adapter.platform)
+        if existing is adapter:
+            try:
+                await adapter.disconnect()
+            finally:
+                self.adapters.pop(adapter.platform, None)
+                self.delivery_router.adapters = self.adapters
+
+        if not self.adapters:
+            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
+            logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
+            await self.stop()
+
+    def _request_clean_exit(self, reason: str) -> None:
+        self._exit_cleanly = True
+        self._exit_reason = reason
+        self._shutdown_event.set()
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -674,6 +711,11 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(gateway_state="starting", exit_reason=None)
+        except Exception:
+            pass
         
         # Warn if no user allowlists are configured and open access is not opted in
         _any_allowlist = any(
@@ -703,6 +745,7 @@ class GatewayRunner:
             logger.warning("Process checkpoint recovery: %s", e)
         
         connected_count = 0
+        startup_nonretryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
@@ -714,8 +757,9 @@ class GatewayRunner:
                 logger.warning("No adapter available for %s", platform.value)
                 continue
             
-            # Set up message handler
+            # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -728,10 +772,24 @@ class GatewayRunner:
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
+                    if adapter.has_fatal_error and not adapter.fatal_error_retryable:
+                        startup_nonretryable_errors.append(
+                            f"{platform.value}: {adapter.fatal_error_message}"
+                        )
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
         
         if connected_count == 0:
+            if startup_nonretryable_errors:
+                reason = "; ".join(startup_nonretryable_errors)
+                logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                except Exception:
+                    pass
+                self._request_clean_exit(reason)
+                return True
             logger.warning("No messaging platforms connected.")
             logger.info("Gateway will continue running for cron job execution.")
         
@@ -739,6 +797,11 @@ class GatewayRunner:
         self.delivery_router.adapters = self.adapters
         
         self._running = True
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(gateway_state="running", exit_reason=None)
+        except Exception:
+            pass
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -833,8 +896,12 @@ class GatewayRunner:
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
-        from gateway.status import remove_pid_file
+        from gateway.status import remove_pid_file, write_runtime_status
         remove_pid_file()
+        try:
+            write_runtime_status(gateway_state="stopped", exit_reason=self._exit_reason)
+        except Exception:
+            pass
         
         logger.info("Gateway stopped")
     
@@ -4373,6 +4440,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     success = await runner.start()
     if not success:
         return False
+    if runner.should_exit_cleanly:
+        if runner.exit_reason:
+            logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+        return True
     
     # Write PID file so CLI can detect gateway is running
     import atexit

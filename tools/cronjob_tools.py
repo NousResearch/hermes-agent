@@ -8,6 +8,7 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -372,7 +373,7 @@ def check_cronjob_requirements() -> bool:
     Requires 'crontab' executable to be present in the system PATH.
     Available in interactive CLI mode and gateway/messaging platforms.
     """
-    # Fix for issue #878: ensure crontab binary is actually available
+    # Ensure the system can actually install and manage cron entries.
     if not shutil.which("crontab"):
         return False
 

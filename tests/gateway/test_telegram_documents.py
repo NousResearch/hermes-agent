@@ -12,6 +12,7 @@ import asyncio
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -535,6 +536,51 @@ class TestSendDocument:
 
         call_kwargs = connected_adapter._bot.send_document.call_args[1]
         assert call_kwargs["reply_to_message_id"] == 50
+
+
+class TestTelegramPhotoBatching:
+    @pytest.mark.asyncio
+    async def test_flush_photo_batch_does_not_drop_newer_scheduled_task(self, adapter):
+        old_task = MagicMock()
+        new_task = MagicMock()
+        batch_key = "session:photo-burst"
+        adapter._pending_photo_batch_tasks[batch_key] = new_task
+        adapter._pending_photo_batches[batch_key] = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=SimpleNamespace(channel_id="chat-1"),
+            media_urls=["/tmp/a.jpg"],
+            media_types=["image/jpeg"],
+        )
+
+        with (
+            patch("gateway.platforms.telegram.asyncio.current_task", return_value=old_task),
+            patch("gateway.platforms.telegram.asyncio.sleep", new=AsyncMock()),
+        ):
+            await adapter._flush_photo_batch(batch_key)
+
+        assert adapter._pending_photo_batch_tasks[batch_key] is new_task
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_photo_batch_tasks(self, adapter):
+        task = MagicMock()
+        task.done.return_value = False
+        adapter._pending_photo_batch_tasks["session:photo-burst"] = task
+        adapter._pending_photo_batches["session:photo-burst"] = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=SimpleNamespace(channel_id="chat-1"),
+        )
+        adapter._app = MagicMock()
+        adapter._app.updater.stop = AsyncMock()
+        adapter._app.stop = AsyncMock()
+        adapter._app.shutdown = AsyncMock()
+
+        await adapter.disconnect()
+
+        task.cancel.assert_called_once()
+        assert adapter._pending_photo_batch_tasks == {}
+        assert adapter._pending_photo_batches == {}
 
 
 # ---------------------------------------------------------------------------

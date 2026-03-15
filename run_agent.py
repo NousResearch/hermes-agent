@@ -5582,6 +5582,12 @@ class AIAgent:
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
                         args = tc.function.arguments
+                        if isinstance(args, (dict, list)):
+                            tc.function.arguments = json.dumps(args)
+                            continue
+                        if args is not None and not isinstance(args, str):
+                            tc.function.arguments = str(args)
+                            args = tc.function.arguments
                         # Treat empty/whitespace strings as empty object
                         if not args or not args.strip():
                             tc.function.arguments = "{}"

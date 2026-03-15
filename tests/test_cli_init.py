@@ -95,6 +95,13 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestCollaborationDefaults:
+    def test_default_config_exposes_disabled_collaboration_block(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["collaboration"]["enabled"] is False
+
+
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
         cli = _make_cli()

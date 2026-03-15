@@ -14,9 +14,13 @@ Usage:
 """
 
 import asyncio
+import concurrent.futures
+import contextlib
+import json
 import logging
 import os
 import re
+import time
 import sys
 import signal
 import threading
@@ -222,6 +226,12 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        from gateway.collaboration import CollaborationStore
+        self.collaboration_store = CollaborationStore(self.config.sessions_dir / "collaboration.db")
+        self._internal_event_queue: asyncio.Queue[Any] = asyncio.Queue()
+        self._internal_event_task: Optional[asyncio.Task] = None
+        self._collaboration_waits: Dict[str, Dict[str, Any]] = {}
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -237,6 +247,7 @@ class GatewayRunner:
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            has_pending_collaborations_fn=lambda key: self.collaboration_store.has_pending_for_session(key),
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
@@ -272,6 +283,181 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+
+        # Per-chat voice reply mode: "off" | "voice_only" | "all"
+        self._voice_mode: Dict[str, str] = self._load_voice_modes()
+
+    async def route_collaboration_request(
+        self,
+        *,
+        requester_session_key: str,
+        target_session_key: str,
+        job_id: str,
+        task_text: str,
+        lineage: list[str],
+        requester_agent: str = "",
+        target_source: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        from gateway.collaboration import InternalGatewayEvent
+
+        await self._ensure_internal_event_consumer()
+        await self._internal_event_queue.put(
+            InternalGatewayEvent(
+                kind="collaboration_request",
+                session_key=target_session_key,
+                job_id=job_id,
+                payload={
+                    "requester_session_key": requester_session_key,
+                    "requester_agent": requester_agent,
+                    "task_text": task_text,
+                    "lineage": list(lineage),
+                    "target_source": target_source or {},
+                },
+            )
+        )
+
+    async def route_collaboration_result(
+        self,
+        *,
+        requester_session_key: str,
+        job_id: str,
+        result_text: str,
+    ) -> None:
+        from gateway.collaboration import InternalGatewayEvent
+
+        await self._ensure_internal_event_consumer()
+        await self._internal_event_queue.put(
+            InternalGatewayEvent(
+                kind="collaboration_result",
+                session_key=requester_session_key,
+                job_id=job_id,
+                payload={"result_text": result_text},
+            )
+        )
+
+    def register_collaboration_wait(
+        self,
+        job_id: str,
+        requester_session_key: str,
+    ) -> Dict[str, Any]:
+        handle = {
+            "job_id": job_id,
+            "requester_session_key": requester_session_key,
+            "future": concurrent.futures.Future(),
+            "created_at": time.time(),
+        }
+        self._collaboration_waits[job_id] = handle
+        return handle
+
+    def get_collaboration_wait(self, job_id: str) -> Optional[Dict[str, Any]]:
+        return self._collaboration_waits.get(job_id)
+
+    def unregister_collaboration_wait(self, job_id: str) -> None:
+        self._collaboration_waits.pop(job_id, None)
+
+    async def _ensure_internal_event_consumer(self) -> None:
+        if self._internal_event_task and not self._internal_event_task.done():
+            return
+        self._internal_event_task = asyncio.create_task(self._internal_event_consumer())
+
+    async def _internal_event_consumer(self) -> None:
+        while True:
+            try:
+                await self._process_next_internal_event()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("collaboration event consumer error: %s", exc, exc_info=True)
+
+    async def _process_next_internal_event(self) -> None:
+        event = await self._internal_event_queue.get()
+        try:
+            await self._deliver_internal_event(event)
+        finally:
+            self._internal_event_queue.task_done()
+
+    async def _deliver_internal_event(self, event: Any) -> None:
+        logger.debug(
+            "collaboration job_id=%s session=%s status=queued kind=%s",
+            getattr(event, "job_id", "?"),
+            getattr(event, "session_key", "?"),
+            getattr(event, "kind", "?"),
+        )
+        if getattr(event, "kind", "") == "collaboration_request":
+            await self._handle_collaboration_request_event(event)
+        elif getattr(event, "kind", "") == "collaboration_result":
+            await self._handle_collaboration_result_event(event)
+
+    async def _handle_collaboration_request_event(self, event: Any) -> None:
+        payload = getattr(event, "payload", {}) or {}
+        try:
+            await self._run_collaboration_target(event.job_id, event.session_key, payload)
+        except Exception as exc:
+            logger.error("collaboration request failed: %s", exc, exc_info=True)
+            self._mark_collaboration_failed_from_exception(event.job_id, exc)
+            await self.route_collaboration_result(
+                requester_session_key=payload.get("requester_session_key", ""),
+                job_id=event.job_id,
+                result_text=json.dumps({"status": "failed", "error": str(exc)}),
+            )
+
+    async def _handle_collaboration_result_event(self, event: Any) -> None:
+        handle = self.get_collaboration_wait(event.job_id)
+        payload = getattr(event, "payload", {}) or {}
+        result_text = payload.get("result_text", "")
+        if handle and not handle["future"].done():
+            handle["future"].set_result(payload)
+        try:
+            job = self.collaboration_store.get_job(event.job_id)
+            if job:
+                job.status = "completed"
+                job.result_text = result_text
+                job.updated_at = datetime.now().isoformat()
+                self.collaboration_store.save_job(job)
+        except Exception:
+            logger.debug("Failed to persist collaboration result for %s", event.job_id)
+
+    def _mark_collaboration_failed_from_exception(self, job_id: str, exc: Exception) -> None:
+        job = self.collaboration_store.get_job(job_id)
+        if not job:
+            return
+        job.status = "failed"
+        job.error_reason = f"{type(exc).__name__}: {exc}"
+        job.updated_at = datetime.now().isoformat()
+        self.collaboration_store.save_job(job)
+
+    async def _run_collaboration_target(self, job_id: str, target_session_key: str, payload: Dict[str, Any]) -> None:
+        from agent.prompt_builder import build_collaboration_prompt
+        from gateway.session import SessionSource
+
+        source_dict = payload.get("target_source") or {}
+        source = SessionSource.from_dict(source_dict)
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        message = build_collaboration_prompt(
+            requester_agent=payload.get("requester_agent", "unknown"),
+            job_id=job_id,
+            task_text=payload.get("task_text", ""),
+        )
+        result = await self._run_agent(
+            message=message,
+            context_prompt="",
+            history=history,
+            source=source,
+            session_id=session_entry.session_id,
+            session_key=target_session_key,
+        )
+        await self.route_collaboration_result(
+            requester_session_key=payload.get("requester_session_key", ""),
+            job_id=job_id,
+            result_text=json.dumps(
+                {
+                    "status": "completed",
+                    "result": result.get("final_response", ""),
+                    "target_agent": payload.get("requester_agent", ""),
+                }
+            ),
+        )
 
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
@@ -327,7 +513,56 @@ class GatewayRunner:
             return
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
-    
+
+    # -- Voice mode persistence ------------------------------------------
+
+    _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+
+    def _load_voice_modes(self) -> Dict[str, str]:
+        try:
+            data = json.loads(self._VOICE_MODE_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        valid_modes = {"off", "voice_only", "all"}
+        return {
+            str(chat_id): mode
+            for chat_id, mode in data.items()
+            if mode in valid_modes
+        }
+
+    def _save_voice_modes(self) -> None:
+        try:
+            self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._VOICE_MODE_PATH.write_text(
+                json.dumps(self._voice_mode, indent=2)
+            )
+        except OSError as e:
+            logger.warning("Failed to save voice modes: %s", e)
+
+    def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
+        """Update an adapter's in-memory auto-TTS suppression set if present."""
+        disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
+        if not isinstance(disabled_chats, set):
+            return
+        if disabled:
+            disabled_chats.add(chat_id)
+        else:
+            disabled_chats.discard(chat_id)
+
+    def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
+        """Restore persisted /voice off state into a live platform adapter."""
+        disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
+        if not isinstance(disabled_chats, set):
+            return
+        disabled_chats.clear()
+        disabled_chats.update(
+            chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
+        )
+
     def _flush_memories_for_session(self, old_session_id: str):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -488,6 +723,38 @@ class GatewayRunner:
             return {"enabled": True, "effort": effort}
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return None
+
+    @staticmethod
+    def _load_gateway_max_tokens() -> int | None:
+        """Load a gateway-wide max_tokens cap from env/config.
+
+        Env var ``HERMES_MAX_TOKENS`` overrides ``agent.max_tokens`` in
+        ``config.yaml``. Returns ``None`` when unset so the model/provider
+        default still applies.
+        """
+        raw_value = os.getenv("HERMES_MAX_TOKENS", "").strip()
+        if not raw_value:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw_cfg = cfg.get("agent", {}).get("max_tokens")
+                    raw_value = "" if raw_cfg is None else str(raw_cfg).strip()
+            except Exception:
+                raw_value = ""
+        if not raw_value:
+            return None
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid gateway max_tokens value %r", raw_value)
+            return None
+        if value <= 0:
+            logger.warning("Ignoring non-positive gateway max_tokens value %r", raw_value)
+            return None
+        return value
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -725,6 +992,12 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
 
+        if self._internal_event_task:
+            self._internal_event_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._internal_event_task
+            self._internal_event_task = None
+
         self.adapters.clear()
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
@@ -816,7 +1089,6 @@ class GatewayRunner:
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
-        # Webhook messages are local HTTP requests — authorized by default.
         if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
             return True
 
@@ -3049,11 +3321,13 @@ class GatewayRunner:
         """
         from run_agent import AIAgent
         import queue
+        self._event_loop = asyncio.get_running_loop()
         
         # Determine toolset based on platform.
         # Check config.yaml for per-platform overrides, fallback to hardcoded defaults.
         default_toolset_map = {
             Platform.LOCAL: "hermes-cli",
+            Platform.WEBHOOK: "hermes-webhook",
             Platform.TELEGRAM: "hermes-telegram",
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
@@ -3078,6 +3352,7 @@ class GatewayRunner:
         # Map platform enum to config key
         platform_config_key = {
             Platform.LOCAL: "cli",
+            Platform.WEBHOOK: "webhook",
             Platform.TELEGRAM: "telegram",
             Platform.DISCORD: "discord",
             Platform.WHATSAPP: "whatsapp",
@@ -3358,10 +3633,14 @@ class GatewayRunner:
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
+            reasoning_config = self._load_reasoning_config()
+            max_tokens = self._load_gateway_max_tokens()
+            self._reasoning_config = reasoning_config
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
                 max_iterations=max_iterations,
+                max_tokens=max_tokens,
                 quiet_mode=True,
                 verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
@@ -3378,12 +3657,16 @@ class GatewayRunner:
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
+                skip_context_files=(source.platform == Platform.WEBHOOK),
                 honcho_session_key=session_key,
                 honcho_manager=honcho_manager,
                 honcho_config=honcho_config,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )
+            agent.gateway_runner = self
+            agent.gateway_session_key = session_key
+            agent.gateway_source = source
             
             # Store agent reference for interrupt support
             agent_holder[0] = agent

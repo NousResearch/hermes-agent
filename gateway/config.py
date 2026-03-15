@@ -153,6 +153,12 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+
+    # STT settings
+    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+
+    # Collaboration settings (explicit alias registry, limits, kill switch)
+    collaboration: Dict[str, Any] = field(default_factory=dict)
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -171,6 +177,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # Webhook uses a configured listening port
+            elif platform == Platform.WEBHOOK and config.extra.get("port"):
                 connected.append(platform)
         return connected
     
@@ -216,6 +225,8 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
+            "collaboration": self.collaboration,
         }
     
     @classmethod
@@ -256,6 +267,8 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=_coerce_bool(stt_enabled, True),
+            collaboration=data.get("collaboration", {}) if isinstance(data.get("collaboration", {}), dict) else {},
         )
 
 
@@ -293,6 +306,26 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge quick commands from config.yaml into gateway runtime config.
+            # config.yaml is the user-facing config source, so when present it
+            # should override gateway.json for this setting.
+            qc = yaml_cfg.get("quick_commands")
+            if qc is not None:
+                if isinstance(qc, dict):
+                    config.quick_commands = qc
+                else:
+                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
+            # Bridge STT enable/disable from config.yaml into gateway runtime.
+            # This keeps the gateway aligned with the user-facing config source.
+            stt_cfg = yaml_cfg.get("stt")
+            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
+                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+
+            collaboration_cfg = yaml_cfg.get("collaboration")
+            if isinstance(collaboration_cfg, dict):
+                config.collaboration = collaboration_cfg
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
@@ -459,18 +492,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
 
-    # Webhook (generic inbound HTTP adapter)
+    # Webhook
     webhook_port = os.getenv("WEBHOOK_PORT")
     if webhook_port:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
         config.platforms[Platform.WEBHOOK].enabled = True
-        # Default to no auto-reset for webhook sessions — these are
-        # programmatic integrations (bridges, automations) where the
-        # caller manages lifecycle.  Context is preserved until the
-        # caller explicitly creates a new session or chat_id.
-        if Platform.WEBHOOK not in config.reset_by_platform:
-            config.reset_by_platform[Platform.WEBHOOK] = SessionResetPolicy(mode="none")
+        try:
+            config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
+        except ValueError:
+            logger.warning("Ignoring invalid WEBHOOK_PORT=%r", webhook_port)
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

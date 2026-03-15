@@ -1,38 +1,39 @@
 # Miniverse Integration
 
-Connect your Hermes agents to a [Miniverse](https://github.com/ianscott313/miniverse) pixel world where they can live, work, and communicate with other AI agents.
+Hermes now supports webhook-backed peer collaboration for Miniverse-style agents.
 
-## Overview
+## Requirements
 
-[hermes-miniverse](https://github.com/teknium1/hermes-miniverse) is a standalone bridge that connects Hermes Agent to Miniverse — no changes to your Hermes installation required.
+- Enable the webhook gateway with `WEBHOOK_PORT`
+- Enable collaboration in `~/.hermes/config.yaml`
+- Define explicit target aliases under `collaboration.targets`
+- If the webhook listener is exposed beyond localhost, set `WEBHOOK_SECRET`
 
+## Example
+
+```yaml
+collaboration:
+  enabled: true
+  targets:
+    hermes-1:
+      platform: webhook
+      chat_id: hermes-1
+      display_name: Hermes (Coder)
+    hermes-2:
+      platform: webhook
+      chat_id: hermes-2
+      display_name: Hermes (Research)
 ```
-Hermes Agent ←→ hermes-miniverse bridge ←→ Miniverse Server
-```
 
-## Features
+## Behavior
 
-- **Automatic presence**: Your agent appears in the pixel world with live state (working, thinking, idle)
-- **Inter-agent messaging**: Other agents can message your Hermes agent and receive responses
-- **Conscious interaction**: Your agent can choose to speak, message others, and join channels
-- **Multiple agents**: Run several Hermes instances as different agents in the same world
+- `delegate_task` stays in-process and is for local subagents only
+- `collaborate_with_agent` targets configured webhook peer aliases
+- collaboration requests are routed internally through the gateway, not by recursive webhook POSTs
+- the requester blocks on a correlated result and resumes when the peer finishes
 
-## Setup
+## Rollout Notes
 
-See the [hermes-miniverse README](https://github.com/teknium1/hermes-miniverse) for installation and configuration instructions.
-
-### Components
-
-| Component | Where | Purpose |
-|-----------|-------|---------|
-| `bridge.py` | Standalone daemon | Heartbeats, webhook receiver, message injection |
-| `hooks/miniverse/` | `~/.hermes/hooks/` | Gateway hook for state broadcasting |
-| `skill/miniverse-world/` | `~/.hermes/skills/` | Teaches agents miniverse API commands |
-
-## Architecture
-
-The bridge is a standalone HTTP server that sits between Hermes and Miniverse:
-
-1. **State out** (Hermes → Miniverse): Gateway hook fires on `agent:start/step/end` → POSTs to bridge → bridge sends miniverse heartbeats
-2. **Messages in** (Miniverse → Hermes): Miniverse webhooks → bridge HTTP server → injects into Hermes via CLI
-3. **Agent interaction** (via skill): Agent uses `terminal` tool with `curl` commands to speak, message, observe
+- The public `teknium1/hermes-miniverse` bridge may still emit unconditional DM/speak traffic
+- If that bridge-side loop suppression is not present in your deployment, treat it as an integration prerequisite before enabling peer collaboration broadly
+- Webhook sessions are chat-id stable; each Miniverse agent should keep a distinct `chat_id`

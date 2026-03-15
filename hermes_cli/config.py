@@ -114,6 +114,16 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
 
+    "collaboration": {
+        "enabled": False,
+        "max_pending_per_session": 3,
+        "max_pending_total": 50,
+        "max_queue_size": 1000,
+        "default_timeout_seconds": 300,
+        "result_grace_seconds": 30,
+        "targets": {},
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.

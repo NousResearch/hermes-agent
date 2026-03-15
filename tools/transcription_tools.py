@@ -93,6 +93,18 @@ def _load_stt_config() -> dict:
         return {}
 
 
+def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
+    """Return whether STT is enabled in config."""
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    enabled = stt_config.get("enabled", True)
+    if isinstance(enabled, str):
+        return enabled.strip().lower() in ("true", "1", "yes", "on")
+    if enabled is None:
+        return True
+    return bool(enabled)
+
+
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
@@ -101,6 +113,9 @@ def _get_provider(stt_config: dict) -> str:
       2. Auto-detect: local > groq (free) > openai (paid)
       3. Disabled (returns "none")
     """
+    if not is_stt_enabled(stt_config):
+        return "none"
+
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
     if provider == "local":
@@ -334,6 +349,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     # Load config and determine provider
     stt_config = _load_stt_config()
+    if not is_stt_enabled(stt_config):
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "STT is disabled in config.yaml (stt.enabled: false).",
+        }
+
     provider = _get_provider(stt_config)
 
     if provider == "local":

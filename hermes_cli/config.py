@@ -219,7 +219,8 @@ DEFAULT_CONFIG = {
     },
     
     "stt": {
-        "provider": "local",  # "local" (free, faster-whisper) | "openai" (Whisper API)
+        "enabled": True,
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
         },
@@ -300,7 +301,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 7,
+    "_config_version": 8,
 }
 
 # =============================================================================

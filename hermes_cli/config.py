@@ -1092,6 +1092,13 @@ def save_anthropic_oauth_token(value: str, save_fn=None):
     writer("ANTHROPIC_API_KEY", "")
 
 
+def use_anthropic_claude_code_credentials(save_fn=None):
+    """Use Claude Code's own credential files instead of persisting env tokens."""
+    writer = save_fn or save_env_value
+    writer("ANTHROPIC_TOKEN", "")
+    writer("ANTHROPIC_API_KEY", "")
+
+
 def save_anthropic_api_key(value: str, save_fn=None):
     """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
     writer = save_fn or save_env_value

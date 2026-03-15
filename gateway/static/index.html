@@ -431,10 +431,13 @@ async function sendVoice(blob) {
 async function uploadFile(el) {
     const file = el.files[0]; if (!file) return; el.value = '';
 
-    // Show preview for images
+    // Show preview for images and videos
     if (file.type.startsWith('image/')) {
         const url = URL.createObjectURL(file);
         addUserImageMessage(url, file.name);
+    } else if (file.type.startsWith('video/')) {
+        const url = URL.createObjectURL(file);
+        addUserVideoMessage(url, file.name);
     } else {
         addUserMessage(`[File: ${file.name}]`);
     }
@@ -536,6 +539,16 @@ function addImageMessage(url, caption) {
     const img = document.createElement('img'); img.src = url; img.onclick = () => window.open(url, '_blank');
     div.appendChild(img);
     messagesEl.insertBefore(div, typingEl); scrollToBottom();
+}
+
+function addUserVideoMessage(url, filename) {
+    const div = document.createElement('div'); div.className = 'msg user';
+    const video = document.createElement('video');
+    video.src = url; video.controls = true; video.preload = 'metadata';
+    video.style.cssText = 'max-width:100%;max-height:200px;border-radius:10px';
+    div.appendChild(video);
+    if (filename) { const label = document.createElement('div'); label.style.cssText = 'font-size:11px;opacity:0.7;margin-top:4px'; label.textContent = filename; div.appendChild(label); }
+    messagesEl.insertBefore(div, typingEl); scrollToBottom(); saveHistory('user', `[Video: ${filename}]`);
 }
 
 function addVideoMessage(url, caption) {

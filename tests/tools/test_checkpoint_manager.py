@@ -1,8 +1,10 @@
 """Tests for tools/checkpoint_manager.py — CheckpointManager."""
 
+import logging
 import os
 import json
 import shutil
+import subprocess
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -142,6 +144,12 @@ class TestTakeCheckpoint:
     def test_first_checkpoint(self, mgr, work_dir):
         result = mgr.ensure_checkpoint(str(work_dir), "initial")
         assert result is True
+
+    def test_successful_checkpoint_does_not_log_expected_diff_exit(self, mgr, work_dir, caplog):
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            result = mgr.ensure_checkpoint(str(work_dir), "initial")
+        assert result is True
+        assert not any("diff --cached --quiet" in r.getMessage() for r in caplog.records)
 
     def test_dedup_same_turn(self, mgr, work_dir):
         r1 = mgr.ensure_checkpoint(str(work_dir), "first")
@@ -374,6 +382,26 @@ class TestErrorResilience:
         mgr._git_available = None  # reset lazy probe
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
+
+    def test_run_git_allows_expected_nonzero_without_error_log(self, tmp_path, caplog):
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff", "--cached", "--quiet"],
+            returncode=1,
+            stdout="",
+            stderr="",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+                ok, stdout, stderr = _run_git(
+                    ["diff", "--cached", "--quiet"],
+                    tmp_path / "shadow",
+                    str(tmp_path / "work"),
+                    allowed_returncodes={1},
+                )
+        assert ok is False
+        assert stdout == ""
+        assert stderr == ""
+        assert not caplog.records
 
     def test_checkpoint_failure_does_not_raise(self, mgr, work_dir, monkeypatch):
         """Checkpoint failures should never raise — they're silently logged."""

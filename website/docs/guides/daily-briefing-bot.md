@@ -29,7 +29,8 @@ Before starting, make sure you have:
 - **Hermes Agent installed** — see the [Installation guide](/docs/getting-started/installation)
 - **Gateway running** — the gateway daemon handles cron execution:
   ```bash
-  hermes gateway install   # Install as system service (recommended)
+  hermes gateway install   # Install as a user service
+  sudo hermes gateway install --system   # Linux servers: boot-time system service
   # or
   hermes gateway           # Run in foreground
   ```
@@ -242,10 +243,12 @@ Make sure the scheduler is actually running:
 hermes cron status
 ```
 
-If the gateway isn't running, your jobs won't execute. Install it as a system service for reliability:
+If the gateway isn't running, your jobs won't execute. Install it as a background service for reliability:
 
 ```bash
 hermes gateway install
+# or on Linux servers
+sudo hermes gateway install --system
 ```
 
 ## Going Further

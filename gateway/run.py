@@ -100,24 +100,40 @@ if _config_path.exists():
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:
                     os.environ[_env_var] = str(_compression_cfg[_cfg_key])
-        # Auxiliary model overrides (vision, web_extract).
-        # Each task has provider + model; bridge non-default values to env vars.
+        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
+        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
             _aux_task_env = {
-                "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
-                "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+                "vision": {
+                    "provider": "AUXILIARY_VISION_PROVIDER",
+                    "model": "AUXILIARY_VISION_MODEL",
+                    "base_url": "AUXILIARY_VISION_BASE_URL",
+                    "api_key": "AUXILIARY_VISION_API_KEY",
+                },
+                "web_extract": {
+                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+                },
             }
-            for _task_key, (_prov_env, _model_env) in _aux_task_env.items():
+            for _task_key, _env_map in _aux_task_env.items():
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
                 _prov = str(_task_cfg.get("provider", "")).strip()
                 _model = str(_task_cfg.get("model", "")).strip()
+                _base_url = str(_task_cfg.get("base_url", "")).strip()
+                _api_key = str(_task_cfg.get("api_key", "")).strip()
                 if _prov and _prov != "auto":
-                    os.environ[_prov_env] = _prov
+                    os.environ[_env_map["provider"]] = _prov
                 if _model:
-                    os.environ[_model_env] = _model
+                    os.environ[_env_map["model"]] = _model
+                if _base_url:
+                    os.environ[_env_map["base_url"]] = _base_url
+                if _api_key:
+                    os.environ[_env_map["api_key"]] = _api_key
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:

@@ -460,7 +460,14 @@ API_SSL_CERT=/path/to/cert.pem
 API_SSL_KEY=/path/to/key.pem
 ```
 
-The server will show `https://` URLs on startup. Self-signed certs trigger a browser warning — click "Advanced" → "Proceed" on first visit.
+The server will show `https://` URLs on startup. Self-signed certs trigger a browser warning:
+
+- **Chrome/Edge**: "Your connection is not private" → Advanced → Proceed
+- **Firefox**: "Warning: Potential Security Risk" → Advanced → Accept the Risk
+- **Safari (iOS)**: "This Connection Is Not Private" → Show Details → visit this website
+- **Safari (macOS)**: "This Connection Is Not Private" → Show Details → visit this website
+
+This warning only appears once per device. After accepting, the browser remembers the certificate.
 
 ### Production Deployment
 

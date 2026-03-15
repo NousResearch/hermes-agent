@@ -53,6 +53,15 @@ class TestSystemdServiceRefresh:
         ]
 
 
+class TestGeneratedSystemdUnits:
+    def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "ExecStart=" in unit
+        assert "ExecStop=" not in unit
+        assert "TimeoutStopSec=60" in unit
+
+
 class TestGatewayStopCleanup:
     def test_stop_sweeps_manual_gateway_processes_after_service_stop(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

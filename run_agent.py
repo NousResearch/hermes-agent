@@ -1724,13 +1724,13 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if "radio_play" in self.valid_tool_names:
             tool_guidance.append(
-                "You have a built-in radio player (Hermes Radio). "
-                "When the user asks to play music, listen to radio, hear songs, or dig for tracks, "
-                "use the radio_play tool -- NOT web_search or YouTube. "
-                "Use radio_pause to pause/resume, radio_skip to skip, radio_stop to stop, "
-                "radio_volume to adjust volume, radio_status to check what's playing. "
-                "Source 'crate' plays from Radiooooo (decades/countries/moods), "
-                "'somafm' for curated underground channels, 'stream' for any URL or station search."
+                "IMPORTANT: You have a built-in radio player (Hermes Radio) with dedicated tools. "
+                "ALWAYS use these tools for music -- NEVER use terminal commands, web_search, or YouTube. "
+                "radio_play: start music (source='crate' for Radiooooo, 'somafm' for channels, 'stream' for URLs). "
+                "radio_skip: skip track. radio_pause: pause/resume. radio_stop: stop. "
+                "radio_volume: set volume. radio_status: check what's playing. "
+                "radio_search: find stations. radio_mic_break: DJ commentary. "
+                "These are direct tool calls -- do NOT try to import radio modules or run Python code."
             )
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))

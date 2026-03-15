@@ -260,8 +260,18 @@ class DockerEnvironment(BaseEnvironment):
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
+        # Load ~/.hermes/.env so secrets set via `hermes config set` are
+        # available inside the Docker container (os.getenv only sees shell exports).
+        _hermes_env: dict = {}
+        try:
+            from hermes_cli.config import get_env_path, load_env
+            _hermes_env = load_env() or {}
+        except Exception:
+            pass
+
         for key in self._inner.config.forward_env:
-            if (value := os.getenv(key)) is not None:
+            value = os.getenv(key) or _hermes_env.get(key)
+            if value is not None:
                 cmd.extend(["-e", f"{key}={value}"])
         for key, value in self._inner.config.env.items():
             cmd.extend(["-e", f"{key}={value}"])

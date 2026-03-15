@@ -288,6 +288,7 @@ class MessageEvent:
     message_id: Optional[str] = None
     
     # Media attachments
+    # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
     
@@ -751,7 +752,25 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
-            # Store this as a pending message - it will interrupt the running agent
+            # Special case: photo bursts/albums frequently arrive as multiple near-
+            # simultaneous messages. Queue them without interrupting the active run,
+            # then process them immediately after the current task finishes.
+            if event.message_type == MessageType.PHOTO:
+                print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
+                existing = self._pending_messages.get(session_key)
+                if existing and existing.message_type == MessageType.PHOTO:
+                    existing.media_urls.extend(event.media_urls)
+                    existing.media_types.extend(event.media_types)
+                    if event.text:
+                        if not existing.text:
+                            existing.text = event.text
+                        elif event.text not in existing.text:
+                            existing.text = f"{existing.text}\n\n{event.text}".strip()
+                else:
+                    self._pending_messages[session_key] = event
+                return  # Don't interrupt now - will run after current task completes
+
+            # Default behavior for non-photo follow-ups: interrupt the running agent
             print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)

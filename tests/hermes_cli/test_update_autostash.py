@@ -134,6 +134,16 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
 
 
 
+def test_print_stash_cleanup_guidance_with_selector(capsys):
+    hermes_main._print_stash_cleanup_guidance("abc123", "stash@{2}")
+
+    out = capsys.readouterr().out
+    assert "Check `git status` first" in out
+    assert "git stash list --format='%gd %H %s'" in out
+    assert "git stash drop stash@{2}" in out
+
+
+
 def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved(monkeypatch, tmp_path, capsys):
     calls = []
 
@@ -157,6 +167,8 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
     out = capsys.readouterr().out
     assert "couldn't find the stash entry to drop" in out
     assert "stash was left in place" in out
+    assert "Check `git status` first" in out
+    assert "git stash list --format='%gd %H %s'" in out
     assert "Look for commit abc123" in out
 
 
@@ -183,6 +195,8 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert "couldn't drop the saved stash entry" in out
     assert "drop failed" in out
+    assert "Check `git status` first" in out
+    assert "git stash list --format='%gd %H %s'" in out
     assert "git stash drop stash@{0}" in out
 
 

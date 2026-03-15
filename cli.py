@@ -571,12 +571,28 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     include_file = Path(repo_root) / ".worktreeinclude"
     if include_file.exists():
         try:
+            repo_root_resolved = Path(repo_root).resolve()
+            wt_path_resolved = wt_path.resolve()
             for line in include_file.read_text().splitlines():
                 entry = line.strip()
                 if not entry or entry.startswith("#"):
                     continue
                 src = Path(repo_root) / entry
                 dst = wt_path / entry
+                # Prevent path traversal: ensure src stays within repo_root
+                # and dst stays within the worktree directory
+                try:
+                    src_resolved = src.resolve()
+                    dst_resolved = dst.resolve(strict=False)
+                except (OSError, ValueError):
+                    logger.debug("Skipping invalid .worktreeinclude entry: %s", entry)
+                    continue
+                if not str(src_resolved).startswith(str(repo_root_resolved) + os.sep) and src_resolved != repo_root_resolved:
+                    logger.warning("Skipping .worktreeinclude entry outside repo root: %s", entry)
+                    continue
+                if not str(dst_resolved).startswith(str(wt_path_resolved) + os.sep) and dst_resolved != wt_path_resolved:
+                    logger.warning("Skipping .worktreeinclude entry that escapes worktree: %s", entry)
+                    continue
                 if src.is_file():
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(src), str(dst))
@@ -584,7 +600,7 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     # Symlink directories (faster, saves disk)
                     if not dst.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        os.symlink(str(src.resolve()), str(dst))
+                        os.symlink(str(src_resolved), str(dst))
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 

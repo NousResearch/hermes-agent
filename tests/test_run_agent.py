@@ -1089,46 +1089,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
 
-    def test_anthropic_managed_key_500_falls_back_to_haiku_and_retries(self, agent):
-        self._setup_agent(agent)
-        agent.provider = "anthropic"
-        agent.api_mode = "anthropic_messages"
-        agent.model = "claude-sonnet-4-6"
-        agent._anthropic_auth_source = "claude_json_primary_api_key"
-        agent._anthropic_api_key = "sk-ant-api03-primary"
-
-        calls = {"api": 0}
-
-        class _ServerError(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 500 - internal server error")
-                self.status_code = 500
-
-        anthropic_response = SimpleNamespace(
-            content=[SimpleNamespace(type="text", text="Recovered with haiku")],
-            stop_reason="end_turn",
-            usage=None,
-        )
-
-        def _fake_api_call(api_kwargs):
-            calls["api"] += 1
-            if calls["api"] == 1:
-                raise _ServerError()
-            return anthropic_response
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-        ):
-            result = agent.run_conversation("hello")
-
-        assert calls["api"] == 2
-        assert agent.model == "claude-haiku-4-5-20251001"
-        assert result["completed"] is True
-        assert result["final_response"] == "Recovered with haiku"
-
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -2184,46 +2144,6 @@ class TestAnthropicCredentialRefresh:
 
         old_client.close.assert_not_called()
         rebuild.assert_not_called()
-
-    def test_try_fallback_anthropic_managed_key_model_switches_sonnet_to_haiku(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-        ):
-            agent = AIAgent(
-                api_key="sk-ant-api03-primary",
-                api_mode="anthropic_messages",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-
-        agent.model = "claude-sonnet-4-6"
-        agent._anthropic_auth_source = "claude_json_primary_api_key"
-
-        assert agent._try_fallback_anthropic_managed_key_model() is True
-        assert agent.model == "claude-haiku-4-5-20251001"
-
-    def test_try_fallback_anthropic_managed_key_model_ignores_normal_api_keys(self):
-        with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-        ):
-            agent = AIAgent(
-                api_key="sk-ant-api03-real-api-key",
-                api_mode="anthropic_messages",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-
-        agent.model = "claude-sonnet-4-6"
-        agent._anthropic_auth_source = "anthropic_api_key_env"
-
-        assert agent._try_fallback_anthropic_managed_key_model() is False
-        assert agent.model == "claude-sonnet-4-6"
 
     def test_anthropic_messages_create_preflights_refresh(self):
         with (

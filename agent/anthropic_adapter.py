@@ -102,31 +102,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
 
 
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read credentials from Claude Code's config files.
+    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
-    Checks two locations (in order):
-      1. ~/.claude.json — top-level primaryApiKey (native binary, v2.x)
-      2. ~/.claude/.credentials.json — claudeAiOauth block (npm/legacy installs)
+    This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
+    subscription flow is OAuth/setup-token based with refreshable credentials,
+    and native direct Anthropic provider usage should follow that path rather
+    than auto-detecting Claude's first-party managed key.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # 1. Native binary (v2.x): ~/.claude.json with top-level primaryApiKey
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if primary_key:
-                return {
-                    "accessToken": primary_key,
-                    "refreshToken": "",
-                    "expiresAt": 0,  # Managed keys don't have a user-visible expiry
-                    "source": "claude_json_primary_api_key",
-                }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
-
-    # 2. Legacy/npm installs: ~/.claude/.credentials.json
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -144,6 +128,20 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
+    return None
+
+
+def read_claude_managed_key() -> Optional[str]:
+    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = json.loads(claude_json.read_text(encoding="utf-8"))
+            primary_key = data.get("primaryApiKey", "")
+            if isinstance(primary_key, str) and primary_key.strip():
+                return primary_key.strip()
+        except (json.JSONDecodeError, OSError, IOError) as e:
+            logger.debug("Failed to read ~/.claude.json: %s", e)
     return None
 
 
@@ -292,6 +290,10 @@ def get_anthropic_token_source(token: Optional[str] = None) -> str:
     creds = read_claude_code_credentials()
     if creds and creds.get("accessToken") == token:
         return str(creds.get("source") or "claude_code_credentials")
+
+    managed_key = read_claude_managed_key()
+    if managed_key and managed_key == token:
+        return "claude_json_primary_api_key"
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key and api_key == token:

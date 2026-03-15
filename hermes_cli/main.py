@@ -54,16 +54,11 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback
-from dotenv import load_dotenv
-from hermes_cli.config import get_env_path, get_hermes_home
-_user_env = get_env_path()
-if _user_env.exists():
-    try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
-load_dotenv(dotenv_path=PROJECT_ROOT / '.env', override=False)
+# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import get_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
+load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))

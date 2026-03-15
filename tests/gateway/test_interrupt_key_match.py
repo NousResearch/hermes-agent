@@ -50,11 +50,11 @@ class TestInterruptKeyConsistency:
     """Ensure adapter interrupt methods are queried with session_key, not chat_id."""
 
     def test_session_key_differs_from_chat_id_for_dm(self):
-        """Session key for a DM is NOT the same as chat_id."""
+        """Session key for a DM is namespaced and includes the DM chat_id."""
         source = _source("123456", "dm")
         session_key = build_session_key(source)
         assert session_key != source.chat_id
-        assert session_key == "agent:main:telegram:dm"
+        assert session_key == "agent:main:telegram:dm:123456"
 
     def test_session_key_differs_from_chat_id_for_group(self):
         """Session key for a group chat includes prefix, unlike raw chat_id."""

@@ -3227,6 +3227,12 @@ For more help on a command:
     # web-safety list-exempt
     web_safety_subparsers.add_parser("list-exempt", help="List all exempt domains")
     
+    # web-safety restore
+    web_safety_subparsers.add_parser("restore", help="Restore default config from git if tampered")
+    
+    # web-safety verify
+    web_safety_subparsers.add_parser("verify", help="Verify config file integrity")
+    
     def cmd_web_safety(args):
         """Handle web-safety commands."""
         from tools.web_safety import (
@@ -3238,6 +3244,10 @@ For more help on a command:
             list_exempt_domains,
             get_web_safety_status,
             BUILTIN_EXEMPT_DOMAINS,
+            is_config_tampered,
+            restore_default_config,
+            _verify_config_hash,
+            DEFAULT_CONFIG_FILE,
         )
         
         if args.web_safety_action == "status":
@@ -3249,6 +3259,28 @@ For more help on a command:
             print(f"User exempt: {status['user_exempt_count']}")
             print(f"\nBlocked file: {status['blocked_file']}")
             print(f"Exempt file: {status['exempt_file']}")
+            # Show tampered status
+            if is_config_tampered():
+                print("\nWARNING: Config file TAMPERED! Using fallback defaults.")
+                print("Run 'hermes web-safety restore' to attempt restore from git.")
+            else:
+                print(f"\nConfig file: OK (verified)")
+            
+        elif args.web_safety_action == "verify":
+            print("Verifying config file integrity...")
+            if _verify_config_hash():
+                print(f"OK: {DEFAULT_CONFIG_FILE} hash verified")
+                sys.exit(0)
+            else:
+                print(f"FAILED: {DEFAULT_CONFIG_FILE} has been tampered with!")
+                print("Run 'hermes web-safety restore' to attempt restore from git.")
+                sys.exit(1)
+            
+        elif args.web_safety_action == "restore":
+            print("Attempting to restore default config from git...")
+            success, msg = restore_default_config()
+            print(msg)
+            sys.exit(0 if success else 1)
             
         elif args.web_safety_action == "block":
             success, msg = block_domain(args.domain)

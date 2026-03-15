@@ -106,8 +106,22 @@ EXEMPT_DOMAINS: set[str] = set(BUILTIN_EXEMPT_DOMAINS)
 # Default config file (ships with Hermes)
 DEFAULT_CONFIG_FILE = Path(__file__).parent / "web_safety.yaml"
 
+# Known-good SHA256 hash of the default config file
+# This is computed from the original web_safety.yaml at build time
+# If the file is tampered with, we detect it and refuse to load
+KNOWN_GOOD_CONFIG_HASH = "82c917ce79a137d8e8a0be25cba073821d0c1ec7ba7a358c7b99298edeb5a25a"
+
+# Fallback blocked domains if YAML is missing or tampered
+FALLBACK_BLOCKED_DOMAINS = [
+    "moltbook.com",
+    "*.moltbook.com",
+]
+
 # Runtime blocked set (loaded from files)
 BLOCKED_DOMAINS: set[str] = set()
+
+# Track if we're using fallback due to tampering
+_using_fallback_config = False
 
 
 # =============================================================================
@@ -140,25 +154,55 @@ def _ensure_initialized() -> None:
 
 def _load_blocked_domains() -> int:
     """Load blocked domains from default YAML config and user additions file."""
+    global _using_fallback_config
     count = 0
+    _using_fallback_config = False
     
     # First, load from default YAML config (ships with Hermes)
-    try:
-        if DEFAULT_CONFIG_FILE.exists():
-            import yaml
-            with open(DEFAULT_CONFIG_FILE, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f) or {}
-            domains = config.get("blocked_domains", [])
-            for domain in domains:
-                domain = str(domain).lower().strip()
-                if domain:
-                    BLOCKED_DOMAINS.add(domain)
+    if DEFAULT_CONFIG_FILE.exists():
+        # Verify file integrity via hash
+        if not _verify_config_hash():
+            logger.error(
+                "SECURITY ALERT: web_safety.yaml has been tampered with! "
+                "Hash mismatch detected. Using fallback defaults."
+            )
+            _using_fallback_config = True
+            # Use fallback domains
+            for domain in FALLBACK_BLOCKED_DOMAINS:
+                BLOCKED_DOMAINS.add(domain.lower())
+                count += 1
+        else:
+            # Hash is good, load from YAML
+            try:
+                import yaml
+                with open(DEFAULT_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+                domains = config.get("blocked_domains", [])
+                for domain in domains:
+                    domain = str(domain).lower().strip()
+                    if domain:
+                        BLOCKED_DOMAINS.add(domain)
+                        count += 1
+                logger.debug("Loaded %d blocked domains from %s", count, DEFAULT_CONFIG_FILE)
+            except ImportError:
+                logger.warning("PyYAML not installed, using fallback blocked domains")
+                _using_fallback_config = True
+                for domain in FALLBACK_BLOCKED_DOMAINS:
+                    BLOCKED_DOMAINS.add(domain.lower())
                     count += 1
-            logger.debug("Loaded %d blocked domains from %s", count, DEFAULT_CONFIG_FILE)
-    except ImportError:
-        logger.warning("PyYAML not installed, skipping default blocked domains config")
-    except Exception as e:
-        logger.warning("Failed to load default blocked domains: %s", e)
+            except Exception as e:
+                logger.warning("Failed to load default blocked domains: %s", e)
+                _using_fallback_config = True
+                for domain in FALLBACK_BLOCKED_DOMAINS:
+                    BLOCKED_DOMAINS.add(domain.lower())
+                    count += 1
+    else:
+        # File doesn't exist, use fallback
+        logger.warning("web_safety.yaml not found, using fallback blocked domains")
+        _using_fallback_config = True
+        for domain in FALLBACK_BLOCKED_DOMAINS:
+            BLOCKED_DOMAINS.add(domain.lower())
+            count += 1
     
     # Then, load user additions from persistent file
     if BLOCKED_DOMAINS_FILE.exists():
@@ -174,6 +218,80 @@ def _load_blocked_domains() -> int:
             logger.warning("Failed to load user blocked domains: %s", e)
     
     return count
+
+
+def _compute_file_hash(filepath: Path) -> str:
+    """Compute SHA256 hash of a file."""
+    import hashlib
+    sha256 = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+    except Exception as e:
+        logger.error("Failed to compute hash for %s: %s", filepath, e)
+        return ""
+
+
+def _verify_config_hash() -> bool:
+    """Verify that the config file hash matches the known-good hash.
+    
+    Returns:
+        True if hash matches (file is untampered), False if tampered or error.
+    """
+    if not DEFAULT_CONFIG_FILE.exists():
+        return False
+    
+    current_hash = _compute_file_hash(DEFAULT_CONFIG_FILE)
+    if not current_hash:
+        return False
+    
+    if current_hash != KNOWN_GOOD_CONFIG_HASH:
+        logger.error(
+            "Config file hash mismatch! Expected: %s, Got: %s",
+            KNOWN_GOOD_CONFIG_HASH[:16] + "...",
+            current_hash[:16] + "..."
+        )
+        return False
+    
+    return True
+
+
+def is_config_tampered() -> bool:
+    """Check if the config file was detected as tampered during initialization."""
+    return _using_fallback_config
+
+
+def restore_default_config() -> Tuple[bool, str]:
+    """Attempt to restore the default config file from git.
+    
+    Returns:
+        (success, message)
+    """
+    import subprocess
+    
+    try:
+        # Try to restore from git
+        result = subprocess.run(
+            ["git", "checkout", "HEAD", "--", str(DEFAULT_CONFIG_FILE)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=Path(__file__).parent.parent,
+        )
+        if result.returncode == 0:
+            # Verify the restored hash
+            if _verify_config_hash():
+                return True, "Successfully restored default config from git"
+            else:
+                return False, "Restored file still has wrong hash - repo may be compromised"
+        else:
+            return False, f"Git restore failed: {result.stderr}"
+    except FileNotFoundError:
+        return False, "Git not available - cannot restore"
+    except Exception as e:
+        return False, f"Restore failed: {e}"
 
 
 def _load_exempt_domains() -> int:

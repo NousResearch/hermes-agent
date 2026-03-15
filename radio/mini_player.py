@@ -295,11 +295,10 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         dur_fmt = _format_time(now.duration)
         fragments.append(("class:radio-time", f"  {pos_fmt}/{dur_fmt}"))
 
-    # Volume dial -- Unicode circle that "rotates" with level
-    # 12 clock positions using braille/geometric chars
+    # Volume dial -- starts from bottom-left, fills clockwise
     vol = int(now.volume)
-    _DIAL = "\u25cb\u25d4\u25d1\u25d5\u25cf"  # empty -> quarter -> half -> three-quarter -> full
-    dial_idx = min(4, vol * 5 // 101)  # 0-4 mapped from 0-100
+    _DIAL = "\u25cb\u25d8\u25d3\u25d1\u25d2\u25cf"  # 6 positions: empty -> bl -> half-l -> half -> half-r -> full
+    dial_idx = min(5, vol * 6 // 101)
     dial = _DIAL[dial_idx]
     fragments.append(("class:radio-vol", f"  {dial} {vol}"))
 
@@ -369,12 +368,17 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
     # Top border
     fragments.append(("class:radio-border", f"  \u256d{'\u2500' * (W - 2)}\u256e\n"))
 
-    # Row 1: HERMES RADIO + volume
-    vol_str = f"vol {int(now.volume)}"
-    pad = W - 4 - 12 - len(vol_str)
+    # Row 1: HERMES RADIO -- TRANSMISSIONS ONLY + volume dial
+    vol = int(now.volume)
+    _DIAL = "\u25cb\u25d8\u25d3\u25d1\u25d2\u25cf"
+    dial_idx = min(5, vol * 6 // 101)
+    vol_str = f"{_DIAL[dial_idx]} {vol}"
+    title_full = "HERMES RADIO \u2014 TRANSMISSIONS ONLY"
+    pad = W - 4 - len(title_full) - len(vol_str)
     fragments.append(("class:radio-border", "  \u2502 "))
     fragments.append(("class:radio-label", "HERMES RADI"))
     fragments.append(("class:radio-control", "O"))
+    fragments.append(("class:radio-tags", " \u2014 TRANSMISSIONS ONLY"))
     fragments.append(("", " " * max(1, pad)))
     fragments.append(("class:radio-vol", vol_str))
     fragments.append(("class:radio-border", " \u2502\n"))
@@ -455,9 +459,10 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
     fragments.append(("", " " * max(0, pad + 1)))
     fragments.append(("class:radio-border", "\u2502\n"))
 
-    # Row 12: Progress bar + time
-    bar_w = W - 18  # leave room for time display
-    if now.duration and now.duration > 0 and now.position is not None:
+    # Row 12: Progress bar + time (crate dig only) or LIVE (streams)
+    is_stream = now.source_mode == "stream"
+    bar_w = W - 18
+    if not is_stream and now.duration and now.duration > 0 and now.position is not None:
         progress = max(0.0, min(1.0, now.position / now.duration))
         filled = int(progress * bar_w)
         remaining = bar_w - filled
@@ -470,6 +475,13 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
         fragments.append(("class:radio-progress-bg", "\u2500" * max(0, remaining - 1)))
         fragments.append(("class:radio-time", time_str))
         pad = W - 4 - bar_w - len(time_str)
+        fragments.append(("", " " * max(0, pad + 1)))
+        fragments.append(("class:radio-border", "\u2502\n"))
+    elif is_stream:
+        live_text = "LIVE"
+        pad = W - 4 - len(live_text)
+        fragments.append(("class:radio-border", "  \u2502 "))
+        fragments.append(("class:radio-station", live_text))
         fragments.append(("", " " * max(0, pad + 1)))
         fragments.append(("class:radio-border", "\u2502\n"))
     else:

@@ -2032,6 +2032,16 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
 
 
 
+def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] = None) -> None:
+    print("  Check `git status` first so you don't accidentally reapply the same change twice.")
+    print("  Find the saved entry with: git stash list --format='%gd %H %s'")
+    if stash_selector:
+        print(f"  Remove it with: git stash drop {stash_selector}")
+    else:
+        print(f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}")
+
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2072,7 +2082,7 @@ def _restore_stashed_changes(
     if stash_selector is None:
         print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
         print("  The stash was left in place. You can remove it manually after checking the result.")
-        print(f"  Look for commit {stash_ref} in `git stash list --format='%gd %H'` and drop that selector.")
+        _print_stash_cleanup_guidance(stash_ref)
     else:
         drop = subprocess.run(
             git_cmd + ["stash", "drop", stash_selector],
@@ -2087,7 +2097,7 @@ def _restore_stashed_changes(
             if drop.stderr.strip():
                 print(drop.stderr.strip())
             print("  The stash was left in place. You can remove it manually after checking the result.")
-            print(f"  If needed: git stash drop {stash_selector}")
+            _print_stash_cleanup_guidance(stash_ref, stash_selector)
 
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")

@@ -82,6 +82,19 @@ _rate_limiter = _RateLimiter()
 _MEDIA_SECRET = secrets.token_hex(32)  # Separate from API_KEY, regenerated per process
 
 
+import re as _re
+
+def _safe_suffix(filename: str, default: str = "") -> str:
+    """Extract and sanitize file extension from user-supplied filename."""
+    if not filename:
+        return default
+    suffix = Path(filename).suffix.lower()
+    # Only allow alphanumeric extensions
+    if _re.match(r'^\.[a-z0-9]{1,10}$', suffix):
+        return suffix
+    return default
+
+
 def _sign_media_path(file_path: str) -> str:
     """Create an HMAC token for a media file path."""
     return hmac.new(_MEDIA_SECRET.encode(), file_path.encode(), hashlib.sha256).hexdigest()[:16]
@@ -100,7 +113,7 @@ def _make_media_url(file_path: str, host: str = "") -> str:
 
 class ChatRequest(BaseModel):
     message: str = Field(..., max_length=100_000)
-    session_id: Optional[str] = None
+    session_id: Optional[str] = Field(None, max_length=64, pattern=r'^[a-zA-Z0-9_\-]+$')
 
 
 class ChatResponse(BaseModel):
@@ -290,7 +303,7 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
         data = await _read_upload_safe(file, _MAX_UPLOAD_BYTES)
 
         _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        suffix = Path(file.filename).suffix if file.filename else ""
+        suffix = _safe_suffix(file.filename)
         dest = _UPLOAD_DIR / f"upload_{uuid4().hex[:12]}{suffix}"
         dest.write_bytes(data)
 
@@ -321,7 +334,7 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
         data = await _read_upload_safe(file, _MAX_UPLOAD_BYTES)
 
         # Save to temp file for transcription
-        suffix = Path(file.filename).suffix if file.filename else ".webm"
+        suffix = _safe_suffix(file.filename, ".webm")
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, prefix="api_voice_", delete=False)
         tmp.write(data)
         tmp.close()
@@ -332,7 +345,8 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
             result = await asyncio.to_thread(transcribe_audio, tmp.name, model=stt_model)
 
             if not result.get("success"):
-                raise HTTPException(422, f"Transcription failed: {result.get('error', 'unknown')}")
+                logger.warning("Voice transcription failed: %s", result.get("error", "unknown"))
+                raise HTTPException(422, "Transcription failed. Check server logs for details.")
 
             transcript = result.get("transcript", "").strip()
             if not transcript:

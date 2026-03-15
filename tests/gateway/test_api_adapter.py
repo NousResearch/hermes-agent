@@ -871,16 +871,18 @@ class TestVoiceChatEndpoint:
         app = create_app(adapter)
         client = TestClient(app)
 
-        def fake_transcribe(path, model=None):
-            return {
-                "success": True,
-                "transcript": "hello from voice",
-                "language": "en",
-                "language_probability": 0.95,
-            }
+        fake_result = {
+            "success": True,
+            "transcript": "hello from voice",
+            "language": "en",
+            "language_probability": 0.95,
+        }
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fake_result
 
         with patch.dict(os.environ, {"API_KEY": "test-key"}), \
-             patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+             patch("gateway.api_server.asyncio.to_thread", fake_to_thread):
             resp = client.post(
                 "/v1/chat/voice",
                 files={"file": ("voice.webm", b"fake-audio", "audio/webm")},
@@ -899,15 +901,17 @@ class TestVoiceChatEndpoint:
         app = create_app(adapter)
         client = TestClient(app)
 
-        def fake_transcribe(path, model=None):
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "No speech detected",
-            }
+        fake_result = {
+            "success": False,
+            "transcript": "",
+            "error": "No speech detected",
+        }
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fake_result
 
         with patch.dict(os.environ, {"API_KEY": "test-key"}), \
-             patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+             patch("gateway.api_server.asyncio.to_thread", fake_to_thread):
             resp = client.post(
                 "/v1/chat/voice",
                 files={"file": ("voice.webm", b"silence", "audio/webm")},

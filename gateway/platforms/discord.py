@@ -87,8 +87,9 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client):
+    def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
+        self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
         # Decryption
@@ -274,19 +275,21 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
-            if user_id == 0:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE skip: unknown user for ssrc=%d", ssrc)
-                return  # unknown user, can't DAVE-decrypt
-            try:
-                import davey
-                decrypted = self._dave_session.decrypt(
-                    user_id, davey.MediaType.audio, decrypted
-                )
-            except Exception as e:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                return
+            if user_id:
+                try:
+                    import davey
+                    decrypted = self._dave_session.decrypt(
+                        user_id, davey.MediaType.audio, decrypted
+                    )
+                except Exception as e:
+                    # Unencrypted passthrough — use NaCl-decrypted data as-is
+                    if "Unencrypted" not in str(e):
+                        if self._packet_debug_count <= 10:
+                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                        return
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
 
         # --- Opus decode -> PCM ---
         try:
@@ -303,6 +306,32 @@ class VoiceReceiver:
     # ------------------------------------------------------------------
     # Silence detection
     # ------------------------------------------------------------------
+
+    def _infer_user_for_ssrc(self, ssrc: int) -> int:
+        """Try to infer user_id for an unmapped SSRC.
+
+        When the bot rejoins a voice channel, Discord may not resend
+        SPEAKING events for users already speaking.  If exactly one
+        allowed user is in the channel, map the SSRC to them.
+        """
+        try:
+            channel = self._vc.channel
+            if not channel:
+                return 0
+            bot_id = self._vc.user.id if self._vc.user else 0
+            allowed = self._allowed_user_ids
+            candidates = [
+                m.id for m in channel.members
+                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+            ]
+            if len(candidates) == 1:
+                uid = candidates[0]
+                self._ssrc_to_user[ssrc] = uid
+                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
+                return uid
+        except Exception:
+            pass
+        return 0
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
@@ -322,6 +351,10 @@ class VoiceReceiver:
 
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
+                        # Infer from allowed users in the voice channel.
+                        user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
@@ -695,13 +728,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Play auto-TTS audio.
 
-        When the bot is in a voice channel for this chat's guild, skip the
-        file attachment — the gateway runner plays audio in the VC instead.
+        When the bot is in a voice channel for this chat's guild, play
+        directly in the VC instead of sending as a file attachment.
         """
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.debug("[%s] Skipping play_tts for %s — VC playback handled by runner", self.name, chat_id)
-                return SendResult(success=True)
+                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
     async def send_voice(
@@ -805,7 +839,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Start voice receiver (Phase 2: listen to users)
         try:
-            receiver = VoiceReceiver(vc)
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
             receiver.start()
             self._voice_receivers[guild_id] = receiver
             self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -1001,14 +1035,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice listening (Phase 2)
     # ------------------------------------------------------------------
 
+    # UDP keepalive interval in seconds — prevents Discord from dropping
+    # the UDP route after ~60s of silence.
+    _KEEPALIVE_INTERVAL = 15
+
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
+        last_keepalive = time.monotonic()
         try:
             while receiver._running:
                 await asyncio.sleep(0.2)
+
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
+                now = time.monotonic()
+                if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
+                    last_keepalive = now
+                    try:
+                        vc = self._voice_clients.get(guild_id)
+                        if vc and vc.is_connected():
+                            vc._connection.send_packet(b'\xf8\xff\xfe')
+                    except Exception:
+                        pass
+
                 completed = receiver.check_silence()
                 for user_id, pcm_data in completed:
                     if not self._is_allowed_user(str(user_id)):

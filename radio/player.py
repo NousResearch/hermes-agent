@@ -171,6 +171,12 @@ class HermesRadio:
             start_meter(url)
         except Exception:
             pass
+        # Log station to history
+        try:
+            from radio.history import log_station
+            log_station(station_name=station_name, url=url, source="stream")
+        except Exception:
+            pass
         self._notify_state_change()
         return f"Tuned to {station_name or url}"
 
@@ -340,7 +346,7 @@ class HermesRadio:
         self._now.mood = track.mood
         self._now.paused = False
 
-        # Add to history
+        # Add to in-memory history (for LLM context)
         self._now.recent_tracks.append({
             "title": track.title,
             "artist": track.artist,
@@ -348,9 +354,24 @@ class HermesRadio:
             "country": track.country,
             "mood": track.mood,
         })
-        # Keep last 10
         if len(self._now.recent_tracks) > 10:
             self._now.recent_tracks = self._now.recent_tracks[-10:]
+
+        # Persist: history log, track download, honcho sync (all optional)
+        try:
+            from radio.history import log_track, save_track, sync_to_honcho
+            log_track(
+                artist=track.artist, title=track.title, source="crate",
+                decade=track.decade, country=track.country, mood=track.mood,
+                duration=track.length, url=url,
+            )
+            save_track(url, track.artist, track.title, track.decade, track.country, track.mood)
+            sync_to_honcho({
+                "artist": track.artist, "title": track.title,
+                "decade": track.decade, "country": track.country, "mood": track.mood,
+            })
+        except Exception:
+            pass
 
         self._notify_state_change()
 
@@ -448,7 +469,22 @@ class HermesRadio:
             if not commentary:
                 return
 
-            await self._speak(commentary)
+            audio_path = await self._render_tts(commentary)
+            if audio_path:
+                await self._speak_audio(audio_path)
+
+            # Save mic break (optional, gated on config)
+            try:
+                from radio.history import log_mic_break, save_mic_break
+                log_mic_break(
+                    commentary=commentary,
+                    audio_path=audio_path,
+                    track_artist=self._now.artist,
+                    track_title=self._now.title,
+                )
+                save_mic_break(commentary, audio_path)
+            except Exception:
+                pass
         except Exception:
             logger.exception("Mic break error")
         finally:
@@ -456,11 +492,13 @@ class HermesRadio:
 
     async def _speak(self, text: str) -> None:
         """TTS render + volume duck + play on voice instance."""
-        # Render TTS via Hermes' existing tool
         audio_path = await self._render_tts(text)
         if not audio_path:
             return
+        await self._speak_audio(audio_path)
 
+    async def _speak_audio(self, audio_path: str) -> None:
+        """Play a pre-rendered audio file with volume ducking."""
         # Start voice mpv if needed
         if not self._voice.running:
             await self._voice.start()

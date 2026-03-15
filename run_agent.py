@@ -511,9 +511,14 @@ class AIAgent:
         self._anthropic_client = None
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                get_anthropic_token_source,
+            )
             effective_key = api_key or resolve_anthropic_token() or ""
             self._anthropic_api_key = effective_key
+            self._anthropic_auth_source = get_anthropic_token_source(effective_key)
             self._anthropic_base_url = base_url
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
@@ -2643,6 +2648,27 @@ class AIAgent:
             return False
 
         self._anthropic_api_key = new_token
+        try:
+            from agent.anthropic_adapter import get_anthropic_token_source
+            self._anthropic_auth_source = get_anthropic_token_source(new_token)
+        except Exception:
+            pass
+        return True
+
+    def _try_fallback_anthropic_managed_key_model(self) -> bool:
+        if self.api_mode != "anthropic_messages":
+            return False
+        if getattr(self, "_anthropic_auth_source", "") != "claude_json_primary_api_key":
+            return False
+        current_model = str(getattr(self, "model", "") or "").lower()
+        if not any(name in current_model for name in ("sonnet", "opus")):
+            return False
+
+        fallback_model = "claude-haiku-4-5-20251001"
+        if current_model == fallback_model:
+            return False
+
+        self.model = fallback_model
         return True
 
     def _anthropic_messages_create(self, api_kwargs: dict):
@@ -4491,6 +4517,7 @@ class AIAgent:
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
+            anthropic_managed_key_model_fallback_attempted = False
             nous_auth_retry_attempted = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -4852,6 +4879,19 @@ class AIAgent:
                         if self._try_refresh_nous_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
                             continue
+                    if (
+                        self.api_mode == "anthropic_messages"
+                        and status_code == 500
+                        and not anthropic_managed_key_model_fallback_attempted
+                    ):
+                        anthropic_managed_key_model_fallback_attempted = True
+                        if self._try_fallback_anthropic_managed_key_model():
+                            print(
+                                f"{self.log_prefix}⚠️  Claude native managed key hit Anthropic 500 on Sonnet/Opus. "
+                                f"Falling back to claude-haiku-4-5-20251001 and retrying..."
+                            )
+                            continue
+
                     if (
                         self.api_mode == "anthropic_messages"
                         and status_code == 401

@@ -121,6 +121,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                     "accessToken": primary_key,
                     "refreshToken": "",
                     "expiresAt": 0,  # Managed keys don't have a user-visible expiry
+                    "source": "claude_json_primary_api_key",
                 }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude.json: %s", e)
@@ -138,6 +139,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                         "accessToken": access_token,
                         "refreshToken": oauth_data.get("refreshToken", ""),
                         "expiresAt": oauth_data.get("expiresAt", 0),
+                        "source": "claude_code_credentials_file",
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
@@ -271,6 +273,31 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
         )
         return resolved
     return None
+
+
+def get_anthropic_token_source(token: Optional[str] = None) -> str:
+    """Best-effort source classification for an Anthropic credential token."""
+    token = (token or "").strip()
+    if not token:
+        return "none"
+
+    env_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    if env_token and env_token == token:
+        return "anthropic_token_env"
+
+    cc_env_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if cc_env_token and cc_env_token == token:
+        return "claude_code_oauth_token_env"
+
+    creds = read_claude_code_credentials()
+    if creds and creds.get("accessToken") == token:
+        return str(creds.get("source") or "claude_code_credentials")
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key and api_key == token:
+        return "anthropic_api_key_env"
+
+    return "unknown"
 
 
 def resolve_anthropic_token() -> Optional[str]:

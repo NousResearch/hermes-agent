@@ -207,16 +207,17 @@ honcho: {}
 
 Honcho context is fetched asynchronously to avoid blocking the response path:
 
-```
-Turn N:
-  user message
-    → consume cached context (from previous turn's background fetch)
-    → inject into system prompt (user representation, AI representation, dialectic)
-    → LLM call
-    → response
-    → fire background fetch for next turn
-         → fetch context    ─┐
-         → fetch dialectic  ─┴→ cache for Turn N+1
+```mermaid
+flowchart TD
+    user["User message"] --> cache["Consume cached Honcho context<br/>from the previous turn"]
+    cache --> prompt["Inject user, AI, and dialectic context<br/>into the system prompt"]
+    prompt --> llm["LLM call"]
+    llm --> response["Assistant response"]
+    response --> fetch["Start background fetch for Turn N+1"]
+    fetch --> ctx["Fetch context"]
+    fetch --> dia["Fetch dialectic"]
+    ctx --> next["Cache for the next turn"]
+    dia --> next
 ```
 
 Turn 1 is a cold start (no cache). All subsequent turns consume cached results with zero HTTP latency on the response path. The system prompt on turn 1 uses only static context to preserve prefix cache hits at the LLM provider.

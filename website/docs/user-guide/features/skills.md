@@ -140,7 +140,7 @@ When a missing value is encountered, Hermes asks for it securely only when the s
 
 ## Skill Directory Structure
 
-```
+```text
 ~/.hermes/skills/                  # Single source of truth
 ├── mlops/                         # Category directory
 │   ├── axolotl/

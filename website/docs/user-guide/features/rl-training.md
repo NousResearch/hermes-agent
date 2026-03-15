@@ -174,21 +174,17 @@ The training loop:
 
 ## Architecture Diagram
 
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Atropos API   │◄────│   Environment    │────►│  OpenAI/sglang  │
-│  (run-api)      │     │  (BaseEnv impl)  │     │  Inference API  │
-│  Port 8000      │     │                  │     │  Port 8001      │
-└────────┬────────┘     └──────────────────┘     └────────┬────────┘
-         │                                                │
-         │  Batches (tokens + scores + logprobs)          │
-         │                                                │
-         ▼                                                │
-┌─────────────────┐                                       │
-│  Tinker Trainer  │◄──────────────────────────────────────┘
-│  (LoRA training) │  Serves inference via FastAPI
-│  + FastAPI       │  Trains via Tinker ServiceClient
-└─────────────────┘
+```mermaid
+flowchart LR
+    api["Atropos API<br/>run-api<br/>port 8000"]
+    env["Environment<br/>BaseEnv implementation"]
+    infer["OpenAI / sglang<br/>inference API<br/>port 8001"]
+    trainer["Tinker Trainer<br/>LoRA training + FastAPI"]
+
+    env <--> api
+    env --> infer
+    api -->|"batches: tokens, scores, logprobs"| trainer
+    trainer -->|"serves inference"| infer
 ```
 
 ## Creating Custom Environments

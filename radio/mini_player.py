@@ -498,19 +498,3 @@ def _format_time(seconds: float) -> str:
     m = int(seconds) // 60
     s = int(seconds) % 60
     return f"{m}:{s:02d}"
-
-
-# Style tokens
-MINI_PLAYER_STYLES = {
-    "radio-bars": "#bc8cff",
-    "radio-title": "#e6edf3 bold",
-    "radio-title-dim": "#c9d1d9",
-    "radio-label": "#7eb8f6 bold",
-    "radio-tags": "#6e7681",
-    "radio-station": "#7ee6a8",
-    "radio-time": "#6e7681",
-    "radio-vol": "#484f58",
-    "radio-progress": "#7eb8f6",
-    "radio-progress-bg": "#21262d",
-    "radio-border": "#21262d",
-}

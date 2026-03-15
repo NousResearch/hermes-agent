@@ -3090,13 +3090,13 @@ class HermesCLI:
 
         try:
             from radio.menu import search_menu, radio_menu_fallback
-            from radio.player import HermesRadio, check_radio_available
+            from radio.player import HermesRadio
         except ImportError as e:
             print(f"Radio module not available: {e}")
             return
 
         from tools.radio_tool import _run_radio_async as _run
-        from radio.menu import build_menu_items, RadioMenuState, radio_menu_fallback
+        from radio.menu import build_menu_items, RadioMenuState
 
         # Gather state
         now = None
@@ -3137,11 +3137,9 @@ class HermesCLI:
         if not selected:
             return
 
-        radio = HermesRadio.get()
-        radio.configure(self.config)
-        self._handle_radio_command_inner(cmd, _run, None, search_menu, HermesRadio, selected)
+        self._handle_radio_command_inner(cmd, _run, search_menu, HermesRadio, selected)
 
-    def _handle_radio_command_inner(self, cmd, _run, radio_menu, search_menu, HermesRadio, selected=None):
+    def _handle_radio_command_inner(self, cmd, _run, search_menu, HermesRadio, selected=None):
         """Execute the selected radio menu item."""
         if selected is None:
             return
@@ -5191,6 +5189,8 @@ class HermesCLI:
                 if HermesRadio.active():
                     from tools.radio_tool import _run_radio_async
                     _run_radio_async(HermesRadio.get().stop())
+                from tools.radio_tool import _stop_radio_loop
+                _stop_radio_loop()
             except Exception:
                 pass
             # Close session in SQLite

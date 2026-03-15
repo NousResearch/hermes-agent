@@ -5,8 +5,8 @@ API: https://api.somafm.com/channels.json
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 import httpx
 

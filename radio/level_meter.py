@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import threading
-import time
 from collections import deque
 from typing import Deque, List, Optional
 
@@ -31,9 +30,6 @@ _current_url = ""
 
 # Regex to extract RMS level from ffmpeg ametadata output
 _RMS_RE = re.compile(r"lavfi\.astats\.Overall\.RMS_level=([-\d.]+)")
-# Also grab per-channel for stereo spread
-_CH1_RE = re.compile(r"lavfi\.astats\.1\.RMS_level=([-\d.]+)")
-_CH2_RE = re.compile(r"lavfi\.astats\.2\.RMS_level=([-\d.]+)")
 
 
 def start(url: str) -> None:

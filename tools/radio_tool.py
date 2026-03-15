@@ -41,6 +41,16 @@ def _ensure_radio_loop() -> asyncio.AbstractEventLoop:
         return _radio_loop
 
 
+def _stop_radio_loop():
+    """Gracefully stop the persistent radio event loop."""
+    global _radio_loop, _radio_thread
+    with _radio_lock:
+        if _radio_loop and _radio_loop.is_running():
+            _radio_loop.call_soon_threadsafe(_radio_loop.stop)
+        _radio_loop = None
+        _radio_thread = None
+
+
 def _run_radio_async(coro):
     """Run an async coroutine on the persistent radio event loop."""
     loop = _ensure_radio_loop()

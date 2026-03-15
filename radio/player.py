@@ -8,7 +8,6 @@ background service within the Hermes CLI process.
 import asyncio
 import json
 import logging
-import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -77,8 +76,8 @@ class HermesRadio:
         self._mood_weights: Optional[Dict[str, float]] = None
         self._country_weights: Optional[Dict[str, float]] = None
         self._decade_weights: Optional[Dict[int, float]] = None
-        # Prefetched next track
-        self._next_track = None
+        # State poll task (created in start())
+        self._state_poll_task = None
 
     @classmethod
     def get(cls) -> "HermesRadio":

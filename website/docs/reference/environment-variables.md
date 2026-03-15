@@ -26,15 +26,17 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
 | `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
 | `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
-| `ANTHROPIC_API_KEY` | Anthropic API key or setup-token ([console.anthropic.com](https://console.anthropic.com/)) |
-| `ANTHROPIC_TOKEN` | Anthropic OAuth/setup token (alternative to `ANTHROPIC_API_KEY`) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code setup-token (same as `ANTHROPIC_TOKEN`) |
+| `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
+| `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`) |
 
 ## Provider Auth (OAuth)
+
+For native Anthropic auth, Hermes prefers Claude Code's own credential files when they exist because those credentials can refresh automatically. Environment variables such as `ANTHROPIC_TOKEN` remain useful as manual overrides, but they are no longer the preferred path for Claude Pro/Max login.
 
 | Variable | Description |
 |----------|-------------|

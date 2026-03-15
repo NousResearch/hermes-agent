@@ -2145,6 +2145,31 @@ class TestAnthropicCredentialRefresh:
         old_client.close.assert_not_called()
         rebuild.assert_not_called()
 
+    def test_anthropic_messages_create_preflights_refresh(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
+            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
+        refresh.assert_called_once_with()
+        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        assert result is response
+
 
 # ===================================================================
 # _streaming_api_call tests

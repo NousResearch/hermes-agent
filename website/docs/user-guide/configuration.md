@@ -63,7 +63,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
-| **Anthropic** | `hermes model` (API key, setup-token, or Claude Code auto-detect) |
+| **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -85,16 +85,22 @@ Use Claude models directly through the Anthropic API — no OpenRouter proxy nee
 
 ```bash
 # With an API key (pay-per-token)
-export ANTHROPIC_API_KEY=sk-ant-api03-...
+export ANTHROPIC_API_KEY=***
 hermes chat --provider anthropic --model claude-sonnet-4-6
 
-# With a Claude Code setup-token (Pro/Max subscription)
-export ANTHROPIC_API_KEY=sk-ant-oat01-...  # from 'claude setup-token'
+# Preferred: authenticate through `hermes model`
+# Hermes will use Claude Code's credential store directly when available
+hermes model
+
+# Manual override with a setup-token (fallback / legacy)
+export ANTHROPIC_TOKEN=***  # setup-token or manual OAuth token
 hermes chat --provider anthropic
 
-# Auto-detect Claude Code credentials (if you have Claude Code installed)
-hermes chat --provider anthropic  # reads ~/.claude.json automatically
+# Auto-detect Claude Code credentials (if you already use Claude Code)
+hermes chat --provider anthropic  # reads Claude Code credential files automatically
 ```
+
+When you choose Anthropic OAuth through `hermes model`, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable.
 
 Or set it permanently:
 ```yaml

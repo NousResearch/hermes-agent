@@ -2613,6 +2613,43 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_anthropic_client_credentials(self) -> bool:
+        if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
+            return False
+
+        try:
+            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+
+            new_token = resolve_anthropic_token()
+        except Exception as exc:
+            logger.debug("Anthropic credential refresh failed: %s", exc)
+            return False
+
+        if not isinstance(new_token, str) or not new_token.strip():
+            return False
+        new_token = new_token.strip()
+        if new_token == self._anthropic_api_key:
+            return False
+
+        try:
+            self._anthropic_client.close()
+        except Exception:
+            pass
+
+        try:
+            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
+        except Exception as exc:
+            logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
+            return False
+
+        self._anthropic_api_key = new_token
+        return True
+
+    def _anthropic_messages_create(self, api_kwargs: dict):
+        if self.api_mode == "anthropic_messages":
+            self._try_refresh_anthropic_client_credentials()
+        return self._anthropic_client.messages.create(**api_kwargs)
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2629,7 +2666,7 @@ class AIAgent:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
                 elif self.api_mode == "anthropic_messages":
-                    result["response"] = self._anthropic_client.messages.create(**api_kwargs)
+                    result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
             except Exception as e:
@@ -3267,7 +3304,7 @@ class AIAgent:
                     tools=[memory_tool_def], max_tokens=5120,
                     reasoning_config=None,
                 )
-                response = self._anthropic_client.messages.create(**ant_kwargs)
+                response = self._anthropic_messages_create(ant_kwargs)
             elif not _aux_available:
                 api_kwargs = {
                     "model": self.model,
@@ -4018,7 +4055,7 @@ class AIAgent:
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak, normalize_anthropic_response as _nar
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
-                    summary_response = self._anthropic_client.messages.create(**_ant_kw)
+                    summary_response = self._anthropic_messages_create(_ant_kw)
                     _msg, _ = _nar(summary_response)
                     final_response = (_msg.content or "").strip()
                 else:
@@ -4048,7 +4085,7 @@ class AIAgent:
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak2, normalize_anthropic_response as _nar2
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
                                      max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
-                    retry_response = self._anthropic_client.messages.create(**_ant_kw2)
+                    retry_response = self._anthropic_messages_create(_ant_kw2)
                     _retry_msg, _ = _nar2(retry_response)
                     final_response = (_retry_msg.content or "").strip()
                 else:
@@ -4822,12 +4859,8 @@ class AIAgent:
                         and not anthropic_auth_retry_attempted
                     ):
                         anthropic_auth_retry_attempted = True
-                        # Try re-reading Claude Code credentials (they may have been refreshed)
-                        from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client, _is_oauth_token
-                        new_token = resolve_anthropic_token()
-                        if new_token and new_token != self._anthropic_api_key:
-                            self._anthropic_api_key = new_token
-                            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
+                        from agent.anthropic_adapter import _is_oauth_token
+                        if self._try_refresh_anthropic_client_credentials():
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info

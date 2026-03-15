@@ -321,7 +321,7 @@ def build_session_key(source: SessionSource) -> str:
     This is the single source of truth for session key construction.
 
     DM rules:
-      - WhatsApp DMs include chat_id (multi-user support).
+      - WhatsApp and Webhook DMs include chat_id (multi-session support).
       - Other DMs include thread_id when present (e.g. Slack threaded DMs),
         so each DM thread gets its own session while top-level DMs share one.
       - Without thread_id or chat_id, all DMs share a single session.
@@ -334,7 +334,7 @@ def build_session_key(source: SessionSource) -> str:
     if source.chat_type == "dm":
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
-        if platform == "whatsapp" and source.chat_id:
+        if platform in ("whatsapp", "webhook") and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
     if source.thread_id:

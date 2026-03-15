@@ -42,6 +42,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    WEBHOOK = "webhook"
 
 
 @dataclass
@@ -510,6 +511,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
+
+    # Webhook (generic inbound HTTP adapter)
+    webhook_port = os.getenv("WEBHOOK_PORT")
+    if webhook_port:
+        if Platform.WEBHOOK not in config.platforms:
+            config.platforms[Platform.WEBHOOK] = PlatformConfig()
+        config.platforms[Platform.WEBHOOK].enabled = True
+        # Default to no auto-reset for webhook sessions — these are
+        # programmatic integrations (bridges, automations) where the
+        # caller manages lifecycle.  Context is preserved until the
+        # caller explicitly creates a new session or chat_id.
+        if Platform.WEBHOOK not in config.reset_by_platform:
+            config.reset_by_platform[Platform.WEBHOOK] = SessionResetPolicy(mode="none")
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

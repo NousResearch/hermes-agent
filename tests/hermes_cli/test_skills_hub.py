@@ -3,7 +3,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from hermes_cli.skills_hub import do_list
+from hermes_cli.skills_hub import do_check, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -68,6 +68,34 @@ def _capture(source_filter: str = "all") -> str:
     return sink.getvalue()
 
 
+def _capture_check(monkeypatch, results, name=None) -> str:
+    import tools.skills_hub as hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: results)
+    do_check(name=name, console=console)
+    return sink.getvalue()
+
+
+def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
+    import tools.skills_hub as hub
+    import hermes_cli.skills_hub as cli_hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    installs = []
+
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: results)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, name: {"install_path": "category/" + name}
+    })())
+    monkeypatch.setattr(cli_hub, "do_install", lambda identifier, category="", force=False, console=None: installs.append((identifier, category, force)))
+
+    do_update(console=console)
+    return sink.getvalue(), installs
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -122,3 +150,30 @@ def test_do_list_filter_builtin(three_source_env):
     assert "builtin-skill" in output
     assert "hub-skill" not in output
     assert "local-skill" not in output
+
+
+def test_do_check_reports_available_updates(monkeypatch):
+    output = _capture_check(monkeypatch, [
+        {"name": "hub-skill", "source": "skills.sh", "status": "update_available"},
+        {"name": "other-skill", "source": "github", "status": "up_to_date"},
+    ])
+
+    assert "hub-skill" in output
+    assert "update_available" in output
+    assert "up_to_date" in output
+
+
+def test_do_check_handles_no_installed_updates(monkeypatch):
+    output = _capture_check(monkeypatch, [])
+
+    assert "No hub-installed skills to check" in output
+
+
+def test_do_update_reinstalls_outdated_skills(monkeypatch):
+    output, installs = _capture_update(monkeypatch, [
+        {"name": "hub-skill", "identifier": "skills-sh/example/repo/hub-skill", "status": "update_available"},
+        {"name": "other-skill", "identifier": "github/example/other-skill", "status": "up_to_date"},
+    ])
+
+    assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
+    assert "Updated 1 skill" in output

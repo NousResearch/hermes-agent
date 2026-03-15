@@ -40,6 +40,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-v3.2",
     ],
     "openai-codex": [
+        "gpt-5.3-codex",
         "gpt-5.2-codex",
         "gpt-5.1-codex-mini",
         "gpt-5.1-codex-max",
@@ -220,6 +221,16 @@ def normalize_provider(provider: Optional[str]) -> str:
     """
     normalized = (provider or "openrouter").strip().lower()
     return _PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def provider_label(provider: Optional[str]) -> str:
+    """Return a human-friendly label for a provider id or alias."""
+    original = (provider or "openrouter").strip()
+    normalized = original.lower()
+    if normalized == "auto":
+        return "Auto"
+    normalized = normalize_provider(normalized)
+    return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
 def provider_model_ids(provider: Optional[str]) -> list[str]:

@@ -26,6 +26,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -53,10 +54,11 @@ logger = logging.getLogger(__name__)
 from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
 
 
-# Add mini-swe-agent to path if not installed
-mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
-if mini_swe_path.exists():
-    sys.path.insert(0, str(mini_swe_path))
+# Add mini-swe-agent to path if not installed. In git worktrees the populated
+# submodule may live in the main checkout rather than the worktree itself.
+from minisweagent_path import ensure_minisweagent_on_path
+
+ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 
 
 # =============================================================================
@@ -130,6 +132,7 @@ def set_approval_callback(cb):
 from tools.approval import (
     detect_dangerous_command as _detect_dangerous_command,
     check_dangerous_command as _check_dangerous_command_impl,
+    check_all_command_guards as _check_all_guards_impl,
     load_permanent_allowlist as _load_permanent_allowlist,
     DANGEROUS_PATTERNS,
 )
@@ -139,6 +142,12 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
     """Delegate to the consolidated approval module, passing the CLI callback."""
     return _check_dangerous_command_impl(command, env_type,
                                          approval_callback=_approval_callback)
+
+
+def _check_all_guards(command: str, env_type: str) -> dict:
+    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+    return _check_all_guards_impl(command, env_type,
+                                  approval_callback=_approval_callback)
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
@@ -949,10 +958,10 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        # Check for dangerous commands (only for local/ssh in interactive modes)
+        # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         if not force:
-            approval = _check_dangerous_command(command, env_type)
+            approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":
@@ -962,13 +971,13 @@ def terminal_tool(
                         "error": approval.get("message", "Waiting for user approval"),
                         "status": "approval_required",
                         "command": approval.get("command", command),
-                        "description": approval.get("description", "dangerous command"),
+                        "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
                     }, ensure_ascii=False)
-                # Command was blocked - include the pattern category so the caller knows why
-                desc = approval.get("description", "potentially dangerous operation")
+                # Command was blocked
+                desc = approval.get("description", "command flagged")
                 fallback_msg = (
-                    f"Command denied: matches '{desc}' pattern. "
+                    f"Command denied: {desc}. "
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
                 return json.dumps({
@@ -1124,50 +1133,82 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met.
+
+    Important: local and singularity backends now use Hermes' own environment
+    wrappers directly and do not require the ``minisweagent`` Python package to
+    be installed. Docker and Modal still rely on mini-swe-agent internals.
+    """
     config = _get_env_config()
     env_type = config["env_type"]
-    
+
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
+            # Local execution uses Hermes' own LocalEnvironment wrapper and does
+            # not depend on minisweagent being importable.
             return True
+
         elif env_type == "docker":
-            from minisweagent.environments.docker import DockerEnvironment
+            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
+            if importlib.util.find_spec("minisweagent") is None:
+                logger.error("mini-swe-agent is required for docker terminal backend but is not importable")
+                return False
             # Check if docker is available (use find_docker for macOS PATH issues)
             from tools.environments.docker import find_docker
-            import subprocess
             docker = find_docker()
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
             return result.returncode == 0
+
         elif env_type == "singularity":
-            from minisweagent.environments.singularity import SingularityEnvironment
-            # Check if singularity/apptainer is available
-            import subprocess
-            import shutil
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
                 result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
                 return result.returncode == 0
             return False
+
         elif env_type == "ssh":
-            from tools.environments.ssh import SSHEnvironment
             # Check that host and user are configured
-            return bool(config.get("ssh_host")) and bool(config.get("ssh_user"))
+            if not config.get("ssh_host") or not config.get("ssh_user"):
+                logger.error(
+                    "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
+                    "are not both set. Configure both or switch TERMINAL_ENV to 'local'."
+                )
+                return False
+            return True
+
         elif env_type == "modal":
-            from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
+            if importlib.util.find_spec("minisweagent") is None:
+                logger.error("mini-swe-agent is required for modal terminal backend but is not importable")
+                return False
             # Check for modal token
-            return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+            has_token = os.getenv("MODAL_TOKEN_ID") is not None
+            has_config = Path.home().joinpath(".modal.toml").exists()
+            if not (has_token or has_config):
+                logger.error(
+                    "Modal backend selected but no MODAL_TOKEN_ID environment variable "
+                    "or ~/.modal.toml config file was found. Configure Modal or choose "
+                    "a different TERMINAL_ENV."
+                )
+                return False
+            return True
+
         elif env_type == "daytona":
             from daytona import Daytona
             return os.getenv("DAYTONA_API_KEY") is not None
+
         else:
+            logger.error(
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
+                "modal, daytona, ssh.",
+                env_type,
+            )
             return False
     except Exception as e:
-        logger.error("Terminal requirements check failed: %s", e)
+        logger.error("Terminal requirements check failed: %s", e, exc_info=True)
         return False
 
 

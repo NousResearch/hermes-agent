@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import logging
 import sys
 
 from agent.prompt_builder import (
@@ -14,8 +15,28 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    MEMORY_GUIDANCE,
+    SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
 )
+
+
+# =========================================================================
+# Guidance constants
+# =========================================================================
+
+
+class TestGuidanceConstants:
+    def test_memory_guidance_discourages_task_logs(self):
+        assert "durable facts" in MEMORY_GUIDANCE
+        assert "Do NOT save task progress" in MEMORY_GUIDANCE
+        assert "session_search" in MEMORY_GUIDANCE
+        assert "like a diary" not in MEMORY_GUIDANCE
+        assert ">80%" not in MEMORY_GUIDANCE
+
+    def test_session_search_guidance_is_simple_cross_session_recall(self):
+        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 
 # =========================================================================
@@ -143,6 +164,23 @@ class TestParseSkillFile:
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
+
+    def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: broken\n---\n")
+
+        def boom(*args, **kwargs):
+            raise OSError("read exploded")
+
+        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+
+        assert is_compat is True
+        assert frontmatter == {}
+        assert desc == ""
+        assert "Failed to parse skill file" in caplog.text
+        assert str(skill_file) in caplog.text
 
     def test_incompatible_platform_returns_false(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
@@ -331,14 +369,15 @@ class TestBuildSkillsSystemPrompt:
 
 
 class TestBuildContextFilesPrompt:
-    def test_empty_dir_returns_empty(self, tmp_path):
+    def test_empty_dir_loads_seeded_global_soul(self, tmp_path):
         from unittest.mock import patch
 
         fake_home = tmp_path / "fake_home"
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
-        assert result == ""
+        assert "Project Context" in result
+        assert "# Hermes ☤" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -351,11 +390,33 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
 
-    def test_loads_soul_md(self, tmp_path):
-        (tmp_path / "SOUL.md").write_text("Be concise and friendly.")
+    def test_loads_soul_md_from_hermes_home_only(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "concise and friendly" in result
-        assert "SOUL.md" in result
+        assert "Be concise and friendly." in result
+        assert "cwd soul should be ignored" not in result
+
+    def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Be concise and friendly." in result
+        assert "If SOUL.md is present" not in result
+        assert "## SOUL.md" not in result
+
+    def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert result == ""
 
     def test_blocks_injection_in_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text(
@@ -394,6 +455,7 @@ class TestPromptBuilderConstants:
         assert "whatsapp" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
+        assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
 
@@ -439,6 +501,21 @@ class TestReadSkillConditions:
     def test_missing_file_returns_empty(self, tmp_path):
         conditions = _read_skill_conditions(tmp_path / "missing.md")
         assert conditions == {}
+
+    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: broken\n---\n")
+
+        def boom(*args, **kwargs):
+            raise OSError("read exploded")
+
+        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            conditions = _read_skill_conditions(skill_file)
+
+        assert conditions == {}
+        assert "Failed to read skill conditions" in caplog.text
+        assert str(skill_file) in caplog.text
 
 
 class TestSkillShouldShow:

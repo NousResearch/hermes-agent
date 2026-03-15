@@ -53,6 +53,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import shutil
@@ -66,6 +67,12 @@ from pathlib import Path
 from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
+
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services)
+_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Throttle screenshot cleanup to avoid repeated full directory scans.
+_last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
 # ============================================================================
 # Configuration
@@ -159,82 +166,27 @@ def _emergency_cleanup_all_sessions():
     if not _active_sessions:
         return
     
-    logger.info("Emergency cleanup: closing %s active session(s)...", len(_active_sessions))
-    
+    logger.info("Emergency cleanup: closing %s active session(s)...",
+                len(_active_sessions))
+
     try:
-        if _is_local_mode():
-            # Local mode: just close agent-browser sessions via CLI
-            for task_id, session_info in list(_active_sessions.items()):
-                session_name = session_info.get("session_name")
-                if session_name:
-                    try:
-                        browser_cmd = _find_agent_browser()
-                        task_socket_dir = os.path.join(
-                            _socket_safe_tmpdir(),
-                            f"agent-browser-{session_name}"
-                        )
-                        env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
-                        subprocess.run(
-                            browser_cmd.split() + ["--session", session_name, "--json", "close"],
-                            capture_output=True, timeout=5, env=env,
-                        )
-                        logger.info("Closed local session %s", session_name)
-                    except Exception as e:
-                        logger.debug("Error closing local session %s: %s", session_name, e)
-        else:
-            # Cloud mode: release Browserbase sessions via API
-            api_key = os.environ.get("BROWSERBASE_API_KEY")
-            project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-
-            if not api_key or not project_id:
-                logger.warning("Cannot cleanup - missing BROWSERBASE credentials")
-                return
-
-            for task_id, session_info in list(_active_sessions.items()):
-                bb_session_id = session_info.get("bb_session_id")
-                if bb_session_id:
-                    try:
-                        response = requests.post(
-                            f"https://api.browserbase.com/v1/sessions/{bb_session_id}",
-                            headers={
-                                "X-BB-API-Key": api_key,
-                                "Content-Type": "application/json"
-                            },
-                            json={
-                                "projectId": project_id,
-                                "status": "REQUEST_RELEASE"
-                            },
-                            timeout=5  # Short timeout for cleanup
-                        )
-                        if response.status_code in (200, 201, 204):
-                            logger.info("Closed session %s", bb_session_id)
-                        else:
-                            logger.warning("Failed to close session %s: HTTP %s", bb_session_id, response.status_code)
-                    except Exception as e:
-                        logger.error("Error closing session %s: %s", bb_session_id, e)
-        
-        _active_sessions.clear()
+        cleanup_all_browsers()
     except Exception as e:
         logger.error("Emergency cleanup error: %s", e)
+    finally:
+        with _cleanup_lock:
+            _active_sessions.clear()
+            _session_last_activity.clear()
+        _recording_sessions.clear()
 
 
-def _signal_handler(signum, frame):
-    """Handle interrupt signals to cleanup sessions before exit."""
-    logger.warning("Received signal %s, cleaning up...", signum)
-    _emergency_cleanup_all_sessions()
-    sys.exit(128 + signum)
-
-
-# Register cleanup handlers
+# Register cleanup via atexit only.  Previous versions installed SIGINT/SIGTERM
+# handlers that called sys.exit(), but this conflicts with prompt_toolkit's
+# async event loop — a SystemExit raised inside a key-binding callback
+# corrupts the coroutine state and makes the process unkillable.  atexit
+# handlers run on any normal exit (including sys.exit), so browser sessions
+# are still cleaned up without hijacking signals.
 atexit.register(_emergency_cleanup_all_sessions)
-
-# Only register signal handlers in main process (not in multiprocessing workers)
-try:
-    if os.getpid() == os.getpgrp():  # Main process check
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
-except (OSError, AttributeError):
-    pass  # Signal handling not available (e.g., Windows or worker process)
 
 
 # =============================================================================
@@ -644,18 +596,14 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
 
 
 def _create_local_session(task_id: str) -> Dict[str, str]:
-    """Create a lightweight local browser session (no cloud API call).
-
-    Returns the same dict shape as ``_create_browserbase_session`` so the rest
-    of the code can treat both modes uniformly.
-    """
     import uuid
-    session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-    logger.info("Created local browser session %s", session_name)
+    session_name = f"h_{uuid.uuid4().hex[:10]}"
+    logger.info("Created local browser session %s for task %s",
+                session_name, task_id)
     return {
         "session_name": session_name,
-        "bb_session_id": None,   # Not applicable in local mode
-        "cdp_url": None,         # Not applicable in local mode
+        "bb_session_id": None,
+        "cdp_url": None,
         "features": {"local": True},
     }
 
@@ -776,6 +724,27 @@ def _find_agent_browser() -> str:
     )
 
 
+def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
+    """Extract a screenshot file path from agent-browser human-readable output."""
+    if not text:
+        return None
+
+    patterns = [
+        r"Screenshot saved to ['\"](?P<path>/[^'\"]+?\.png)['\"]",
+        r"Screenshot saved to (?P<path>/\S+?\.png)(?:\s|$)",
+        r"(?P<path>/\S+?\.png)(?:\s|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            path = match.group("path").strip().strip("'\"")
+            if path:
+                return path
+
+    return None
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -845,10 +814,20 @@ def _run_browser_command(
                      command, task_id, task_socket_dir, len(task_socket_dir))
         
         browser_env = {**os.environ}
-        # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
-        _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        if "/usr/bin" not in browser_env.get("PATH", "").split(":"):
-            browser_env["PATH"] = f"{browser_env.get('PATH', '')}:{_SANE_PATH}"
+
+        # Ensure PATH includes Hermes-managed Node first, then standard system dirs.
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_node_bin = str(hermes_home / "node" / "bin")
+
+        existing_path = browser_env.get("PATH", "")
+        path_parts = [p for p in existing_path.split(":") if p]
+        candidate_dirs = [hermes_node_bin] + [p for p in _SANE_PATH.split(":") if p]
+
+        for part in reversed(candidate_dirs):
+            if os.path.isdir(part) and part not in path_parts:
+                path_parts.insert(0, part)
+
+        browser_env["PATH"] = ":".join(path_parts)
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
         result = subprocess.run(
@@ -871,10 +850,11 @@ def _run_browser_command(
                            command, " ".join(cmd_parts[:4]) + "...",
                            (result.stderr or "")[:200])
 
-        # Parse JSON output
-        if result.stdout.strip():
+        stdout_text = result.stdout.strip()
+
+        if stdout_text:
             try:
-                parsed = json.loads(result.stdout.strip())
+                parsed = json.loads(stdout_text)
                 # Warn if snapshot came back empty (common sign of daemon/CDP issues)
                 if command == "snapshot" and parsed.get("success"):
                     snap_data = parsed.get("data", {})
@@ -884,13 +864,33 @@ def _run_browser_command(
                                        "returncode=%s", result.returncode)
                 return parsed
             except json.JSONDecodeError:
-                # Non-JSON output indicates agent-browser crash or version mismatch
-                raw = result.stdout.strip()[:500]
+                raw = stdout_text[:2000]
                 logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                               command, result.returncode, raw[:200])
+                               command, result.returncode, raw[:500])
+
+                if command == "screenshot":
+                    stderr_text = (result.stderr or "").strip()
+                    combined_text = "\n".join(
+                        part for part in [stdout_text, stderr_text] if part
+                    )
+                    recovered_path = _extract_screenshot_path_from_text(combined_text)
+
+                    if recovered_path and Path(recovered_path).exists():
+                        logger.info(
+                            "browser 'screenshot' recovered file from non-JSON output: %s",
+                            recovered_path,
+                        )
+                        return {
+                            "success": True,
+                            "data": {
+                                "path": recovered_path,
+                                "raw": raw,
+                            },
+                        }
+
                 return {
-                    "success": True,
-                    "data": {"raw": raw}
+                    "success": False,
+                    "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
                 }
         
         # Check for errors
@@ -1255,46 +1255,26 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 def browser_close(task_id: Optional[str] = None) -> str:
     """
     Close the browser session.
-    
+
     Args:
         task_id: Task identifier for session isolation
-        
+
     Returns:
         JSON string with close result
     """
     effective_task_id = task_id or "default"
-    
-    # Stop auto-recording before closing
-    _maybe_stop_recording(effective_task_id)
-    
-    result = _run_browser_command(effective_task_id, "close", [])
-    
-    # Close the backend session (Browserbase API in cloud mode, nothing extra in local mode)
-    session_key = task_id if task_id and task_id in _active_sessions else "default"
-    if session_key in _active_sessions:
-        session_info = _active_sessions[session_key]
-        bb_session_id = session_info.get("bb_session_id")
-        if bb_session_id:
-            # Cloud mode: release the Browserbase session via API
-            try:
-                config = _get_browserbase_config()
-                _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
-            except Exception as e:
-                logger.warning("Could not close BrowserBase session: %s", e)
-        del _active_sessions[session_key]
-    
-    if result.get("success"):
-        return json.dumps({
-            "success": True,
-            "closed": True
-        }, ensure_ascii=False)
-    else:
-        # Even if close fails, session was released
-        return json.dumps({
-            "success": True,
-            "closed": True,
-            "warning": result.get("error", "Session may not have been active")
-        }, ensure_ascii=False)
+    with _cleanup_lock:
+        had_session = effective_task_id in _active_sessions
+
+    cleanup_browser(effective_task_id)
+
+    response = {
+        "success": True,
+        "closed": True,
+    }
+    if not had_session:
+        response["warning"] = "Session may not have been active"
+    return json.dumps(response, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
@@ -1486,9 +1466,11 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
         
         # Take screenshot using agent-browser
-        screenshot_args = [str(screenshot_path)]
+        screenshot_args = []
         if annotate:
-            screenshot_args.insert(0, "--annotate")
+            screenshot_args.append("--annotate")
+        screenshot_args.append("--full")
+        screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
             effective_task_id, 
             "screenshot", 
@@ -1503,7 +1485,11 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 "success": False,
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
             }, ensure_ascii=False)
-        
+
+        actual_screenshot_path = result.get("data", {}).get("path")
+        if actual_screenshot_path:
+            screenshot_path = Path(actual_screenshot_path)
+
         # Check if screenshot file was created
         if not screenshot_path.exists():
             mode = "local" if _is_local_mode() else "cloud"
@@ -1578,8 +1564,17 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
-    """Remove browser screenshots older than max_age_hours to prevent disk bloat."""
-    import time
+    """Remove browser screenshots older than max_age_hours to prevent disk bloat.
+
+    Throttled to run at most once per hour per directory to avoid repeated
+    scans on screenshot-heavy workflows.
+    """
+    key = str(screenshots_dir)
+    now = time.time()
+    if now - _last_screenshot_cleanup_by_dir.get(key, 0.0) < 3600:
+        return
+    _last_screenshot_cleanup_by_dir[key] = now
+
     try:
         cutoff = time.time() - (max_age_hours * 3600)
         for f in screenshots_dir.glob("browser_screenshot_*.png"):

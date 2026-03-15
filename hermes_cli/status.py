@@ -11,8 +11,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.models import provider_label
+from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 
 def check_mark(ok: bool) -> str:
@@ -48,6 +51,32 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _configured_model_label(config: dict) -> str:
+    """Return the configured default model from config.yaml."""
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        model = (model_cfg.get("default") or model_cfg.get("name") or "").strip()
+    elif isinstance(model_cfg, str):
+        model = model_cfg.strip()
+    else:
+        model = ""
+    return model or "(not set)"
+
+
+def _effective_provider_label() -> str:
+    """Return the provider label matching current CLI runtime resolution."""
+    requested = resolve_requested_provider()
+    try:
+        effective = resolve_provider(requested)
+    except AuthError:
+        effective = requested or "auto"
+
+    if effective == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+        effective = "custom"
+
+    return provider_label(effective)
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -68,6 +97,14 @@ def show_status(args):
     
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    print(f"  Model:        {_configured_model_label(config)}")
+    print(f"  Provider:     {_effective_provider_label()}")
     
     # =========================================================================
     # API Keys
@@ -181,7 +218,6 @@ def show_status(args):
         # Fall back to config file value when env var isn't set
         # (hermes status doesn't go through cli.py's config loading)
         try:
-            from hermes_cli.config import load_config
             _cfg = load_config()
             terminal_env = _cfg.get("terminal", {}).get("backend", "local")
         except Exception:
@@ -267,7 +303,7 @@ def show_status(args):
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
     
-    jobs_file = Path.home() / ".hermes" / "cron" / "jobs.json"
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
         import json
         try:
@@ -287,7 +323,7 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
     
-    sessions_file = Path.home() / ".hermes" / "sessions" / "sessions.json"
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
         import json
         try:

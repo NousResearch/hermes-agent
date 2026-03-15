@@ -3,7 +3,25 @@
 import os
 import pytest
 
-from tools.approval import check_dangerous_command, detect_dangerous_command
+import tools.approval as approval_module
+import tools.tirith_security
+
+from tools.approval import (
+    check_all_command_guards,
+    check_dangerous_command,
+    detect_dangerous_command,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_approval_state():
+    approval_module._permanent_approved.clear()
+    approval_module.clear_session("default")
+    approval_module.clear_session("test-session")
+    yield
+    approval_module._permanent_approved.clear()
+    approval_module.clear_session("default")
+    approval_module.clear_session("test-session")
 
 
 class TestYoloMode:
@@ -53,6 +71,24 @@ class TestYoloMode:
         for cmd in dangerous_commands:
             result = check_dangerous_command(cmd, "local")
             assert result["approved"], f"Command should be approved in yolo mode: {cmd}"
+
+    def test_combined_guard_bypasses_yolo_mode(self, monkeypatch):
+        """The new combined guard should preserve yolo bypass semantics."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+        called = {"value": False}
+
+        def fake_check(command):
+            called["value"] = True
+            return {"action": "block", "findings": [], "summary": "should never run"}
+
+        monkeypatch.setattr(tools.tirith_security, "check_command_security", fake_check)
+
+        result = check_all_command_guards("rm -rf /", "local")
+        assert result["approved"]
+        assert result["message"] is None
+        assert called["value"] is False
 
     def test_yolo_mode_not_set_by_default(self):
         """HERMES_YOLO_MODE should not be set by default."""

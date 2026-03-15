@@ -1,10 +1,17 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
-from agent.skill_commands import scan_skill_commands, build_skill_invocation_message
+from agent.skill_commands import (
+    build_plan_path,
+    build_preloaded_skills_prompt,
+    build_skill_invocation_message,
+    scan_skill_commands,
+)
 
 
 def _make_skill(
@@ -77,6 +84,33 @@ class TestScanSkillCommands:
             _make_skill(tmp_path, "generic-tool")
             result = scan_skill_commands()
         assert "/generic-tool" in result
+
+
+class TestBuildPreloadedSkillsPrompt:
+    def test_builds_prompt_for_multiple_named_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill")
+            _make_skill(tmp_path, "second-skill")
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["first-skill", "second-skill"]
+            )
+
+        assert missing == []
+        assert loaded == ["first-skill", "second-skill"]
+        assert "first-skill" in prompt
+        assert "second-skill" in prompt
+        assert "preloaded" in prompt.lower()
+
+    def test_reports_missing_named_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "present-skill")
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["present-skill", "missing-skill"]
+            )
+
+        assert "present-skill" in prompt
+        assert loaded == ["present-skill"]
+        assert missing == ["missing-skill"]
 
 
 class TestBuildSkillInvocationMessage:
@@ -241,3 +275,37 @@ Generate some audio.
 
         assert msg is not None
         assert 'file_path="<path>"' in msg
+
+
+class TestPlanSkillHelpers:
+    def test_build_plan_path_uses_workspace_relative_dir_and_slugifies_request(self):
+        path = build_plan_path(
+            "Implement OAuth login + refresh tokens!",
+            now=datetime(2026, 3, 15, 9, 30, 45),
+        )
+
+        assert path == Path(".hermes") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
+
+    def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "plan",
+                body="Save plans under .hermes/plans in the active workspace and do not execute the work.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message(
+                "/plan",
+                "Add a /plan command",
+                runtime_note=(
+                    "Save the markdown plan with write_file to this exact relative path inside "
+                    "the active workspace/backend cwd: .hermes/plans/plan.md"
+                ),
+            )
+
+        assert msg is not None
+        assert "Save plans under $HERMES_HOME/plans" not in msg
+        assert ".hermes/plans" in msg
+        assert "Add a /plan command" in msg
+        assert ".hermes/plans/plan.md" in msg
+        assert "Runtime note:" in msg

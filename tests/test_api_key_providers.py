@@ -426,3 +426,30 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setenv("GLM_API_KEY", "sk-kimi-looks-like-kimi-but-isnt")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+# =============================================================================
+# Kimi / Moonshot model list isolation tests
+# =============================================================================
+
+class TestKimiMoonshotModelListIsolation:
+    """Moonshot (legacy) users must not see Coding Plan-only models."""
+
+    def test_moonshot_list_excludes_coding_plan_only_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        moonshot_models = _PROVIDER_MODELS["moonshot"]
+        coding_plan_only = {"kimi-for-coding", "kimi-k2-thinking-turbo"}
+        leaked = set(moonshot_models) & coding_plan_only
+        assert not leaked, f"Moonshot list contains Coding Plan-only models: {leaked}"
+
+    def test_moonshot_list_contains_shared_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        moonshot_models = _PROVIDER_MODELS["moonshot"]
+        assert "kimi-k2.5" in moonshot_models
+        assert "kimi-k2-thinking" in moonshot_models
+
+    def test_coding_plan_list_contains_plan_specific_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        coding_models = _PROVIDER_MODELS["kimi-coding"]
+        assert "kimi-for-coding" in coding_models
+        assert "kimi-k2-thinking-turbo" in coding_models

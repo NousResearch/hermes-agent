@@ -3240,7 +3240,7 @@ Prompt Strategy for finetuning Llama2 chat models see also https://github.com/fa
 
 This implementation is based on the Vicuna PR and the fastchat repo, see also: https://github.com/lm-sys/FastChat/blob/cdd7730686cb1bf9ae2b768ee171bdf7d1ff04f3/fastchat/conversation.py#L847
 
-Use dataset type: “llama2_chat” in conig.yml to use this prompt style.
+Use dataset type: “llama2_chat” in config.yml to use this prompt style.
 
 E.g. in the config.yml:
 
@@ -4991,7 +4991,7 @@ prompt_strategies.orcamini
 
 Prompt Strategy for finetuning Orca Mini (v2) models see also https://huggingface.co/psmathur/orca_mini_v2_7b for more information
 
-Use dataset type: orcamini in conig.yml to use this prompt style.
+Use dataset type: orcamini in config.yml to use this prompt style.
 
 Compared to the alpaca_w_system.open_orca dataset type, this one specifies the system prompt with “### System:”.
 

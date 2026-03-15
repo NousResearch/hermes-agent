@@ -2,6 +2,15 @@
 
 Post-processing effects applied to the pixel canvas (`numpy uint8 array, shape (H,W,3)`) after character rendering and before encoding. Also covers **pixel-level blend modes**, **feedback buffers**, and the **ShaderChain** compositor.
 
+**Cross-references:**
+- Grid system, palettes, color (HSV + OKLAB): `architecture.md`
+- Effect building blocks (value fields, noise, SDFs): `effects.md`
+- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
+- Scene protocol, render_clip, SCENES table: `scenes.md`
+- Complete scene examples with shader usage: `examples.md`
+- Performance tuning (frame budget, worker count): `optimization.md`
+- Encoding pitfalls (ffmpeg flags, color space): `troubleshooting.md`
+
 ## Design Philosophy
 
 The shader pipeline turns raw ASCII renders into cinematic output. The system is designed for **composability** — every shader, blend mode, and feedback transform is an independent building block. Combining them creates infinite visual variety from a small set of primitives.
@@ -1024,4 +1033,325 @@ cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
        "-s", f"{W}x{H}", "-r", str(fps), "-i", "pipe:0",
        "-vf", f"fps={fps},scale={W}:{H}:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
        "-loop", "0", output_gif]
+```
+
+### PNG Sequence
+
+For frame-accurate editing, compositing in external tools (After Effects, Nuke), or lossless archival:
+
+```python
+import os
+
+def output_png_sequence(frames, output_dir, W, H, fps, prefix="frame"):
+    """Write frames as numbered PNGs. frames = iterable of uint8 (H,W,3) arrays."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Method 1: Direct PIL write (no ffmpeg dependency)
+    from PIL import Image
+    for i, frame in enumerate(frames):
+        img = Image.fromarray(frame)
+        img.save(os.path.join(output_dir, f"{prefix}_{i:06d}.png"))
+    
+    # Method 2: ffmpeg pipe (faster for large sequences)
+    cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{W}x{H}", "-r", str(fps), "-i", "pipe:0",
+           os.path.join(output_dir, f"{prefix}_%06d.png")]
+```
+
+Reassemble PNG sequence to video:
+```bash
+ffmpeg -framerate 24 -i frame_%06d.png -c:v libx264 -crf 18 -pix_fmt yuv420p output.mp4
+```
+
+### Alpha Channel / Transparent Background (RGBA)
+
+For compositing ASCII art over other video or images. Uses RGBA canvas (4 channels) instead of RGB (3 channels):
+
+```python
+def create_rgba_canvas(H, W):
+    """Transparent canvas — alpha channel starts at 0 (fully transparent)."""
+    return np.zeros((H, W, 4), dtype=np.uint8)
+
+def render_char_rgba(canvas, row, col, char_img, color_rgb, alpha=255):
+    """Render a character with alpha. char_img = PIL glyph mask (grayscale).
+    Alpha comes from the glyph mask — background stays transparent."""
+    r, g, b = color_rgb
+    y0, x0 = row * cell_h, col * cell_w
+    mask = np.array(char_img)  # grayscale 0-255
+    canvas[y0:y0+cell_h, x0:x0+cell_w, 0] = np.maximum(canvas[y0:y0+cell_h, x0:x0+cell_w, 0], (mask * r / 255).astype(np.uint8))
+    canvas[y0:y0+cell_h, x0:x0+cell_w, 1] = np.maximum(canvas[y0:y0+cell_h, x0:x0+cell_w, 1], (mask * g / 255).astype(np.uint8))
+    canvas[y0:y0+cell_h, x0:x0+cell_w, 2] = np.maximum(canvas[y0:y0+cell_h, x0:x0+cell_w, 2], (mask * b / 255).astype(np.uint8))
+    canvas[y0:y0+cell_h, x0:x0+cell_w, 3] = np.maximum(canvas[y0:y0+cell_h, x0:x0+cell_w, 3], mask)
+
+def blend_onto_background(rgba_canvas, bg_rgb):
+    """Composite RGBA canvas over a solid or image background."""
+    alpha = rgba_canvas[:, :, 3:4].astype(np.float32) / 255.0
+    fg = rgba_canvas[:, :, :3].astype(np.float32)
+    bg = bg_rgb.astype(np.float32)
+    result = fg * alpha + bg * (1.0 - alpha)
+    return result.astype(np.uint8)
+```
+
+RGBA output via ffmpeg (ProRes 4444 for editing, WebM VP9 for web):
+```bash
+# ProRes 4444 — preserves alpha, widely supported in NLEs
+ffmpeg -y -f rawvideo -pix_fmt rgba -s {W}x{H} -r {fps} -i pipe:0 \
+    -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le output.mov
+
+# WebM VP9 — alpha support for web/browser compositing
+ffmpeg -y -f rawvideo -pix_fmt rgba -s {W}x{H} -r {fps} -i pipe:0 \
+    -c:v libvpx-vp9 -pix_fmt yuva420p -crf 30 -b:v 0 output.webm
+
+# PNG sequence with alpha (lossless)
+ffmpeg -y -f rawvideo -pix_fmt rgba -s {W}x{H} -r {fps} -i pipe:0 \
+    frame_%06d.png
+```
+
+**Key constraint**: shaders that operate on `(H,W,3)` arrays need adaptation for RGBA. Either apply shaders to the RGB channels only and preserve alpha, or write RGBA-aware versions:
+
+```python
+def apply_shader_rgba(canvas_rgba, shader_fn, **kwargs):
+    """Apply an RGB shader to the color channels of an RGBA canvas."""
+    rgb = canvas_rgba[:, :, :3]
+    alpha = canvas_rgba[:, :, 3:4]
+    rgb_out = shader_fn(rgb, **kwargs)
+    return np.concatenate([rgb_out, alpha], axis=2)
+```
+
+---
+
+## Real-Time Terminal Rendering
+
+Live ASCII display in the terminal using ANSI escape codes. Useful for previewing scenes during development, live performances, and interactive parameter tuning.
+
+### ANSI Color Escape Codes
+
+```python
+def rgb_to_ansi(r, g, b):
+    """24-bit true color ANSI escape (supported by most modern terminals)."""
+    return f"\033[38;2;{r};{g};{b}m"
+
+ANSI_RESET = "\033[0m"
+ANSI_CLEAR = "\033[2J\033[H"  # clear screen + cursor home
+ANSI_HIDE_CURSOR = "\033[?25l"
+ANSI_SHOW_CURSOR = "\033[?25h"
+```
+
+### Frame-to-ANSI Conversion
+
+```python
+def frame_to_ansi(chars, colors):
+    """Convert char+color arrays to a single ANSI string for terminal output.
+    
+    Args:
+        chars: (rows, cols) array of single characters
+        colors: (rows, cols, 3) uint8 RGB array
+    Returns:
+        str: ANSI-encoded frame ready for sys.stdout.write()
+    """
+    rows, cols = chars.shape
+    lines = []
+    for r in range(rows):
+        parts = []
+        prev_color = None
+        for c in range(cols):
+            rgb = tuple(colors[r, c])
+            ch = chars[r, c]
+            if ch == " " or rgb == (0, 0, 0):
+                parts.append(" ")
+            else:
+                if rgb != prev_color:
+                    parts.append(rgb_to_ansi(*rgb))
+                    prev_color = rgb
+                parts.append(ch)
+        parts.append(ANSI_RESET)
+        lines.append("".join(parts))
+    return "\n".join(lines)
+```
+
+### Optimized: Delta Updates
+
+Only redraw characters that changed since the last frame. Eliminates redundant terminal writes for static regions:
+
+```python
+def frame_to_ansi_delta(chars, colors, prev_chars, prev_colors):
+    """Emit ANSI escapes only for cells that changed."""
+    rows, cols = chars.shape
+    parts = []
+    for r in range(rows):
+        for c in range(cols):
+            if (chars[r, c] != prev_chars[r, c] or
+                not np.array_equal(colors[r, c], prev_colors[r, c])):
+                parts.append(f"\033[{r+1};{c+1}H")  # move cursor
+                rgb = tuple(colors[r, c])
+                parts.append(rgb_to_ansi(*rgb))
+                parts.append(chars[r, c])
+    return "".join(parts)
+```
+
+### Live Render Loop
+
+```python
+import sys
+import time
+
+def render_live(scene_fn, r, fps=24, duration=None):
+    """Render a scene function live in the terminal.
+    
+    Args:
+        scene_fn: v2 scene function (r, f, t, S) -> canvas
+                  OR v1-style function that populates a grid
+        r: Renderer instance
+        fps: target frame rate
+        duration: seconds to run (None = run until Ctrl+C)
+    """
+    frame_time = 1.0 / fps
+    S = {}
+    f = {}  # synthesize features or connect to live audio
+    
+    sys.stdout.write(ANSI_HIDE_CURSOR + ANSI_CLEAR)
+    sys.stdout.flush()
+    
+    t0 = time.monotonic()
+    frame_count = 0
+    try:
+        while True:
+            t = time.monotonic() - t0
+            if duration and t > duration:
+                break
+            
+            # Synthesize features from time (or connect to live audio via pyaudio)
+            f = synthesize_features(t)
+            
+            # Render scene — for terminal, use a small grid
+            g = r.get_grid("sm")
+            # Option A: v2 scene → extract chars/colors from canvas (reverse render)
+            # Option B: call effect functions directly for chars/colors
+            canvas = scene_fn(r, f, t, S)
+            
+            # For terminal display, render chars+colors directly
+            # (bypassing the pixel canvas — terminal uses character cells)
+            chars, colors = scene_to_terminal(scene_fn, r, f, t, S, g)
+            
+            frame_str = ANSI_CLEAR + frame_to_ansi(chars, colors)
+            sys.stdout.write(frame_str)
+            sys.stdout.flush()
+            
+            # Frame timing
+            elapsed = time.monotonic() - t0 - (frame_count * frame_time)
+            sleep_time = frame_time - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            frame_count += 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write(ANSI_SHOW_CURSOR + ANSI_RESET + "\n")
+        sys.stdout.flush()
+
+def scene_to_terminal(scene_fn, r, f, t, S, g):
+    """Run effect functions and return (chars, colors) for terminal display.
+    For terminal mode, skip the pixel canvas and work with character arrays directly."""
+    # Effects that return (chars, colors) work directly
+    # For vf-based effects, render the value field + hue field to chars/colors:
+    val = vf_plasma(g, f, t, S)
+    hue = hf_time_cycle(0.08)(g, t)
+    mask = val > 0.03
+    chars = val2char(val, mask, PAL_DENSE)
+    R, G, B = hsv2rgb(hue, np.full_like(val, 0.8), val)
+    colors = mkc(R, G, B, g.rows, g.cols)
+    return chars, colors
+```
+
+### Curses-Based Rendering (More Robust)
+
+For full-featured terminal UIs with proper resize handling and input:
+
+```python
+import curses
+
+def render_curses(scene_fn, r, fps=24):
+    """Curses-based live renderer with resize handling and key input."""
+    
+    def _main(stdscr):
+        curses.start_color()
+        curses.use_default_colors()
+        curses.curs_set(0)  # hide cursor
+        stdscr.nodelay(True)  # non-blocking input
+        
+        # Initialize color pairs (curses supports 256 colors)
+        # Map RGB to nearest curses color pair
+        color_cache = {}
+        next_pair = [1]
+        
+        def get_color_pair(r, g, b):
+            key = (r >> 4, g >> 4, b >> 4)  # quantize to reduce pairs
+            if key not in color_cache:
+                if next_pair[0] < curses.COLOR_PAIRS - 1:
+                    ci = 16 + (r // 51) * 36 + (g // 51) * 6 + (b // 51)  # 6x6x6 cube
+                    curses.init_pair(next_pair[0], ci, -1)
+                    color_cache[key] = next_pair[0]
+                    next_pair[0] += 1
+                else:
+                    return 0
+            return curses.color_pair(color_cache[key])
+        
+        S = {}
+        f = {}
+        frame_time = 1.0 / fps
+        t0 = time.monotonic()
+        
+        while True:
+            t = time.monotonic() - t0
+            f = synthesize_features(t)
+            
+            # Adapt grid to terminal size
+            max_y, max_x = stdscr.getmaxyx()
+            g = r.get_grid_for_size(max_x, max_y)  # dynamic grid sizing
+            
+            chars, colors = scene_to_terminal(scene_fn, r, f, t, S, g)
+            rows, cols = chars.shape
+            
+            for row in range(min(rows, max_y - 1)):
+                for col in range(min(cols, max_x - 1)):
+                    ch = chars[row, col]
+                    rgb = tuple(colors[row, col])
+                    try:
+                        stdscr.addch(row, col, ch, get_color_pair(*rgb))
+                    except curses.error:
+                        pass  # ignore writes outside terminal bounds
+            
+            stdscr.refresh()
+            
+            # Handle input
+            key = stdscr.getch()
+            if key == ord('q'):
+                break
+            
+            time.sleep(max(0, frame_time - (time.monotonic() - t0 - t)))
+    
+    curses.wrapper(_main)
+```
+
+### Terminal Rendering Constraints
+
+| Constraint | Value | Notes |
+|-----------|-------|-------|
+| Max practical grid | ~200x60 | Depends on terminal size |
+| Color support | 24-bit (modern), 256 (fallback), 16 (minimal) | Check `$COLORTERM` for truecolor |
+| Frame rate ceiling | ~30 fps | Terminal I/O is the bottleneck |
+| Delta updates | 2-5x faster | Only worth it when <30% of cells change per frame |
+| SSH latency | Kills performance | Local terminals only for real-time |
+
+**Detect color support:**
+```python
+import os
+def get_terminal_color_depth():
+    ct = os.environ.get("COLORTERM", "")
+    if ct in ("truecolor", "24bit"):
+        return 24
+    term = os.environ.get("TERM", "")
+    if "256color" in term:
+        return 8  # 256 colors
+    return 4  # 16 colors basic ANSI
 ```

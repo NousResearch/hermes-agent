@@ -127,7 +127,8 @@ Then start the gateway:
 
 ```bash
 hermes gateway              # Foreground
-hermes gateway install      # Install as a system service
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 ---
@@ -192,8 +193,8 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
-| **Group messages ignored** | `SIGNAL_GROUP_POLICY` defaults to `disabled`. Set to `allowlist` or `open`. |
-| **Bot responds to everyone** | Set `SIGNAL_DM_POLICY=pairing` or `allowlist` and configure `SIGNAL_ALLOWED_USERS` |
+| **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
+| **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 
 ---
@@ -205,8 +206,8 @@ The adapter monitors the SSE connection and automatically reconnects if:
 :::
 
 - Phone numbers are redacted in all log output
-- Use `SIGNAL_DM_POLICY=pairing` (default) for safe onboarding of new users
-- Keep groups disabled unless you specifically need group support
+- Use DM pairing or explicit allowlists for safe onboarding of new users
+- Keep groups disabled unless you specifically need group support, or allowlist only the groups you trust
 - Signal's end-to-end encryption protects message content in transit
 - The signal-cli session data in `~/.local/share/signal-cli/` contains account credentials — protect it like a password
 

@@ -14,6 +14,10 @@ Hermes Agent includes a full environment framework that connects its tool-callin
 
 All three share the same core: an **environment** class that defines tasks, runs an agent loop, and scores the output.
 
+:::info Repo environments vs RL training tools
+The Python environment framework documented here lives under the repo's `environments/` directory and is the implementation-level API for Hermes/Atropos integration. This is separate from the user-facing `rl_*` tools, which operate as an orchestration surface for remote RL training workflows.
+:::
+
 :::tip Quick Links
 - **Want to run benchmarks?** Jump to [Available Benchmarks](#available-benchmarks)
 - **Want to train with RL?** See [RL Training Tools](/user-guide/features/rl-training) for the agent-driven interface, or [Running Environments](#running-environments) for manual execution
@@ -24,34 +28,48 @@ All three share the same core: an **environment** class that defines tasks, runs
 
 The environment system is built on a three-layer inheritance chain:
 
-```
-                     Atropos Framework
-                 ┌───────────────────────┐
-                 │       BaseEnv          │  (atroposlib)
-                 │  - Server management   │
-                 │  - Worker scheduling   │
-                 │  - Wandb logging       │
-                 │  - CLI (serve/process/ │
-                 │    evaluate)           │
-                 └───────────┬───────────┘
-                             │ inherits
-                 ┌───────────┴───────────┐
-                 │  HermesAgentBaseEnv    │  environments/hermes_base_env.py
-                 │  - Terminal backend    │
-                 │  - Tool resolution     │
-                 │  - Agent loop engine   │
-                 │  - ToolContext         │
-                 └───────────┬───────────┘
-                             │ inherits
-       ┌─────────────────────┼─────────────────────┐
-       │                     │                      │
-  TerminalTestEnv     HermesSweEnv     TerminalBench2EvalEnv
-  (stack testing)    (SWE training)      (benchmark eval)
-                                             │
-                                    ┌────────┼────────┐
-                                    │                  │
-                              TBLiteEvalEnv     YCBenchEvalEnv
-                             (fast benchmark)  (long-horizon)
+```mermaid
+classDiagram
+    class BaseEnv {
+      Server management
+      Worker scheduling
+      Wandb logging
+      CLI: serve / process / evaluate
+    }
+
+    class HermesAgentBaseEnv {
+      Terminal backend configuration
+      Tool resolution
+      Agent loop engine
+      ToolContext access
+    }
+
+    class TerminalTestEnv {
+      Stack testing
+    }
+
+    class HermesSweEnv {
+      SWE training
+    }
+
+    class TerminalBench2EvalEnv {
+      Benchmark evaluation
+    }
+
+    class TBLiteEvalEnv {
+      Fast benchmark
+    }
+
+    class YCBenchEvalEnv {
+      Long-horizon benchmark
+    }
+
+    BaseEnv <|-- HermesAgentBaseEnv
+    HermesAgentBaseEnv <|-- TerminalTestEnv
+    HermesAgentBaseEnv <|-- HermesSweEnv
+    HermesAgentBaseEnv <|-- TerminalBench2EvalEnv
+    TerminalBench2EvalEnv <|-- TBLiteEvalEnv
+    TerminalBench2EvalEnv <|-- YCBenchEvalEnv
 ```
 
 ### BaseEnv (Atropos)

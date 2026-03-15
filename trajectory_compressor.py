@@ -495,6 +495,21 @@ class TrajectoryCompressor:
             parts.append(f"[Turn {i} - {role.upper()}]:\n{value}")
         
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _coerce_summary_content(content: Any) -> str:
+        """Normalize summary-model output to a safe string."""
+        if not isinstance(content, str):
+            content = str(content) if content else ""
+        return content.strip()
+
+    @staticmethod
+    def _ensure_summary_prefix(summary: str) -> str:
+        """Normalize summary text to include the expected prefix exactly once."""
+        text = (summary or "").strip()
+        if text.startswith("[CONTEXT SUMMARY]:"):
+            return text
+        return "[CONTEXT SUMMARY]:" if not text else f"[CONTEXT SUMMARY]: {text}"
     
     def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> str:
         """
@@ -545,13 +560,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 
-                summary = response.choices[0].message.content.strip()
-                
-                # Ensure it starts with the prefix
-                if not summary.startswith("[CONTEXT SUMMARY]:"):
-                    summary = "[CONTEXT SUMMARY]: " + summary
-                
-                return summary
+                summary = self._coerce_summary_content(response.choices[0].message.content)
+                return self._ensure_summary_prefix(summary)
                 
             except Exception as e:
                 metrics.summarization_errors += 1
@@ -612,13 +622,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 
-                summary = response.choices[0].message.content.strip()
-                
-                # Ensure it starts with the prefix
-                if not summary.startswith("[CONTEXT SUMMARY]:"):
-                    summary = "[CONTEXT SUMMARY]: " + summary
-                
-                return summary
+                summary = self._coerce_summary_content(response.choices[0].message.content)
+                return self._ensure_summary_prefix(summary)
                 
             except Exception as e:
                 metrics.summarization_errors += 1

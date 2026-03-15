@@ -276,12 +276,70 @@ def _run_single_child(
         else:
             status = "failed"
 
+        # Build tool trace from conversation messages (already in memory).
+        # Uses tool_call_id to correctly pair parallel tool calls with results.
+        tool_trace: list[Dict[str, Any]] = []
+        trace_by_id: Dict[str, Dict[str, Any]] = {}
+        messages = result.get("messages") or []
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "assistant":
+                    for tc in (msg.get("tool_calls") or []):
+                        fn = tc.get("function", {})
+                        entry_t = {
+                            "tool": fn.get("name", "unknown"),
+                            "args_bytes": len(fn.get("arguments", "")),
+                        }
+                        tool_trace.append(entry_t)
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            trace_by_id[tc_id] = entry_t
+                elif msg.get("role") == "tool":
+                    content = msg.get("content", "")
+                    is_error = bool(
+                        content and "error" in content[:80].lower()
+                    )
+                    result_meta = {
+                        "result_bytes": len(content),
+                        "status": "error" if is_error else "ok",
+                    }
+                    # Match by tool_call_id for parallel calls
+                    tc_id = msg.get("tool_call_id")
+                    target = trace_by_id.get(tc_id) if tc_id else None
+                    if target is not None:
+                        target.update(result_meta)
+                    elif tool_trace:
+                        # Fallback for messages without tool_call_id
+                        tool_trace[-1].update(result_meta)
+
+        # Determine exit reason
+        if interrupted:
+            exit_reason = "interrupted"
+        elif completed:
+            exit_reason = "completed"
+        else:
+            exit_reason = "max_iterations"
+
+        # Extract token counts (safe for mock objects)
+        _input_tokens = getattr(child, "session_prompt_tokens", 0)
+        _output_tokens = getattr(child, "session_completion_tokens", 0)
+        _model = getattr(child, "model", None)
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            "model": _model if isinstance(_model, str) else None,
+            "exit_reason": exit_reason,
+            "tokens": {
+                "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
+                "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
+            },
+            "tool_trace": tool_trace,
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -482,18 +540,51 @@ def delegate_task(
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.provider`` is configured, resolves the full credential
-    bundle (base_url, api_key, api_mode, provider) via the runtime provider
-    system — the same path used by CLI/gateway startup.  This lets subagents
-    run on a completely different provider:model pair.
+    If ``delegation.base_url`` is configured, subagents use that direct
+    OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
+    configured, the full credential bundle (base_url, api_key, api_mode,
+    provider) is resolved via the runtime provider system — the same path used
+    by CLI/gateway startup. This lets subagents run on a completely different
+    provider:model pair.
 
-    If no provider is configured, returns None values so the child inherits
-    everything from the parent agent.
+    If neither base_url nor provider is configured, returns None values so the
+    child inherits everything from the parent agent.
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = cfg.get("model") or None
-    configured_provider = cfg.get("provider") or None
+    configured_model = str(cfg.get("model") or "").strip() or None
+    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_base_url = str(cfg.get("base_url") or "").strip() or None
+    configured_api_key = str(cfg.get("api_key") or "").strip() or None
+
+    if configured_base_url:
+        api_key = (
+            configured_api_key
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        if not api_key:
+            raise ValueError(
+                "Delegation base_url is configured but no API key was found. "
+                "Set delegation.api_key or OPENAI_API_KEY."
+            )
+
+        base_lower = configured_base_url.lower()
+        provider = "custom"
+        api_mode = "chat_completions"
+        if "chatgpt.com/backend-api/codex" in base_lower:
+            provider = "openai-codex"
+            api_mode = "codex_responses"
+        elif "api.anthropic.com" in base_lower:
+            provider = "anthropic"
+            api_mode = "anthropic_messages"
+
+        return {
+            "model": configured_model,
+            "provider": provider,
+            "base_url": configured_base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+        }
 
     if not configured_provider:
         # No provider override — child inherits everything from parent
@@ -512,7 +603,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
-            f"Check that the provider is configured (API key set, valid provider name). "
+            f"Check that the provider is configured (API key set, valid provider name), "
+            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 

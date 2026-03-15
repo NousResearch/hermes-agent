@@ -2290,7 +2290,7 @@ This call gives the AsyncStager the opportunity to ‘stage’ the state_dict. T
 
 for serializing the state_dict and writing it to storage.
 
-the serialization thread starts and before returning from dcp.async_save. If this is set to False, the assumption is the user has defined a custom synchronization point for the the purpose of further optimizing save latency in the training loop (for example, by overlapping staging with the forward/backward pass), and it is the respondsibility of the user to call AsyncStager.synchronize_staging at the appropriate time.
+the serialization thread starts and before returning from dcp.async_save. If this is set to False, the assumption is the user has defined a custom synchronization point for the purpose of further optimizing save latency in the training loop (for example, by overlapping staging with the forward/backward pass), and it is the respondsibility of the user to call AsyncStager.synchronize_staging at the appropriate time.
 
 Clean up all resources used by the stager.
 
@@ -2430,7 +2430,7 @@ Read the checkpoint metadata.
 
 The metadata object associated with the checkpoint being loaded.
 
-Calls to indicates a brand new checkpoint read is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint read. The meaning of the checkpiont_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
+Calls to indicates a brand new checkpoint read is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint read. The meaning of the checkpoint_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
 
 checkpoint_id (Union[str, os.PathLike, None]) – The ID of this checkpoint instance. The meaning of the checkpoint_id depends on the storage. It can be a path to a folder or to a file. It can also be a key if the storage is more like a key-value store. (Default: None)
 
@@ -2488,7 +2488,7 @@ plan (SavePlan) – The local plan from the SavePlanner in use.
 
 A transformed SavePlan after storage local planning
 
-Calls to indicates a brand new checkpoint write is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint write. The meaning of the checkpiont_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
+Calls to indicates a brand new checkpoint write is going to happen. A checkpoint_id may be present if users set the checkpoint_id for this checkpoint write. The meaning of the checkpoint_id is storage-dependent. It can be a path to a folder/file or a key for a key-value storage.
 
 checkpoint_id (Union[str, os.PathLike, None]) – The ID of this checkpoint instance. The meaning of the checkpoint_id depends on the storage. It can be a path to a folder or to a file. It can also be a key if the storage is a key-value store. (Default: None)
 
@@ -2498,7 +2498,19 @@ is_coordinator (bool) – Whether this instance is responsible for coordinating 
 
 Return the storage-specific metadata. This is used to store additional information in a checkpoint that can be useful for providing request-level observability. StorageMeta is passed to the SavePlanner during save calls. Returns None by default.
 
-TODO: provide an example
+Example:
+
+```python
+from torch.distributed.checkpoint.storage import StorageMeta
+
+class CustomStorageBackend:
+    def get_storage_metadata(self):
+        # Return storage-specific metadata that will be stored with the checkpoint
+        return StorageMeta()
+```
+
+This example shows how a storage backend can return `StorageMeta`
+to attach additional metadata to a checkpoint.
 
 Optional[StorageMeta]
 
@@ -3441,7 +3453,7 @@ The target module does not have to be an FSDP module.
 
 A StateDictSettings containing the state_dict_type and state_dict / optim_state_dict configs that are currently set.
 
-AssertionError` if the StateDictSettings for differen –
+AssertionError` if the StateDictSettings for different –
 
 FSDP submodules differ. –
 
@@ -3766,7 +3778,7 @@ The sharing is done as described by ZeRO.
 
 The local optimizer instance in each rank is only responsible for updating approximately 1 / world_size parameters and hence only needs to keep 1 / world_size optimizer states. After parameters are updated locally, each rank will broadcast its parameters to all other peers to keep all model replicas in the same state. ZeroRedundancyOptimizer can be used in conjunction with torch.nn.parallel.DistributedDataParallel to reduce per-rank peak memory consumption.
 
-ZeroRedundancyOptimizer uses a sorted-greedy algorithm to pack a number of parameters at each rank. Each parameter belongs to a single rank and is not divided among ranks. The partition is arbitrary and might not match the the parameter registration or usage order.
+ZeroRedundancyOptimizer uses a sorted-greedy algorithm to pack a number of parameters at each rank. Each parameter belongs to a single rank and is not divided among ranks. The partition is arbitrary and might not match the parameter registration or usage order.
 
 params (Iterable) – an Iterable of torch.Tensor s or dict s giving all parameters, which will be sharded across ranks.
 

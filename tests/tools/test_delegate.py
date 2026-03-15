@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 """
 
 import json
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -246,6 +247,169 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
 
+class TestDelegateObservability(unittest.TestCase):
+    """Tests for enriched metadata returned by _run_single_child."""
+
+    def test_observability_fields_present(self):
+        """Completed child should return tool_trace, tokens, model, exit_reason."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 5000
+            mock_child.session_completion_tokens = 1200
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [
+                    {"role": "user", "content": "do something"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "web_search", "arguments": '{"query": "test"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"results": [1,2,3]}'},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
+            entry = result["results"][0]
+
+            # Core observability fields
+            self.assertEqual(entry["model"], "claude-sonnet-4-6")
+            self.assertEqual(entry["exit_reason"], "completed")
+            self.assertEqual(entry["tokens"]["input"], 5000)
+            self.assertEqual(entry["tokens"]["output"], 1200)
+
+            # Tool trace
+            self.assertEqual(len(entry["tool_trace"]), 1)
+            self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+            self.assertIn("args_bytes", entry["tool_trace"][0])
+            self.assertIn("result_bytes", entry["tool_trace"][0])
+            self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_tool_trace_detects_error(self):
+        """Tool results containing 'error' should be marked as error status."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "failed",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": "Error: command not found"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["status"], "error")
+
+    def test_parallel_tool_calls_paired_correctly(self):
+        """Parallel tool calls should each get their own result via tool_call_id matching."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 3000
+            mock_child.session_completion_tokens = 800
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_a", "function": {"name": "web_search", "arguments": '{"q": "a"}'}},
+                        {"id": "tc_b", "function": {"name": "web_search", "arguments": '{"q": "b"}'}},
+                        {"id": "tc_c", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}},
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_a", "content": '{"ok": true}'},
+                    {"role": "tool", "tool_call_id": "tc_b", "content": "Error: rate limited"},
+                    {"role": "tool", "tool_call_id": "tc_c", "content": "file1.txt\nfile2.txt"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+
+            # All three tool calls should have results
+            self.assertEqual(len(trace), 3)
+
+            # First: web_search → ok
+            self.assertEqual(trace[0]["tool"], "web_search")
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertIn("result_bytes", trace[0])
+
+            # Second: web_search → error
+            self.assertEqual(trace[1]["tool"], "web_search")
+            self.assertEqual(trace[1]["status"], "error")
+            self.assertIn("result_bytes", trace[1])
+
+            # Third: terminal → ok
+            self.assertEqual(trace[2]["tool"], "terminal")
+            self.assertEqual(trace[2]["status"], "ok")
+            self.assertIn("result_bytes", trace[2])
+
+    def test_exit_reason_interrupted(self):
+        """Interrupted child should report exit_reason='interrupted'."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
+            self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
+
+    def test_exit_reason_max_iterations(self):
+        """Child that didn't complete and wasn't interrupted hit max_iterations."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 50,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
+            self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
@@ -298,6 +462,43 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "sk-or-test-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
         mock_resolve.assert_called_once_with(requested="openrouter")
+
+    def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "provider": "openrouter",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "qwen2.5-coder")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(creds["api_key"], "local-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
+    def test_direct_endpoint_falls_back_to_openai_api_key_env(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+        }
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "env-openai-key")
+        self.assertEqual(creds["provider"], "custom")
+
+    def test_direct_endpoint_does_not_fall_back_to_openrouter_api_key_env(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+        }
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "env-openrouter-key"}, clear=False):
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("OPENAI_API_KEY", str(ctx.exception))
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
@@ -425,6 +626,40 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], "sk-or-key")
             self.assertNotEqual(kwargs["base_url"], parent.base_url)
             self.assertNotEqual(kwargs["api_key"], parent.api_key)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_direct_endpoint_credentials_reach_child_agent(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-key",
+        }
+        mock_creds.return_value = {
+            "model": "qwen2.5-coder",
+            "provider": "custom",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Direct endpoint test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "qwen2.5-coder")
+            self.assertEqual(kwargs["provider"], "custom")
+            self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
+            self.assertEqual(kwargs["api_key"], "local-key")
+            self.assertEqual(kwargs["api_mode"], "chat_completions")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

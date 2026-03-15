@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from hermes_cli import auth as auth_mod
 from hermes_cli.auth import (
     AuthError,
     PROVIDER_REGISTRY,
@@ -18,6 +19,10 @@ from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
 
 
+def _normalize_custom_provider_name(value: str) -> str:
+    return value.strip().lower().replace(" ", "-")
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
@@ -29,20 +34,98 @@ def _get_model_config() -> Dict[str, Any]:
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
-    """Resolve provider request from explicit arg, env, then config."""
+    """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
         return requested.strip().lower()
-
-    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
-    if env_provider:
-        return env_provider
 
     model_cfg = _get_model_config()
     cfg_provider = model_cfg.get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
 
+    # Prefer the persisted config selection over any stale shell/.env
+    # provider override so chat uses the endpoint the user last saved.
+    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+    if env_provider:
+        return env_provider
+
     return "auto"
+
+
+def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+    requested_norm = _normalize_custom_provider_name(requested_provider or "")
+    if not requested_norm or requested_norm == "custom":
+        return None
+
+    # Raw names should only map to custom providers when they are not already
+    # valid built-in providers or aliases. Explicit menu keys like
+    # ``custom:local`` always target the saved custom provider.
+    if requested_norm == "auto":
+        return None
+    if not requested_norm.startswith("custom:"):
+        try:
+            auth_mod.resolve_provider(requested_norm)
+        except AuthError:
+            pass
+        else:
+            return None
+
+    config = load_config()
+    custom_providers = config.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        base_url = entry.get("base_url")
+        if not isinstance(name, str) or not isinstance(base_url, str):
+            continue
+        name_norm = _normalize_custom_provider_name(name)
+        menu_key = f"custom:{name_norm}"
+        if requested_norm not in {name_norm, menu_key}:
+            continue
+        return {
+            "name": name.strip(),
+            "base_url": base_url.strip(),
+            "api_key": str(entry.get("api_key", "") or "").strip(),
+        }
+
+    return None
+
+
+def _resolve_named_custom_runtime(
+    *,
+    requested_provider: str,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    custom_provider = _get_named_custom_provider(requested_provider)
+    if not custom_provider:
+        return None
+
+    base_url = (
+        (explicit_base_url or "").strip()
+        or custom_provider.get("base_url", "")
+    ).rstrip("/")
+    if not base_url:
+        return None
+
+    api_key = (
+        (explicit_api_key or "").strip()
+        or custom_provider.get("api_key", "")
+        or os.getenv("OPENAI_API_KEY", "").strip()
+        or os.getenv("OPENROUTER_API_KEY", "").strip()
+    )
+
+    return {
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "base_url": base_url,
+        "api_key": api_key,
+        "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+    }
 
 
 def _resolve_openrouter_runtime(
@@ -61,9 +144,15 @@ def _resolve_openrouter_runtime(
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
     use_config_base_url = False
-    if requested_norm == "auto":
-        if cfg_base_url.strip() and not explicit_base_url and not env_openai_base_url:
+    if cfg_base_url.strip() and not explicit_base_url and not env_openai_base_url:
+        if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
+                use_config_base_url = True
+        elif requested_norm == "custom":
+            # Persisted custom endpoints store their base URL in config.yaml.
+            # If OPENAI_BASE_URL is not currently set in the environment, keep
+            # honoring that saved endpoint instead of falling back to OpenRouter.
+            if cfg_provider == "custom":
                 use_config_base_url = True
 
     # When the user explicitly requested the openrouter provider, skip
@@ -119,6 +208,15 @@ def resolve_runtime_provider(
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
+
+    custom_runtime = _resolve_named_custom_runtime(
+        requested_provider=requested_provider,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+    )
+    if custom_runtime:
+        custom_runtime["requested_provider"] = requested_provider
+        return custom_runtime
 
     provider = resolve_provider(
         requested_provider,

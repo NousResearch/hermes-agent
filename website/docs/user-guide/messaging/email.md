@@ -80,7 +80,8 @@ EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 
 ```bash
 hermes gateway              # Run in foreground
-hermes gateway install      # Install as a system service
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 On startup, the adapter:

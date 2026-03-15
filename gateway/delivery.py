@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
 
+from hermes_cli.config import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 MAX_PLATFORM_OUTPUT = 4000
@@ -116,7 +118,7 @@ class DeliveryRouter:
         """
         self.config = config
         self.adapters = adapters or {}
-        self.output_dir = Path.home() / ".hermes" / "cron" / "output"
+        self.output_dir = get_hermes_home() / "cron" / "output"
     
     def resolve_targets(
         self,
@@ -159,7 +161,7 @@ class DeliveryRouter:
         
         # Always include local if configured
         if self.config.always_log_local:
-            local_key = (Platform.LOCAL, None)
+            local_key = (Platform.LOCAL, None, None)
             if local_key not in seen_platforms:
                 targets.append(DeliveryTarget(platform=Platform.LOCAL))
         
@@ -256,7 +258,7 @@ class DeliveryRouter:
     def _save_full_output(self, content: str, job_id: str) -> Path:
         """Save full cron output to disk and return the file path."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = Path.home() / ".hermes" / "cron" / "output"
+        out_dir = get_hermes_home() / "cron" / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{job_id}_{timestamp}.txt"
         path.write_text(content)
@@ -313,7 +315,7 @@ def build_delivery_context_for_tool(
     origin: Optional[SessionSource] = None
 ) -> Dict[str, Any]:
     """
-    Build context for the schedule_cronjob tool to understand delivery options.
+    Build context for the unified cronjob tool to understand delivery options.
     
     This is passed to the tool so it can validate and explain delivery targets.
     """

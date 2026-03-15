@@ -1,6 +1,14 @@
 # Composition & Brightness Reference
 
-The composable system is the core of visual complexity. It operates at three levels: pixel-level blend modes, multi-grid composition, and adaptive brightness management. This document covers all three.
+The composable system is the core of visual complexity. It operates at three levels: pixel-level blend modes, multi-grid composition, and adaptive brightness management. This document covers all three, plus the masking/stencil system for spatial control.
+
+**Cross-references:**
+- Grid system, palettes, color (HSV + OKLAB): `architecture.md`
+- Effect building blocks (value fields, hue fields, particles): `effects.md`
+- Scene protocol, render_clip, SCENES table: `scenes.md`
+- Shader pipeline, feedback buffer: `shaders.md`
+- Complete scene examples with blend/mask usage: `examples.md`
+- Blend mode pitfalls (overlay crush, division by zero): `troubleshooting.md`
 
 ## Pixel-Level Blend Modes
 
@@ -101,6 +109,69 @@ result = blend_canvas(result, canvas_c, "difference", 0.6)
 ```
 
 Order matters: `screen(A, B)` is commutative, but `difference(screen(A,B), C)` differs from `difference(A, screen(B,C))`.
+
+### Linear-Light Blend Modes
+
+Standard `blend_canvas()` operates in sRGB space — the raw byte values. This is fine for most uses, but sRGB is perceptually non-linear: blending in sRGB darkens midtones and shifts hues slightly. For physically accurate blending (matching how light actually combines), convert to linear light first.
+
+Uses `srgb_to_linear()` / `linear_to_srgb()` from `architecture.md` § OKLAB Color System.
+
+```python
+def blend_canvas_linear(base, top, mode="normal", opacity=1.0):
+    """Blend in linear light space for physically accurate results.
+    
+    Identical API to blend_canvas(), but converts sRGB → linear before
+    blending and linear → sRGB after. More expensive (~2x) due to the
+    gamma conversions, but produces correct results for additive blending,
+    screen, and any mode where brightness matters.
+    """
+    af = srgb_to_linear(base.astype(np.float32) / 255.0)
+    bf = srgb_to_linear(top.astype(np.float32) / 255.0)
+    fn = BLEND_MODES.get(mode, BLEND_MODES["normal"])
+    result = fn(af, bf)
+    if opacity < 1.0:
+        result = af * (1 - opacity) + result * opacity
+    result = linear_to_srgb(np.clip(result, 0, 1))
+    return np.clip(result * 255, 0, 255).astype(np.uint8)
+```
+
+**When to use `blend_canvas_linear()` vs `blend_canvas()`:**
+
+| Scenario | Use | Why |
+|----------|-----|-----|
+| Screen-blending two bright layers | `linear` | sRGB screen over-brightens highlights |
+| Add mode for glow/bloom effects | `linear` | Additive light follows linear physics |
+| Blending text overlay at low opacity | `srgb` | Perceptual blending looks more natural for text |
+| Multiply for shadow/darkening | `srgb` | Differences are minimal for darken ops |
+| Color-critical work (matching reference) | `linear` | Avoids sRGB hue shifts in midtones |
+| Performance-critical inner loop | `srgb` | ~2x faster, good enough for most ASCII art |
+
+**Batch version** for compositing many layers (converts once, blends multiple, converts back):
+
+```python
+def blend_many_linear(layers, modes, opacities):
+    """Blend a stack of layers in linear light space.
+    
+    Args:
+        layers: list of uint8 (H,W,3) canvases
+        modes: list of blend mode strings (len = len(layers) - 1)
+        opacities: list of floats (len = len(layers) - 1)
+    Returns:
+        uint8 (H,W,3) canvas
+    """
+    # Convert all to linear at once
+    linear = [srgb_to_linear(l.astype(np.float32) / 255.0) for l in layers]
+    result = linear[0]
+    for i in range(1, len(linear)):
+        fn = BLEND_MODES.get(modes[i-1], BLEND_MODES["normal"])
+        blended = fn(result, linear[i])
+        op = opacities[i-1]
+        if op < 1.0:
+            blended = result * (1 - op) + blended * op
+        result = np.clip(blended, 0, 1)
+    result = linear_to_srgb(result)
+    return np.clip(result * 255, 0, 255).astype(np.uint8)
+```
 
 ---
 
@@ -219,19 +290,22 @@ def tonemap(canvas, target_mean=90, gamma=0.75, black_point=2, white_point=253):
     """Adaptive tone-mapping: normalizes + gamma-corrects so no frame is
     fully dark or washed out.
 
-    1. Compute 1st and 99.5th percentile (ignores outlier pixels)
+    1. Compute 1st and 99.5th percentile on 4x subsample (16x fewer values,
+       negligible accuracy loss, major speedup at 1080p+)
     2. Stretch that range to [0, 1]
     3. Apply gamma curve (< 1 lifts shadows, > 1 darkens)
     4. Rescale to [black_point, white_point]
     """
     f = canvas.astype(np.float32)
-    lo = np.percentile(f, 1)
-    hi = np.percentile(f, 99.5)
+    sub = f[::4, ::4]  # 4x subsample: ~390K values vs ~6.2M at 1080p
+    lo = np.percentile(sub, 1)
+    hi = np.percentile(sub, 99.5)
     if hi - lo < 10:
         hi = max(hi, lo + 10)  # near-uniform frame fallback
     f = np.clip((f - lo) / (hi - lo), 0.0, 1.0)
-    f = np.power(f, gamma)
-    f = f * (white_point - black_point) + black_point
+    np.power(f, gamma, out=f)          # in-place: avoids allocation
+    np.multiply(f, (white_point - black_point), out=f)
+    np.add(f, black_point, out=f)
     return np.clip(f, 0, 255).astype(np.uint8)
 ```
 
@@ -450,6 +524,208 @@ class FeedbackBuffer:
 | Kaleidoscopic recursion | `decay=0.75, blend="screen", transform="rotate_cw", transform_amt=0.005, hue_shift=0.01` | Rotating mandala feedback |
 | Color evolution | `decay=0.8, blend="difference", opacity=0.4, hue_shift=0.03` | Frame-to-frame color XOR |
 | Rising heat haze | `decay=0.5, blend="add", opacity=0.2, transform="shift_up", transform_amt=0.02` | Hot air shimmer |
+
+---
+
+## Masking / Stencil System
+
+Masks are float32 arrays `(rows, cols)` or `(VH, VW)` in range [0, 1]. They control where effects are visible: 1.0 = fully visible, 0.0 = fully hidden. Use masks to create figure/ground relationships, focal points, and shaped reveals.
+
+### Shape Masks
+
+```python
+def mask_circle(g, cx_frac=0.5, cy_frac=0.5, radius=0.3, feather=0.05):
+    """Circular mask centered at (cx_frac, cy_frac) in normalized coords.
+    feather: width of soft edge (0 = hard cutoff)."""
+    asp = g.cw / g.ch if hasattr(g, 'cw') else 1.0
+    dx = (g.cc / g.cols - cx_frac)
+    dy = (g.rr / g.rows - cy_frac) * asp
+    d = np.sqrt(dx**2 + dy**2)
+    if feather > 0:
+        return np.clip(1.0 - (d - radius) / feather, 0, 1)
+    return (d <= radius).astype(np.float32)
+
+def mask_rect(g, x0=0.2, y0=0.2, x1=0.8, y1=0.8, feather=0.03):
+    """Rectangular mask. Coordinates in [0,1] normalized."""
+    dx = np.maximum(x0 - g.cc / g.cols, g.cc / g.cols - x1)
+    dy = np.maximum(y0 - g.rr / g.rows, g.rr / g.rows - y1)
+    d = np.maximum(dx, dy)
+    if feather > 0:
+        return np.clip(1.0 - d / feather, 0, 1)
+    return (d <= 0).astype(np.float32)
+
+def mask_ring(g, cx_frac=0.5, cy_frac=0.5, inner_r=0.15, outer_r=0.35,
+              feather=0.03):
+    """Ring / annulus mask."""
+    inner = mask_circle(g, cx_frac, cy_frac, inner_r, feather)
+    outer = mask_circle(g, cx_frac, cy_frac, outer_r, feather)
+    return outer - inner
+
+def mask_gradient_h(g, start=0.0, end=1.0):
+    """Left-to-right gradient mask."""
+    return np.clip((g.cc / g.cols - start) / (end - start + 1e-10), 0, 1).astype(np.float32)
+
+def mask_gradient_v(g, start=0.0, end=1.0):
+    """Top-to-bottom gradient mask."""
+    return np.clip((g.rr / g.rows - start) / (end - start + 1e-10), 0, 1).astype(np.float32)
+
+def mask_gradient_radial(g, cx_frac=0.5, cy_frac=0.5, inner=0.0, outer=0.5):
+    """Radial gradient mask — bright at center, dark at edges."""
+    d = np.sqrt((g.cc / g.cols - cx_frac)**2 + (g.rr / g.rows - cy_frac)**2)
+    return np.clip(1.0 - (d - inner) / (outer - inner + 1e-10), 0, 1)
+```
+
+### Value Field as Mask
+
+Use any `vf_*` function's output as a spatial mask:
+
+```python
+def mask_from_vf(vf_result, threshold=0.5, feather=0.1):
+    """Convert a value field to a mask by thresholding.
+    feather: smooth edge width around threshold."""
+    if feather > 0:
+        return np.clip((vf_result - threshold + feather) / (2 * feather), 0, 1)
+    return (vf_result > threshold).astype(np.float32)
+
+def mask_select(mask, vf_a, vf_b):
+    """Spatial conditional: show vf_a where mask is 1, vf_b where mask is 0.
+    mask: float32 [0,1] array. Intermediate values blend."""
+    return vf_a * mask + vf_b * (1 - mask)
+```
+
+### Text Stencil
+
+Render text to a mask. Effects are visible only through the letterforms:
+
+```python
+def mask_text(grid, text, row_frac=0.5, font=None, font_size=None):
+    """Render text string as a float32 mask [0,1] at grid resolution.
+    Characters = 1.0, background = 0.0.
+
+    row_frac: vertical position as fraction of grid height.
+    font: PIL ImageFont (defaults to grid's font if None).
+    font_size: override font size for the mask text (for larger stencil text).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    f = font or grid.font
+    if font_size and font != grid.font:
+        f = ImageFont.truetype(font.path, font_size)
+
+    # Render text to image at pixel resolution, then downsample to grid
+    img = Image.new("L", (grid.cols * grid.cw, grid.ch), 0)
+    draw = ImageDraw.Draw(img)
+    bbox = draw.textbbox((0, 0), text, font=f)
+    tw = bbox[2] - bbox[0]
+    x = (grid.cols * grid.cw - tw) // 2
+    draw.text((x, 0), text, fill=255, font=f)
+    row_mask = np.array(img, dtype=np.float32) / 255.0
+
+    # Place in full grid mask
+    mask = np.zeros((grid.rows, grid.cols), dtype=np.float32)
+    target_row = int(grid.rows * row_frac)
+    # Downsample rendered text to grid cells
+    for c in range(grid.cols):
+        px = c * grid.cw
+        if px + grid.cw <= row_mask.shape[1]:
+            cell = row_mask[:, px:px + grid.cw]
+            if cell.mean() > 0.1:
+                mask[target_row, c] = cell.mean()
+    return mask
+
+def mask_text_block(grid, lines, start_row_frac=0.3, font=None):
+    """Multi-line text stencil. Returns full grid mask."""
+    mask = np.zeros((grid.rows, grid.cols), dtype=np.float32)
+    for i, line in enumerate(lines):
+        row_frac = start_row_frac + i / grid.rows
+        line_mask = mask_text(grid, line, row_frac, font)
+        mask = np.maximum(mask, line_mask)
+    return mask
+```
+
+### Animated Masks
+
+Masks that change over time for reveals, wipes, and morphing:
+
+```python
+def mask_iris(g, t, t_start, t_end, cx_frac=0.5, cy_frac=0.5,
+              max_radius=0.7, ease_fn=None):
+    """Iris open/close: circle that grows from 0 to max_radius.
+    ease_fn: easing function (default: ease_in_out_cubic from effects.md)."""
+    if ease_fn is None:
+        ease_fn = lambda x: x * x * (3 - 2 * x)  # smoothstep fallback
+    progress = np.clip((t - t_start) / (t_end - t_start), 0, 1)
+    radius = ease_fn(progress) * max_radius
+    return mask_circle(g, cx_frac, cy_frac, radius, feather=0.03)
+
+def mask_wipe_h(g, t, t_start, t_end, direction="right"):
+    """Horizontal wipe reveal."""
+    progress = np.clip((t - t_start) / (t_end - t_start), 0, 1)
+    if direction == "left":
+        progress = 1 - progress
+    return mask_gradient_h(g, start=progress - 0.05, end=progress + 0.05)
+
+def mask_wipe_v(g, t, t_start, t_end, direction="down"):
+    """Vertical wipe reveal."""
+    progress = np.clip((t - t_start) / (t_end - t_start), 0, 1)
+    if direction == "up":
+        progress = 1 - progress
+    return mask_gradient_v(g, start=progress - 0.05, end=progress + 0.05)
+
+def mask_dissolve(g, t, t_start, t_end, seed=42):
+    """Random pixel dissolve — noise threshold sweeps from 0 to 1."""
+    progress = np.clip((t - t_start) / (t_end - t_start), 0, 1)
+    rng = np.random.RandomState(seed)
+    noise = rng.random((g.rows, g.cols)).astype(np.float32)
+    return (noise < progress).astype(np.float32)
+```
+
+### Mask Boolean Operations
+
+```python
+def mask_union(a, b):
+    """OR — visible where either mask is active."""
+    return np.maximum(a, b)
+
+def mask_intersect(a, b):
+    """AND — visible only where both masks are active."""
+    return np.minimum(a, b)
+
+def mask_subtract(a, b):
+    """A minus B — visible where A is active but B is not."""
+    return np.clip(a - b, 0, 1)
+
+def mask_invert(m):
+    """NOT — flip mask."""
+    return 1.0 - m
+```
+
+### Applying Masks to Canvases
+
+```python
+def apply_mask_canvas(canvas, mask, bg_canvas=None):
+    """Apply a grid-resolution mask to a pixel canvas.
+    Expands mask from (rows, cols) to (VH, VW) via nearest-neighbor.
+
+    canvas: uint8 (VH, VW, 3)
+    mask: float32 (rows, cols) [0,1]
+    bg_canvas: what shows through where mask=0. None = black.
+    """
+    # Expand mask to pixel resolution
+    mask_px = np.repeat(np.repeat(mask, canvas.shape[0] // mask.shape[0] + 1, axis=0),
+                        canvas.shape[1] // mask.shape[1] + 1, axis=1)
+    mask_px = mask_px[:canvas.shape[0], :canvas.shape[1]]
+
+    if bg_canvas is not None:
+        return np.clip(canvas * mask_px[:, :, None] +
+                       bg_canvas * (1 - mask_px[:, :, None]), 0, 255).astype(np.uint8)
+    return np.clip(canvas * mask_px[:, :, None], 0, 255).astype(np.uint8)
+
+def apply_mask_vf(vf_a, vf_b, mask):
+    """Apply mask at value-field level — blend two value fields spatially.
+    All arrays are (rows, cols) float32."""
+    return vf_a * mask + vf_b * (1 - mask)
+```
 
 ---
 

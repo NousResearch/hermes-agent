@@ -78,7 +78,9 @@ Create an `AGENTS.md` in your project root with architecture decisions, coding c
 
 ### SOUL.md: Customize Personality
 
-Want the agent to be more concise? More technical? Place a `SOUL.md` in your project root or `~/.hermes/SOUL.md` for global personality customization. This shapes the agent's tone and communication style.
+Want Hermes to have a stable default voice? Edit `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` if you use a custom Hermes home). Hermes now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
+
+For a full walkthrough, see [Use SOUL.md with Hermes](/docs/guides/use-soul-with-hermes).
 
 ```markdown
 # Soul
@@ -86,6 +88,8 @@ You are a senior backend engineer. Be terse and direct.
 Skip explanations unless asked. Prefer one-liners over verbose solutions.
 Always consider error handling and edge cases.
 ```
+
+Use `SOUL.md` for durable personality. Use `AGENTS.md` for project-specific instructions.
 
 ### .cursorrules Compatibility
 
@@ -180,6 +184,25 @@ When working with untrusted repositories or running unfamiliar code, use Docker 
 TERMINAL_BACKEND=docker
 TERMINAL_DOCKER_IMAGE=hermes-sandbox:latest
 ```
+
+### Avoid Windows Encoding Pitfalls
+
+On Windows, some default encodings (such as `cp125x`) cannot represent all Unicode characters, which can cause `UnicodeEncodeError` when writing files in tests or scripts.
+
+- Prefer opening files with an explicit UTF-8 encoding:
+
+```python
+with open("results.txt", "w", encoding="utf-8") as f:
+    f.write("✓ All good\n")
+```
+
+- In PowerShell, you can also switch the current session to UTF-8 for console and native command output:
+
+```powershell
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+```
+
+This keeps PowerShell and child processes on UTF-8 and helps avoid Windows-only failures.
 
 ### Review Before Choosing "Always"
 

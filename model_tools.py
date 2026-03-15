@@ -144,7 +144,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_press", "browser_close", "browser_get_images",
         "browser_vision"
     ],
-    "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+    "cronjob_tools": ["cronjob"],
     "rl_tools": [
         "rl_list_environments", "rl_select_environment",
         "rl_get_current_config", "rl_edit_config",

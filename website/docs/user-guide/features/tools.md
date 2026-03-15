@@ -10,25 +10,22 @@ Tools are functions that extend the agent's capabilities. They're organized into
 
 ## Available Tools
 
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **Web** | `web_search`, `web_extract` | Search the web, extract page content |
-| **Terminal** | `terminal`, `process` | Execute commands (local/docker/singularity/modal/daytona/ssh backends), manage background processes |
-| **File** | `read_file`, `write_file`, `patch`, `search_files` | Read, write, edit, and search files |
-| **Browser** | `browser_navigate`, `browser_click`, `browser_type`, `browser_console`, etc. | Full browser automation via Browserbase |
-| **Vision** | `vision_analyze` | Image analysis via multimodal models |
-| **Image Gen** | `image_generate` | Generate images (FLUX via FAL) |
-| **TTS** | `text_to_speech` | Text-to-speech (Edge TTS / ElevenLabs / OpenAI) |
-| **Reasoning** | `mixture_of_agents` | Multi-model reasoning |
-| **Skills** | `skills_list`, `skill_view`, `skill_manage` | Find, view, create, and manage skills |
-| **Todo** | `todo` | Read/write task list for multi-step planning |
-| **Memory** | `memory` | Persistent notes + user profile across sessions |
-| **Session Search** | `session_search` | Search + summarize past conversations (FTS5) |
-| **Cronjob** | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` | Scheduled task management |
-| **Code Execution** | `execute_code` | Run Python scripts that call tools via RPC sandbox |
-| **Delegation** | `delegate_task` | Spawn subagents with isolated context |
-| **Clarify** | `clarify` | Ask the user multiple-choice or open-ended questions |
-| **MCP** | Auto-discovered | External tools from MCP servers |
+Hermes ships with a broad built-in tool registry covering web search, browser automation, terminal execution, file editing, memory, delegation, RL training, messaging delivery, Home Assistant, Honcho memory, and more.
+
+High-level categories:
+
+| Category | Examples | Description |
+|----------|----------|-------------|
+| **Web** | `web_search`, `web_extract` | Search the web and extract page content. |
+| **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
+| **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
+| **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |
+| **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
+| **Memory & recall** | `memory`, `session_search`, `honcho_*` | Persistent memory, session search, and Honcho cross-session context. |
+| **Automation & delivery** | `cronjob`, `send_message` | Scheduled tasks with create/list/update/pause/resume/run/remove actions, plus outbound messaging delivery. |
+| **Integrations** | `ha_*`, MCP server tools, `rl_*` | Home Assistant, MCP, RL training, and other integrations. |
+
+For the authoritative code-derived registry, see [Built-in Tools Reference](/docs/reference/tools-reference) and [Toolsets Reference](/docs/reference/toolsets-reference).
 
 ## Using Toolsets
 
@@ -43,7 +40,9 @@ hermes tools
 hermes tools
 ```
 
-**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.
+Common toolsets include `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `honcho`, `homeassistant`, and `rl`.
+
+See [Toolsets Reference](/docs/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
 ## Terminal Backends
 
@@ -56,6 +55,7 @@ The terminal tool can execute commands in different environments:
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
 | `singularity` | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
+| `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 
 ### Configuration
 

@@ -6,7 +6,9 @@ Pure display functions with no HermesCLI state dependency.
 import json
 import logging
 import os
+import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -143,7 +145,9 @@ def check_for_updates() -> Optional[int]:
     repo_dir = hermes_home / "hermes-agent"
     cache_file = hermes_home / ".update_check"
 
-    # Must be a git repo
+    # Must be a git repo — fall back to project root for dev installs
+    if not (repo_dir / ".git").exists():
+        repo_dir = Path(__file__).parent.parent.resolve()
     if not (repo_dir / ".git").exists():
         return None
 
@@ -188,6 +192,30 @@ def check_for_updates() -> Optional[int]:
         pass
 
     return behind
+
+
+# =========================================================================
+# Non-blocking update check
+# =========================================================================
+
+_update_result: Optional[int] = None
+_update_check_done = threading.Event()
+
+
+def prefetch_update_check():
+    """Kick off update check in a background daemon thread."""
+    def _run():
+        global _update_result
+        _update_result = check_for_updates()
+        _update_check_done.set()
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
+def get_update_result(timeout: float = 0.5) -> Optional[int]:
+    """Get result of prefetched check. Returns None if not ready."""
+    _update_check_done.wait(timeout=timeout)
+    return _update_result
 
 
 # =========================================================================
@@ -245,7 +273,15 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     text = _skin_color("banner_text", "#FFF8DC")
     session_color = _skin_color("session_border", "#8B8682")
 
-    left_lines = ["", HERMES_CADUCEUS, ""]
+    # Use skin's custom caduceus art if provided
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _bskin = get_active_skin()
+        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+    except Exception:
+        _bskin = None
+        _hero = HERMES_CADUCEUS
+    left_lines = ["", _hero, ""]
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
@@ -360,9 +396,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     summary_parts.append("/help for commands")
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
-    # Update check — show if behind origin/main
+    # Update check — use prefetched result if available
     try:
-        behind = check_for_updates()
+        behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             right_lines.append(
@@ -386,6 +422,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     )
 
     console.print()
-    console.print(HERMES_AGENT_LOGO)
-    console.print()
+    term_width = shutil.get_terminal_size().columns
+    if term_width >= 95:
+        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        console.print(_logo)
+        console.print()
     console.print(outer_panel)

@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -242,6 +243,17 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):

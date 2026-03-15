@@ -249,6 +249,32 @@ class SessionDB:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
+        """Resolve an exact or uniquely prefixed session ID to the full ID.
+
+        Returns the exact ID when it exists. Otherwise treats the input as a
+        prefix and returns the single matching session ID if the prefix is
+        unambiguous. Returns None for no matches or ambiguous prefixes.
+        """
+        exact = self.get_session(session_id_or_prefix)
+        if exact:
+            return exact["id"]
+
+        escaped = (
+            session_id_or_prefix
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        cursor = self._conn.execute(
+            "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
+            (f"{escaped}%",),
+        )
+        matches = [row["id"] for row in cursor.fetchall()]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     # Maximum length for session titles
     MAX_TITLE_LENGTH = 100
 

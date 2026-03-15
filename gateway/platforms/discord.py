@@ -605,10 +605,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
             
             for i, chunk in enumerate(chunks):
-                msg = await channel.send(
-                    content=chunk,
-                    reference=reference if i == 0 else None,
-                )
+                chunk_reference = reference if i == 0 else None
+                try:
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                    )
+                except Exception as e:
+                    err_text = str(e)
+                    if (
+                        chunk_reference is not None
+                        and "error code: 50035" in err_text
+                        and "Cannot reply to a system message" in err_text
+                    ):
+                        logger.warning(
+                            "[%s] Reply target %s is a Discord system message; retrying send without reply reference",
+                            self.name,
+                            reply_to,
+                        )
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                        )
+                    else:
+                        raise
                 message_ids.append(str(msg.id))
             
             return SendResult(

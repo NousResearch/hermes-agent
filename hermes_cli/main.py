@@ -2196,21 +2196,21 @@ def cmd_update(args):
                     prompt_user=prompt_for_restore,
                 )
         
-        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
+        # Reinstall Python dependencies.
+        # Require the full extras install to succeed so updates do not silently
+        # skip optional runtime dependencies that the installer normally brings in.
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
             subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
                 cwd=PROJECT_ROOT, check=True,
                 env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
             )
         else:
             venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            if venv_pip.exists():
-                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            else:
-                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():

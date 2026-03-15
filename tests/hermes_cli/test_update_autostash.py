@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
@@ -235,3 +236,45 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
 
     with pytest.raises(CalledProcessError):
         hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+
+
+def test_cmd_update_requires_full_extras_install_to_succeed(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    recorded_commands = []
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
+    monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
+    monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
+    monkeypatch.setattr(hermes_config, "migrate_config", lambda **_kwargs: {"env_added": [], "config_added": []})
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    def fake_run(cmd, **kwargs):
+        recorded_commands.append((cmd, kwargs))
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    install_calls = [cmd for cmd, _kwargs in recorded_commands if cmd[:4] == ["/usr/bin/uv", "pip", "install", "-e"]]
+    assert install_calls == [["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]]
+
+    extras_call = next(kwargs for cmd, kwargs in recorded_commands if cmd == install_calls[0])
+    expected_env = {**hermes_main.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")}
+    assert extras_call["cwd"] == tmp_path
+    assert extras_call["check"] is True
+    assert extras_call["env"] == expected_env

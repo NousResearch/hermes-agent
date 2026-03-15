@@ -12,29 +12,33 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 
 ## Architecture
 
-```text
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                  Hermes Gateway                                       │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐           │
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │           │
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│           │
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘           │
-│       │             │           │           │         │         │        │            │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘            │
-│                                     │                                                 │
-│                            ┌────────▼────────┐                                        │
-│                            │  Session Store  │                                        │
-│                            │  (per-chat)     │                                        │
-│                            └────────┬────────┘                                        │
-│                                     │                                                 │
-│                            ┌────────▼────────┐                                        │
-│                            │   AIAgent       │                                        │
-│                            │   (run_agent)   │                                        │
-│                            └─────────────────┘                                        │
-│                                                                                       │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Gateway["Hermes Gateway"]
+        subgraph Adapters["Platform adapters"]
+            tg[Telegram]
+            dc[Discord]
+            wa[WhatsApp]
+            sl[Slack]
+            sig[Signal]
+            em[Email]
+            ha[Home Assistant]
+        end
+
+        store["Session store<br/>per chat"]
+        agent["AIAgent<br/>run_agent.py"]
+        cron["Cron scheduler<br/>ticks every 60s"]
+    end
+
+    tg --> store
+    dc --> store
+    wa --> store
+    sl --> store
+    sig --> store
+    em --> store
+    ha --> store
+    store --> agent
+    cron --> store
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.

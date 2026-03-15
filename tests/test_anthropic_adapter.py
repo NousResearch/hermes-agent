@@ -567,6 +567,56 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
+    def test_converts_data_url_image_to_anthropic_image_block(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
+                    },
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert blocks[0] == {"type": "text", "text": "Describe this image"}
+        assert blocks[1] == {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "ZmFrZQ==",
+            },
+        }
+
+    def test_converts_remote_image_url_to_anthropic_image_block(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/cat.png"},
+                    },
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert blocks[1] == {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": "https://example.com/cat.png",
+            },
+        }
+
     def test_empty_cached_assistant_tool_turn_converts_without_empty_text_block(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},

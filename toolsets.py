@@ -64,6 +64,11 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Android device control (gated on relay/bridge running via check_fn)
+    "android_ping", "android_read_screen", "android_tap", "android_tap_text",
+    "android_type", "android_swipe", "android_open_app", "android_press_key",
+    "android_screenshot", "android_scroll", "android_wait",
+    "android_get_apps", "android_current_app", "android_setup",
 ]
 
 
@@ -199,6 +204,18 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "android": {
+        "description": "Android device control — read screen, tap, type, open apps, and more via the hermes-android bridge",
+        "tools": [
+            "android_ping", "android_read_screen", "android_tap", "android_tap_text",
+            "android_type", "android_swipe", "android_open_app", "android_press_key",
+            "android_screenshot", "android_scroll", "android_wait",
+            "android_get_apps", "android_current_app",
+            "android_setup",
+        ],
         "includes": []
     },
 

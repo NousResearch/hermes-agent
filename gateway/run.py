@@ -2435,6 +2435,13 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
+            err_lower = str(e).lower()
+            if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
+                return (
+                    "Voice dependencies are missing (PyNaCl / davey). "
+                    "Install or reinstall Hermes with the messaging extra, e.g. "
+                    "`pip install hermes-agent[messaging]`."
+                )
             return f"Failed to join voice channel: {e}"
 
         if success:
@@ -2575,18 +2582,9 @@ class GatewayRunner:
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input.
-        # Exception: Discord voice channel — play_tts override is a no-op,
-        # so the runner must handle VC playback.
-        skip_double = is_voice_input
-        if skip_double:
-            adapter = self.adapters.get(event.source.platform)
-            guild_id = self._get_guild_id(event)
-            if (guild_id and adapter
-                    and hasattr(adapter, "is_in_voice_channel")
-                    and adapter.is_in_voice_channel(guild_id)):
-                skip_double = False
-        if skip_double:
+        # Dedup: base adapter auto-TTS already handles voice input
+        # (play_tts plays in VC when connected, so runner can skip).
+        if is_voice_input:
             return False
 
         return True

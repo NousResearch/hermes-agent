@@ -214,11 +214,28 @@ def build_menu_items(
         items.append(MenuItem(label="NOW PLAYING", is_header=True))
         title = now_playing.get("title", "")
         artist = now_playing.get("artist", "")
-        display = f"{artist} \u2014 {title}" if artist else title
-        prefix = "\u25b6" if not now_playing.get("paused") else "\u23f8"
+        display = f"{artist} — {title}" if artist else title
+        prefix = "▶" if not now_playing.get("paused") else "⏸"
         items.append(MenuItem(label=f"{prefix} {display}", sublabel=now_playing.get("station_name", ""), action="toggle_pause"))
         items.append(MenuItem(label="Skip track", action="skip"))
         items.append(MenuItem(label="Stop radio", action="stop"))
+
+    # Visualizer presets near the top so they are easy to discover
+    visualizer_names = list_presets()
+    if visualizer_names:
+        items.append(MenuItem(label="VISUALIZER", is_header=True))
+        for name in visualizer_names:
+            sublabel = "active" if name == active_visualizer else ""
+            items.append(MenuItem(
+                label=name,
+                sublabel=sublabel,
+                action="visualizer",
+                data={"name": name},
+            ))
+
+    # Options near the top too
+    items.append(MenuItem(label="OPTIONS", is_header=True))
+    items.append(MenuItem(label="Mic breaks", sublabel="AI DJ commentary", is_toggle=True, toggled=mic_breaks, toggle_key="mic_breaks"))
 
     # Crate digger (with decades + moods nested inside)
     items.append(MenuItem(label="CRATE DIGGER", is_header=True))
@@ -237,7 +254,6 @@ def build_menu_items(
     items.append(MenuItem(label="MOODS", is_header=True))
     for mood, desc in [("weird", "the good stuff"), ("slow", "deep, contemplative"), ("fast", "upbeat, energetic")]:
         items.append(MenuItem(label=mood, sublabel=desc, is_toggle=True, toggled=mood in active_moods, toggle_key=f"mood:{mood}"))
-
     # SomaFM
     items.append(MenuItem(label="SOMAFM", is_header=True))
     if soma_channels:
@@ -270,23 +286,6 @@ def build_menu_items(
     items.append(MenuItem(label="SEARCH", is_header=True))
     items.append(MenuItem(label="Search Radio Browser", sublabel="45k+ stations", action="search_rb"))
     items.append(MenuItem(label="Search Radio Garden", sublabel="by city", action="search_rg"))
-
-    # Visualizer presets
-    visualizer_names = list_presets()
-    if visualizer_names:
-        items.append(MenuItem(label="VISUALIZER", is_header=True))
-        for name in visualizer_names:
-            sublabel = "active" if name == active_visualizer else ""
-            items.append(MenuItem(
-                label=name,
-                sublabel=sublabel,
-                action="visualizer",
-                data={"name": name},
-            ))
-
-    # Options
-    items.append(MenuItem(label="OPTIONS", is_header=True))
-    items.append(MenuItem(label="Mic breaks", sublabel="AI DJ commentary", is_toggle=True, toggled=mic_breaks, toggle_key="mic_breaks"))
 
     return items
 

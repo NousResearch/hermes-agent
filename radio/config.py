@@ -88,7 +88,7 @@ def set_volume(vol: int) -> None:
 
 
 def get_visualizer() -> str:
-    return load().get("visualizer", "braille")
+    return load().get("visualizer", "wide")
 
 
 def set_visualizer(name: str) -> None:

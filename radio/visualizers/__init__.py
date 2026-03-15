@@ -29,7 +29,7 @@ BUILTIN_DIR = Path(__file__).parent
 USER_DIR = Path(os.path.expanduser("~/.hermes/radio/visualizers"))
 
 # Default preset name
-DEFAULT_PRESET = "braille"
+DEFAULT_PRESET = "wide"
 
 
 def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:

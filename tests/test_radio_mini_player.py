@@ -39,12 +39,12 @@ def test_generate_bars_uses_visualizer_engine(monkeypatch):
 def test_generate_bars_expanded_uses_visualizer_engine(monkeypatch):
     def fake_render_rows(**kwargs):
         assert kwargs['width'] == 32
-        assert kwargs['rows'] == 3
+        assert kwargs['rows'] == 4
         assert kwargs['paused'] is True
-        return ['A' * 32, 'B' * 32, 'C' * 32]
+        return ['A' * 32, 'B' * 32, 'C' * 32, 'D' * 32]
 
     monkeypatch.setattr(visualizer_engine, 'render_rows', fake_render_rows)
 
     rows = mini_player._generate_bars_expanded(position=3.0, title='seed-track', paused=True)
 
-    assert rows == ['A' * 32, 'B' * 32, 'C' * 32]
+    assert rows == ['A' * 32, 'B' * 32, 'C' * 32, 'D' * 32]

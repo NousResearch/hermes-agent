@@ -88,6 +88,15 @@ def test_render_rows_returns_strings_even_when_meter_inactive(monkeypatch):
     assert all(len(row) == 12 for row in rows)
 
 
+def test_default_visualizer_is_wide_when_config_missing(tmp_path, monkeypatch):
+    from radio import config as radio_config
+
+    monkeypatch.setattr(radio_config, 'RADIO_DIR', tmp_path)
+    monkeypatch.setattr(radio_config, 'CONFIG_PATH', tmp_path / 'config.yaml')
+
+    assert radio_config.get_visualizer() == 'wide'
+
+
 def test_visualizer_name_round_trips_through_radio_config(tmp_path, monkeypatch):
     from radio import config as radio_config
 
@@ -109,6 +118,17 @@ def test_build_menu_items_includes_visualizer_presets(monkeypatch):
     visualizer_items = [item for item in items if item.action == 'visualizer']
     assert [item.data['name'] for item in visualizer_items] == ['braille', 'mirror']
     assert visualizer_items[1].sublabel == 'active'
+
+
+def test_build_menu_items_places_visualizer_and_options_before_crate_sections(monkeypatch):
+    from radio import menu
+
+    monkeypatch.setattr(menu, 'list_presets', lambda: ['wide'])
+    items = menu.build_menu_items(active_visualizer='wide')
+    labels = [item.label for item in items]
+
+    assert labels.index('VISUALIZER') < labels.index('CRATE DIGGER')
+    assert labels.index('OPTIONS') < labels.index('CRATE DIGGER')
 
 
 def test_mirror_mode_is_horizontally_symmetric_even_without_mirror_flag(monkeypatch):

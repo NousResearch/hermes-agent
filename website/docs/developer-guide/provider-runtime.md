@@ -27,9 +27,11 @@ If you are trying to add a new first-class inference provider, read [Adding Prov
 At a high level, provider resolution uses:
 
 1. explicit CLI/runtime request
-2. environment variables
-3. `config.yaml` model/provider config
+2. `config.yaml` model/provider config
+3. environment variables
 4. provider-specific defaults or auto resolution
+
+That ordering matters because Hermes treats the saved model/provider choice as the source of truth for normal runs. This prevents a stale shell export from silently overriding the endpoint a user last selected in `hermes model`.
 
 ## Providers
 
@@ -70,11 +72,17 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 
 Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when both `OPENROUTER_API_KEY` and `OPENAI_API_KEY` exist.
 
+It also distinguishes between:
+
+- a real custom endpoint selected by the user
+- the OpenRouter fallback path used when no custom endpoint is configured
+
 That distinction is especially important for:
 
 - local model servers
 - non-OpenRouter OpenAI-compatible APIs
 - switching providers without re-running setup
+- config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 
 ## Native Anthropic path
 
@@ -113,6 +121,12 @@ Auxiliary tasks such as:
 - memory flushes
 
 can use their own provider/model routing rather than the main conversational model.
+
+When an auxiliary task is configured with provider `main`, Hermes resolves that through the same shared runtime path as normal chat. In practice that means:
+
+- env-driven custom endpoints still work
+- custom endpoints saved via `hermes model` / `config.yaml` also work
+- auxiliary routing can tell the difference between a real saved custom endpoint and the OpenRouter fallback
 
 ## Fallback models
 

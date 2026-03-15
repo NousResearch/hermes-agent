@@ -115,3 +115,57 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
     assert helper_calls == []
     assert "Configured to run as: alice" not in out  # generated test unit has no User= line
     assert "System service installed and enabled" in out
+
+
+def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
+    user_unit = tmp_path / "user" / "hermes-gateway.service"
+    system_unit = tmp_path / "system" / "hermes-gateway.service"
+    user_unit.parent.mkdir(parents=True)
+    system_unit.parent.mkdir(parents=True)
+    user_unit.write_text("[Unit]\n", encoding="utf-8")
+    system_unit.write_text("[Unit]\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        gateway,
+        "get_systemd_unit_path",
+        lambda system=False: system_unit if system else user_unit,
+    )
+
+    gateway.print_systemd_scope_conflict_warning()
+
+    out = capsys.readouterr().out
+    assert "Both user and system gateway services are installed" in out
+    assert "hermes gateway uninstall" in out
+    assert "--system" in out
+
+
+def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
+    monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=False)
+
+    out = capsys.readouterr().out
+    assert (scope, did_install) == ("system", False)
+    assert "sudo hermes gateway install --system --run-as-user alice" in out
+    assert "sudo hermes gateway start --system" in out
+
+
+def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+    )
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=True)
+
+    assert (scope, did_install) == ("system", True)
+    assert calls == [(True, True, "alice")]

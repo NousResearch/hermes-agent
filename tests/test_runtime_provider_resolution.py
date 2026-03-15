@@ -131,13 +131,36 @@ def test_custom_endpoint_prefers_openai_key(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-zai-correct-key")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-wrong-key-for-zai")
+    monkeypatch.setenv("OPENAI_API_KEY", "zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
 
     resolved = rp.resolve_runtime_provider(requested="custom")
 
     assert resolved["base_url"] == "https://api.z.ai/api/coding/paas/v4"
-    assert resolved["api_key"] == "sk-zai-correct-key"
+    assert resolved["api_key"] == "zai-key"
+
+
+def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
+    """Persisted custom endpoints in config.yaml must still resolve when
+    OPENAI_BASE_URL is absent from the current environment."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:1234/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
+    assert resolved["api_key"] == "local-key"
 
 
 def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):

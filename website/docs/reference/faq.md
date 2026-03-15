@@ -50,6 +50,8 @@ hermes config set OPENAI_API_KEY ollama                       # Any non-empty va
 hermes config set HERMES_MODEL llama3.1
 ```
 
+You can also save the endpoint interactively with `hermes model`. Hermes persists that custom endpoint in `config.yaml`, and auxiliary tasks configured with provider `main` follow the same saved endpoint.
+
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
 ### How much does it cost?

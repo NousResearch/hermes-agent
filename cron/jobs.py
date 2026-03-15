@@ -32,6 +32,32 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
 
 
+def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+    """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
+    if skills is None:
+        raw_items = [skill] if skill else []
+    elif isinstance(skills, str):
+        raw_items = [skills]
+    else:
+        raw_items = list(skills)
+
+    normalized: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
+    normalized = dict(job)
+    skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
+    normalized["skills"] = skills
+    normalized["skill"] = skills[0] if skills else None
+    return normalized
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -265,6 +291,7 @@ def create_job(
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -276,7 +303,8 @@ def create_job(
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
         origin: Source info where job was created (for "origin" delivery)
-        skill: Optional skill name to load before running the prompt
+        skill: Optional legacy single skill name to load before running the prompt
+        skills: Optional ordered list of skills to load before running the prompt
 
     Returns:
         The created job dict
@@ -294,12 +322,14 @@ def create_job(
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
 
-    label_source = skill or prompt or "cron job"
+    normalized_skills = _normalize_skill_list(skill, skills)
+    label_source = (normalized_skills[0] if normalized_skills else prompt) or "cron job"
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
         "prompt": prompt,
-        "skill": skill,
+        "skills": normalized_skills,
+        "skill": normalized_skills[0] if normalized_skills else None,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -332,13 +362,13 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
-            return job
+            return _apply_skill_fields(job)
     return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = load_jobs()
+    jobs = [_apply_skill_fields(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
@@ -351,8 +381,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if job["id"] != job_id:
             continue
 
-        updated = {**job, **updates}
+        updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
+
+        if "skills" in updates or "skill" in updates:
+            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+            updated["skills"] = normalized_skills
+            updated["skill"] = normalized_skills[0] if normalized_skills else None
 
         if schedule_changed:
             updated_schedule = updated["schedule"]
@@ -368,7 +403,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         jobs[i] = updated
         save_jobs(jobs)
-        return jobs[i]
+        return _apply_skill_fields(jobs[i])
     return None
 
 
@@ -479,21 +514,21 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now."""
     now = _hermes_now()
-    jobs = load_jobs()
+    jobs = [_apply_skill_fields(j) for j in load_jobs()]
     due = []
-    
+
     for job in jobs:
         if not job.get("enabled", True):
             continue
-        
+
         next_run = job.get("next_run_at")
         if not next_run:
             continue
-        
+
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:
             due.append(job)
-    
+
     return due
 
 

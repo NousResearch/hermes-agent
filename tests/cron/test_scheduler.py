@@ -248,3 +248,49 @@ class TestRunJobSkillBacked:
         assert "blogwatcher" in prompt_arg
         assert "Follow this skill" in prompt_arg
         assert "Check the feeds and summarize anything new." in prompt_arg
+
+    def test_run_job_loads_multiple_skills_in_order(self, tmp_path):
+        job = {
+            "id": "multi-skill-job",
+            "name": "multi skill test",
+            "prompt": "Combine the results.",
+            "skills": ["blogwatcher", "find-nearby"],
+        }
+
+        fake_db = MagicMock()
+
+        def _skill_view(name):
+            return json.dumps({"success": True, "content": f"# {name}\nInstructions for {name}."})
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view) as skill_view_mock, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert skill_view_mock.call_count == 2
+        assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "find-nearby"]
+
+        prompt_arg = mock_agent.run_conversation.call_args.args[0]
+        assert prompt_arg.index("blogwatcher") < prompt_arg.index("find-nearby")
+        assert "Instructions for blogwatcher." in prompt_arg
+        assert "Instructions for find-nearby." in prompt_arg
+        assert "Combine the results." in prompt_arg

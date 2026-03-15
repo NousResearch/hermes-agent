@@ -245,3 +245,35 @@ class TestUnifiedCronjobTool:
 
         listing = json.loads(cronjob(action="list"))
         assert listing["jobs"][0]["skill"] == "blogwatcher"
+
+    def test_create_multi_skill_job(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                skills=["blogwatcher", "find-nearby"],
+                prompt="Use both skills and combine the result.",
+                schedule="every 1h",
+                name="Combo job",
+            )
+        )
+        assert result["success"] is True
+        assert result["skills"] == ["blogwatcher", "find-nearby"]
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["skills"] == ["blogwatcher", "find-nearby"]
+
+    def test_update_can_clear_skills(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                skills=["blogwatcher", "find-nearby"],
+                prompt="Use both skills and combine the result.",
+                schedule="every 1h",
+            )
+        )
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], skills=[])
+        )
+        assert updated["success"] is True
+        assert updated["job"]["skills"] == []
+        assert updated["job"]["skill"] is None

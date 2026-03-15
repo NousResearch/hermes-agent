@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -85,12 +85,31 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
+def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+    if skills is None:
+        raw_items = [skill] if skill else []
+    elif isinstance(skills, str):
+        raw_items = [skills]
+    else:
+        raw_items = list(skills)
+
+    normalized: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job.get("prompt", "")
+    skills = _canonical_skills(job.get("skill"), job.get("skills"))
     return {
         "job_id": job["id"],
         "name": job["name"],
-        "skill": job.get("skill"),
+        "skill": skills[0] if skills else None,
+        "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "schedule": job.get("schedule_display"),
         "repeat": _repeat_display(job),
@@ -115,6 +134,7 @@ def cronjob(
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
     reason: Optional[str] = None,
     task_id: str = None,
 ) -> str:
@@ -127,8 +147,9 @@ def cronjob(
         if normalized == "create":
             if not schedule:
                 return json.dumps({"success": False, "error": "schedule is required for create"}, indent=2)
-            if not prompt and not skill:
-                return json.dumps({"success": False, "error": "create requires either prompt or skill"}, indent=2)
+            canonical_skills = _canonical_skills(skill, skills)
+            if not prompt and not canonical_skills:
+                return json.dumps({"success": False, "error": "create requires either prompt or at least one skill"}, indent=2)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -141,7 +162,7 @@ def cronjob(
                 repeat=repeat,
                 deliver=deliver,
                 origin=_origin_from_env(),
-                skill=skill,
+                skills=canonical_skills,
             )
             return json.dumps(
                 {
@@ -149,6 +170,7 @@ def cronjob(
                     "job_id": job["id"],
                     "name": job["name"],
                     "skill": job.get("skill"),
+                    "skills": job.get("skills", []),
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
@@ -213,8 +235,10 @@ def cronjob(
                 updates["name"] = name
             if deliver is not None:
                 updates["deliver"] = deliver
-            if skill is not None:
-                updates["skill"] = skill
+            if skills is not None or skill is not None:
+                canonical_skills = _canonical_skills(skill, skills)
+                updates["skills"] = canonical_skills
+                updates["skill"] = canonical_skills[0] if canonical_skills else None
             if repeat is not None:
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = repeat
@@ -272,12 +296,13 @@ CRONJOB_SCHEMA = {
     "name": "cronjob",
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
-Use action='create' to schedule a new job from a prompt or a skill.
+Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skill is provided on create, the future cron run loads that skill first, then follows the prompt as the task instruction.
+If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
+On update, passing skills=[] clears attached skills.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
@@ -293,7 +318,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skill is also provided, this becomes the task instruction paired with that skill."
+                "description": "For create: the full self-contained prompt. If skill or skills are also provided, this becomes the task instruction paired with those skills."
             },
             "schedule": {
                 "type": "string",
@@ -317,7 +342,12 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "skill": {
                 "type": "string",
-                "description": "Optional skill name to load before executing the cron prompt"
+                "description": "Optional single skill name to load before executing the cron prompt"
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional ordered list of skills to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
             "reason": {
                 "type": "string",
@@ -365,6 +395,7 @@ registry.register(
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", False),
         skill=args.get("skill"),
+        skills=args.get("skills"),
         reason=args.get("reason"),
         task_id=kw.get("task_id"),
     ),

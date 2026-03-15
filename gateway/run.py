@@ -3510,14 +3510,14 @@ class GatewayRunner:
         Auto-analyze user-attached images with the vision tool and prepend
         the descriptions to the message text.
 
-        Each image is analyzed with a general-purpose prompt. The resulting
-        description and local cache path are injected so the model can:
+        Each image is analyzed with a general-purpose prompt.  The resulting
+        description *and* the local cache path are injected so the model can:
           1. Immediately understand what the user sent (no extra tool call).
           2. Re-examine the image with vision_analyze if it needs more detail.
 
         Args:
-            user_text:      The user's original caption / message text.
-            image_paths:    List of local file paths to cached images.
+            user_text:   The user's original caption / message text.
+            image_paths: List of local file paths to cached images.
 
         Returns:
             The enriched message string with vision descriptions prepended.

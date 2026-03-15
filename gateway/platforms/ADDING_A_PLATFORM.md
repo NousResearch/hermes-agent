@@ -173,7 +173,7 @@ platform_map = {
 }
 ```
 
-Without this, `schedule_cronjob(deliver="your_platform")` silently fails.
+Without this, `cronjob(action="create", deliver="your_platform", ...)` silently fails.
 
 ---
 

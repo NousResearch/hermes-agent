@@ -177,6 +177,26 @@ def build_session_context_prompt(context: SessionContext) -> str:
     elif context.source.user_id:
         lines.append(f"**User ID:** {context.source.user_id}")
     
+    # Platform-specific behavioral notes
+    if context.source.platform == Platform.SLACK:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Slack. "
+            "You do NOT have access to Slack-specific APIs — you cannot search "
+            "channel history, pin/unpin messages, manage channels, or list users. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+    elif context.source.platform == Platform.DISCORD:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Discord. "
+            "You do NOT have access to Discord-specific APIs — you cannot search "
+            "channel history, pin messages, manage roles, or list server members. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:
@@ -241,8 +261,11 @@ class SessionEntry:
     output_tokens: int = 0
     total_tokens: int = 0
 
-    # Per-session reasoning visibility: "off", "on", "stream"
+    # Per-session reasoning visibility: "off", "hide", "show", "stream"
     reasoning_mode: str = "off"
+    
+    # Last API-reported prompt tokens (for accurate compression pre-check)
+    last_prompt_tokens: int = 0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -260,6 +283,7 @@ class SessionEntry:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+            "last_prompt_tokens": self.last_prompt_tokens,
             "reasoning_mode": self.reasoning_mode,
         }
         if self.origin:
@@ -291,6 +315,7 @@ class SessionEntry:
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
+            last_prompt_tokens=data.get("last_prompt_tokens", 0),
             reasoning_mode=data.get("reasoning_mode", "off"),
         )
 
@@ -299,13 +324,26 @@ def build_session_key(source: SessionSource) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
-    WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+
+    DM rules:
+      - WhatsApp DMs include chat_id (multi-user support).
+      - Other DMs include thread_id when present (e.g. Slack threaded DMs),
+        so each DM thread gets its own session while top-level DMs share one.
+      - Without thread_id or chat_id, all DMs share a single session.
+
+    Group/channel rules:
+      - thread_id differentiates threads within a channel.
+      - Without thread_id, all messages in a channel share one session.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
+        if source.thread_id:
+            return f"agent:main:{platform}:dm:{source.thread_id}"
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+    if source.thread_id:
+        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
     return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
 
 
@@ -350,7 +388,11 @@ class SessionStore:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
-                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                        try:
+                            self._entries[key] = SessionEntry.from_dict(entry_data)
+                        except (ValueError, KeyError):
+                            # Skip entries with unknown/removed platform values
+                            continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
         
@@ -555,7 +597,9 @@ class SessionStore:
         self, 
         session_key: str,
         input_tokens: int = 0,
-        output_tokens: int = 0
+        output_tokens: int = 0,
+        last_prompt_tokens: int = None,
+        model: str = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -565,13 +609,16 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            if last_prompt_tokens is not None:
+                entry.last_prompt_tokens = last_prompt_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()
             
             if self._db:
                 try:
                     self._db.update_token_counts(
-                        entry.session_id, input_tokens, output_tokens
+                        entry.session_id, input_tokens, output_tokens,
+                        model=model,
                     )
                 except Exception as e:
                     logger.debug("Session DB operation failed: %s", e)
@@ -696,10 +743,17 @@ class SessionStore:
         """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL)."""
-        # Write to SQLite
-        if self._db:
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Append a message to a session's transcript (SQLite + legacy JSONL).
+
+        Args:
+            skip_db: When True, only write to JSONL and skip the SQLite write.
+                     Used when the agent already persisted messages to SQLite
+                     via its own _flush_messages_to_session_db(), preventing
+                     the duplicate-write bug (#860).
+        """
+        # Write to SQLite (unless the agent already handled it)
+        if self._db and not skip_db:
             try:
                 self._db.append_message(
                     session_id=session_id,

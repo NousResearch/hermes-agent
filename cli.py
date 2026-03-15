@@ -1280,6 +1280,37 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _current_input_text(self) -> str:
+        """Best-effort access to the current prompt buffer text."""
+        try:
+            if self._app and getattr(self._app, "current_buffer", None):
+                return self._app.current_buffer.text or ""
+        except Exception:
+            pass
+        return ""
+
+    def _radio_shortcuts_unblocked(self) -> bool:
+        """Return True when modal UI states won't steal radio shortcuts."""
+        return not any([
+            self._radio_menu_state,
+            self._clarify_state,
+            self._approval_state,
+            self._sudo_state,
+            self._secret_state,
+        ])
+
+    def _can_toggle_radio_expanded(self) -> bool:
+        """Expanded radio toggle only fires when radio is active and input is empty."""
+        if not self._radio_shortcuts_unblocked():
+            return False
+        if self._current_input_text().strip():
+            return False
+        try:
+            from radio.player import HermesRadio
+            return HermesRadio.active()
+        except ImportError:
+            return False
+
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Strip provider prefixes and swap the default model for Codex.
 
@@ -4320,15 +4351,13 @@ class HermesCLI:
                 self._radio_menu_state.cancel()
                 event.app.invalidate()
 
-        # Toggle expanded radio display (v key when no menu is open)
-        @kb.add('v', filter=Condition(lambda: not self._radio_menu_state and not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state))
+        # Toggle expanded radio display (Shift+V, only when prompt is empty)
+        @kb.add('V', filter=Condition(lambda: self._can_toggle_radio_expanded()))
         def radio_toggle_expanded(event):
             try:
-                from radio.player import HermesRadio
-                if HermesRadio.active():
-                    from radio.mini_player import toggle_expanded
-                    toggle_expanded()
-                    event.app.invalidate()
+                from radio.mini_player import toggle_expanded
+                toggle_expanded()
+                event.app.invalidate()
             except ImportError:
                 pass
 

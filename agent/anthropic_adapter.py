@@ -391,6 +391,68 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert an OpenAI-style image block to Anthropic's image source format."""
+    image_data = part.get("image_url", {})
+    url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+
+    if url.startswith("data:"):
+        header, sep, data = url.partition(",")
+        if sep and ";base64" in header:
+            media_type = header[5:].split(";", 1)[0] or "image/png"
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            }
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": url,
+            },
+        }
+
+    return None
+
+
+def _convert_user_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(part, dict):
+        ptype = part.get("type")
+        if ptype == "text":
+            block = {"type": "text", "text": part.get("text", "")}
+            if isinstance(part.get("cache_control"), dict):
+                block["cache_control"] = dict(part["cache_control"])
+            return block
+        if ptype == "image_url":
+            return _convert_openai_image_part_to_anthropic(part)
+        if ptype == "image" and part.get("source"):
+            return dict(part)
+        if ptype == "image" and part.get("data"):
+            media_type = part.get("mimeType") or part.get("media_type") or "image/png"
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": part.get("data", ""),
+                },
+            }
+        if ptype == "tool_result":
+            return dict(part)
+    elif part is not None:
+        return {"type": "text", "text": str(part)}
+    return None
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -495,7 +557,15 @@ def convert_messages_to_anthropic(
             continue
 
         # Regular user message
-        result.append({"role": "user", "content": content})
+        if isinstance(content, list):
+            converted_blocks = []
+            for part in content:
+                converted = _convert_user_content_part_to_anthropic(part)
+                if converted is not None:
+                    converted_blocks.append(converted)
+            result.append({"role": "user", "content": converted_blocks or [{"type": "text", "text": ""}]})
+        else:
+            result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()

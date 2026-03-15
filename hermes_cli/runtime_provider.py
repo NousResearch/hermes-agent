@@ -144,9 +144,15 @@ def _resolve_openrouter_runtime(
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
     use_config_base_url = False
-    if requested_norm == "auto":
-        if cfg_base_url.strip() and not explicit_base_url and not env_openai_base_url:
+    if cfg_base_url.strip() and not explicit_base_url and not env_openai_base_url:
+        if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
+                use_config_base_url = True
+        elif requested_norm == "custom":
+            # Persisted custom endpoints store their base URL in config.yaml.
+            # If OPENAI_BASE_URL is not currently set in the environment, keep
+            # honoring that saved endpoint instead of falling back to OpenRouter.
+            if cfg_provider == "custom":
                 use_config_base_url = True
 
     # When the user explicitly requested the openrouter provider, skip

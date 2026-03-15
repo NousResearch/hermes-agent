@@ -465,9 +465,44 @@ def _read_main_model() -> str:
     return ""
 
 
+def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
+    """Resolve the active custom/main endpoint the same way the main CLI does.
+
+    This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
+    endpoints where the base URL lives in config.yaml instead of the live
+    environment.
+    """
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested="custom")
+    except Exception as exc:
+        logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
+        return None, None
+
+    custom_base = runtime.get("base_url")
+    custom_key = runtime.get("api_key")
+    if not isinstance(custom_base, str) or not custom_base.strip():
+        return None, None
+    if not isinstance(custom_key, str) or not custom_key.strip():
+        return None, None
+
+    custom_base = custom_base.strip().rstrip("/")
+    if "openrouter.ai" in custom_base.lower():
+        # requested='custom' falls back to OpenRouter when no custom endpoint is
+        # configured. Treat that as "no custom endpoint" for auxiliary routing.
+        return None, None
+
+    return custom_base, custom_key.strip()
+
+
+def _current_custom_base_url() -> str:
+    custom_base, _ = _resolve_custom_runtime()
+    return custom_base or ""
+
+
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
-    custom_base = os.getenv("OPENAI_BASE_URL")
-    custom_key = os.getenv("OPENAI_API_KEY")
+    custom_base, custom_key = _resolve_custom_runtime()
     if not custom_base or not custom_key:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
@@ -829,7 +864,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     The Codex adapter translates max_tokens internally, so we use max_tokens
     for it as well.
     """
-    custom_base = os.getenv("OPENAI_BASE_URL", "")
+    custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
     # Only use max_completion_tokens for direct OpenAI custom endpoints
     if (not or_key
@@ -950,7 +985,7 @@ def _build_call_kwargs(
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":
-            custom_base = os.getenv("OPENAI_BASE_URL", "")
+            custom_base = _current_custom_base_url()
             if "api.openai.com" in custom_base.lower():
                 kwargs["max_completion_tokens"] = max_tokens
             else:

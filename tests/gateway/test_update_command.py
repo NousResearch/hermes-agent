@@ -151,13 +151,34 @@ class TestHandleUpdateCommand:
         assert result == ["/custom/path/hermes"]
 
     @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_prefers_sibling_venv_executable(self, tmp_path):
+        """_resolve_hermes_bin prefers a sibling hermes executable next to sys.executable."""
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        fake_python = tmp_path / "venv" / "bin" / "python3"
+        fake_python.parent.mkdir(parents=True)
+        fake_python.write_text("#!/bin/sh\n")
+        fake_python.chmod(0o755)
+        fake_hermes = fake_python.parent / "hermes"
+        fake_hermes.write_text("#!/bin/sh\n")
+        fake_hermes.chmod(0o755)
+
+        with patch("shutil.which", return_value=None), \
+             patch.object(sys, "executable", str(fake_python)):
+            result = _resolve_hermes_bin()
+
+        assert result == [str(fake_hermes)]
+
+    @pytest.mark.asyncio
     async def test_resolve_hermes_bin_fallback(self):
-        """_resolve_hermes_bin falls back to sys.executable argv when which fails."""
+        """_resolve_hermes_bin falls back to sys.executable argv when which and sibling shim fail."""
         import sys
         from gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
         with patch("shutil.which", return_value=None), \
+             patch("os.access", return_value=False), \
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 

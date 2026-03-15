@@ -421,6 +421,26 @@ provider_routing:
 
 **Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
 
+## Fallback Model
+
+Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
+
+```yaml
+fallback_model:
+  provider: openrouter                    # required
+  model: anthropic/claude-sonnet-4        # required
+  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+```
+
+When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
+
+Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+
+:::tip
+Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+:::
+
 ## Terminal Backend Configuration
 
 Configure which environment the agent uses for terminal commands:
@@ -733,6 +753,7 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  background_process_notifications: all  # all | result | error | off (gateway only)
 ```
 
 | Mode | What you see |

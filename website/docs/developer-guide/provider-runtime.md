@@ -130,7 +130,41 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes also supports a configured fallback model/provider, allowing runtime failover in supported error paths.
+Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+
+### How it works internally
+
+1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
+
+2. **Trigger points**: `_try_activate_fallback()` is called from three places in the main retry loop in `run_agent.py`:
+   - After max retries on invalid API responses (None choices, missing content)
+   - On non-retryable client errors (HTTP 401, 403, 404)
+   - After max retries on transient errors (HTTP 429, 500, 502, 503)
+
+3. **Activation flow** (`_try_activate_fallback`):
+   - Returns `False` immediately if already activated or not configured
+   - Calls `resolve_provider_client()` from `auxiliary_client.py` to build a new client with proper auth
+   - Determines `api_mode`: `codex_responses` for openai-codex, `anthropic_messages` for anthropic, `chat_completions` for everything else
+   - Swaps in-place: `self.model`, `self.provider`, `self.base_url`, `self.api_mode`, `self.client`, `self._client_kwargs`
+   - For anthropic fallback: builds a native Anthropic client instead of OpenAI-compatible
+   - Re-evaluates prompt caching (enabled for Claude models on OpenRouter)
+   - Sets `_fallback_activated = True` — prevents firing again
+   - Resets retry count to 0 and continues the loop
+
+4. **Config flow**:
+   - CLI: `cli.py` reads `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
+   - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
+   - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
+
+### What does NOT support fallback
+
+- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
+- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
+- **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+
+### Test coverage
+
+See `tests/test_fallback_model.py` for comprehensive tests covering all supported providers, one-shot semantics, and edge cases.
 
 ## Related docs
 

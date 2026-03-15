@@ -23,7 +23,11 @@ def _ensure_discord_mock():
     discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4)
     discord_mod.Interaction = object
     discord_mod.Embed = MagicMock
-    discord_mod.app_commands = SimpleNamespace(describe=lambda **kwargs: (lambda fn: fn))
+    discord_mod.app_commands = SimpleNamespace(
+        describe=lambda **kwargs: (lambda fn: fn),
+        choices=lambda **kwargs: (lambda fn: fn),
+        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
 
     ext_mod = MagicMock()
     commands_mod = MagicMock()

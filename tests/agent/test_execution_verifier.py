@@ -47,7 +47,7 @@ class TestVerificationResult:
     def test_to_dict_warning(self):
         vr = VerificationResult(
             status=WARNING, tool_name="write_file", check="file_written",
-            message="file was written but is empty: /tmp/empty.txt",
+            message="file exists but is empty; result may be incomplete or intentional: /tmp/empty.txt",
         )
         d = vr.to_dict()
         assert d["status"] == "warning"

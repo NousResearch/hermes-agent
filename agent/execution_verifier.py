@@ -8,7 +8,7 @@ continues reasoning.
 
 Supported verifications (MVP):
   - terminal / git clone  → target directory exists
-  - write_file            → file exists and size is non-zero
+  - write_file            → file exists; empty files are flagged as warnings
   - patch                 → modified/created files still exist after the tool claims success
 
 The verifier is deliberately conservative: it only fires for operations it
@@ -228,7 +228,7 @@ def _verify_write_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Opt
 
 
 def _verify_patch(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
-    """Verify patch: modified files still exist and patch claims success."""
+    """Verify patch: modified/created files still exist after the tool claims success."""
     if not result_data.get("success"):
         return None
 

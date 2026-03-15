@@ -65,10 +65,20 @@ def _get_radio():
 
 # -- Tool handlers ---------------------------------------------------------
 
+def _is_gateway() -> bool:
+    """Check if running on a messaging platform (Telegram, Discord, etc.)."""
+    import os
+    return bool(os.getenv("HERMES_SESSION_PLATFORM"))
+
+
 def radio_play_tool(args: Dict[str, Any], **kwargs) -> str:
     """Start playing music from a source."""
     source = args.get("source", "crate").lower()
     query = args.get("query", "")
+
+    # Gateway mode: download and send tracks as messages instead of mpv playback
+    if _is_gateway() and source == "crate":
+        return _run_radio_async(_gateway_crate_dig(query))
 
     radio = _get_radio()
 
@@ -280,8 +290,78 @@ async def _do_search(query: str, source: str) -> dict:
         return {"success": False, "error": f"Unknown search source: {source}"}
 
 
+async def _gateway_crate_dig(query: str) -> str:
+    """Gateway mode: dig a track and return it as a MEDIA tag for Telegram/Discord."""
+    from radio.radiooooo import RadioooooClient
+
+    # Parse query
+    decades = None
+    moods = None
+    country = None
+    if query:
+        parts = query.split()
+        for part in parts:
+            if part.isdigit() and 1900 <= int(part) <= 2020:
+                decades = decades or []
+                decades.append(int(part))
+            elif part.upper() in ("SLOW", "FAST", "WEIRD"):
+                moods = moods or []
+                moods.append(part.lower())
+            elif len(part) == 3 and part.isalpha():
+                country = part.upper()
+
+    client = RadioooooClient()
+    try:
+        track = await client.dig(decades=decades, moods=moods, country=country)
+        if not track or not track.audio_url:
+            return json.dumps({"success": False, "error": "No track found"})
+
+        # Download the track
+        from radio.history import save_track
+        saved = save_track(
+            track.audio_url, track.artist, track.title,
+            track.decade, track.country, track.mood,
+        )
+
+        if not saved:
+            # Download to temp if save_tracks is off
+            import os
+            import tempfile
+            import httpx
+            tmp_dir = os.path.join(tempfile.gettempdir(), "hermes-radio")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_path = os.path.join(tmp_dir, f"{track.id}.mp3")
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+                resp = await http.get(track.audio_url)
+                resp.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    f.write(resp.content)
+            saved = tmp_path
+
+        # Return MEDIA tag for gateway delivery
+        caption = f"{track.artist} \u2014 {track.title} ({track.decade}s, {track.country}, {track.mood})"
+        media_tag = f"MEDIA:{saved}"
+
+        return json.dumps({
+            "success": True,
+            "message": caption,
+            "media_tag": media_tag,
+            "track": {
+                "artist": track.artist,
+                "title": track.title,
+                "decade": track.decade,
+                "country": track.country,
+                "mood": track.mood,
+            },
+        })
+    finally:
+        await client.close()
+
+
 def check_radio_available() -> bool:
-    """Check if mpv is installed."""
+    """Check if mpv is installed (or if running on gateway, always available)."""
+    if _is_gateway():
+        return True  # gateway mode doesn't need mpv
     return shutil.which("mpv") is not None
 
 

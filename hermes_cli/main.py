@@ -499,6 +499,7 @@ def cmd_chat(args):
         "model": args.model,
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
+        "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
@@ -510,7 +511,11 @@ def cmd_chat(args):
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
-    cli_main(**kwargs)
+    try:
+        cli_main(**kwargs)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def cmd_gateway(args):
@@ -2276,6 +2281,7 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
@@ -2315,6 +2321,12 @@ For more help on a command:
         help="Run in an isolated git worktree (for parallel agents)"
     )
     parser.add_argument(
+        "--skills", "-s",
+        action="append",
+        default=None,
+        help="Preload one or more skills for the session (repeat flag or comma-separate)"
+    )
+    parser.add_argument(
         "--yolo",
         action="store_true",
         default=False,
@@ -2348,6 +2360,12 @@ For more help on a command:
     chat_parser.add_argument(
         "-t", "--toolsets",
         help="Comma-separated toolsets to enable"
+    )
+    chat_parser.add_argument(
+        "-s", "--skills",
+        action="append",
+        default=None,
+        help="Preload one or more skills for the session (repeat flag or comma-separate)"
     )
     chat_parser.add_argument(
         "--provider",

@@ -118,6 +118,11 @@ class HermesRadio:
 
         self._state_poll_task = asyncio.create_task(self._poll_state())
         self._notify_state_change()
+        try:
+            from radio.log import info
+            info("radio started")
+        except Exception:
+            pass
         logger.info("Hermes Radio started")
 
     async def stop(self) -> None:
@@ -360,6 +365,12 @@ class HermesRadio:
         try:
             from radio.level_meter import start as start_meter
             start_meter(url)
+        except Exception:
+            pass
+        # Log to radio.log
+        try:
+            from radio.log import play as log_play
+            log_play(track.artist, track.title, track.decade, track.country, track.mood)
         except Exception:
             pass
         self._now.title = track.title

@@ -20,6 +20,7 @@ async def test_image_enrichment_uses_athabasca_upload_guidance_without_stale_r2_
 
     assert "R2 not configured" not in enriched
     assert "Gateway media URL available for reference" not in enriched
-    assert "POST /api/uploads" in enriched
-    assert "Do not store the local cache path" in enriched
+    assert "Athabasca" not in enriched
+    assert "POST /api/uploads" not in enriched
+    assert "Do not store the local cache path" not in enriched
     assert "caption" in enriched

@@ -160,6 +160,13 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Mimic dictionary .get() behavior for backward compatibility.
+        Fixes Issue #973.
+        """
+        return getattr(self, key, default)
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""

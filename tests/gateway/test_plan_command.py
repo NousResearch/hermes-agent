@@ -83,7 +83,7 @@ description: Plan mode skill.
 # Plan
 
 Use the current conversation context when no explicit instruction is provided.
-Save plans under $HERMES_HOME/plans.
+Save plans under the active workspace's .hermes/plans directory.
 """
     )
 
@@ -96,7 +96,6 @@ class TestGatewayPlanCommand:
         runner = _make_runner()
         event = _make_event("/plan Add OAuth login")
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
         monkeypatch.setattr(
             "agent.model_metadata.get_model_context_length",
@@ -112,7 +111,9 @@ class TestGatewayPlanCommand:
         forwarded = runner._run_agent.call_args.kwargs["message"]
         assert "Plan mode skill" in forwarded
         assert "Add OAuth login" in forwarded
-        assert str(tmp_path / "plans") in forwarded
+        assert ".hermes/plans" in forwarded
+        assert str(tmp_path / "plans") not in forwarded
+        assert "active workspace/backend cwd" in forwarded
         assert "Runtime note:" in forwarded
 
     @pytest.mark.asyncio

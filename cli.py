@@ -3318,7 +3318,8 @@ class HermesCLI:
             user_instruction,
             task_id=self.session_id,
             runtime_note=(
-                f"Save the markdown plan with write_file to this exact path: {plan_path}"
+                "Save the markdown plan with write_file to this exact relative path "
+                f"inside the active workspace/backend cwd: {plan_path}"
             ),
         )
 

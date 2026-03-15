@@ -29,14 +29,13 @@ description: Plan mode skill.
 # Plan
 
 Use the current conversation context when no explicit instruction is provided.
-Save plans under $HERMES_HOME/plans.
+Save plans under the active workspace's .hermes/plans directory.
 """
     )
 
 
 class TestCLIPlanCommand:
     def test_plan_command_queues_plan_skill_message(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cli_obj = _make_cli()
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -49,11 +48,12 @@ class TestCLIPlanCommand:
         queued = cli_obj._pending_input.put.call_args[0][0]
         assert "Plan mode skill" in queued
         assert "Add OAuth login" in queued
-        assert str(tmp_path / "plans") in queued
+        assert ".hermes/plans" in queued
+        assert str(tmp_path / "plans") not in queued
+        assert "active workspace/backend cwd" in queued
         assert "Runtime note:" in queued
 
     def test_plan_without_args_uses_skill_context_guidance(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cli_obj = _make_cli()
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -63,4 +63,5 @@ class TestCLIPlanCommand:
 
         queued = cli_obj._pending_input.put.call_args[0][0]
         assert "current conversation context" in queued
-        assert "conversation-plan" in queued
+        assert ".hermes/plans/" in queued
+        assert "conversation-plan.md" in queued

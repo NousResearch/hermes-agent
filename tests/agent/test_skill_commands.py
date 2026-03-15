@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
@@ -277,32 +278,34 @@ Generate some audio.
 
 
 class TestPlanSkillHelpers:
-    def test_build_plan_path_uses_hermes_home_and_slugifies_request(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
+    def test_build_plan_path_uses_workspace_relative_dir_and_slugifies_request(self):
         path = build_plan_path(
             "Implement OAuth login + refresh tokens!",
             now=datetime(2026, 3, 15, 9, 30, 45),
         )
 
-        assert path == tmp_path / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
+        assert path == Path(".hermes") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
 
     def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "plan",
-                body="Save plans under $HERMES_HOME/plans and do not execute the work.",
+                body="Save plans under .hermes/plans in the active workspace and do not execute the work.",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message(
                 "/plan",
                 "Add a /plan command",
-                runtime_note="Save the markdown plan with write_file to /tmp/plans/plan.md",
+                runtime_note=(
+                    "Save the markdown plan with write_file to this exact relative path inside "
+                    "the active workspace/backend cwd: .hermes/plans/plan.md"
+                ),
             )
 
         assert msg is not None
-        assert "Save plans under $HERMES_HOME/plans" in msg
+        assert "Save plans under $HERMES_HOME/plans" not in msg
+        assert ".hermes/plans" in msg
         assert "Add a /plan command" in msg
-        assert "/tmp/plans/plan.md" in msg
+        assert ".hermes/plans/plan.md" in msg
         assert "Runtime note:" in msg

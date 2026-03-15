@@ -7,7 +7,6 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 
 import json
 import logging
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -24,15 +23,20 @@ def build_plan_path(
     *,
     now: datetime | None = None,
 ) -> Path:
-    """Return the default markdown path for a /plan invocation."""
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    """Return the default workspace-relative markdown path for a /plan invocation.
+
+    Relative paths are intentional: file tools are task/backend-aware and resolve
+    them against the active working directory for local, docker, ssh, modal,
+    daytona, and similar terminal backends. That keeps the plan with the active
+    workspace instead of the Hermes host's global home directory.
+    """
     slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
     if slug:
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return hermes_home / "plans" / f"{timestamp}-{slug}.md"
+    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:

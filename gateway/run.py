@@ -1161,7 +1161,8 @@ class GatewayRunner:
                     user_instruction,
                     task_id=_quick_key,
                     runtime_note=(
-                        f"Save the markdown plan with write_file to this exact path: {plan_path}"
+                        "Save the markdown plan with write_file to this exact relative path "
+                        f"inside the active workspace/backend cwd: {plan_path}"
                     ),
                 )
                 if not event.text:

@@ -77,7 +77,7 @@ def _handle_honcho_profile(args: dict, **kw) -> str:
             return json.dumps({"result": "No profile facts available yet. The user's profile builds over time through conversations."})
         return json.dumps({"result": card})
     except Exception as e:
-        logger.error("Error fetching Honcho peer card: %s", e)
+        logger.error("Error fetching Honcho peer card: %s", e, exc_info=True)
         return json.dumps({"error": f"Failed to fetch profile: {e}"})
 
 
@@ -122,7 +122,7 @@ def _handle_honcho_search(args: dict, **kw) -> str:
             return json.dumps({"result": "No relevant context found."})
         return json.dumps({"result": result})
     except Exception as e:
-        logger.error("Error searching Honcho context: %s", e)
+        logger.error("Error searching Honcho context: %s", e, exc_info=True)
         return json.dumps({"error": f"Failed to search context: {e}"})
 
 
@@ -165,7 +165,7 @@ def _handle_honcho_context(args: dict, **kw) -> str:
         result = _session_manager.dialectic_query(_session_key, query, peer=peer_target)
         return json.dumps({"result": result or "No result from Honcho."})
     except Exception as e:
-        logger.error("Error querying Honcho context: %s", e)
+        logger.error("Error querying Honcho context: %s", e, exc_info=True)
         return json.dumps({"error": f"Failed to query context: {e}"})
 
 
@@ -208,7 +208,7 @@ def _handle_honcho_conclude(args: dict, **kw) -> str:
             return json.dumps({"result": f"Conclusion saved: {conclusion}"})
         return json.dumps({"error": "Failed to save conclusion."})
     except Exception as e:
-        logger.error("Error creating Honcho conclusion: %s", e)
+        logger.error("Error creating Honcho conclusion: %s", e, exc_info=True)
         return json.dumps({"error": f"Failed to save conclusion: {e}"})
 
 

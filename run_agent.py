@@ -4207,7 +4207,12 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            try:
+                print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            except OSError:
+                # Handle cases where stdout is unavailable (e.g., headless Docker/systemd)
+                # to prevent the agent from crashing on I/O errors.
+                pass
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -4317,7 +4322,11 @@ class AIAgent:
             if self._interrupt_requested:
                 interrupted = True
                 if not self.quiet_mode:
-                    print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                    try:
+                        print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                    except OSError:
+                        # Prevent crash if stdout is closed or unavailable in headless mode
+                        pass
                 break
             
             api_call_count += 1
@@ -4828,21 +4837,26 @@ class AIAgent:
                         if new_token and new_token != self._anthropic_api_key:
                             self._anthropic_api_key = new_token
                             self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
-                            print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
+                            try:
+                                print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
+                            except OSError:
+                                pass
                             continue
                         # Credential refresh didn't help — show diagnostic info
-                        key = self._anthropic_api_key
-                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                        print(f"{self.log_prefix}🔐 Anthropic 401 — authentication failed.")
-                        print(f"{self.log_prefix}   Auth method: {auth_method}")
-                        print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
-                        print(f"{self.log_prefix}   Troubleshooting:")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.hermes/.env for Hermes-managed OAuth/setup tokens")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.hermes/.env for API keys or legacy token values")
-                        print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
-                        print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_API_KEY \"\"")
+                        try:
+                            print(f"{self.log_prefix}🔐 Anthropic 401 – authentication failed.")
+                            print(f"{self.log_prefix} Auth method: {auth_method}")
+                            print(f"{self.log_prefix} Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix} Token: (empty or short)")
+                            print(f"{self.log_prefix} Troubleshooting:")
+                            print(f"{self.log_prefix}    • Check ANTHROPIC_TOKEN in ~/.hermes/.env for Hermes-managed OAuth/setup tokens")
+                            print(f"{self.log_prefix}    • Check ANTHROPIC_API_KEY in ~/.hermes/.env for API keys or legacy token values")
+                            print(f"{self.log_prefix}    • For API keys: verify at https://console.anthropic.com/settings/keys")
+                            print(f"{self.log_prefix}    • For Claude Code: run 'claude /login' to refresh, then retry")
+                            print(f"{self.log_prefix}    • Clear stale keys: hermes config set ANTHROPIC_TOKEN \"\"")
+                            print(f"{self.log_prefix}    • Legacy cleanup: hermes config set ANTHROPIC_API_KEY \"\"")
+                        except OSError:
+                            # Fallback to logger since diagnostic info is important but stdout might be broken
+                            logger.error("Anthropic 401 authentication failed. Diagnostic info suppressed due to OSError.")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time

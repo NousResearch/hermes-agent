@@ -379,6 +379,15 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:telegram:dm:99"
 
+    def test_distinct_dm_chat_ids_get_distinct_session_keys(self):
+        """Different DM chats must not collapse into one shared session."""
+        first = SessionSource(platform=Platform.TELEGRAM, chat_id="99", chat_type="dm")
+        second = SessionSource(platform=Platform.TELEGRAM, chat_id="100", chat_type="dm")
+
+        assert build_session_key(first) == "agent:main:telegram:dm:99"
+        assert build_session_key(second) == "agent:main:telegram:dm:100"
+        assert build_session_key(first) != build_session_key(second)
+
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
         source = SessionSource(

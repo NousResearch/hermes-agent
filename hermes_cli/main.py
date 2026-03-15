@@ -499,6 +499,7 @@ def cmd_chat(args):
         "model": args.model,
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
+        "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
@@ -510,7 +511,11 @@ def cmd_chat(args):
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
-    cli_main(**kwargs)
+    try:
+        cli_main(**kwargs)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def cmd_gateway(args):
@@ -1368,6 +1373,12 @@ _PROVIDER_MODELS = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "moonshot": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
     "minimax": [
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
@@ -1449,8 +1460,8 @@ def _model_flow_kimi(config, current_model=""):
             "kimi-k2-thinking-turbo",
         ]
     else:
-        # Legacy Moonshot models
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        # Legacy Moonshot models (excludes Coding Plan-only models)
+        model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
@@ -1586,8 +1597,30 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_adapter import run_oauth_setup_token
-    from hermes_cli.config import save_anthropic_oauth_token
+    from agent.anthropic_adapter import (
+        run_oauth_setup_token,
+        read_claude_code_credentials,
+        is_claude_code_token_valid,
+    )
+    from hermes_cli.config import (
+        save_anthropic_oauth_token,
+        use_anthropic_claude_code_credentials,
+    )
+
+    def _activate_claude_code_credentials_if_available() -> bool:
+        try:
+            creds = read_claude_code_credentials()
+        except Exception:
+            creds = None
+        if creds and (
+            is_claude_code_token_valid(creds)
+            or bool(creds.get("refreshToken"))
+        ):
+            use_anthropic_claude_code_credentials(save_fn=save_env_value)
+            print("  ✓ Claude Code credentials linked.")
+            print("    Hermes will use Claude's credential store directly instead of copying a setup-token into ~/.hermes/.env.")
+            return True
+        return False
 
     try:
         print()
@@ -1596,6 +1629,8 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         token = run_oauth_setup_token()
         if token:
+            if _activate_claude_code_credentials_if_available():
+                return True
             save_anthropic_oauth_token(token, save_fn=save_env_value)
             print("  ✓ OAuth credentials saved.")
             return True
@@ -2276,6 +2311,7 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
@@ -2315,6 +2351,12 @@ For more help on a command:
         help="Run in an isolated git worktree (for parallel agents)"
     )
     parser.add_argument(
+        "--skills", "-s",
+        action="append",
+        default=None,
+        help="Preload one or more skills for the session (repeat flag or comma-separate)"
+    )
+    parser.add_argument(
         "--yolo",
         action="store_true",
         default=False,
@@ -2348,6 +2390,12 @@ For more help on a command:
     chat_parser.add_argument(
         "-t", "--toolsets",
         help="Comma-separated toolsets to enable"
+    )
+    chat_parser.add_argument(
+        "-s", "--skills",
+        action="append",
+        default=None,
+        help="Preload one or more skills for the session (repeat flag or comma-separate)"
     )
     chat_parser.add_argument(
         "--provider",
@@ -2597,13 +2645,48 @@ For more help on a command:
     # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
-    
+
+    # cron create/add
+    cron_create = cron_subparsers.add_parser("create", aliases=["add"], help="Create a scheduled job")
+    cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")
+    cron_create.add_argument("prompt", nargs="?", help="Optional self-contained prompt or task instruction")
+    cron_create.add_argument("--name", help="Optional human-friendly job name")
+    cron_create.add_argument("--deliver", help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id")
+    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    cron_create.add_argument("--skill", dest="skills", action="append", help="Attach a skill. Repeat to add multiple skills.")
+
+    # cron edit
+    cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
+    cron_edit.add_argument("job_id", help="Job ID to edit")
+    cron_edit.add_argument("--schedule", help="New schedule")
+    cron_edit.add_argument("--prompt", help="New prompt/task instruction")
+    cron_edit.add_argument("--name", help="New job name")
+    cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument("--skill", dest="skills", action="append", help="Replace the job's skills with this set. Repeat to attach multiple skills.")
+    cron_edit.add_argument("--add-skill", dest="add_skills", action="append", help="Append a skill without replacing the existing list. Repeatable.")
+    cron_edit.add_argument("--remove-skill", dest="remove_skills", action="append", help="Remove a specific attached skill. Repeatable.")
+    cron_edit.add_argument("--clear-skills", action="store_true", help="Remove all attached skills from the job")
+
+    # lifecycle actions
+    cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
+    cron_pause.add_argument("job_id", help="Job ID to pause")
+
+    cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
+    cron_resume.add_argument("job_id", help="Job ID to resume")
+
+    cron_run = cron_subparsers.add_parser("run", help="Run a job on the next scheduler tick")
+    cron_run.add_argument("job_id", help="Job ID to trigger")
+
+    cron_remove = cron_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove a scheduled job")
+    cron_remove.add_argument("job_id", help="Job ID to remove")
+
     # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
-    
+
     # cron tick (mostly for debugging)
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
-    
+
     cron_parser.set_defaults(func=cmd_cron)
     
     # =========================================================================

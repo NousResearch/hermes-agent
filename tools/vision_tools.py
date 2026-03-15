@@ -377,16 +377,11 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """Check if an auxiliary vision model is available."""
+    """Check if the configured runtime vision path can resolve a client."""
     try:
-        from agent.auxiliary_client import resolve_provider_client
-        client, _ = resolve_provider_client("openrouter")
-        if client is not None:
-            return True
-        client, _ = resolve_provider_client("nous")
-        if client is not None:
-            return True
-        client, _ = resolve_provider_client("custom")
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        _provider, client, _model = resolve_vision_provider_client()
         return client is not None
     except Exception:
         return False

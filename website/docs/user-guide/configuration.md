@@ -753,6 +753,7 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  background_process_notifications: all  # all | result | error | off (gateway only)
 ```
 
 | Mode | What you see |

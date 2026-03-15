@@ -181,6 +181,63 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+## Background Sessions
+
+Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
+
+```
+/background Check all servers in the cluster and report any that are down
+```
+
+Hermes confirms immediately:
+
+```
+🔄 Background task started: "Check all servers in the cluster..."
+   Task ID: bg_143022_a1b2c3
+```
+
+### How It Works
+
+Each `/background` prompt spawns a **separate agent instance** that runs asynchronously:
+
+- **Isolated session** — the background agent has its own session with its own conversation history. It has no knowledge of your current chat context and receives only the prompt you provide.
+- **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
+- **Non-blocking** — your main chat stays fully interactive. Send messages, run other commands, or start more background tasks while it works.
+- **Result delivery** — when the task finishes, the result is sent back to the **same chat or channel** where you issued the command, prefixed with "✅ Background task complete". If it fails, you'll see "❌ Background task failed" with the error.
+
+### Background Process Notifications
+
+When the agent running a background session uses `terminal(background=true)` to start long-running processes (servers, builds, etc.), the gateway can push status updates to your chat. Control this with `display.background_process_notifications` in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  background_process_notifications: all    # all | result | error | off
+```
+
+| Mode | What you receive |
+|------|-----------------|
+| `all` | Running-output updates **and** the final completion message (default) |
+| `result` | Only the final completion message (regardless of exit code) |
+| `error` | Only the final message when the exit code is non-zero |
+| `off` | No process watcher messages at all |
+
+You can also set this via environment variable:
+
+```bash
+HERMES_BACKGROUND_NOTIFICATIONS=result
+```
+
+### Use Cases
+
+- **Server monitoring** — "/background Check the health of all services and alert me if anything is down"
+- **Long builds** — "/background Build and deploy the staging environment" while you continue chatting
+- **Research tasks** — "/background Research competitor pricing and summarize in a table"
+- **File operations** — "/background Organize the photos in ~/Downloads by date into folders"
+
+:::tip
+Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.
+:::
+
 ## Service Management
 
 ### Linux (systemd)

@@ -164,6 +164,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `900`) |
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
+| `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
 
 ## Session Settings
 

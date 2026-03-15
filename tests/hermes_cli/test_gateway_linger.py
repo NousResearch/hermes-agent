@@ -96,7 +96,7 @@ class TestEnsureLingerEnabled:
 def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
 
     calls = []
 
@@ -117,4 +117,4 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
         ["systemctl", "--user", "enable", gateway.SERVICE_NAME],
     ]
     assert helper_calls == [True]
-    assert "Service installed and enabled" in out
+    assert "User service installed and enabled" in out

@@ -20,6 +20,8 @@ Primary implementation:
 - `hermes_cli/auth.py`
 - `agent/auxiliary_client.py`
 
+If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:

@@ -124,3 +124,24 @@ def get_mood_weights() -> Dict[str, float]:
 
 def get_decade_weights() -> Dict[int, float]:
     return load().get("decade_weights", {})
+
+
+def get_recent_stations() -> List[Dict[str, Any]]:
+    """Get recently listened stations (most recent first, max 10)."""
+    return load().get("recent_stations", [])
+
+
+def add_recent_station(name: str, url: str, source: str = "stream") -> None:
+    """Add a station to recently listened. Deduplicates by URL."""
+    cfg = load()
+    recent = cfg.get("recent_stations", [])
+
+    # Remove existing entry with same URL
+    recent = [s for s in recent if s.get("url") != url]
+
+    # Add to front
+    recent.insert(0, {"name": name, "url": url, "source": source})
+
+    # Keep max 10
+    cfg["recent_stations"] = recent[:10]
+    save(cfg)

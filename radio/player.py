@@ -38,7 +38,7 @@ class NowPlaying:
     mood: str = ""
     position: Optional[float] = None
     duration: Optional[float] = None
-    volume: float = 80.0
+    volume: float = 55.0
     paused: bool = False
     station_name: str = ""
     # History for mic break context
@@ -59,7 +59,7 @@ class HermesRadio:
         self._mic_break_active = False
         self._auto_mic_breaks = True
         self._mic_break_persona = "encyclopedic"
-        self._duck_volume = 20
+        self._duck_volume = 15
         self._duck_ramp_ms = 500
         self._tracks_since_break = 0
         self._break_every_n = 3
@@ -79,7 +79,7 @@ class HermesRadio:
         # State poll task (created in start())
         self._state_poll_task = None
         self._muted = False
-        self._pre_mute_volume = 80.0
+        self._pre_mute_volume = 55.0
 
     @classmethod
     def get(cls) -> "HermesRadio":
@@ -182,6 +182,8 @@ class HermesRadio:
         try:
             from radio.history import log_station
             log_station(station_name=station_name, url=url, source="stream")
+            from radio.config import add_recent_station
+            add_recent_station(station_name, url, source="stream")
         except Exception:
             pass
         self._notify_state_change()
@@ -734,7 +736,7 @@ Source: {now.source_mode}"""
         mic_cfg = radio_cfg.get("mic_breaks", {})
         crate_cfg = radio_cfg.get("crate", {})
 
-        self._now.volume = radio_cfg.get("default_volume", 80)
+        self._now.volume = radio_cfg.get("default_volume", 55)
         self._auto_mic_breaks = mic_cfg.get("enabled", True)
         self._mic_break_persona = mic_cfg.get("persona", "encyclopedic")
         self._duck_volume = mic_cfg.get("duck_volume", 20)

@@ -237,6 +237,22 @@ def build_menu_items(
         for name, preset in presets.items():
             items.append(MenuItem(label=name, sublabel=preset.get("source", ""), action="preset", data={"name": name, **preset}))
 
+    # Recently listened
+    try:
+        from radio.config import get_recent_stations
+        recent = get_recent_stations()
+        if recent:
+            items.append(MenuItem(label="RECENT", is_header=True))
+            for station in recent:
+                items.append(MenuItem(
+                    label=station.get("name", "?"),
+                    sublabel=station.get("source", "stream"),
+                    action="stream",
+                    data={"url": station.get("url", ""), "name": station.get("name", "")},
+                ))
+    except Exception:
+        pass
+
     # Search
     items.append(MenuItem(label="SEARCH", is_header=True))
     items.append(MenuItem(label="Search Radio Browser", sublabel="45k+ stations", action="search_rb"))

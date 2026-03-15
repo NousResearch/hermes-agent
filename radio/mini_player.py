@@ -288,29 +288,38 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     elif now.source_mode == "stream" and now.station_name:
         fragments.append(("class:radio-station", f"  [{now.station_name}]"))
 
-    # Position / Duration (for finite tracks)
-    if now.duration and now.duration > 0 and now.position is not None:
+    # Position / Duration (only for finite tracks, not streams)
+    is_stream = now.source_mode == "stream"
+    if not is_stream and now.duration and now.duration > 0 and now.position is not None:
         pos_fmt = _format_time(now.position)
         dur_fmt = _format_time(now.duration)
         fragments.append(("class:radio-time", f"  {pos_fmt}/{dur_fmt}"))
 
-    # Volume
-    fragments.append(("class:radio-vol", f"  vol {int(now.volume)}"))
+    # Volume with speaker icon
+    vol = int(now.volume)
+    if vol <= 0:
+        vol_icon = "\u2507"  # muted
+    elif vol < 33:
+        vol_icon = "\u2581"  # low
+    elif vol < 66:
+        vol_icon = "\u2584"  # mid
+    else:
+        vol_icon = "\u2588"  # high
+    fragments.append(("class:radio-vol", f"  {vol_icon} {vol}"))
 
     # Check if radio control mode is active
     control_mode = False
     try:
-        # Import here to avoid circular dependency
         import radio.mini_player as _self_mod
         control_mode = getattr(_self_mod, '_control_mode_active', False)
     except Exception:
         pass
 
-    # Second line: control hints (when in control mode) or progress bar
+    # Second line: control hints, progress bar (finite tracks only), or nothing (streams)
     fragments.append(("", "\n"))
     if control_mode:
         fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  -/+ vol  Tab expand  Ctrl+O/q exit"))
-    elif now.duration and now.duration > 0 and now.position is not None:
+    elif not is_stream and now.duration and now.duration > 0 and now.position is not None:
         bar_width = 52
         progress = max(0.0, min(1.0, now.position / now.duration))
         filled = int(progress * bar_width)
@@ -318,6 +327,9 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress", "\u2501" * filled + "\u2578"))
         fragments.append(("class:radio-progress-bg", "\u2500" * max(0, remaining - 1)))
+    elif is_stream:
+        # Stream mode: show LIVE indicator instead of progress bar
+        fragments.append(("class:radio-station", "  LIVE"))
     else:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress-bg", "\u2500" * 52))

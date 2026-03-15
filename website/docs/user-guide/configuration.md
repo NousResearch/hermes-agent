@@ -695,6 +695,8 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
 ```
 
+This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
+
 ## Display Settings
 
 ```yaml
@@ -719,10 +721,43 @@ display:
 
 ```yaml
 stt:
-  provider: "openai"           # STT provider
+  provider: "local"            # "local" | "groq" | "openai"
+  local:
+    model: "base"              # tiny, base, small, medium, large-v3
+  openai:
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+Provider behavior:
+
+- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
+- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
+- `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+
+If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
+
+Groq and OpenAI model overrides are environment-driven:
+
+```bash
+STT_GROQ_MODEL=whisper-large-v3-turbo
+STT_OPENAI_MODEL=whisper-1
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+STT_OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+## Voice Mode (CLI)
+
+```yaml
+voice:
+  record_key: "ctrl+b"         # Push-to-talk key inside the CLI
+  max_recording_seconds: 120    # Hard stop for long recordings
+  auto_tts: false               # Enable spoken replies automatically when /voice on
+  silence_threshold: 200        # RMS threshold for speech detection
+  silence_duration: 3.0         # Seconds of silence before auto-stop
+```
+
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
 ## Quick Commands
 

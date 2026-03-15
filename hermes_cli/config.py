@@ -150,30 +150,44 @@ DEFAULT_CONFIG = {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
+            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
         },
         "web_extract": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "compression": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "session_search": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "mcp": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
+            "base_url": "",
+            "api_key": "",
         },
     },
     
@@ -205,7 +219,8 @@ DEFAULT_CONFIG = {
     },
     
     "stt": {
-        "provider": "local",  # "local" (free, faster-whisper) | "openai" (Whisper API)
+        "enabled": True,
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
         },
@@ -243,6 +258,8 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
+        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -284,7 +301,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 7,
+    "_config_version": 8,
 }
 
 # =============================================================================

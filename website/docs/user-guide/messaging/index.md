@@ -13,27 +13,27 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 ## Architecture
 
 ```text
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              Hermes Gateway                                   │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐       │
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │       │
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│       │
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘       │
-│       │             │           │           │         │         │        │           │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘           │
-│                                     │                                                │
-│                            ┌────────▼────────┐                                       │
-│                            │  Session Store  │                                       │
-│                            │  (per-chat)     │                                       │
-│                            └────────┬────────┘                                       │
-│                                     │                                                │
-│                            ┌────────▼────────┐                                       │
-│                            │   AIAgent       │                                       │
-│                            │   (run_agent)   │                                       │
-│                            └─────────────────┘                                       │
-│                                                                                      │
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                                  Hermes Gateway                                       │
+├───────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                       │
+│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐           │
+│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │           │
+│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│           │
+│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘           │
+│       │             │           │           │         │         │        │            │
+│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘            │
+│                                     │                                                 │
+│                            ┌────────▼────────┐                                        │
+│                            │  Session Store  │                                        │
+│                            │  (per-chat)     │                                        │
+│                            └────────┬────────┘                                        │
+│                                     │                                                 │
+│                            ┌────────▼────────┐                                        │
+│                            │   AIAgent       │                                        │
+│                            │   (run_agent)   │                                        │
+│                            └─────────────────┘                                        │
+│                                                                                       │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -54,10 +54,12 @@ This walks you through configuring each platform with arrow-key selection, shows
 ```bash
 hermes gateway              # Run in foreground
 hermes gateway setup        # Configure messaging platforms interactively
-hermes gateway install      # Install as systemd service (Linux) / launchd (macOS)
-hermes gateway start        # Start the service
-hermes gateway stop         # Stop the service
-hermes gateway status       # Check service status
+hermes gateway install      # Install as a user service (Linux) / launchd service (macOS)
+sudo hermes gateway install --system   # Linux only: install a boot-time system service
+hermes gateway start        # Start the default service
+hermes gateway stop         # Stop the default service
+hermes gateway status       # Check default service status
+hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
 ## Chat Commands (Inside Messaging)
@@ -188,7 +190,17 @@ journalctl --user -u hermes-gateway -f
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
+
+# Or install a boot-time system service that still runs as your user
+sudo hermes gateway install --system
+sudo hermes gateway start --system
+sudo hermes gateway status --system
+journalctl -u hermes-gateway -f
 ```
+
+Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
+
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 ### macOS (launchd)
 

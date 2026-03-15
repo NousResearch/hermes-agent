@@ -10,8 +10,8 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda: unit_path)
-        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
         calls = []
 
@@ -33,8 +33,8 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda: unit_path)
-        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
         calls = []
 
@@ -60,12 +60,12 @@ class TestGatewayStopCleanup:
 
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda: unit_path)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
         service_calls = []
         kill_calls = []
 
-        monkeypatch.setattr(gateway_cli, "systemd_stop", lambda: service_calls.append("stop"))
+        monkeypatch.setattr(gateway_cli, "systemd_stop", lambda system=False: service_calls.append("stop"))
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
@@ -76,3 +76,66 @@ class TestGatewayStopCleanup:
 
         assert service_calls == ["stop"]
         assert kill_calls == [False]
+
+
+class TestGatewayServiceDetection:
+    def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+
+        def fake_run(cmd, capture_output=True, text=True, **kwargs):
+            if cmd == ["systemctl", "--user", "is-active", gateway_cli.SERVICE_NAME]:
+                return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
+            if cmd == ["systemctl", "is-active", gateway_cli.SERVICE_NAME]:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_service_running() is True
+
+
+class TestGatewaySystemServiceRouting:
+    def test_gateway_install_passes_system_flags(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_install",
+            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
+        )
+
+        assert calls == [(True, True, "alice")]
+
+    def test_gateway_status_prefers_system_service_when_only_system_unit_exists(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: False)
+        system_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+
+        calls = []
+        monkeypatch.setattr(gateway_cli, "systemd_status", lambda deep=False, system=False: calls.append((deep, system)))
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        assert calls == [(False, False)]

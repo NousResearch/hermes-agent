@@ -41,12 +41,13 @@ If you are new to the codebase, read in this order:
 2. [Agent Loop Internals](./agent-loop.md)
 3. [Prompt Assembly](./prompt-assembly.md)
 4. [Provider Runtime Resolution](./provider-runtime.md)
-5. [Tools Runtime](./tools-runtime.md)
-6. [Session Storage](./session-storage.md)
-7. [Gateway Internals](./gateway-internals.md)
-8. [Context Compression & Prompt Caching](./context-compression-and-caching.md)
-9. [ACP Internals](./acp-internals.md)
-10. [Environments, Benchmarks & Data Generation](./environments.md)
+5. [Adding Providers](./adding-providers.md)
+6. [Tools Runtime](./tools-runtime.md)
+7. [Session Storage](./session-storage.md)
+8. [Gateway Internals](./gateway-internals.md)
+9. [Context Compression & Prompt Caching](./context-compression-and-caching.md)
+10. [ACP Internals](./acp-internals.md)
+11. [Environments, Benchmarks & Data Generation](./environments.md)
 
 ## Major subsystems
 

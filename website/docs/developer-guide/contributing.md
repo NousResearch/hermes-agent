@@ -20,6 +20,12 @@ We value contributions in this order:
 6. **New tools** — rarely needed; most capabilities should be skills
 7. **Documentation** — fixes, clarifications, new examples
 
+## Common contribution paths
+
+- Building a new tool? Start with [Adding Tools](./adding-tools.md)
+- Building a new skill? Start with [Creating Skills](./creating-skills.md)
+- Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
+
 ## Development Setup
 
 ### Prerequisites

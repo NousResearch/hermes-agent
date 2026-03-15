@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -174,6 +175,43 @@ def _deliver_result(job: dict, content: str) -> None:
             logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
+def _build_job_prompt(job: dict) -> str:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+    prompt = job.get("prompt", "")
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return prompt
+
+    from tools.skills_tool import skill_view
+
+    parts = []
+    for skill_name in skill_names:
+        loaded = json.loads(skill_view(skill_name))
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            raise RuntimeError(error)
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend(
+            [
+                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "",
+                content,
+            ]
+        )
+
+    if prompt:
+        parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
+    return "\n".join(parts)
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -194,10 +232,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = job["prompt"]
+    prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
-    delivery_target = _resolve_delivery_target(job)
-    
+
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -207,11 +244,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-    if delivery_target:
-        os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
-        os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
-        if delivery_target.get("thread_id") is not None:
-            os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -221,6 +253,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+
+        delivery_target = _resolve_delivery_target(job)
+        if delivery_target:
+            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            if delivery_target.get("thread_id") is not None:
+                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
         model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
@@ -301,6 +340,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            disabled_toolsets=["cronjob"],
             quiet_mode=True,
             platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",

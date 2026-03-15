@@ -2140,20 +2140,22 @@ def setup_gateway(config: dict):
         print_info("      • Create an App-Level Token with 'connections:write' scope")
         print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
         print_info("      Required scopes: chat:write, app_mentions:read,")
-        print_info("      channels:history, channels:read, groups:history,")
-        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("      channels:history, channels:read, im:history,")
+        print_info("      im:read, im:write, users:read, files:write")
+        print_info("      Optional for private channels: groups:history")
         print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-        print_info("      Required events: message.im, message.channels,")
-        print_info("      message.groups, app_mention")
-        print_warning("   ⚠ Without message.channels/message.groups events,")
-        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("      Required events: message.im, message.channels, app_mention")
+        print_info("      Optional for private channels: message.groups")
+        print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
+        print_warning("     not public channels.")
         print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. Reinstall the app after any scope or event changes")
         print_info(
-            "   6. After installing, invite the bot to channels: /invite @YourBot"
+            "   7. After installing, invite the bot to channels: /invite @YourBot"
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack"
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/"
         )
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
@@ -2171,14 +2173,17 @@ def setup_gateway(config: dict):
             )
             print()
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
             else:
+                print_warning(
+                    "⚠️  No Slack allowlist set - unpaired users will be denied by default."
+                )
                 print_info(
-                    "⚠️  No allowlist set - anyone in your workspace can use the bot!"
+                    "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
     # ── WhatsApp ──
@@ -2238,7 +2243,9 @@ def setup_gateway(config: dict):
         from hermes_cli.gateway import (
             _is_service_installed,
             _is_service_running,
-            systemd_install,
+            has_conflicting_systemd_units,
+            install_linux_gateway_from_setup,
+            print_systemd_scope_conflict_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
@@ -2250,6 +2257,10 @@ def setup_gateway(config: dict):
         service_running = _is_service_running()
 
         print()
+        if _is_linux and has_conflicting_systemd_units():
+            print_systemd_scope_conflict_warning()
+            print()
+
         if service_running:
             if prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
@@ -2275,15 +2286,18 @@ def setup_gateway(config: dict):
                 True,
             ):
                 try:
+                    installed_scope = None
+                    did_install = False
                     if _is_linux:
-                        systemd_install(force=False)
+                        installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                     else:
                         launchd_install(force=False)
+                        did_install = True
                     print()
-                    if prompt_yes_no("  Start the service now?", True):
+                    if did_install and prompt_yes_no("  Start the service now?", True):
                         try:
                             if _is_linux:
-                                systemd_start()
+                                systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
                         except Exception as e:
@@ -2293,6 +2307,8 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
+                if _is_linux:
+                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
             print_info("Start the gateway to bring your bots online:")

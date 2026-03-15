@@ -31,7 +31,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
-| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
+| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for OpenAI speech-to-text and text-to-speech providers |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`) |
 
 ## Provider Auth (OAuth)
@@ -59,7 +59,12 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
-| `ELEVENLABS_API_KEY` | Premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
+| `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
+| `ELEVENLABS_API_KEY` | ElevenLabs premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
+| `STT_GROQ_MODEL` | Override the Groq STT model (default: `whisper-large-v3-turbo`) |
+| `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
+| `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
+| `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
@@ -174,6 +179,23 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `CONTEXT_COMPRESSION_ENABLED` | Enable auto-compression (default: `true`) |
 | `CONTEXT_COMPRESSION_THRESHOLD` | Trigger at this % of limit (default: 0.50) |
 | `CONTEXT_COMPRESSION_MODEL` | Model for summaries |
+
+## Auxiliary Task Overrides
+
+| Variable | Description |
+|----------|-------------|
+| `AUXILIARY_VISION_PROVIDER` | Override provider for vision tasks |
+| `AUXILIARY_VISION_MODEL` | Override model for vision tasks |
+| `AUXILIARY_VISION_BASE_URL` | Direct OpenAI-compatible endpoint for vision tasks |
+| `AUXILIARY_VISION_API_KEY` | API key paired with `AUXILIARY_VISION_BASE_URL` |
+| `AUXILIARY_WEB_EXTRACT_PROVIDER` | Override provider for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_MODEL` | Override model for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_BASE_URL` | Direct OpenAI-compatible endpoint for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_API_KEY` | API key paired with `AUXILIARY_WEB_EXTRACT_BASE_URL` |
+| `CONTEXT_COMPRESSION_PROVIDER` | Override provider for context compression summaries |
+| `CONTEXT_COMPRESSION_MODEL` | Override model for context compression summaries |
+
+For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 
 ## Provider Routing (config.yaml only)
 

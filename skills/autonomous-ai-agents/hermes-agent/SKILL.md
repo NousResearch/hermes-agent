@@ -155,7 +155,7 @@ terminal(command="hermes chat -q 'Summarize this codebase' --model google/gemini
 
 ## Gateway Cron Integration
 
-For scheduled autonomous tasks, use the `schedule_cronjob` tool instead of spawning processes — cron jobs handle delivery, retry, and persistence automatically.
+For scheduled autonomous tasks, use the unified `cronjob` tool instead of spawning processes — cron jobs handle delivery, retry, and persistence automatically.
 
 ## Key Differences Between Modes
 

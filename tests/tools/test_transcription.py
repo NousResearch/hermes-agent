@@ -59,6 +59,10 @@ class TestGetProvider:
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "local"
 
+    def test_disabled_config_returns_none(self):
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"enabled": False, "provider": "openai"}) == "none"
+
 
 # ---------------------------------------------------------------------------
 # File validation
@@ -216,6 +220,18 @@ class TestTranscribeAudio:
 
         assert result["success"] is False
         assert "No STT provider" in result["error"]
+
+    def test_disabled_config_returns_disabled_error(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"enabled": False}), \
+             patch("tools.transcription_tools._get_provider", return_value="none"):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
 
     def test_invalid_file_returns_error(self):
         from tools.transcription_tools import transcribe_audio

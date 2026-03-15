@@ -98,3 +98,27 @@ async def test_polling_conflict_stops_polling_and_notifies_handler(monkeypatch):
     assert adapter.has_fatal_error is True
     updater.stop.assert_awaited()
     fatal_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    updater = SimpleNamespace(running=False, stop=AsyncMock())
+    app = SimpleNamespace(
+        updater=updater,
+        running=False,
+        stop=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    adapter._app = app
+
+    warning = MagicMock()
+    monkeypatch.setattr("gateway.platforms.telegram.logger.warning", warning)
+
+    await adapter.disconnect()
+
+    updater.stop.assert_not_awaited()
+    app.stop.assert_not_awaited()
+    app.shutdown.assert_awaited_once()
+    warning.assert_not_called()

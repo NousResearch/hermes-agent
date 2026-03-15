@@ -129,6 +129,25 @@ Chat with Hermes from your phone or other surfaces via Telegram, Discord, Slack,
 hermes gateway setup    # Interactive platform configuration
 ```
 
+### Add voice mode
+
+Want microphone input in the CLI or spoken replies in messaging?
+
+```bash
+pip install hermes-agent[voice]
+
+# Optional but recommended for free local speech-to-text
+pip install faster-whisper
+```
+
+Then start Hermes and enable it inside the CLI:
+
+```text
+/voice on
+```
+
+Press `Ctrl+B` to record, or use `/voice tts` to have Hermes speak its replies. See [Voice Mode](../user-guide/features/voice-mode.md) for the full setup across CLI, Telegram, Discord, and Discord voice channels.
+
 ### Schedule automated tasks
 
 ```

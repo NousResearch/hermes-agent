@@ -645,14 +645,11 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
 
     Args:
         result: Scan result from scan_skill()
-        force: If True, override blocks for caution verdicts (never overrides dangerous)
+        force: If True, override blocked policy decisions for this scan result
 
     Returns:
         (allowed, reason) tuple
     """
-    if result.verdict == "dangerous":
-        return False, f"Scan verdict is DANGEROUS ({len(result.findings)} findings). Blocked."
-
     policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])
     vi = VERDICT_INDEX.get(result.verdict, 2)
     decision = policy[vi]
@@ -661,7 +658,10 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
 
     if force:
-        return True, f"Force-installed despite {result.verdict} verdict ({len(result.findings)} findings)"
+        return True, (
+            f"Force-installed despite blocked {result.verdict} verdict "
+            f"({len(result.findings)} findings)"
+        )
 
     return False, (
         f"Blocked ({result.trust_level} source + {result.verdict} verdict, "

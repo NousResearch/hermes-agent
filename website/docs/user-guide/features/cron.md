@@ -194,6 +194,8 @@ The agent's final response is automatically delivered. You do not need to call `
 
 ## Schedule formats
 
+The agent's final response is automatically delivered — you do **not** need to include `send_message` in the cron prompt for that same destination. If a cron run calls `send_message` to the exact target the scheduler will already deliver to, Hermes skips that duplicate send and tells the model to put the user-facing content in the final response instead. Use `send_message` only for additional or different targets.
+
 ### Relative delays (one-shot)
 
 ```text

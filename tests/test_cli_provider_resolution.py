@@ -186,6 +186,11 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    # Ensure local user config does not leak a model into the test
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "",
+        "base_url": "https://openrouter.ai/api/v1",
+    })
 
     def _runtime_resolve(**kwargs):
         return {
@@ -240,6 +245,11 @@ def test_codex_provider_uses_config_model(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    # Prevent live API call from overriding the config model
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
 
     shell = cli.HermesCLI(compact=True, max_turns=1)
 

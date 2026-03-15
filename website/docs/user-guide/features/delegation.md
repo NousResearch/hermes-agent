@@ -121,8 +121,8 @@ delegate_task(
 
 When you provide a `tasks` array, subagents run in **parallel** using a thread pool:
 
-- **Maximum concurrency:** 3 tasks (the `tasks` array is truncated to 3 if longer)
-- **Thread pool:** Uses `ThreadPoolExecutor` with `MAX_CONCURRENT_CHILDREN = 3` workers
+- **Maximum concurrency:** Configurable via `delegation.max_concurrent_children` (default: 3). The `tasks` array is truncated to this limit if longer
+- **Thread pool:** Uses `ThreadPoolExecutor` with `max_concurrent_children` workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
 - **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
@@ -143,6 +143,68 @@ delegate_task(
 ```
 
 If omitted, subagents use the same model as the parent.
+
+### Per-Task Overrides (Batch Mode)
+
+In batch mode, each task can specify its own `model`, `provider`, `terminal_backend`, and `max_iterations`:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Survey recent papers on topic X",
+        "toolsets": ["web"],
+        "model": "google/gemini-flash-2.0",       # Fast model for research
+        "provider": "openrouter",
+        "max_iterations": 30                       # Independent budget
+    },
+    {
+        "goal": "Implement the algorithm from the paper",
+        "toolsets": ["terminal", "file"],
+        "model": "anthropic/claude-sonnet-4",      # Strong coding model
+        "terminal_backend": "modal",               # Run on remote GPU
+        "max_iterations": 80                       # More budget for complex work
+    }
+])
+```
+
+Available `terminal_backend` values: `local`, `docker`, `modal`, `ssh`, `singularity`, `daytona`.
+
+When `max_iterations` is set on a task, the child gets its own independent iteration budget instead of sharing the parent's. This prevents starvation where one slow child exhausts the shared budget before siblings finish. If omitted, the child shares the parent's budget (original behavior).
+
+#### SSH: Routing Tasks to Different Remote Machines
+
+When using `terminal_backend: "ssh"`, each task can specify its own SSH connection details. This allows routing different tasks to different remote machines:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Run training on the GPU server",
+        "terminal_backend": "ssh",
+        "ssh_host": "gpu-server.lab.internal",
+        "ssh_user": "researcher",
+        "ssh_key": "~/.ssh/gpu_key"
+    },
+    {
+        "goal": "Run data preprocessing on the CPU cluster",
+        "terminal_backend": "ssh",
+        "ssh_host": "cpu-cluster.lab.internal",
+        "ssh_user": "researcher",
+        "ssh_key": "~/.ssh/cluster_key"
+    }
+])
+```
+
+If SSH fields are omitted, the task falls back to the global `TERMINAL_SSH_HOST` / `TERMINAL_SSH_USER` / `TERMINAL_SSH_KEY` environment variables.
+
+### Configurable Limits
+
+Delegation depth and concurrency are configurable in `config.yaml`:
+
+```yaml
+delegation:
+  max_concurrent_children: 5   # Default: 3
+  max_depth: 3                 # Default: 2 (parent -> child only)
+```
 
 ## Toolset Selection Tips
 

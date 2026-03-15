@@ -37,10 +37,29 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
 
-MAX_CONCURRENT_CHILDREN = 3
-MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_DEFAULT_MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _get_delegation_limits() -> tuple:
+    """Return (max_concurrent_children, max_depth) from config, with defaults."""
+    try:
+        from cli import CLI_CONFIG
+        cfg = CLI_CONFIG.get("delegation", {})
+    except Exception:
+        cfg = {}
+    if not cfg:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config().get("delegation", {})
+        except Exception:
+            cfg = {}
+    return (
+        cfg.get("max_concurrent_children", _DEFAULT_MAX_CONCURRENT_CHILDREN),
+        cfg.get("max_depth", _DEFAULT_MAX_DEPTH),
+    )
 
 
 def check_delegate_requirements() -> bool:
@@ -171,6 +190,10 @@ def _run_single_child(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    # Per-task iteration budget (None = share parent's budget)
+    override_iteration_budget=None,
+    # Explicit task_id so per-task env overrides match run_conversation's key
+    task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -205,9 +228,10 @@ def _run_single_child(
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
-        # Share the parent's iteration budget so subagent tool calls
-        # count toward the session-wide limit.
-        shared_budget = getattr(parent_agent, "iteration_budget", None)
+        # Iteration budget: use per-task budget if provided, else share
+        # the parent's budget so subagent tool calls count toward the
+        # session-wide limit.
+        shared_budget = override_iteration_budget or getattr(parent_agent, "iteration_budget", None)
 
         # Resolve effective credentials: config override > parent inherit
         effective_model = model or parent_agent.model
@@ -253,7 +277,7 @@ def _run_single_child(
         # Run with stdout/stderr suppressed to prevent interleaved output
         devnull = io.StringIO()
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            result = child.run_conversation(user_message=goal)
+            result = child.run_conversation(user_message=goal, task_id=task_id)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -387,12 +411,15 @@ def delegate_task(
     if parent_agent is None:
         return json.dumps({"error": "delegate_task requires a parent agent context."})
 
+    # Configurable depth & concurrency limits
+    max_concurrent, max_depth = _get_delegation_limits()
+
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
-    if depth >= MAX_DEPTH:
+    if depth >= max_depth:
         return json.dumps({
             "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
+                f"Delegation depth limit reached ({max_depth}). "
                 "Subagents cannot spawn further subagents."
             )
         })
@@ -402,19 +429,19 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
+    # Resolve default delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        default_creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
-        task_list = tasks[:MAX_CONCURRENT_CHILDREN]
+        task_list = tasks[:max_concurrent]
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
@@ -435,22 +462,81 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    def _resolve_task_creds(task: dict) -> dict:
+        """Resolve per-task credentials, falling back to default_creds."""
+        task_model = task.get("model")
+        task_provider = task.get("provider")
+        if not task_model and not task_provider:
+            return default_creds
+        # Build a per-task config overlay and resolve
+        task_cfg = dict(cfg)
+        if task_model:
+            task_cfg["model"] = task_model
+        if task_provider:
+            task_cfg["provider"] = task_provider
+        try:
+            return _resolve_delegation_credentials(task_cfg, parent_agent)
+        except ValueError:
+            # Fall back to default creds on resolution failure
+            logger.warning("Failed to resolve per-task credentials for model=%s provider=%s, using defaults",
+                           task_model, task_provider)
+            return default_creds
+
+    def _resolve_task_budget(task: dict) -> tuple:
+        """Return (max_iterations, iteration_budget_or_None) for a task.
+
+        When the task specifies its own max_iterations, the child gets an
+        independent IterationBudget so it doesn't starve siblings or the
+        parent.  Otherwise, the child shares the parent's budget.
+        """
+        task_max = task.get("max_iterations")
+        if task_max and isinstance(task_max, int) and task_max > 0:
+            from run_agent import IterationBudget
+            return task_max, IterationBudget(task_max)
+        return effective_max_iter, None  # None = share parent's budget
+
+    def _setup_task_backend(task: dict, task_index: int) -> str:
+        """Register per-task backend override if specified.
+
+        Returns the deterministic task_id that must be passed to
+        run_conversation() so that terminal_tool looks up overrides
+        under the same key.
+        """
+        task_id = f"delegate_{id(parent_agent)}_{task_index}"
+        backend = task.get("terminal_backend")
+        if backend:
+            from tools.terminal_tool import register_task_env_overrides
+            overrides = {"terminal_backend": backend}
+            # Forward per-task image, cwd, and SSH connection overrides
+            for key in ("docker_image", "modal_image", "singularity_image",
+                        "daytona_image", "cwd",
+                        "ssh_host", "ssh_user", "ssh_port", "ssh_key"):
+                if task.get(key):
+                    overrides[key] = task[key]
+            register_task_env_overrides(task_id, overrides)
+        return task_id
+
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         t = task_list[0]
+        task_creds = _resolve_task_creds(t)
+        task_max_iter, task_budget = _resolve_task_budget(t)
+        child_task_id = _setup_task_backend(t, 0)
         result = _run_single_child(
             task_index=0,
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=creds["model"],
-            max_iterations=effective_max_iter,
+            model=task_creds["model"],
+            max_iterations=task_max_iter,
             parent_agent=parent_agent,
             task_count=1,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
+            override_provider=task_creds["provider"],
+            override_base_url=task_creds["base_url"],
+            override_api_key=task_creds["api_key"],
+            override_api_mode=task_creds["api_mode"],
+            override_iteration_budget=task_budget,
+            task_id=child_task_id,
         )
         results.append(result)
     else:
@@ -463,23 +549,28 @@ def delegate_task(
         _saved_stdout = sys.stdout
         _saved_stderr = sys.stderr
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+        with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
             futures = {}
             for i, t in enumerate(task_list):
+                task_creds = _resolve_task_creds(t)
+                task_max_iter, task_budget = _resolve_task_budget(t)
+                child_task_id = _setup_task_backend(t, i)
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
-                    model=creds["model"],
-                    max_iterations=effective_max_iter,
+                    model=task_creds["model"],
+                    max_iterations=task_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
-                    override_provider=creds["provider"],
-                    override_base_url=creds["base_url"],
-                    override_api_key=creds["api_key"],
-                    override_api_mode=creds["api_mode"],
+                    override_provider=task_creds["provider"],
+                    override_base_url=task_creds["base_url"],
+                    override_api_key=task_creds["api_key"],
+                    override_api_mode=task_creds["api_mode"],
+                    override_iteration_budget=task_budget,
+                    task_id=child_task_id,
                 )
                 futures[future] = i
 
@@ -660,8 +751,9 @@ DELEGATE_TASK_SCHEMA = {
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
-        "All run concurrently and results are returned together.\n\n"
+        "2. Batch (parallel): provide 'tasks' array (concurrency limit is "
+        "configurable, default 3). All run concurrently and results are "
+        "returned together.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -720,13 +812,71 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Override the model for this specific task "
+                                "(e.g. 'gpt-4o', 'claude-sonnet-4-20250514'). "
+                                "Falls back to the delegation default if unset."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Override the provider for this task "
+                                "(e.g. 'openrouter', 'nous'). "
+                                "Falls back to the delegation default if unset."
+                            ),
+                        },
+                        "terminal_backend": {
+                            "type": "string",
+                            "enum": ["local", "docker", "modal", "ssh", "singularity", "daytona"],
+                            "description": (
+                                "Override the terminal backend for this task. "
+                                "Useful for running compute-heavy tasks on remote "
+                                "backends (e.g. 'modal', 'docker') while keeping "
+                                "others local."
+                            ),
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "description": (
+                                "Max tool-calling turns for this specific task. "
+                                "When set, the child gets its own iteration budget "
+                                "independent of the parent and siblings, preventing "
+                                "starvation. Falls back to the top-level "
+                                "max_iterations if unset."
+                            ),
+                        },
+                        "ssh_host": {
+                            "type": "string",
+                            "description": (
+                                "SSH hostname or IP for this task (only used "
+                                "when terminal_backend is 'ssh'). Allows routing "
+                                "different tasks to different remote machines."
+                            ),
+                        },
+                        "ssh_user": {
+                            "type": "string",
+                            "description": "SSH username for this task.",
+                        },
+                        "ssh_port": {
+                            "type": "integer",
+                            "description": "SSH port for this task (default: 22).",
+                        },
+                        "ssh_key": {
+                            "type": "string",
+                            "description": "Path to SSH private key for this task.",
+                        },
                     },
                     "required": ["goal"],
                 },
-                "maxItems": 3,
                 "description": (
-                    "Batch mode: up to 3 tasks to run in parallel. Each gets "
-                    "its own subagent with isolated context and terminal session. "
+                    "Batch mode: tasks to run in parallel (concurrency is "
+                    "configurable via delegation.max_concurrent_children, "
+                    "default 3). Each gets its own subagent with isolated "
+                    "context and terminal session. Per-task model, provider, "
+                    "terminal_backend, and max_iterations overrides are supported. "
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
             },

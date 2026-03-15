@@ -864,7 +864,11 @@ def terminal_tool(
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
         overrides = _task_env_overrides.get(effective_task_id, {})
-        
+
+        # Per-task backend override (e.g., from delegate_task per-task routing)
+        if overrides.get("terminal_backend"):
+            env_type = overrides["terminal_backend"]
+
         # Select image based on env type, with per-task override support
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -919,10 +923,10 @@ def terminal_tool(
                         ssh_config = None
                         if env_type == "ssh":
                             ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
+                                "host": overrides.get("ssh_host") or config.get("ssh_host", ""),
+                                "user": overrides.get("ssh_user") or config.get("ssh_user", ""),
+                                "port": overrides.get("ssh_port") or config.get("ssh_port", 22),
+                                "key": overrides.get("ssh_key") or config.get("ssh_key", ""),
                             }
 
                         container_config = None

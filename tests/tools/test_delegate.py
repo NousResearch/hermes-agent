@@ -18,8 +18,8 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
-    MAX_CONCURRENT_CHILDREN,
-    MAX_DEPTH,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN,
+    _DEFAULT_MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
     _build_child_system_prompt,
@@ -59,7 +59,13 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
-        self.assertEqual(props["tasks"]["maxItems"], 3)
+        # Per-task schema should expose model/provider/terminal_backend overrides
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
+        self.assertIn("terminal_backend", task_props)
+        self.assertIn("max_iterations", task_props)
+        self.assertIn("ssh_host", task_props)
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -162,8 +168,8 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         tasks = [{"goal": f"Task {i}"} for i in range(5)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
-        self.assertEqual(mock_run.call_count, 3)
+        # Should only run 3 tasks (_DEFAULT_MAX_CONCURRENT_CHILDREN)
+        self.assertEqual(mock_run.call_count, _DEFAULT_MAX_CONCURRENT_CHILDREN)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -416,8 +422,8 @@ class TestBlockedTools(unittest.TestCase):
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
-        self.assertEqual(MAX_CONCURRENT_CHILDREN, 3)
-        self.assertEqual(MAX_DEPTH, 2)
+        self.assertEqual(_DEFAULT_MAX_CONCURRENT_CHILDREN, 3)
+        self.assertEqual(_DEFAULT_MAX_DEPTH, 2)
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):

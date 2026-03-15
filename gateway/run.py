@@ -294,8 +294,6 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
-        self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
-        
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1051,10 +1049,19 @@ class GatewayRunner:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
     
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+    _MAX_INTERRUPT_REPLAY_DEPTH = 5
+
+    async def _handle_message(
+        self,
+        event: MessageEvent,
+        *,
+        history_override: Optional[List[Dict[str, Any]]] = None,
+        bypass_running_agent_check: bool = False,
+        _replay_depth: int = 0,
+    ) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -1063,6 +1070,10 @@ class GatewayRunner:
         5. Build context for agent
         6. Run agent conversation
         7. Return response
+
+        _replay_depth tracks recursive calls made to replay queued events
+        after an interrupt. Guarded by _MAX_INTERRUPT_REPLAY_DEPTH to
+        prevent unbounded recursion from rapid-fire interrupts.
         """
         source = event.source
 
@@ -1095,18 +1106,18 @@ class GatewayRunner:
                         )
             return None
         
-        # PRIORITY: If an agent is already running for this session, interrupt it
-        # immediately. This is before command parsing to minimize latency -- the
-        # user's "stop" message reaches the agent as fast as possible.
+        # Explicit stop still bypasses normal command handling so interruption
+        # reaches the running agent quickly. Plain follow-ups are queued by the
+        # platform adapter and should not preempt by default.
         _quick_key = build_session_key(source)
-        if _quick_key in self._running_agents:
+        if not bypass_running_agent_check and _quick_key in self._running_agents:
+            command = event.get_command()
+            if command != "stop":
+                return None
+
             running_agent = self._running_agents[_quick_key]
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
-            else:
-                self._pending_messages[_quick_key] = event.text
+            logger.debug("PRIORITY stop for session %s", _quick_key[:20])
+            running_agent.interrupt()
             return None
         
         # Check for commands
@@ -1137,7 +1148,7 @@ class GatewayRunner:
         
         if command == "stop":
             return await self._handle_stop_command(event)
-        
+
         if command == "model":
             return await self._handle_model_command(event)
 
@@ -1326,7 +1337,7 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
         
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        history = history_override if history_override is not None else self.session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -1791,6 +1802,22 @@ class GatewayRunner:
                 model=agent_result.get("model"),
             )
 
+            pending_event = agent_result.get("_pending_event")
+            if pending_event:
+                if _replay_depth >= self._MAX_INTERRUPT_REPLAY_DEPTH:
+                    logger.warning(
+                        "Interrupt replay depth limit (%d) reached for session %s, "
+                        "dropping queued event to prevent unbounded recursion",
+                        self._MAX_INTERRUPT_REPLAY_DEPTH, session_key,
+                    )
+                else:
+                    return await self._handle_message(
+                        pending_event,
+                        history_override=agent_result.get("_resume_history", agent_messages),
+                        bypass_running_agent_check=True,
+                        _replay_depth=_replay_depth + 1,
+                    )
+
             # Auto voice reply: send TTS audio before the text response
             if self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
@@ -1880,7 +1907,7 @@ class GatewayRunner:
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:
             return "No active task to stop."
-    
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         lines = [
@@ -3712,13 +3739,22 @@ class GatewayRunner:
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
-        
+
         Returns the full result dict from run_conversation, including:
           - "final_response": str (the text to send back)
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
-        
+
+        When interrupted, two additional keys may be present:
+          - "_pending_event": MessageEvent | None — a queued gateway event
+            that should be replayed through _handle_message after the interrupt.
+          - "_resume_history": list — conversation history to pass as
+            history_override when replaying the pending event.
+
+        Callers should check for "_pending_event" and, if present, recurse
+        into _handle_message rather than processing the response normally.
+
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
@@ -4240,10 +4276,8 @@ class GatewayRunner:
                 if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
                     agent = agent_holder[0]
                     if agent:
-                        pending_event = adapter.get_pending_message(session_key)
-                        pending_text = pending_event.text if pending_event else None
                         logger.debug("Interrupt detected from adapter, signaling agent...")
-                        agent.interrupt(pending_text)
+                        agent.interrupt()
                         break
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
@@ -4260,6 +4294,7 @@ class GatewayRunner:
             # Get pending message from adapter if interrupted.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
+            pending_event = None
             if result and result.get("interrupted") and adapter:
                 pending_event = adapter.get_pending_message(session_key) if session_key else None
                 if pending_event:
@@ -4280,8 +4315,13 @@ class GatewayRunner:
                 # like "Operation interrupted." They already know they sent a new
                 # message, so go straight to processing it.
                 
-                # Now process the pending message with updated history
                 updated_history = result.get("messages", history)
+                response["_pending_event"] = pending_event
+                response["_resume_history"] = updated_history
+                if pending_event:
+                    return response
+
+                # Fallback for interrupt sources that only provided plain text.
                 return await self._run_agent(
                     message=pending,
                     context_prompt=context_prompt,

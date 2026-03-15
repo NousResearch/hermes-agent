@@ -156,11 +156,11 @@ Pairing codes expire after 1 hour, are rate-limited, and use cryptographic rando
 
 ## Interrupting the Agent
 
-Send any message while the agent is working to interrupt it. Key behaviors:
+Send a normal message while the agent is working to queue it for later. Use `/stop` if you need Hermes to stop the current task. Key behaviors:
 
 - **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
-- **Multiple messages are combined** — messages sent during interruption are joined into one prompt
+- **Queued follow-ups preserve order** — messages sent while Hermes is busy run after the current task finishes
 - **`/stop` command** — interrupts without queuing a follow-up message
 
 ## Tool Progress Notifications

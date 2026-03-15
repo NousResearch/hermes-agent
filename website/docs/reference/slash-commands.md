@@ -120,5 +120,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 - `/skin`, `/tools`, `/toolsets`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, and `/verbose` are **CLI-only** commands.
 - `/status`, `/stop`, `/sethome`, `/resume`, `/background`, and `/update` are **messaging-only** commands.
+- `/reload-mcp` and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

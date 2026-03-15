@@ -5065,8 +5065,7 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     _time.sleep(0.1)
                 else:
-                    # Refresh mini player when radio is active
-                    # ~3fps: smooth enough for braille, won't freeze input
+                    # Refresh mini player when radio is active (idle only)
                     try:
                         from radio.player import HermesRadio
                         if HermesRadio.active() and self._app:
@@ -5075,7 +5074,7 @@ class HermesCLI:
                             continue
                     except ImportError:
                         pass
-                    _time.sleep(0.05)
+                    _time.sleep(0.1)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()

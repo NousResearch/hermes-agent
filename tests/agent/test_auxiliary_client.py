@@ -169,7 +169,7 @@ class TestGetTextAuxiliaryClient:
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
         # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
@@ -202,7 +202,7 @@ class TestVisionClientFallback:
             client, model = get_vision_auxiliary_client()
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
 
     def test_vision_auto_falls_back_to_custom_endpoint(self, monkeypatch):
         """Custom endpoint is used as fallback in vision auto mode.
@@ -264,7 +264,7 @@ class TestVisionClientFallback:
             client, model = get_vision_auxiliary_client()
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
 
 
 class TestGetAuxiliaryProvider:
@@ -382,7 +382,7 @@ class TestResolveForcedProvider:
             client, model = _resolve_forced_provider("main")
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
 
     def test_forced_codex(self, codex_auth_dir, monkeypatch):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
@@ -390,7 +390,7 @@ class TestResolveForcedProvider:
             client, model = _resolve_forced_provider("codex")
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
 
     def test_forced_codex_no_token(self, monkeypatch):
         with patch("agent.auxiliary_client._read_codex_access_token", return_value=None):

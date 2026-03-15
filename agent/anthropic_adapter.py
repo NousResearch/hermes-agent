@@ -406,6 +406,66 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _image_source_from_openai_url(url: str) -> Dict[str, str]:
+    """Convert an OpenAI-style image URL/data URL into Anthropic image source."""
+    url = str(url or "").strip()
+    if not url:
+        return {"type": "url", "url": ""}
+
+    if url.startswith("data:"):
+        header, _, data = url.partition(",")
+        media_type = "image/jpeg"
+        if header.startswith("data:"):
+            mime_part = header[len("data:"):].split(";", 1)[0].strip()
+            if mime_part.startswith("image/"):
+                media_type = mime_part
+        return {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
+
+    return {"type": "url", "url": url}
+
+
+def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+    """Convert a single OpenAI-style content part to Anthropic format."""
+    if part is None:
+        return None
+    if isinstance(part, str):
+        return {"type": "text", "text": part}
+    if not isinstance(part, dict):
+        return {"type": "text", "text": str(part)}
+
+    ptype = part.get("type")
+
+    if ptype == "input_text":
+        block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+    elif ptype in {"image_url", "input_image"}:
+        image_value = part.get("image_url", {})
+        url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+        block = {"type": "image", "source": _image_source_from_openai_url(url)}
+    else:
+        block = dict(part)
+
+    if isinstance(part.get("cache_control"), dict) and "cache_control" not in block:
+        block["cache_control"] = dict(part["cache_control"])
+    return block
+
+
+def _convert_content_to_anthropic(content: Any) -> Any:
+    """Convert OpenAI-style multimodal content arrays to Anthropic blocks."""
+    if not isinstance(content, list):
+        return content
+
+    converted = []
+    for part in content:
+        block = _convert_content_part_to_anthropic(part)
+        if block is not None:
+            converted.append(block)
+    return converted
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
 ) -> Tuple[Optional[Any], List[Dict]]:
@@ -442,11 +502,9 @@ def convert_messages_to_anthropic(
             blocks = []
             if content:
                 if isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict):
-                            blocks.append(dict(part))
-                        elif part is not None:
-                            blocks.append({"type": "text", "text": str(part)})
+                    converted_content = _convert_content_to_anthropic(content)
+                    if isinstance(converted_content, list):
+                        blocks.extend(converted_content)
                 else:
                     blocks.append({"type": "text", "text": str(content)})
             for tc in m.get("tool_calls", []):
@@ -495,7 +553,7 @@ def convert_messages_to_anthropic(
             continue
 
         # Regular user message
-        result.append({"role": "user", "content": content})
+        result.append({"role": "user", "content": _convert_content_to_anthropic(content)})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()

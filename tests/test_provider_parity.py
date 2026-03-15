@@ -543,7 +543,7 @@ class TestAuxiliaryClientProviderPriority:
              patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client()
-        assert model == "gpt-5.3-codex"
+        assert model == "gpt-5.2-codex"
         assert isinstance(client, CodexAuxiliaryClient)
 
 

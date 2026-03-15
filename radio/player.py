@@ -20,6 +20,32 @@ from radio.mpv_client import MpvClient
 logger = logging.getLogger(__name__)
 
 
+def _station_name_from_url(url: str) -> str:
+    """Extract a readable station name from a stream URL."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+
+    # Radio Garden: /listen/station-name/ID -> extract station-name
+    if "radio.garden" in parsed.hostname or "":
+        parts = parsed.path.split("/")
+        for i, p in enumerate(parts):
+            if p == "listen" and i + 1 < len(parts):
+                name = parts[i + 1].replace("-", " ").title()
+                return name
+
+    # SomaFM: ice2.somafm.com/defcon-256-mp3 -> defcon
+    if "somafm.com" in (parsed.hostname or ""):
+        path = parsed.path.strip("/").split("-")[0]
+        return f"SomaFM {path}" if path else "SomaFM"
+
+    # Generic: use hostname or last path segment
+    path = parsed.path.strip("/").split("/")[-1]
+    if path and path not in ("stream", "channel.mp3", ""):
+        return path.replace("-", " ").replace("_", " ").title()
+
+    return parsed.hostname or "Radio"
+
+
 class SourceMode(str, Enum):
     CRATE = "crate"       # Radiooooo track-by-track
     STREAM = "stream"     # Live radio (Radio Browser, SomaFM, Radio Garden, custom)
@@ -169,15 +195,38 @@ class HermesRadio:
         self._cancel_crate()
         self._source_mode = SourceMode.STREAM
         self._now.source_mode = "stream"
+
+        # Derive a station name if none provided
+        if not station_name:
+            station_name = _station_name_from_url(url)
+
         self._now.station_name = station_name
         self._now.active = True
         await self._primary.loadfile(url)
+
         # Start level meter for reactive visualizer
         try:
             from radio.level_meter import start as start_meter
             start_meter(url)
         except Exception:
             pass
+
+        # After a short delay, try to get a better name from mpv metadata
+        async def _update_name():
+            await asyncio.sleep(2)
+            try:
+                title = await self._primary.get_media_title()
+                if title and title not in ("channel.mp3", url.split("/")[-1]):
+                    if not self._now.station_name or self._now.station_name == _station_name_from_url(url):
+                        self._now.station_name = title
+                        self._notify_state_change()
+                        # Update recent with the real name
+                        from radio.config import add_recent_station
+                        add_recent_station(title, url, source="stream")
+            except Exception:
+                pass
+        asyncio.create_task(_update_name())
+
         # Log station to history
         try:
             from radio.history import log_station
@@ -187,7 +236,7 @@ class HermesRadio:
         except Exception:
             pass
         self._notify_state_change()
-        return f"Tuned to {station_name or url}"
+        return f"Tuned to {station_name}"
 
     async def play_crate(
         self,

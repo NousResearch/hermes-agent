@@ -323,7 +323,7 @@ def create_job(
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
-    label_source = (normalized_skills[0] if normalized_skills else prompt) or "cron job"
+    label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),

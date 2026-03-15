@@ -252,3 +252,109 @@ async def test_discord_dms_ignore_mention_requirement(adapter, monkeypatch):
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "dm without mention"
     assert event.source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
+    """Auto-threading should be enabled by default (DISCORD_AUTO_THREAD defaults to 'true')."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    # Patch _auto_create_thread to return a fake thread
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
+    """Setting auto_thread to false skips thread creation."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch):
+    """Messages in a thread the bot has participated in should not require @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    # Simulate bot having previously participated in thread 456
+    adapter._bot_participated_threads.add("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "follow-up without mention"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_unknown_thread_still_requires_mention(adapter, monkeypatch):
+    """Messages in a thread the bot hasn't participated in should still require @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    # Bot has NOT participated in thread 789
+    thread = FakeThread(channel_id=789, name="some thread")
+    message = make_message(channel=thread, content="hello from unknown thread")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_tracks_participation(adapter, monkeypatch):
+    """Auto-created threads should be tracked for future mention-free replies."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    fake_thread = FakeThread(channel_id=555, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="start a thread")
+
+    await adapter._handle_message(message)
+
+    assert "555" in adapter._bot_participated_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeypatch):
+    """When the bot processes a message in a thread, it tracks participation."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    thread = FakeThread(channel_id=777, name="manually created thread")
+    message = make_message(channel=thread, content="hello in thread")
+
+    await adapter._handle_message(message)
+
+    assert "777" in adapter._bot_participated_threads

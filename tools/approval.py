@@ -38,7 +38,7 @@ DANGEROUS_PATTERNS = [
     (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
-    (r':()\s*{\s*:\s*\|\s*:&\s*}\s*;:', "fork bomb"),
+    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     (r'\b(bash|sh|zsh)\s+-c\s+', "shell command via -c flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
@@ -48,6 +48,29 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
 ]
+
+
+def _legacy_pattern_key(pattern: str) -> str:
+    """Reproduce the old regex-derived approval key for backwards compatibility."""
+    return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
+
+
+_PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
+for _pattern, _description in DANGEROUS_PATTERNS:
+    _legacy_key = _legacy_pattern_key(_pattern)
+    _canonical_key = _description
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
+    _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
+
+
+def _approval_key_aliases(pattern_key: str) -> set[str]:
+    """Return all approval keys that should match this pattern.
+
+    New approvals use the human-readable description string, but older
+    command_allowlist entries and session approvals may still contain the
+    historical regex-derived key.
+    """
+    return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
 # =========================================================================
@@ -63,7 +86,7 @@ def detect_dangerous_command(command: str) -> tuple:
     command_lower = command.lower()
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
-            pattern_key = pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
+            pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)
 
@@ -103,11 +126,17 @@ def approve_session(session_key: str, pattern_key: str):
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
-    """Check if a pattern is approved (session-scoped or permanent)."""
+    """Check if a pattern is approved (session-scoped or permanent).
+
+    Accept both the current canonical key and the legacy regex-derived key so
+    existing command_allowlist entries continue to work after key migrations.
+    """
+    aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        if pattern_key in _permanent_approved:
+        if any(alias in _permanent_approved for alias in aliases):
             return True
-        return pattern_key in _session_approved.get(session_key, set())
+        session_approvals = _session_approved.get(session_key, set())
+        return any(alias in session_approvals for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):

@@ -89,6 +89,56 @@
   border: 1px solid rgba(255, 215, 0, 0.06);
 }
 
+/* Text diagrams: preserve spacing, disable ligatures, and prefer box-drawing-safe fonts */
+pre.prism-code.language-text,
+pre.prism-code.language-plaintext,
+pre.prism-code.language-txt,
+pre.prism-code.language-ascii {
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.35;
+  font-family: 'JetBrains Mono', 'Cascadia Mono', 'Cascadia Code', 'Fira Code', 'SFMono-Regular', 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-rendering: optimizeSpeed;
+}
+
+pre.prism-code.language-text code,
+pre.prism-code.language-plaintext code,
+pre.prism-code.language-txt code,
+pre.prism-code.language-ascii code {
+  white-space: pre;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+.theme-mermaid {
+  margin: 1.5rem 0;
+  text-align: center;
+}
+
+.theme-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.docs-terminal-figure {
+  display: block;
+  width: 100%;
+  max-width: 900px;
+  margin: 1.25rem auto 0.5rem;
+  border: 1px solid rgba(255, 215, 0, 0.08);
+  border-radius: 12px;
+  background: #0a0a12;
+}
+
+.docs-figure-caption {
+  margin-top: 0.35rem;
+  text-align: center;
+  color: var(--ifm-font-color-secondary);
+  font-size: 0.95rem;
+}
+
 /* Admonitions — gold-tinted */
 [data-theme='dark'] .alert--info {
   --ifm-alert-background-color: rgba(255, 215, 0, 0.05);

@@ -26,15 +26,17 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
 | `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
 | `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
-| `ANTHROPIC_API_KEY` | Anthropic API key or setup-token ([console.anthropic.com](https://console.anthropic.com/)) |
-| `ANTHROPIC_TOKEN` | Anthropic OAuth/setup token (alternative to `ANTHROPIC_API_KEY`) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code setup-token (same as `ANTHROPIC_TOKEN`) |
+| `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
+| `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
-| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
+| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for OpenAI speech-to-text and text-to-speech providers |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`) |
 
 ## Provider Auth (OAuth)
+
+For native Anthropic auth, Hermes prefers Claude Code's own credential files when they exist because those credentials can refresh automatically. Environment variables such as `ANTHROPIC_TOKEN` remain useful as manual overrides, but they are no longer the preferred path for Claude Pro/Max login.
 
 | Variable | Description |
 |----------|-------------|
@@ -57,7 +59,12 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
-| `ELEVENLABS_API_KEY` | Premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
+| `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
+| `ELEVENLABS_API_KEY` | ElevenLabs premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
+| `STT_GROQ_MODEL` | Override the Groq STT model (default: `whisper-large-v3-turbo`) |
+| `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
+| `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
+| `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
@@ -157,6 +164,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `900`) |
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
+| `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
 
 ## Session Settings
 
@@ -172,6 +180,35 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `CONTEXT_COMPRESSION_ENABLED` | Enable auto-compression (default: `true`) |
 | `CONTEXT_COMPRESSION_THRESHOLD` | Trigger at this % of limit (default: 0.50) |
 | `CONTEXT_COMPRESSION_MODEL` | Model for summaries |
+
+## Auxiliary Task Overrides
+
+| Variable | Description |
+|----------|-------------|
+| `AUXILIARY_VISION_PROVIDER` | Override provider for vision tasks |
+| `AUXILIARY_VISION_MODEL` | Override model for vision tasks |
+| `AUXILIARY_VISION_BASE_URL` | Direct OpenAI-compatible endpoint for vision tasks |
+| `AUXILIARY_VISION_API_KEY` | API key paired with `AUXILIARY_VISION_BASE_URL` |
+| `AUXILIARY_WEB_EXTRACT_PROVIDER` | Override provider for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_MODEL` | Override model for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_BASE_URL` | Direct OpenAI-compatible endpoint for web extraction/summarization |
+| `AUXILIARY_WEB_EXTRACT_API_KEY` | API key paired with `AUXILIARY_WEB_EXTRACT_BASE_URL` |
+| `CONTEXT_COMPRESSION_PROVIDER` | Override provider for context compression summaries |
+| `CONTEXT_COMPRESSION_MODEL` | Override model for context compression summaries |
+
+For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
+
+## Fallback Model (config.yaml only)
+
+The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a `fallback_model` section with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
+
+```yaml
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+```
+
+See [Fallback Providers](/docs/user-guide/features/fallback-providers) for full details.
 
 ## Provider Routing (config.yaml only)
 

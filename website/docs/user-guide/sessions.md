@@ -88,15 +88,8 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-```text
-╭─────────────────────────── Previous Conversation ────────────────────────────╮
-│   ● You: What is Python?                                                     │
-│   ◆ Hermes: Python is a high-level programming language.                     │
-│   ● You: How do I install it?                                                │
-│   ◆ Hermes: [3 tool calls: web_search, web_extract, terminal]                │
-│   ◆ Hermes: You can download Python from python.org...                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
+<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
 - Shows **user messages** (gold `●`) and **assistant responses** (green `◆`)

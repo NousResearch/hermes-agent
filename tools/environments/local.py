@@ -30,11 +30,12 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from the provider registry + known extras.
+    """Derive the blocklist from provider, tool, and gateway config.
 
     Automatically picks up api_key_env_vars and base_url_env_var from
-    every registered provider, so adding a new provider to auth.py is
-    enough — no manual list to keep in sync.
+    every registered provider, plus tool/messaging env vars from the
+    optional config registry, so new Hermes-managed secrets are blocked
+    in subprocesses without having to maintain multiple static lists.
     """
     blocked: set[str] = set()
 
@@ -47,7 +48,18 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    # Vars not in the registry but still Hermes-internal / conflict-prone
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        for name, metadata in OPTIONAL_ENV_VARS.items():
+            category = metadata.get("category")
+            if category in {"tool", "messaging"}:
+                blocked.add(name)
+            elif category == "setting" and metadata.get("password"):
+                blocked.add(name)
+    except ImportError:
+        pass
+
+    # Vars not covered above but still Hermes-internal / conflict-prone.
     blocked.update({
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
@@ -59,11 +71,81 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
+        # Expanded isolation for other major providers (Issue #1002)
+        "GOOGLE_API_KEY",          # Gemini / Google AI Studio
+        "DEEPSEEK_API_KEY",        # DeepSeek
+        "MISTRAL_API_KEY",         # Mistral AI
+        "GROQ_API_KEY",            # Groq
+        "TOGETHER_API_KEY",        # Together AI
+        "PERPLEXITY_API_KEY",      # Perplexity
+        "COHERE_API_KEY",          # Cohere
+        "FIREWORKS_API_KEY",       # Fireworks AI
+        "XAI_API_KEY",             # xAI (Grok)
+        "HELICONE_API_KEY",        # LLM Observability proxy
+        # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
+        "TELEGRAM_HOME_CHANNEL",
+        "TELEGRAM_HOME_CHANNEL_NAME",
+        "DISCORD_HOME_CHANNEL",
+        "DISCORD_HOME_CHANNEL_NAME",
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "SLACK_HOME_CHANNEL",
+        "SLACK_HOME_CHANNEL_NAME",
+        "SLACK_ALLOWED_USERS",
+        "WHATSAPP_ENABLED",
+        "WHATSAPP_MODE",
+        "WHATSAPP_ALLOWED_USERS",
+        "SIGNAL_HTTP_URL",
+        "SIGNAL_ACCOUNT",
+        "SIGNAL_ALLOWED_USERS",
+        "SIGNAL_GROUP_ALLOWED_USERS",
+        "SIGNAL_HOME_CHANNEL",
+        "SIGNAL_HOME_CHANNEL_NAME",
+        "SIGNAL_IGNORE_STORIES",
+        "HASS_TOKEN",
+        "HASS_URL",
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+        "EMAIL_HOME_ADDRESS",
+        "EMAIL_HOME_ADDRESS_NAME",
+        "GATEWAY_ALLOWED_USERS",
+        # Skills Hub / GitHub app auth paths and aliases.
+        "GH_TOKEN",
+        "GITHUB_APP_ID",
+        "GITHUB_APP_PRIVATE_KEY_PATH",
+        "GITHUB_APP_INSTALLATION_ID",
     })
     return frozenset(blocked)
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+    """Filter Hermes-managed secrets from a subprocess environment.
+
+    `_HERMES_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
+    intentionally for callers that truly need it.
+    """
+    sanitized: dict[str, str] = {}
+
+    for key, value in (base_env or {}).items():
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            continue
+        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            sanitized[key] = value
+
+    for key, value in (extra_env or {}).items():
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            sanitized[real_key] = value
+        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            sanitized[key] = value
+
+    return sanitized
 
 
 def _find_bash() -> str:

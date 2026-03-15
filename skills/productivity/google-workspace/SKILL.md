@@ -102,7 +102,9 @@ This prints a URL. **Send the URL to the user** and tell them:
 ### Step 4: Exchange the code
 
 The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
-or just the code string. Either works:
+or just the code string. Either works. The `--auth-url` step stores a temporary
+pending OAuth session locally so `--auth-code` can complete the PKCE exchange
+later, even on headless systems:
 
 ```bash
 $GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
@@ -119,6 +121,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 ### Notes
 
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
+- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - To revoke: `$GSETUP --revoke`
 
 ## Usage

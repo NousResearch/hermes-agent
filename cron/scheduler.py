@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -56,6 +57,50 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _resolve_delivery_target(job: dict) -> Optional[dict]:
+    """Resolve the concrete auto-delivery target for a cron job, if any."""
+    deliver = job.get("deliver", "local")
+    origin = _resolve_origin(job)
+
+    if deliver == "local":
+        return None
+
+    if deliver == "origin":
+        if not origin:
+            return None
+        return {
+            "platform": origin["platform"],
+            "chat_id": str(origin["chat_id"]),
+            "thread_id": origin.get("thread_id"),
+        }
+
+    if ":" in deliver:
+        platform_name, chat_id = deliver.split(":", 1)
+        return {
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": None,
+        }
+
+    platform_name = deliver
+    if origin and origin.get("platform") == platform_name:
+        return {
+            "platform": platform_name,
+            "chat_id": str(origin["chat_id"]),
+            "thread_id": origin.get("thread_id"),
+        }
+
+    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    if not chat_id:
+        return None
+
+    return {
+        "platform": platform_name,
+        "chat_id": chat_id,
+        "thread_id": None,
+    }
+
+
 def _deliver_result(job: dict, content: str) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
@@ -63,36 +108,19 @@ def _deliver_result(job: dict, content: str) -> None:
     Uses the standalone platform send functions from send_message_tool so delivery
     works whether or not the gateway is running.
     """
-    deliver = job.get("deliver", "local")
-    origin = _resolve_origin(job)
-
-    if deliver == "local":
+    target = _resolve_delivery_target(job)
+    if not target:
+        if job.get("deliver", "local") != "local":
+            logger.warning(
+                "Job '%s' deliver=%s but no concrete delivery target could be resolved",
+                job["id"],
+                job.get("deliver", "local"),
+            )
         return
 
-    thread_id = None
-
-    # Resolve target platform + chat_id
-    if deliver == "origin":
-        if not origin:
-            logger.warning("Job '%s' deliver=origin but no origin stored, skipping delivery", job["id"])
-            return
-        platform_name = origin["platform"]
-        chat_id = origin["chat_id"]
-        thread_id = origin.get("thread_id")
-    elif ":" in deliver:
-        platform_name, chat_id = deliver.split(":", 1)
-    else:
-        # Bare platform name like "telegram" — need to resolve to origin or home channel
-        platform_name = deliver
-        if origin and origin.get("platform") == platform_name:
-            chat_id = origin["chat_id"]
-            thread_id = origin.get("thread_id")
-        else:
-            # Fall back to home channel
-            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
-            if not chat_id:
-                logger.warning("Job '%s' deliver=%s but no chat_id or home channel. Set via: hermes config set %s_HOME_CHANNEL <channel_id>", job["id"], deliver, platform_name.upper())
-                return
+    platform_name = target["platform"]
+    chat_id = target["chat_id"]
+    thread_id = target.get("thread_id")
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -147,6 +175,43 @@ def _deliver_result(job: dict, content: str) -> None:
             logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
+def _build_job_prompt(job: dict) -> str:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+    prompt = job.get("prompt", "")
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return prompt
+
+    from tools.skills_tool import skill_view
+
+    parts = []
+    for skill_name in skill_names:
+        loaded = json.loads(skill_view(skill_name))
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            raise RuntimeError(error)
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend(
+            [
+                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "",
+                content,
+            ]
+        )
+
+    if prompt:
+        parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
+    return "\n".join(parts)
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -167,9 +232,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = job["prompt"]
+    prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
-    
+
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -189,7 +254,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        delivery_target = _resolve_delivery_target(job)
+        if delivery_target:
+            os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+            os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+            if delivery_target.get("thread_id") is not None:
+                os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+
+        model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -200,10 +272,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _model_cfg = _cfg.get("model", {})
-                if isinstance(_model_cfg, str):
-                    model = _model_cfg
-                elif isinstance(_model_cfg, dict):
-                    model = _model_cfg.get("default", model)
+                if not job.get("model"):
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -248,9 +321,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         try:
-            runtime = resolve_runtime_provider(
-                requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
-            )
+            runtime_kwargs = {
+                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+            }
+            if job.get("base_url"):
+                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            runtime = resolve_runtime_provider(**runtime_kwargs)
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
@@ -268,6 +344,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            disabled_toolsets=["cronjob"],
             quiet_mode=True,
             platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
@@ -324,7 +401,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     finally:
         # Clean up injected env vars so they don't leak to other jobs
-        for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME"):
+        for key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+        ):
             os.environ.pop(key, None)
         if _session_db:
             try:

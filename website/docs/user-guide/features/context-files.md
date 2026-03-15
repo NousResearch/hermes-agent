@@ -103,7 +103,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 The final prompt section looks roughly like:
 
-```
+```text
 # Project Context
 
 The following project context files have been loaded and should be followed:

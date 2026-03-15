@@ -91,7 +91,7 @@ CONFIGURABLE_TOOLSETS = [
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
-    ("cronjob",         "⏰ Cron Jobs",                 "schedule, list, remove"),
+    ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
@@ -354,22 +354,49 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
 
 
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
-    """Save the selected toolset keys for a platform to config."""
+    """Save the selected toolset keys for a platform to config.
+
+    Preserves any non-configurable toolset entries (like MCP server names)
+    that were already in the config for this platform.
+    """
     config.setdefault("platform_toolsets", {})
-    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys)
+
+    # Get the set of all configurable toolset keys
+    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+
+    # Get existing toolsets for this platform
+    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
+    if not isinstance(existing_toolsets, list):
+        existing_toolsets = []
+
+    # Preserve any entries that are NOT configurable toolsets (i.e. MCP server names)
+    preserved_entries = {
+        entry for entry in existing_toolsets
+        if entry not in configurable_keys
+    }
+
+    # Merge preserved entries with new enabled toolsets
+    config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
     save_config(config)
 
 
 def _toolset_has_keys(ts_key: str) -> bool:
     """Check if a toolset's required API keys are configured."""
+    if ts_key == "vision":
+        try:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            _provider, client, _model = resolve_vision_provider_client()
+            return client is not None
+        except Exception:
+            return False
+
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
-        for provider in cat["providers"]:
+        for provider in cat.get("providers", []):
             env_vars = provider.get("env_vars", [])
-            if not env_vars:
-                return True  # Free provider (e.g., Edge TTS)
-            if all(get_env_value(v["key"]) for v in env_vars):
+            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 
@@ -628,6 +655,39 @@ def _configure_provider(provider: dict, config: dict):
 
 def _configure_simple_requirements(ts_key: str):
     """Simple fallback for toolsets that just need env vars (no provider selection)."""
+    if ts_key == "vision":
+        if _toolset_has_keys("vision"):
+            return
+        print()
+        print(color("  Vision / Image Analysis requires a multimodal backend:", Colors.YELLOW))
+        choices = [
+            "OpenRouter — uses Gemini",
+            "OpenAI-compatible endpoint — base URL, API key, and vision model",
+            "Skip",
+        ]
+        idx = _prompt_choice("  Configure vision backend", choices, 2)
+        if idx == 0:
+            _print_info("  Get key at: https://openrouter.ai/keys")
+            value = _prompt("    OPENROUTER_API_KEY", password=True)
+            if value and value.strip():
+                save_env_value("OPENROUTER_API_KEY", value.strip())
+                _print_success("    Saved")
+            else:
+                _print_warning("    Skipped")
+        elif idx == 1:
+            base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+            key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
+            api_key = _prompt(key_label, password=True)
+            if api_key and api_key.strip():
+                save_env_value("OPENAI_BASE_URL", base_url)
+                save_env_value("OPENAI_API_KEY", api_key.strip())
+                if "api.openai.com" in base_url.lower():
+                    save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
+                _print_success("    Saved")
+            else:
+                _print_warning("    Skipped")
+        return
+
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
     if not requirements:
         return

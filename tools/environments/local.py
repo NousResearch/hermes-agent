@@ -10,6 +10,7 @@ import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+from typing import Optional
 from tools.environments.base import BaseEnvironment
 
 # Unique marker to isolate real command output from shell init/exit noise.
@@ -283,8 +284,8 @@ class LocalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         from tools.terminal_tool import _interrupt_event
 
         work_dir = cwd or self.cwd or os.getcwd()

@@ -222,8 +222,8 @@ class SingularityEnvironment(BaseEnvironment):
             raise RuntimeError("Instance start timed out")
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         if not self._instance_started:
             return {"output": "Instance not started", "returncode": -1}
 

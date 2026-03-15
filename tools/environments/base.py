@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -37,8 +38,8 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
         ...
 
@@ -61,7 +62,7 @@ class BaseEnvironment(ABC):
     # Shared helpers (eliminate duplication across backends)
     # ------------------------------------------------------------------
 
-    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+    def _prepare_command(self, command: str) -> tuple[str, Optional[str]]:
         """Transform sudo commands if SUDO_PASSWORD is available.
 
         Returns:
@@ -74,8 +75,8 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
         return _transform_sudo_command(command)
 
-    def _build_run_kwargs(self, timeout: int | None,
-                          stdin_data: str | None = None) -> dict:
+    def _build_run_kwargs(self, timeout: Optional[int],
+                          stdin_data: Optional[str] = None) -> dict:
         """Build common subprocess.run kwargs for non-interactive execution."""
         kw = {
             "text": True,
@@ -91,7 +92,7 @@ class BaseEnvironment(ABC):
             kw["stdin"] = subprocess.DEVNULL
         return kw
 
-    def _timeout_result(self, timeout: int | None) -> dict:
+    def _timeout_result(self, timeout: Optional[int]) -> dict:
         """Standard return dict when a command times out."""
         return {
             "output": f"Command timed out after {timeout or self.timeout}s",

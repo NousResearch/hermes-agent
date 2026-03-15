@@ -448,14 +448,25 @@ registry.register(
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
-        include_disabled=args.get("include_disabled", False),
-        skill=args.get("skill"),
-        skills=args.get("skills"),
-        model=args.get("model"),
-        provider=args.get("provider"),
-        base_url=args.get("base_url"),
-        reason=args.get("reason"),
-        task_id=kw.get("task_id"),
-    ),
+        task_id=kw.get("task_id")),
     check_fn=check_cronjob_requirements,
+)
+registry.register(
+    name="list_cronjobs",
+    toolset="cronjob",
+    schema=LIST_CRONJOBS_SCHEMA,
+    handler=lambda args, **kw: list_cronjobs(
+        include_disabled=args.get("include_disabled", False),
+        task_id=kw.get("task_id")),
+    check_fn=check_cronjob_requirements,
+)
+registry.register(
+    name="remove_cronjob",
+    toolset="cronjob",
+    schema=REMOVE_CRONJOB_SCHEMA,
+    handler=lambda args, **kw: remove_cronjob(
+        job_id=args.get("job_id", ""),
+        task_id=kw.get("task_id")),
+    check_fn=check_cronjob_requirements,
+    emoji="⏰",
 )

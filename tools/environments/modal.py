@@ -100,8 +100,8 @@ class ModalEnvironment(BaseEnvironment):
         )
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+                timeout: Optional[int] = None,
+                stdin_data: Optional[str] = None) -> dict:
         if stdin_data is not None:
             marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
             while marker in stdin_data:

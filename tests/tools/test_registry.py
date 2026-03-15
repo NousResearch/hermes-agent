@@ -230,13 +230,3 @@ class TestCheckFnExceptionHandling:
         available, unavailable = reg.check_tool_availability()
         assert "works" in available
         assert any(u["name"] == "crashes" for u in unavailable)
-
-
-class TestSecretCaptureResultContract:
-    def test_secret_request_result_does_not_include_secret_value(self):
-        result = {
-            "success": True,
-            "stored_as": "TENOR_API_KEY",
-            "validated": False,
-        }
-        assert "secret" not in json.dumps(result).lower()

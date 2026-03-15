@@ -194,7 +194,10 @@ DELIVERY OPTIONS (where output goes):
 - "telegram:123456": Send to specific chat (if user provides ID)
 
 NOTE: The agent's final response is auto-delivered to the target — do NOT use
-send_message in the prompt. Just have the agent compose its response normally.
+send_message in the prompt for that same destination. Same-target send_message
+calls are skipped so the cron doesn't double-message the user. Put the main
+user-facing content in the final response, and use send_message only for
+additional or different targets.
 
 Use for: reminders, periodic checks, scheduled reports, automated maintenance.""",
     "parameters": {

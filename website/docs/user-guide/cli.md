@@ -45,27 +45,8 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 ## Interface Layout
 
-```text
-┌─────────────────────────────────────────────────┐
-│  HERMES-AGENT ASCII Logo                        │
-│  ┌─────────────┐ ┌────────────────────────────┐ │
-│  │  Caduceus   │ │ Model: claude-sonnet-4     │ │
-│  │  ASCII Art  │ │ Terminal: local            │ │
-│  │             │ │ Working Dir: /home/user    │ │
-│  │             │ │ Available Tools: 19        │ │
-│  │             │ │ Available Skills: 12       │ │
-│  └─────────────┘ └────────────────────────────┘ │
-├─────────────────────────────────────────────────┤
-│ Conversation output scrolls here...             │
-│                                                 │
-│   (◕‿◕✿) 🧠 pondering... (2.3s)                │
-│   ✧٩(ˊᗜˋ*)و✧ got it! (2.3s)                    │
-│                                                 │
-│ Assistant: Hello! How can I help you today?     │
-├─────────────────────────────────────────────────┤
-│ ❯ [Fixed input area at bottom]                  │
-└─────────────────────────────────────────────────┘
-```
+<img className="docs-terminal-figure" src="/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
+<p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 

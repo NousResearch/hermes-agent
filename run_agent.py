@@ -3310,7 +3310,17 @@ class AIAgent:
         _is_nous = "nousresearch" in self.base_url.lower()
 
         _is_mistral = "api.mistral.ai" in self.base_url.lower()
-        if (_is_openrouter or _is_nous) and not _is_mistral:
+        # Only send reasoning extra_body to providers/models known to support it.
+        # Sending unsupported fields (e.g. to MiniMax, Nvidia) causes 400 errors.
+        _REASONING_MODEL_PREFIXES = (
+            "deepseek/", "anthropic/", "openai/", "x-ai/",
+            "google/gemini-2", "qwen/qwen3",
+        )
+        _model_supports_reasoning = (
+            _is_nous
+            or any(self.model.lower().startswith(p) for p in _REASONING_MODEL_PREFIXES)
+        )
+        if (_is_openrouter or _is_nous) and not _is_mistral and _model_supports_reasoning:
             if self.reasoning_config is not None:
                 rc = dict(self.reasoning_config)
                 # Nous Portal requires reasoning enabled — don't send
@@ -4274,7 +4284,15 @@ class AIAgent:
             summary_extra_body = {}
             _is_openrouter = "openrouter" in self.base_url.lower()
             _is_nous = "nousresearch" in self.base_url.lower()
-            if _is_openrouter or _is_nous:
+            _REASONING_MODEL_PREFIXES = (
+                "deepseek/", "anthropic/", "openai/", "x-ai/",
+                "google/gemini-2", "qwen/qwen3",
+            )
+            _model_supports_reasoning = (
+                _is_nous
+                or any(self.model.lower().startswith(p) for p in _REASONING_MODEL_PREFIXES)
+            )
+            if (_is_openrouter or _is_nous) and _model_supports_reasoning:
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
                 else:

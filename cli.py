@@ -218,11 +218,27 @@ def load_cli_config() -> Dict[str, Any]:
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
+        "auxiliary": {
+            "vision": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+            "web_extract": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+        },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
             "model": "",       # Subagent model override (empty = inherit parent model)
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
+            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
+            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
     }
     
@@ -363,28 +379,44 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in compression_config:
             os.environ[env_var] = str(compression_config[config_key])
     
-    # Apply auxiliary model overrides to environment variables.
-    # Vision and web_extract each have their own provider + model pair.
+    # Apply auxiliary model/direct-endpoint overrides to environment variables.
+    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
     # (Compression is handled in the compression section above.)
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
     auxiliary_config = defaults.get("auxiliary", {})
     auxiliary_task_env = {
-        # config key → (provider env var, model env var)
-        "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
-        "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+        # config key → env var mapping
+        "vision": {
+            "provider": "AUXILIARY_VISION_PROVIDER",
+            "model": "AUXILIARY_VISION_MODEL",
+            "base_url": "AUXILIARY_VISION_BASE_URL",
+            "api_key": "AUXILIARY_VISION_API_KEY",
+        },
+        "web_extract": {
+            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+        },
     }
     
-    for task_key, (prov_env, model_env) in auxiliary_task_env.items():
+    for task_key, env_map in auxiliary_task_env.items():
         task_cfg = auxiliary_config.get(task_key, {})
         if not isinstance(task_cfg, dict):
             continue
         prov = str(task_cfg.get("provider", "")).strip()
         model = str(task_cfg.get("model", "")).strip()
+        base_url = str(task_cfg.get("base_url", "")).strip()
+        api_key = str(task_cfg.get("api_key", "")).strip()
         if prov and prov != "auto":
-            os.environ[prov_env] = prov
+            os.environ[env_map["provider"]] = prov
         if model:
-            os.environ[model_env] = model
+            os.environ[env_map["model"]] = model
+        if base_url:
+            os.environ[env_map["base_url"]] = base_url
+        if api_key:
+            os.environ[env_map["api_key"]] = api_key
     
     # Security settings
     security_config = defaults.get("security", {})
@@ -422,7 +454,6 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
     VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
-    get_available_skills as _get_available_skills,
     build_welcome_banner,
 )
 from hermes_cli.commands import COMMANDS, SlashCommandCompleter
@@ -486,6 +517,15 @@ def _git_repo_root() -> Optional[str]:
     return None
 
 
+def _path_is_within_root(path: Path, root: Path) -> bool:
+    """Return True when a resolved path stays within the expected root."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
@@ -539,12 +579,29 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     include_file = Path(repo_root) / ".worktreeinclude"
     if include_file.exists():
         try:
+            repo_root_resolved = Path(repo_root).resolve()
+            wt_path_resolved = wt_path.resolve()
             for line in include_file.read_text().splitlines():
                 entry = line.strip()
                 if not entry or entry.startswith("#"):
                     continue
                 src = Path(repo_root) / entry
                 dst = wt_path / entry
+                # Prevent path traversal and symlink escapes: both the resolved
+                # source and the resolved destination must stay inside their
+                # expected roots before any file or symlink operation happens.
+                try:
+                    src_resolved = src.resolve(strict=False)
+                    dst_resolved = dst.resolve(strict=False)
+                except (OSError, ValueError):
+                    logger.debug("Skipping invalid .worktreeinclude entry: %s", entry)
+                    continue
+                if not _path_is_within_root(src_resolved, repo_root_resolved):
+                    logger.warning("Skipping .worktreeinclude entry outside repo root: %s", entry)
+                    continue
+                if not _path_is_within_root(dst_resolved, wt_path_resolved):
+                    logger.warning("Skipping .worktreeinclude entry that escapes worktree: %s", entry)
+                    continue
                 if src.is_file():
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(src), str(dst))
@@ -552,7 +609,7 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     # Symlink directories (faster, saves disk)
                     if not dst.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        os.symlink(str(src.resolve()), str(dst))
+                        os.symlink(str(src_resolved), str(dst))
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 
@@ -813,232 +870,6 @@ def _build_compact_banner() -> str:
     )
 
 
-def _get_available_skills() -> Dict[str, List[str]]:
-    """
-    Scan ~/.hermes/skills/ and return skills grouped by category.
-    
-    Returns:
-        Dict mapping category name to list of skill names
-    """
-    import os
-    
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    skills_dir = hermes_home / "skills"
-    skills_by_category = {}
-    
-    if not skills_dir.exists():
-        return skills_by_category
-    
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        
-        if len(parts) >= 2:
-            category = parts[0]
-            skill_name = parts[-2]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        
-        skills_by_category.setdefault(category, []).append(skill_name)
-    
-    return skills_by_category
-
-
-def _format_context_length(tokens: int) -> str:
-    """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
-    if tokens >= 1_000_000:
-        val = tokens / 1_000_000
-        return f"{val:g}M"
-    elif tokens >= 1_000:
-        val = tokens / 1_000
-        return f"{val:g}K"
-    return str(tokens)
-
-
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None):
-    """
-    Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
-    
-    Args:
-        console: Rich Console instance for printing
-        model: The current model name (e.g., "anthropic/claude-opus-4")
-        cwd: Current working directory
-        tools: List of tool definitions
-        enabled_toolsets: List of enabled toolset names
-        session_id: Unique session identifier for logging
-        context_length: Model's context window size in tokens
-    """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-    
-    tools = tools or []
-    enabled_toolsets = enabled_toolsets or []
-    
-    # Get unavailable tools info for coloring
-    _, unavailable_toolsets = check_tool_availability(quiet=True)
-    disabled_tools = set()
-    for item in unavailable_toolsets:
-        disabled_tools.update(item.get("tools", []))
-    
-    # Build the side-by-side content using a table for precise control
-    layout_table = Table.grid(padding=(0, 2))
-    layout_table.add_column("left", justify="center")
-    layout_table.add_column("right", justify="left")
-    
-    # Build left content: caduceus + model info
-    # Resolve skin colors for the banner
-    try:
-        from hermes_cli.skin_engine import get_active_skin
-        _bskin = get_active_skin()
-        _accent = _bskin.get_color("banner_accent", "#FFBF00")
-        _dim = _bskin.get_color("banner_dim", "#B8860B")
-        _text = _bskin.get_color("banner_text", "#FFF8DC")
-        _session_c = _bskin.get_color("session_border", "#8B8682")
-        _title_c = _bskin.get_color("banner_title", "#FFD700")
-        _border_c = _bskin.get_color("banner_border", "#CD7F32")
-        _agent_name = _bskin.get_branding("agent_name", "Hermes Agent")
-    except Exception:
-        _bskin = None
-        _accent, _dim, _text = "#FFBF00", "#B8860B", "#FFF8DC"
-        _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
-        _agent_name = "Hermes Agent"
-
-    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
-    left_lines = ["", _hero, ""]
-    
-    # Shorten model name for display
-    model_short = model.split("/")[-1] if "/" in model else model
-    if len(model_short) > 28:
-        model_short = model_short[:25] + "..."
-    
-    ctx_str = f" [dim {_dim}]·[/] [dim {_dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{_accent}]{model_short}[/]{ctx_str} [dim {_dim}]·[/] [dim {_dim}]Nous Research[/]")
-    left_lines.append(f"[dim {_dim}]{cwd}[/]")
-    
-    # Add session ID if provided
-    if session_id:
-        left_lines.append(f"[dim {_session_c}]Session: {session_id}[/]")
-    left_content = "\n".join(left_lines)
-    
-    # Build right content: tools list grouped by toolset
-    right_lines = []
-    right_lines.append(f"[bold {_accent}]Available Tools[/]")
-    
-    # Group tools by toolset (include all possible tools, both enabled and disabled)
-    toolsets_dict = {}
-    
-    # First, add all enabled tools
-    for tool in tools:
-        tool_name = tool["function"]["name"]
-        toolset = get_toolset_for_tool(tool_name) or "other"
-        if toolset not in toolsets_dict:
-            toolsets_dict[toolset] = []
-        toolsets_dict[toolset].append(tool_name)
-    
-    # Also add disabled toolsets so they show in the banner
-    for item in unavailable_toolsets:
-        # Map the internal toolset ID to display name
-        toolset_id = item.get("id", item.get("name", "unknown"))
-        display_name = f"{toolset_id}_tools" if not toolset_id.endswith("_tools") else toolset_id
-        if display_name not in toolsets_dict:
-            toolsets_dict[display_name] = []
-        for tool_name in item.get("tools", []):
-            if tool_name not in toolsets_dict[display_name]:
-                toolsets_dict[display_name].append(tool_name)
-    
-    # Display tools grouped by toolset (compact format, max 8 groups)
-    sorted_toolsets = sorted(toolsets_dict.keys())
-    display_toolsets = sorted_toolsets[:8]
-    remaining_toolsets = len(sorted_toolsets) - 8
-    
-    for toolset in display_toolsets:
-        tool_names = toolsets_dict[toolset]
-        # Color each tool name - red if disabled, normal if enabled
-        colored_names = []
-        for name in sorted(tool_names):
-            if name in disabled_tools:
-                colored_names.append(f"[red]{name}[/]")
-            else:
-                colored_names.append(f"[{_text}]{name}[/]")
-        
-        tools_str = ", ".join(colored_names)
-        # Truncate if too long (accounting for markup)
-        if len(", ".join(sorted(tool_names))) > 45:
-            # Rebuild with truncation
-            short_names = []
-            length = 0
-            for name in sorted(tool_names):
-                if length + len(name) + 2 > 42:
-                    short_names.append("...")
-                    break
-                short_names.append(name)
-                length += len(name) + 2
-            # Re-color the truncated list
-            colored_names = []
-            for name in short_names:
-                if name == "...":
-                    colored_names.append("[dim]...[/]")
-                elif name in disabled_tools:
-                    colored_names.append(f"[red]{name}[/]")
-                else:
-                    colored_names.append(f"[{_text}]{name}[/]")
-            tools_str = ", ".join(colored_names)
-        
-        right_lines.append(f"[dim {_dim}]{toolset}:[/] {tools_str}")
-    
-    if remaining_toolsets > 0:
-        right_lines.append(f"[dim {_dim}](and {remaining_toolsets} more toolsets...)[/]")
-    
-    right_lines.append("")
-    
-    # Add skills section
-    right_lines.append(f"[bold {_accent}]Available Skills[/]")
-    skills_by_category = _get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
-    
-    if skills_by_category:
-        for category in sorted(skills_by_category.keys()):
-            skill_names = sorted(skills_by_category[category])
-            # Show first 8 skills, then "..." if more
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
-            else:
-                skills_str = ", ".join(skill_names)
-            # Truncate if still too long
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim {_dim}]{category}:[/] [{_text}]{skills_str}[/]")
-    else:
-        right_lines.append(f"[dim {_dim}]No skills installed[/]")
-    
-    right_lines.append("")
-    right_lines.append(f"[dim {_dim}]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
-    
-    right_content = "\n".join(right_lines)
-    
-    # Add to table
-    layout_table.add_row(left_content, right_content)
-    
-    # Wrap in a panel with the title
-    outer_panel = Panel(
-        layout_table,
-        title=f"[bold {_title_c}]{_agent_name} v{VERSION} ({RELEASE_DATE})[/]",
-        border_style=_border_c,
-        padding=(0, 2),
-    )
-    
-    # Print the big logo — use skin's custom logo if available
-    console.print()
-    term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
-        console.print(_logo)
-        console.print()
-    
-    # Print the panel with caduceus and info
-    console.print(outer_panel)
-
 
 # ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
@@ -1048,6 +879,7 @@ from agent.skill_commands import (
     scan_skill_commands,
     get_skill_commands,
     build_skill_invocation_message,
+    build_plan_path,
     build_preloaded_skills_prompt,
 )
 
@@ -3161,6 +2993,8 @@ class HermesCLI:
         elif cmd_lower.startswith("/personality"):
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif cmd_lower == "/plan" or cmd_lower.startswith("/plan "):
+            self._handle_plan_command(cmd_original)
         elif cmd_lower == "/retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
@@ -3271,6 +3105,32 @@ class HermesCLI:
                     self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
+    
+    def _handle_plan_command(self, cmd: str):
+        """Handle /plan [request] — load the bundled plan skill."""
+        parts = cmd.strip().split(maxsplit=1)
+        user_instruction = parts[1].strip() if len(parts) > 1 else ""
+
+        plan_path = build_plan_path(user_instruction)
+        msg = build_skill_invocation_message(
+            "/plan",
+            user_instruction,
+            task_id=self.session_id,
+            runtime_note=(
+                "Save the markdown plan with write_file to this exact relative path "
+                f"inside the active workspace/backend cwd: {plan_path}"
+            ),
+        )
+
+        if not msg:
+            self.console.print("[bold red]Failed to load the bundled /plan skill[/]")
+            return
+
+        _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
+        if hasattr(self, '_pending_input'):
+            self._pending_input.put(msg)
+        else:
+            self.console.print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

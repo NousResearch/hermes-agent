@@ -10,6 +10,8 @@ import pytest
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
+    get_available_vision_backends,
+    resolve_provider_client,
     auxiliary_max_tokens_param,
     _read_codex_access_token,
     _get_auxiliary_provider,
@@ -24,9 +26,12 @@ def _clean_env(monkeypatch):
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
-        # Per-task provider/model overrides
+        "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
+        "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -142,6 +147,27 @@ class TestGetTextAuxiliaryClient:
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
+    def test_task_direct_endpoint_override(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "task-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert model == "task-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "task-key"
+
+    def test_task_direct_endpoint_without_openai_key_does_not_fall_back(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
     def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
         config = {
             "model": {
@@ -187,13 +213,73 @@ class TestGetTextAuxiliaryClient:
 
 
 class TestVisionClientFallback:
-    """Vision client auto mode only tries OpenRouter + Nous (multimodal-capable)."""
+    """Vision client auto mode resolves known-good multimodal backends."""
 
     def test_vision_returns_none_without_any_credentials(self):
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+        ):
             client, model = get_vision_auxiliary_client()
         assert client is None
         assert model is None
+
+    def test_vision_auto_includes_anthropic_when_configured(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+        ):
+            backends = get_available_vision_backends()
+
+        assert "anthropic" in backends
+
+    def test_resolve_provider_client_returns_native_anthropic_wrapper(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+        ):
+            client, model = resolve_provider_client("anthropic")
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "claude-haiku-4-5-20251001"
+
+    def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+        ):
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "claude-haiku-4-5-20251001"
+
+    def test_selected_anthropic_provider_is_preferred_for_vision_auto(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+
+        def fake_load_config():
+            return {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}}
+
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.config.load_config", fake_load_config),
+        ):
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "claude-haiku-4-5-20251001"
 
     def test_vision_auto_includes_codex(self, codex_auth_dir):
         """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
@@ -216,6 +302,27 @@ class TestVisionClientFallback:
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
         assert client is not None  # Custom endpoint picked up as fallback
+
+    def test_vision_direct_endpoint_override(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "vision-key")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_vision_auxiliary_client()
+        assert model == "vision-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:4567/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "vision-key"
+
+    def test_vision_direct_endpoint_requires_openai_api_key(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_vision_auxiliary_client()
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
 
     def test_vision_uses_openrouter_when_available(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -433,6 +540,24 @@ class TestTaskSpecificOverrides:
         with patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client("web_extract")
         assert model == "google/gemini-3-flash-preview"
+
+    def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  web_extract:
+    base_url: http://localhost:3456/v1
+    api_key: config-key
+    model: config-model
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert model == "config-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:3456/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "config-key"
 
     def test_task_without_override_uses_auto(self, monkeypatch):
         """A task with no provider env var falls through to auto chain."""

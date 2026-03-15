@@ -111,6 +111,7 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tm
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
     save_config(config)
@@ -149,6 +150,7 @@ def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_pa
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
     env = _read_env(tmp_path)
@@ -224,3 +226,17 @@ def test_setup_summary_marks_codex_auth_as_vision_available(tmp_path, monkeypatc
     assert "missing run 'hermes setup' to configure" not in output
     assert "Mixture of Agents" in output
     assert "missing OPENROUTER_API_KEY" in output
+
+
+def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Vision (image analysis)" in output
+    assert "missing run 'hermes setup' to configure" not in output

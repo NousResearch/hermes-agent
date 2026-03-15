@@ -100,7 +100,7 @@ In the current implementation, distributions assign a probability to **each indi
 
 All output goes to `data/<run_name>/`:
 
-```
+```text
 data/my_run/
 ├── trajectories.jsonl    # Combined final output (all batches merged)
 ├── batch_0.jsonl         # Individual batch results

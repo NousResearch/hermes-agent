@@ -109,6 +109,7 @@ const sidebars: SidebarsConfig = {
         'developer-guide/architecture',
         'developer-guide/agent-loop',
         'developer-guide/provider-runtime',
+        'developer-guide/adding-providers',
         'developer-guide/prompt-assembly',
         'developer-guide/context-compression-and-caching',
         'developer-guide/gateway-internals',

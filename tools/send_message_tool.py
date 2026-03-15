@@ -153,6 +153,10 @@ def _handle_send(args):
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
+    duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
+    if duplicate_skip:
+        return json.dumps(duplicate_skip)
+
     try:
         from model_tools import _run_async
         result = _run_async(
@@ -211,6 +215,51 @@ def _describe_media_for_mirror(media_files):
             return "[Sent audio attachment]"
         return "[Sent document attachment]"
     return f"[Sent {len(media_files)} media attachments]"
+
+
+def _get_cron_auto_delivery_target():
+    """Return the cron scheduler's auto-delivery target for the current run, if any."""
+    platform = os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
+    chat_id = os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+    if not platform or not chat_id:
+        return None
+    thread_id = os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
+
+
+def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
+    """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
+    auto_target = _get_cron_auto_delivery_target()
+    if not auto_target:
+        return None
+
+    same_target = (
+        auto_target["platform"] == platform_name
+        and str(auto_target["chat_id"]) == str(chat_id)
+        and auto_target.get("thread_id") == thread_id
+    )
+    if not same_target:
+        return None
+
+    target_label = f"{platform_name}:{chat_id}"
+    if thread_id is not None:
+        target_label += f":{thread_id}"
+
+    return {
+        "success": True,
+        "skipped": True,
+        "reason": "cron_auto_delivery_duplicate_target",
+        "target": target_label,
+        "note": (
+            f"Skipped send_message to {target_label}. This cron job will already auto-deliver "
+            "its final response to that same target. Put the intended user-facing content in "
+            "your final response instead, or use a different target if you want an additional message."
+        ),
+    }
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):

@@ -188,9 +188,9 @@ marked.setOptions({
 
 document.getElementById('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
 
-const saved = localStorage.getItem('hermes_api_key');
+// Restore session ID only (not API key — always show auth screen)
 const savedSess = localStorage.getItem('hermes_session_id');
-if (saved) { document.getElementById('token-input').value = saved; if (savedSess) sessionId = savedSess; doAuth(); }
+if (savedSess) sessionId = savedSess;
 
 function doAuth() {
     apiKey = document.getElementById('token-input').value.trim();

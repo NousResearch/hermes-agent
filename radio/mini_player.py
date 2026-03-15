@@ -295,17 +295,13 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         dur_fmt = _format_time(now.duration)
         fragments.append(("class:radio-time", f"  {pos_fmt}/{dur_fmt}"))
 
-    # Volume with speaker icon
+    # Volume dial -- Unicode circle that "rotates" with level
+    # 12 clock positions using braille/geometric chars
     vol = int(now.volume)
-    if vol <= 0:
-        vol_icon = "\u2507"  # muted
-    elif vol < 33:
-        vol_icon = "\u2581"  # low
-    elif vol < 66:
-        vol_icon = "\u2584"  # mid
-    else:
-        vol_icon = "\u2588"  # high
-    fragments.append(("class:radio-vol", f"  {vol_icon} {vol}"))
+    _DIAL = "\u25cb\u25d4\u25d1\u25d5\u25cf"  # empty -> quarter -> half -> three-quarter -> full
+    dial_idx = min(4, vol * 5 // 101)  # 0-4 mapped from 0-100
+    dial = _DIAL[dial_idx]
+    fragments.append(("class:radio-vol", f"  {dial} {vol}"))
 
     # Check if radio control mode is active
     control_mode = False

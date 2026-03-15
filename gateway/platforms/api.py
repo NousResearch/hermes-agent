@@ -44,6 +44,8 @@ class APIPlatformAdapter(BasePlatformAdapter):
         self._server: Optional[uvicorn.Server] = None
         self._host = os.getenv("API_HOST", "127.0.0.1")
         self._port = int(os.getenv("API_PORT", "8765"))
+        self._ssl_cert = os.getenv("API_SSL_CERT", "").strip() or None
+        self._ssl_key = os.getenv("API_SSL_KEY", "").strip() or None
         self._response_queues: Dict[str, asyncio.Queue] = {}
         self._media_files: Dict[str, str] = {}  # token/filename -> file_path
 
@@ -52,26 +54,34 @@ class APIPlatformAdapter(BasePlatformAdapter):
         from gateway.api_server import create_app
 
         app = create_app(self)
+        ssl_kwargs = {}
+        if self._ssl_cert and self._ssl_key:
+            ssl_kwargs["ssl_certfile"] = self._ssl_cert
+            ssl_kwargs["ssl_keyfile"] = self._ssl_key
+            logger.info("TLS enabled (cert=%s)", self._ssl_cert)
+
         config = uvicorn.Config(
             app,
             host=self._host,
             port=self._port,
             log_level="info",
+            **ssl_kwargs,
         )
         self._server = uvicorn.Server(config)
         asyncio.create_task(self._server.serve())
         self._running = True
 
         # Show accessible URLs
+        scheme = "https" if self._ssl_cert else "http"
         if self._host in ("0.0.0.0", "::"):
             ips = self._get_local_ips()
             primary = self._get_primary_ip(ips)
-            print(f"[{self.name}] API + Web UI: http://{primary}:{self._port}")
+            print(f"[{self.name}] API + Web UI: {scheme}://{primary}:{self._port}")
             for ip in ips:
                 if ip != primary:
-                    print(f"[{self.name}]       also: http://{ip}:{self._port}")
+                    print(f"[{self.name}]       also: {scheme}://{ip}:{self._port}")
         else:
-            print(f"[{self.name}] API + Web UI: http://{self._host}:{self._port}")
+            print(f"[{self.name}] API + Web UI: {scheme}://{self._host}:{self._port}")
             if self._host == "127.0.0.1":
                 print(f"[{self.name}]   Set API_HOST=0.0.0.0 for phone/tablet access")
         logger.info("API server starting on %s:%d", self._host, self._port)

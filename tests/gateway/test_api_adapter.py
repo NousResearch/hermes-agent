@@ -1241,6 +1241,17 @@ class TestAdapterHostConfig:
         assert hasattr(adapter, "_media_files")
         assert isinstance(adapter._media_files, dict)
 
+    def test_ssl_disabled_by_default(self):
+        adapter = _make_adapter()
+        assert adapter._ssl_cert is None
+        assert adapter._ssl_key is None
+
+    def test_ssl_enabled_via_env(self):
+        with patch.dict(os.environ, {"API_SSL_CERT": "/path/cert.pem", "API_SSL_KEY": "/path/key.pem"}):
+            adapter = _make_adapter()
+            assert adapter._ssl_cert == "/path/cert.pem"
+            assert adapter._ssl_key == "/path/key.pem"
+
 
 # ── Security fix tests ───────────────────────────────────────────────────
 

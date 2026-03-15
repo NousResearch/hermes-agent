@@ -3804,7 +3804,7 @@ class AIAgent:
                     'image_generate': '🎨', 'text_to_speech': '🔊',
                     'vision_analyze': '👁️', 'mixture_of_agents': '🧠',
                     'skills_list': '📚', 'skill_view': '📚',
-                    'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
+                    'cronjob': '⏰',
                     'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
                     'clarify': '❓', 'execute_code': '🐍', 'delegate_task': '🔀',
                 }

@@ -80,7 +80,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
-        "schedule_cronjob": "name",
+        "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
@@ -513,12 +513,15 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
-    if tool_name == "schedule_cronjob":
-        return _wrap(f"┊ ⏰ schedule  {_trunc(args.get('name', args.get('prompt', 'task')), 30)}  {dur}")
-    if tool_name == "list_cronjobs":
-        return _wrap(f"┊ ⏰ jobs      listing  {dur}")
-    if tool_name == "remove_cronjob":
-        return _wrap(f"┊ ⏰ remove    job {args.get('job_id', '?')}  {dur}")
+    if tool_name == "cronjob":
+        action = args.get("action", "?")
+        if action == "create":
+            skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
+            label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
+            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
+        if action == "list":
+            return _wrap(f"┊ ⏰ cron      listing  {dur}")
+        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name.startswith("rl_"):
         rl = {
             "rl_list_environments": "list envs", "rl_select_environment": f"select {args.get('name', '')}",

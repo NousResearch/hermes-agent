@@ -99,7 +99,7 @@ and open source LLMs. Summarize the top 3 stories in a concise briefing
 with links. Use a friendly, professional tone. Deliver to telegram.
 ```
 
-Hermes will create the cron job for you using the `schedule_cronjob` tool.
+Hermes will create the cron job for you using the unified `cronjob` tool.
 
 ### Option B: CLI Slash Command
 
@@ -232,7 +232,7 @@ Or ask conversationally:
 Remove my morning briefing cron job.
 ```
 
-Hermes will use `list_cronjobs` to find it and `remove_cronjob` to delete it.
+Hermes will use `cronjob(action="list")` to find it and `cronjob(action="remove")` to delete it.
 
 ### Check Gateway Status
 

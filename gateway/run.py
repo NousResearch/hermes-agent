@@ -2435,6 +2435,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
+            err_lower = str(e).lower()
+            if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
+                return "Voice dependencies are missing (PyNaCl / davey). Please reinstall Hermes with voice support enabled."
             return f"Failed to join voice channel: {e}"
 
         if success:

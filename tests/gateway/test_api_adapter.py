@@ -428,6 +428,266 @@ class TestHTTPEndpoints:
 # ── Toolset wiring ───────────────────────────────────────────────────────
 
 
+# ── Security hardening tests ─────────────────────────────────────────────
+
+
+class TestSecurityHardening:
+    """Tests for the security fixes: binding, message limits, requirements."""
+
+    def test_default_host_is_localhost(self):
+        adapter = _make_adapter()
+        assert adapter._host == "127.0.0.1"
+
+    def test_custom_host_from_env(self):
+        with patch.dict(os.environ, {"API_HOST": "0.0.0.0"}):
+            adapter = _make_adapter()
+            assert adapter._host == "0.0.0.0"
+
+    def test_check_requirements_also_checks_uvicorn(self):
+        import builtins
+        real_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == "uvicorn":
+                raise ImportError("mocked")
+            return real_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=mock_import):
+            assert check_api_requirements() is False
+
+    def test_message_max_length_enforced(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/chat",
+                json={"message": "x" * 100_001},
+                headers={"Authorization": "Bearer test-key"},
+            )
+            assert resp.status_code == 422  # validation error
+
+    def test_message_within_limit_accepted(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+        adapter = _make_adapter()
+
+        async def fake_handle(session_id, message, user_id=None):
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "ok"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/chat",
+                json={"message": "x" * 1000},
+                headers={"Authorization": "Bearer test-key"},
+            )
+            assert resp.status_code == 200
+
+
+# ── Successful chat flow ─────────────────────────────────────────────────
+
+
+class TestChatFlow:
+    """Test a complete REST chat request-response cycle."""
+
+    @pytest.mark.asyncio
+    async def test_successful_chat_returns_response(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+
+        # Mock handle_request to simulate agent putting a response on the queue
+        async def fake_handle(session_id, message, user_id=None):
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "Hello back!"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/chat",
+                json={"message": "Hi", "session_id": "test-1"},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["response"] == "Hello back!"
+        assert data["session_id"] == "test-1"
+
+    @pytest.mark.asyncio
+    async def test_chat_with_media(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+
+        async def fake_handle(session_id, message, user_id=None):
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "Here's an image"})
+                await q.put({"type": "image", "url": "https://example.com/img.png"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/chat",
+                json={"message": "Show me something"},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["response"] == "Here's an image"
+        assert len(data["media"]) == 1
+        assert data["media"][0]["type"] == "image"
+
+
+# ── WebSocket tests ──────────────────────────────────────────────────────
+
+
+class TestWebSocket:
+    """Test WebSocket auth, messaging, and edge cases."""
+
+    def test_ws_auth_success(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "ws-key"}):
+            with client.websocket_connect("/v1/chat/stream") as ws:
+                ws.send_json({"type": "auth", "token": "ws-key", "session_id": "ws-1"})
+                resp = ws.receive_json()
+                assert resp["type"] == "auth_ok"
+
+    def test_ws_auth_wrong_key_closes(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "correct"}):
+            with pytest.raises(Exception):
+                with client.websocket_connect("/v1/chat/stream") as ws:
+                    ws.send_json({"type": "auth", "token": "wrong"})
+                    ws.receive_json()  # should close
+
+    def test_ws_chat_flow(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+
+        async def fake_handle(session_id, message, user_id=None):
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "WS response"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "ws-key"}):
+            with client.websocket_connect("/v1/chat/stream") as ws:
+                ws.send_json({"type": "auth", "token": "ws-key", "session_id": "ws-1"})
+                auth_resp = ws.receive_json()
+                assert auth_resp["type"] == "auth_ok"
+
+                ws.send_json({"message": "Hello via WS"})
+                msg = ws.receive_json()
+                assert msg["type"] == "message"
+                assert msg["content"] == "WS response"
+
+                done = ws.receive_json()
+                assert done["type"] == "done"
+
+    def test_ws_empty_message_returns_error(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "ws-key"}):
+            with client.websocket_connect("/v1/chat/stream") as ws:
+                ws.send_json({"type": "auth", "token": "ws-key"})
+                ws.receive_json()  # auth_ok
+
+                ws.send_json({"message": ""})
+                resp = ws.receive_json()
+                assert resp["type"] == "error"
+
+
+# ── Session transcript ───────────────────────────────────────────────────
+
+
+class TestSessionTranscript:
+    def test_get_session_without_store(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.get(
+                "/v1/sessions/test-session",
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["messages"] == []
+        assert "not available" in data.get("note", "")
+
+    def test_get_session_with_store(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        mock_store = MagicMock()
+        mock_store.load_transcript.return_value = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        adapter._session_store = mock_store
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.get(
+                "/v1/sessions/test-session",
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["messages"]) == 2
+
+
 class TestToolsetWiring:
     def test_hermes_api_toolset_exists(self):
         from toolsets import TOOLSETS

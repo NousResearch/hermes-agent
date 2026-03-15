@@ -471,6 +471,8 @@ def _get_env_config() -> Dict[str, Any]:
     # is running inside the container/remote).
     if env_type == "local":
         default_cwd = os.getcwd()
+    elif env_type == "ssh":
+        default_cwd = "~"
     else:
         default_cwd = "/root"
     
@@ -503,6 +505,8 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_persistent": os.getenv("TERMINAL_SSH_PERSISTENT", "false").lower() in ("true", "1", "yes"),
+        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in ("true", "1", "yes"),
         # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
@@ -514,6 +518,7 @@ def _get_env_config() -> Dict[str, Any]:
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
+                        local_config: dict = None,
                         task_id: str = "default"):
     """
     Create an execution environment from mini-swe-agent.
@@ -538,7 +543,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        lc = local_config or {}
+        return _LocalEnvironment(cwd=cwd, timeout=timeout,
+                                 persistent=lc.get("persistent", False))
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -594,6 +601,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
+            persistent=ssh_config.get("persistent", False),
         )
 
     else:
@@ -923,6 +931,7 @@ def terminal_tool(
                                 "user": config.get("ssh_user", ""),
                                 "port": config.get("ssh_port", 22),
                                 "key": config.get("ssh_key", ""),
+                                "persistent": config.get("ssh_persistent", False),
                             }
 
                         container_config = None
@@ -935,6 +944,12 @@ def terminal_tool(
                                 "docker_volumes": config.get("docker_volumes", []),
                             }
 
+                        local_config = None
+                        if env_type == "local":
+                            local_config = {
+                                "persistent": config.get("local_persistent", False),
+                            }
+
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
@@ -942,6 +957,7 @@ def terminal_tool(
                             timeout=effective_timeout,
                             ssh_config=ssh_config,
                             container_config=container_config,
+                            local_config=local_config,
                             task_id=effective_task_id,
                         )
                     except ImportError as e:

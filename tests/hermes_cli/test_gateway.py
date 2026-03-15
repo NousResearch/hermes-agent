@@ -35,7 +35,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
 
     def fake_run(cmd, capture_output=False, text=False, check=False):
@@ -50,7 +50,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     gateway.systemd_status(deep=False)
 
     out = capsys.readouterr().out
-    assert "Gateway service is running" in out
+    assert "gateway service is running" in out
     assert "Systemd linger is disabled" in out
     assert "loginctl enable-linger" in out
 
@@ -58,7 +58,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
 
     calls = []
     helper_calls = []
@@ -79,4 +79,39 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
         ["systemctl", "--user", "enable", gateway.SERVICE_NAME],
     ]
     assert helper_calls == [True]
-    assert "Service installed and enabled" in out
+    assert "User service installed and enabled" in out
+
+
+def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
+    unit_path = tmp_path / "etc" / "systemd" / "system" / "hermes-gateway.service"
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: f"scope={system} user={run_as_user}\n",
+    )
+    monkeypatch.setattr(gateway, "_require_root_for_system_service", lambda action: None)
+
+    calls = []
+    helper_calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+
+    gateway.systemd_install(force=False, system=True, run_as_user="alice")
+
+    out = capsys.readouterr().out
+    assert unit_path.exists()
+    assert unit_path.read_text(encoding="utf-8") == "scope=True user=alice\n"
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", gateway.SERVICE_NAME],
+    ]
+    assert helper_calls == []
+    assert "Configured to run as: alice" not in out  # generated test unit has no User= line
+    assert "System service installed and enabled" in out

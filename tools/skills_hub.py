@@ -1190,12 +1190,29 @@ class ClawHubSource(SkillSource):
         identifier = (meta.identifier or "").lower()
         name = (meta.name or "").lower()
         description = (meta.description or "").lower()
+        normalized_identifier = " ".join(cls._query_terms(identifier))
+        normalized_name = " ".join(cls._query_terms(name))
+        query_terms = cls._query_terms(query_norm)
+        identifier_terms = cls._query_terms(identifier)
+        name_terms = cls._query_terms(name)
         score = 0
 
         if query_norm == identifier:
-            score += 100
+            score += 140
         if query_norm == name:
+            score += 130
+        if normalized_identifier == query_norm:
+            score += 125
+        if normalized_name == query_norm:
+            score += 120
+        if normalized_identifier.startswith(query_norm):
             score += 95
+        if normalized_name.startswith(query_norm):
+            score += 90
+        if query_terms and identifier_terms[: len(query_terms)] == query_terms:
+            score += 70
+        if query_terms and name_terms[: len(query_terms)] == query_terms:
+            score += 65
         if query_norm in identifier:
             score += 40
         if query_norm in name:
@@ -1203,10 +1220,10 @@ class ClawHubSource(SkillSource):
         if query_norm in description:
             score += 10
 
-        for term in cls._query_terms(query_norm):
-            if term in identifier:
+        for term in query_terms:
+            if term in identifier_terms:
                 score += 15
-            if term in name:
+            if term in name_terms:
                 score += 12
             if term in description:
                 score += 3
@@ -1227,9 +1244,36 @@ class ClawHubSource(SkillSource):
 
     def _exact_slug_meta(self, query: str) -> Optional[SkillMeta]:
         slug = query.strip().split("/")[-1]
-        if not slug or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
-            return None
-        return self.inspect(slug)
+        query_terms = self._query_terms(query)
+        candidates: List[str] = []
+
+        if slug and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
+            candidates.append(slug)
+
+        if query_terms:
+            base_slug = "-".join(query_terms)
+            if len(query_terms) >= 2:
+                candidates.extend([
+                    f"{base_slug}-agent",
+                    f"{base_slug}-skill",
+                    f"{base_slug}-tool",
+                    f"{base_slug}-assistant",
+                    f"{base_slug}-playbook",
+                    base_slug,
+                ])
+            else:
+                candidates.append(base_slug)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            meta = self.inspect(candidate)
+            if meta:
+                return meta
+
+        return None
 
     def _finalize_search_results(self, query: str, results: List[SkillMeta], limit: int) -> List[SkillMeta]:
         query_norm = query.strip()
@@ -1260,7 +1304,21 @@ class ClawHubSource(SkillSource):
         return self._dedupe_results(results)[:limit]
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        cache_key = f"clawhub_search_{hashlib.md5(query.encode()).hexdigest()}"
+        query = query.strip()
+
+        if query:
+            query_terms = self._query_terms(query)
+            if len(query_terms) >= 2:
+                direct = self._exact_slug_meta(query)
+                if direct:
+                    return [direct]
+
+            results = self._search_catalog(query, limit=limit)
+            if results:
+                return results
+
+        # Empty query or catalog fallback failure: use the lightweight listing API.
+        cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
             return self._finalize_search_results(
@@ -1364,6 +1422,72 @@ class ClawHubSource(SkillSource):
             trust_level="community",
             tags=tags,
         )
+
+    def _search_catalog(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        cache_key = f"clawhub_search_catalog_v1_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**s) for s in cached][:limit]
+
+        catalog = self._load_catalog_index()
+        if not catalog:
+            return []
+
+        results = self._finalize_search_results(query, catalog, limit)
+        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+        return results
+
+    def _load_catalog_index(self) -> List[SkillMeta]:
+        cache_key = "clawhub_catalog_v1"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**s) for s in cached]
+
+        cursor: Optional[str] = None
+        results: List[SkillMeta] = []
+        seen: set[str] = set()
+        max_pages = 50
+
+        for _ in range(max_pages):
+            params: Dict[str, Any] = {"limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+
+            try:
+                resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=30)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+            except (httpx.HTTPError, json.JSONDecodeError):
+                break
+
+            items = data.get("items", []) if isinstance(data, dict) else []
+            if not isinstance(items, list) or not items:
+                break
+
+            for item in items:
+                slug = item.get("slug")
+                if not isinstance(slug, str) or not slug or slug in seen:
+                    continue
+                seen.add(slug)
+                display_name = item.get("displayName") or item.get("name") or slug
+                summary = item.get("summary") or item.get("description") or ""
+                tags = self._normalize_tags(item.get("tags", []))
+                results.append(SkillMeta(
+                    name=display_name,
+                    description=summary,
+                    source="clawhub",
+                    identifier=slug,
+                    trust_level="community",
+                    tags=tags,
+                ))
+
+            cursor = data.get("nextCursor") if isinstance(data, dict) else None
+            if not isinstance(cursor, str) or not cursor:
+                break
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+        return results
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
         try:

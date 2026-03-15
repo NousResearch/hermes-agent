@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub import ClawHubSource
+from tools.skills_hub import ClawHubSource, SkillMeta
 
 
 class _MockResponse:
@@ -22,8 +22,11 @@ class TestClawHubSource(unittest.TestCase):
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch.object(ClawHubSource, "_load_catalog_index", return_value=[])
     @patch("tools.skills_hub.httpx.get")
-    def test_search_uses_new_endpoint_and_parses_items(self, mock_get, _mock_read_cache, _mock_write_cache):
+    def test_search_uses_listing_endpoint_as_fallback(
+        self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills"):
                 return _MockResponse(
@@ -52,16 +55,21 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].name, "CalDAV Calendar")
         self.assertEqual(results[0].description, "Calendar integration")
 
-        first_call = mock_get.call_args_list[0]
-        args, kwargs = first_call
+        self.assertGreaterEqual(mock_get.call_count, 2)
+        args, kwargs = mock_get.call_args_list[0]
         self.assertTrue(args[0].endswith("/skills"))
         self.assertEqual(kwargs["params"], {"search": "caldav", "limit": 5})
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch.object(
+        ClawHubSource,
+        "_load_catalog_index",
+        return_value=[],
+    )
     @patch("tools.skills_hub.httpx.get")
     def test_search_falls_back_to_exact_slug_when_search_results_are_irrelevant(
-        self, mock_get, _mock_read_cache, _mock_write_cache
+        self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
     ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills"):
@@ -102,23 +110,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("continuous improvement", results[0].description)
 
     @patch("tools.skills_hub.httpx.get")
-    @patch(
-        "tools.skills_hub._read_index_cache",
-        return_value=[
-            {
-                "name": "Apple Music DJ",
-                "description": "Unrelated cached result",
-                "source": "clawhub",
-                "identifier": "apple-music-dj",
-                "trust_level": "community",
-                "repo": None,
-                "path": None,
-                "tags": [],
-                "extra": {},
-            }
-        ],
-    )
-    def test_search_repairs_poisoned_cache_with_exact_slug_lookup(self, _mock_read_cache, mock_get):
+    def test_search_repairs_poisoned_cache_with_exact_slug_lookup(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
             json_data={
@@ -132,12 +124,42 @@ class TestClawHubSource(unittest.TestCase):
             },
         )
 
-        results = self.src.search("self-improving-agent", limit=5)
+        poisoned = [
+            SkillMeta(
+                name="Apple Music DJ",
+                description="Unrelated cached result",
+                source="clawhub",
+                identifier="apple-music-dj",
+                trust_level="community",
+                tags=[],
+            )
+        ]
+        results = self.src._finalize_search_results("self-improving-agent", poisoned, 5)
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].identifier, "self-improving-agent")
         mock_get.assert_called_once()
         self.assertTrue(mock_get.call_args.args[0].endswith("/skills/self-improving-agent"))
+
+    @patch.object(
+        ClawHubSource,
+        "_exact_slug_meta",
+        return_value=SkillMeta(
+            name="self-improving-agent",
+            description="Captures learnings and errors for continuous improvement.",
+            source="clawhub",
+            identifier="self-improving-agent",
+            trust_level="community",
+            tags=["automation"],
+        ),
+    )
+    def test_search_matches_space_separated_query_to_hyphenated_slug(
+        self, _mock_exact_slug
+    ):
+        results = self.src.search("self improving", limit=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].identifier, "self-improving-agent")
 
     @patch("tools.skills_hub.httpx.get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):

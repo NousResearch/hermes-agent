@@ -5066,12 +5066,12 @@ class HermesCLI:
                     _time.sleep(0.1)
                 else:
                     # Refresh mini player when radio is active
-                    # ~6 fps for smooth braille animation
+                    # ~3fps: smooth enough for braille, won't freeze input
                     try:
                         from radio.player import HermesRadio
                         if HermesRadio.active() and self._app:
-                            self._invalidate(min_interval=0.15)
-                            _time.sleep(0.15)
+                            self._invalidate(min_interval=0.3)
+                            _time.sleep(0.3)
                             continue
                     except ImportError:
                         pass

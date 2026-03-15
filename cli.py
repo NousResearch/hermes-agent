@@ -62,22 +62,47 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:
+    _load_dotenv = None
 from hermes_constants import OPENROUTER_BASE_URL
 
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 _user_env = _hermes_home / ".env"
 _project_env = Path(__file__).parent / '.env'
+
+def _fallback_load_dotenv(env_path: Path) -> None:
+    """Inject .env key=value pairs into os.environ when python-dotenv is unavailable."""
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("\"'")
+                    if key:
+                        os.environ.setdefault(key, value)
+    except (OSError, UnicodeDecodeError):
+        pass
+
 if _user_env.exists():
-    try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
+    if _load_dotenv is not None:
+        try:
+            _load_dotenv(dotenv_path=_user_env, encoding="utf-8")
+        except UnicodeDecodeError:
+            _load_dotenv(dotenv_path=_user_env, encoding="latin-1")
+    else:
+        _fallback_load_dotenv(_user_env)
 elif _project_env.exists():
-    try:
-        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+    if _load_dotenv is not None:
+        try:
+            _load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+        except UnicodeDecodeError:
+            _load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+    else:
+        _fallback_load_dotenv(_project_env)
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))

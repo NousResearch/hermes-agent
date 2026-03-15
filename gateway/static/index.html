@@ -181,7 +181,10 @@ function addMessage(type, content, media) {
         label.textContent = 'Voice response';
         div.appendChild(label);
 
-        // Auto-play
+        // Pause mic during TTS playback to prevent echo loop
+        audio.onplay = () => pauseMicDuringPlayback(true);
+        audio.onended = () => pauseMicDuringPlayback(false);
+        audio.onpause = () => pauseMicDuringPlayback(false);
         audio.play().catch(() => {});
       } else if (m.type === 'image' && (m.url || m.path)) {
         const img = document.createElement('img');
@@ -327,7 +330,9 @@ async function toggleMic() {
 
 async function startPushToTalk() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
     audioChunks = [];
     mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType() });
 
@@ -380,7 +385,9 @@ const MIN_SPEECH_MS = 500;       // minimum speech to process
 
 async function startStreamingMic() {
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
     audioContext = new AudioContext();
     const source = audioContext.createMediaStreamSource(micStream);
     analyser = audioContext.createAnalyser();
@@ -595,6 +602,27 @@ async function uploadFile(inputEl) {
   } catch (e) {
     removeTyping();
     addMessage('error', 'Upload failed: ' + e.message);
+  }
+}
+
+// ── Echo prevention ────────────────────────────────────────────────
+
+let micPausedForPlayback = false;
+
+function pauseMicDuringPlayback(pause) {
+  if (!streamingMic) return;  // only affects streaming mode
+
+  if (pause && !micPausedForPlayback) {
+    micPausedForPlayback = true;
+    // Mute the mic input (stop feeding audio to recorder)
+    if (micStream) {
+      micStream.getAudioTracks().forEach(t => t.enabled = false);
+    }
+  } else if (!pause && micPausedForPlayback) {
+    micPausedForPlayback = false;
+    if (micStream) {
+      micStream.getAudioTracks().forEach(t => t.enabled = true);
+    }
   }
 }
 

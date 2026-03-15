@@ -773,6 +773,220 @@ class TestMediaDownload:
         assert resp.content == b"fake-audio-data"
 
 
+# ── Upload endpoint tests ────────────────────────────────────────────────
+
+
+class TestUploadEndpoint:
+    def test_upload_returns_url(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/upload",
+                files={"file": ("test.txt", b"hello world", "text/plain")},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "url" in data
+        assert data["filename"] == "test.txt"
+        assert data["size"] == 11
+
+    def test_upload_file_downloadable(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            up_resp = client.post(
+                "/v1/upload",
+                files={"file": ("doc.pdf", b"pdf-content", "application/pdf")},
+                headers={"Authorization": "Bearer test-key"},
+            )
+            url = up_resp.json()["url"]
+            dl_resp = client.get(url)
+
+        assert dl_resp.status_code == 200
+        assert dl_resp.content == b"pdf-content"
+
+    def test_upload_no_auth_rejected(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/upload",
+            files={"file": ("test.txt", b"data", "text/plain")},
+        )
+        assert resp.status_code == 422  # missing Authorization header
+
+    def test_upload_too_large_rejected(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        # 26 MB > 25 MB limit
+        large_data = b"x" * (26 * 1024 * 1024)
+        with patch.dict(os.environ, {"API_KEY": "test-key"}):
+            resp = client.post(
+                "/v1/upload",
+                files={"file": ("big.bin", large_data, "application/octet-stream")},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 413
+
+
+# ── Voice chat endpoint tests ────────────────────────────────────────────
+
+
+class TestVoiceChatEndpoint:
+    def test_voice_chat_transcribes_and_responds(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+
+        async def fake_handle(session_id, message, user_id=None):
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": f"You said: {message}"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        def fake_transcribe(path, model=None):
+            return {
+                "success": True,
+                "transcript": "hello from voice",
+                "language": "en",
+                "language_probability": 0.95,
+            }
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}), \
+             patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+            resp = client.post(
+                "/v1/chat/voice",
+                files={"file": ("voice.webm", b"fake-audio", "audio/webm")},
+                data={"session_id": "voice-1"},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "hello from voice" in data["response"]
+
+    def test_voice_chat_transcription_failure(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        def fake_transcribe(path, model=None):
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "No speech detected",
+            }
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}), \
+             patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+            resp = client.post(
+                "/v1/chat/voice",
+                files={"file": ("voice.webm", b"silence", "audio/webm")},
+                data={"session_id": "voice-2"},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 422
+        assert "Transcription failed" in resp.json()["detail"]
+
+    def test_voice_chat_no_auth_rejected(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/v1/chat/voice",
+            files={"file": ("voice.webm", b"data", "audio/webm")},
+        )
+        assert resp.status_code == 422  # missing auth header
+
+
+# ── Web UI tests ─────────────────────────────────────────────────────────
+
+
+class TestWebUI:
+    def test_root_serves_html(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Hermes Agent" in resp.text
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_root_has_mic_button(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.get("/")
+        assert "micBtn" in resp.text
+        assert "toggleMic" in resp.text
+
+    def test_root_has_file_upload(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.get("/")
+        assert "fileInput" in resp.text
+        assert "/v1/upload" in resp.text
+
+    def test_root_has_streaming_mic(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        resp = client.get("/")
+        assert "startStreamingMic" in resp.text
+        assert "SILENCE_THRESHOLD" in resp.text
+        assert "voiceMode" in resp.text
+
+
 class TestToolsetWiring:
     def test_hermes_api_toolset_exists(self):
         from toolsets import TOOLSETS

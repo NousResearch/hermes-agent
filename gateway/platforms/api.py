@@ -61,8 +61,46 @@ class APIPlatformAdapter(BasePlatformAdapter):
         self._server = uvicorn.Server(config)
         asyncio.create_task(self._server.serve())
         self._running = True
+
+        # Show accessible URLs
+        if self._host in ("0.0.0.0", "::"):
+            ips = self._get_local_ips()
+            primary = self._get_primary_ip(ips)
+            print(f"[{self.name}] API + Web UI: http://{primary}:{self._port}")
+            for ip in ips:
+                if ip != primary:
+                    print(f"[{self.name}]       also: http://{ip}:{self._port}")
+        else:
+            print(f"[{self.name}] API + Web UI: http://{self._host}:{self._port}")
+            if self._host == "127.0.0.1":
+                print(f"[{self.name}]   Set API_HOST=0.0.0.0 for phone/tablet access")
         logger.info("API server starting on %s:%d", self._host, self._port)
         return True
+
+    @staticmethod
+    def _get_local_ips():
+        """Get all non-loopback IPv4 addresses."""
+        ips = []
+        try:
+            import subprocess
+            out = subprocess.check_output(["ifconfig"], text=True, timeout=5, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("inet ") and "127.0.0.1" not in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        ips.append(parts[1])
+        except Exception:
+            pass
+        return ips
+
+    @staticmethod
+    def _get_primary_ip(ips):
+        """Prefer LAN IPs (192.168.x / 10.x) over VPN ranges."""
+        for ip in ips:
+            if ip.startswith("192.168.") or ip.startswith("10."):
+                return ip
+        return ips[0] if ips else "127.0.0.1"
 
     async def disconnect(self) -> None:
         """Shutdown the server."""

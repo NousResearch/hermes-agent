@@ -193,8 +193,8 @@ Understanding how Hermes behaves in different contexts:
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Bot responds to every message — no @mention needed |
-| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`) |
-| **Threads** | Bot replies in threads when the triggering message is in a thread |
+| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
+| **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. |
 
 :::tip
 In channels, always @mention the bot. Simply typing a message without mentioning it will be ignored.

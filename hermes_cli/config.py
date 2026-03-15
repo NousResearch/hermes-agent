@@ -106,6 +106,7 @@ DEFAULT_CONFIG = {
         "cwd": ".",  # Use current directory
         "timeout": 180,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "docker_forward_env": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -302,7 +303,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 8,
+    "_config_version": 9,
 }
 
 # =============================================================================

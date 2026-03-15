@@ -453,6 +453,8 @@ terminal:
 
   # Docker-specific settings
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_forward_env:              # Optional explicit allowlist for env passthrough
+    - "GITHUB_TOKEN"
   docker_volumes:                    # Share host directories with the container
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"     # :ro for read-only
@@ -516,6 +518,24 @@ This is useful for:
 - **Shared workspaces** where both you and the agent access the same files
 
 Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
+
+### Docker Credential Forwarding
+
+By default, Docker terminal sessions do not inherit arbitrary host credentials. If you need a specific token inside the container, add it to `terminal.docker_forward_env`.
+
+```yaml
+terminal:
+  backend: docker
+  docker_forward_env:
+    - "GITHUB_TOKEN"
+    - "NPM_TOKEN"
+```
+
+Hermes resolves each listed variable from your current shell first, then falls back to `~/.hermes/.env` if it was saved with `hermes config set`.
+
+:::warning
+Anything listed in `docker_forward_env` becomes visible to commands run inside the container. Only forward credentials you are comfortable exposing to the terminal session.
+:::
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 

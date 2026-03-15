@@ -141,6 +141,37 @@ def _service_scope_label(system: bool = False) -> str:
     return "system" if system else "user"
 
 
+def get_installed_systemd_scopes() -> list[str]:
+    scopes = []
+    seen_paths: set[Path] = set()
+    for system, label in ((False, "user"), (True, "system")):
+        unit_path = get_systemd_unit_path(system=system)
+        if unit_path in seen_paths:
+            continue
+        if unit_path.exists():
+            scopes.append(label)
+            seen_paths.add(unit_path)
+    return scopes
+
+
+def has_conflicting_systemd_units() -> bool:
+    return len(get_installed_systemd_scopes()) > 1
+
+
+def print_systemd_scope_conflict_warning() -> None:
+    scopes = get_installed_systemd_scopes()
+    if len(scopes) < 2:
+        return
+
+    rendered_scopes = " + ".join(scopes)
+    print_warning(f"Both user and system gateway services are installed ({rendered_scopes}).")
+    print_info("  This is confusing and can make start/stop/status behavior ambiguous.")
+    print_info("  Default gateway commands target the user service unless you pass --system.")
+    print_info("  Keep one of these:")
+    print_info("    hermes gateway uninstall")
+    print_info("    sudo hermes gateway uninstall --system")
+
+
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:
         print(f"System gateway {action} requires root. Re-run with sudo.")
@@ -176,6 +207,57 @@ def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
             value = line.split("=", 1)[1].strip()
             return value or None
     return None
+
+
+def _default_system_service_user() -> str | None:
+    for candidate in (os.getenv("SUDO_USER"), os.getenv("USER"), os.getenv("LOGNAME")):
+        if candidate and candidate.strip() and candidate.strip() != "root":
+            return candidate.strip()
+    return None
+
+
+def prompt_linux_gateway_install_scope() -> str | None:
+    choice = prompt_choice(
+        "  Choose how the gateway should run in the background:",
+        [
+            "User service (no sudo; best for laptops/dev boxes; may need linger after logout)",
+            "System service (starts on boot; requires sudo; still runs as your user)",
+            "Skip service install for now",
+        ],
+        default=0,
+    )
+    return {0: "user", 1: "system", 2: None}[choice]
+
+
+def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, bool]:
+    scope = prompt_linux_gateway_install_scope()
+    if scope is None:
+        return None, False
+
+    if scope == "system":
+        run_as_user = _default_system_service_user()
+        if os.geteuid() != 0:
+            print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
+            if run_as_user:
+                print_info(f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}")
+            else:
+                print_info("  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>")
+            print_info("  Then start it with: sudo hermes gateway start --system")
+            return scope, False
+
+        if not run_as_user:
+            while True:
+                run_as_user = prompt("  Run the system gateway service as which user?", default="")
+                run_as_user = (run_as_user or "").strip()
+                if run_as_user and run_as_user != "root":
+                    break
+                print_error("  Enter a non-root username.")
+
+        systemd_install(force=force, system=True, run_as_user=run_as_user)
+        return scope, True
+
+    systemd_install(force=force, system=False)
+    return scope, True
 
 
 def get_systemd_linger_status() -> tuple[bool | None, str]:
@@ -462,6 +544,8 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     else:
         _ensure_linger_enabled()
 
+    print_systemd_scope_conflict_warning()
+
 
 def systemd_uninstall(system: bool = False):
     system = _select_systemd_scope(system)
@@ -518,6 +602,10 @@ def systemd_status(deep: bool = False, system: bool = False):
         print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
+
+    if has_conflicting_systemd_units():
+        print_systemd_scope_conflict_warning()
+        print()
 
     if not systemd_unit_is_current(system=system):
         print("⚠ Installed gateway service definition is outdated")
@@ -1025,18 +1113,26 @@ def _is_service_installed() -> bool:
 def _is_service_running() -> bool:
     """Check if the gateway service is currently running."""
     if is_linux():
-        if get_systemd_unit_path(system=False).exists():
+        user_unit_exists = get_systemd_unit_path(system=False).exists()
+        system_unit_exists = get_systemd_unit_path(system=True).exists()
+
+        if user_unit_exists:
             result = subprocess.run(
                 _systemctl_cmd(False) + ["is-active", SERVICE_NAME],
                 capture_output=True, text=True
             )
-            return result.stdout.strip() == "active"
-        if get_systemd_unit_path(system=True).exists():
+            if result.stdout.strip() == "active":
+                return True
+
+        if system_unit_exists:
             result = subprocess.run(
                 _systemctl_cmd(True) + ["is-active", SERVICE_NAME],
                 capture_output=True, text=True
             )
-            return result.stdout.strip() == "active"
+            if result.stdout.strip() == "active":
+                return True
+
+        return False
     elif is_macos() and get_launchd_plist_path().exists():
         result = subprocess.run(
             ["launchctl", "list", "ai.hermes.gateway"],
@@ -1178,6 +1274,10 @@ def gateway_setup():
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 
+    if is_linux() and has_conflicting_systemd_units():
+        print_systemd_scope_conflict_warning()
+        print()
+
     if service_installed and service_running:
         print_success("Gateway service is installed and running.")
     elif service_installed:
@@ -1259,16 +1359,18 @@ def gateway_setup():
                 platform_name = "systemd" if is_linux() else "launchd"
                 if prompt_yes_no(f"  Install the gateway as a {platform_name} service? (runs in background, starts on boot)", True):
                     try:
-                        force = False
+                        installed_scope = None
+                        did_install = False
                         if is_linux():
-                            systemd_install(force)
+                            installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                         else:
-                            launchd_install(force)
+                            launchd_install(force=False)
+                            did_install = True
                         print()
-                        if prompt_yes_no("  Start the service now?", True):
+                        if did_install and prompt_yes_no("  Start the service now?", True):
                             try:
                                 if is_linux():
-                                    systemd_start()
+                                    systemd_start(system=installed_scope == "system")
                                 else:
                                     launchd_start()
                             except subprocess.CalledProcessError as e:
@@ -1278,6 +1380,8 @@ def gateway_setup():
                         print_info("  You can try manually: hermes gateway install")
                 else:
                     print_info("  You can install later: hermes gateway install")
+                    if is_linux():
+                        print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                     print_info("  Or run in foreground:  hermes gateway")
             else:
                 print_info("  Service install not supported on this platform.")

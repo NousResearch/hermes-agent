@@ -78,6 +78,31 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestGatewayServiceDetection:
+    def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+
+        def fake_run(cmd, capture_output=True, text=True, **kwargs):
+            if cmd == ["systemctl", "--user", "is-active", gateway_cli.SERVICE_NAME]:
+                return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
+            if cmd == ["systemctl", "is-active", gateway_cli.SERVICE_NAME]:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_service_running() is True
+
+
 class TestGatewaySystemServiceRouting:
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)

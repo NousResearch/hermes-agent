@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _deliver_result, run_job
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job
 
 
 class TestResolveOrigin:
@@ -42,6 +42,56 @@ class TestResolveOrigin:
     def test_empty_origin(self):
         job = {"origin": {}}
         assert _resolve_origin(job) is None
+
+
+class TestResolveDeliveryTarget:
+    def test_origin_delivery_preserves_thread_id(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1001",
+            "thread_id": "17585",
+        }
+
+    def test_bare_platform_uses_matching_origin_chat(self):
+        job = {
+            "deliver": "telegram",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1001",
+            "thread_id": "17585",
+        }
+
+    def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
+        job = {
+            "deliver": "telegram",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "abc",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-2002",
+            "thread_id": None,
+        }
 
 
 class TestDeliverResultMirrorLogging:

@@ -197,6 +197,18 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 
+## Fallback Model (config.yaml only)
+
+The primary model fallback is configured exclusively through `config.yaml` — there are no environment variables for it. Add a `fallback_model` section with `provider` and `model` keys to enable automatic failover when your main model encounters errors.
+
+```yaml
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+```
+
+See [Fallback Providers](/docs/user-guide/features/fallback-providers) for full details.
+
 ## Provider Routing (config.yaml only)
 
 These go in `~/.hermes/config.yaml` under the `provider_routing` section:

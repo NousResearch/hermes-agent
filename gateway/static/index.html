@@ -92,6 +92,12 @@ let audioChunks = [];
 let micActive = false;
 let micStartTime = 0;
 let micTimerInterval = null;
+let voiceMode = 'off';  // 'off', 'voice_only', 'all'
+let streamingMic = false;  // continuous listening mode
+let silenceTimer = null;
+let audioContext = null;
+let analyser = null;
+let micStream = null;
 
 // Check health on load
 fetch(`${API_BASE}/v1/health`)
@@ -261,6 +267,7 @@ async function sendMessage() {
 
     if (response) {
       addMessage('bot', response, data.media);
+      detectVoiceModeChange(response);
     }
   } catch (e) {
     removeTyping();
@@ -272,17 +279,53 @@ async function sendMessage() {
   }
 }
 
-// ── Microphone (push-to-talk) ──────────────────────────────────────
+function detectVoiceModeChange(response) {
+  const lower = response.toLowerCase();
+  if (lower.includes('voice mode enabled') || lower.includes('voice mode:') && lower.includes('on')) {
+    voiceMode = 'voice_only';
+  } else if (lower.includes('auto-tts enabled')) {
+    voiceMode = 'all';
+  } else if (lower.includes('voice mode disabled') || lower.includes('text-only')) {
+    voiceMode = 'off';
+    if (streamingMic) stopStreamingMic();
+  }
+  updateMicButton();
+}
 
-async function toggleMic() {
-  if (micActive) {
-    stopMic();
+function updateMicButton() {
+  const btn = document.getElementById('micBtn');
+  if (voiceMode === 'off') {
+    btn.title = 'Push to talk';
+    btn.innerHTML = '&#127908;';
   } else {
-    startMic();
+    btn.title = streamingMic ? 'Stop listening' : 'Start listening (continuous)';
+    btn.innerHTML = streamingMic ? '&#9209;' : '&#127908;';
   }
 }
 
-async function startMic() {
+// ── Microphone (push-to-talk) ──────────────────────────────────────
+
+async function toggleMic() {
+  if (voiceMode === 'off') {
+    // Push-to-talk mode
+    if (micActive) {
+      stopPushToTalk();
+    } else {
+      startPushToTalk();
+    }
+  } else {
+    // Streaming mode (voice on/tts)
+    if (streamingMic) {
+      stopStreamingMic();
+    } else {
+      startStreamingMic();
+    }
+  }
+}
+
+// ── Push-to-talk (voice off) ─────────────────────────────────────
+
+async function startPushToTalk() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
@@ -320,13 +363,147 @@ async function startMic() {
   }
 }
 
-function stopMic() {
+function stopPushToTalk() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
   micActive = false;
   document.getElementById('micBtn').classList.remove('recording');
   document.getElementById('micBtn').title = 'Push to talk';
+}
+
+// ── Streaming mic (voice on/tts) ─────────────────────────────────
+
+const SILENCE_THRESHOLD = 0.01;  // RMS below this = silence
+const SILENCE_DURATION = 1500;   // ms of silence to trigger send
+const MIN_SPEECH_MS = 500;       // minimum speech to process
+
+async function startStreamingMic() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(micStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+
+    streamingMic = true;
+    micActive = true;
+    document.getElementById('micBtn').classList.add('recording');
+    updateMicButton();
+    addMessage('system', 'Listening... speak and I will respond');
+
+    startStreamingRecording();
+  } catch (e) {
+    addMessage('error', 'Microphone access denied: ' + e.message);
+  }
+}
+
+function stopStreamingMic() {
+  streamingMic = false;
+  micActive = false;
+
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
+  }
+  clearInterval(micTimerInterval);
+  document.getElementById('micTimer').textContent = '';
+  document.getElementById('micBtn').classList.remove('recording');
+  updateMicButton();
+  addMessage('system', 'Stopped listening');
+}
+
+function startStreamingRecording() {
+  if (!streamingMic || !micStream) return;
+
+  audioChunks = [];
+  mediaRecorder = new MediaRecorder(micStream, { mimeType: getSupportedMimeType() });
+  let speechDetected = false;
+  let speechStart = 0;
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) audioChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    if (!streamingMic) return;  // stopped by user, don't process
+
+    const duration = Date.now() - speechStart;
+    if (audioChunks.length > 0 && speechDetected && duration >= MIN_SPEECH_MS) {
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+      const ext = mediaRecorder.mimeType.includes('webm') ? '.webm' : '.ogg';
+      await sendVoice(blob, `voice${ext}`);
+    }
+
+    // Restart recording for next utterance
+    if (streamingMic) {
+      setTimeout(() => startStreamingRecording(), 100);
+    }
+  };
+
+  mediaRecorder.start(100);  // collect data every 100ms
+  micStartTime = Date.now();
+
+  // Monitor audio levels for silence detection
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+  function checkAudio() {
+    if (!streamingMic) return;
+
+    analyser.getByteTimeDomainData(dataArray);
+
+    // Calculate RMS
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = (dataArray[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+
+    if (rms > SILENCE_THRESHOLD) {
+      // Speech detected
+      if (!speechDetected) {
+        speechDetected = true;
+        speechStart = Date.now();
+      }
+      // Reset silence timer
+      if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
+      // Update timer display
+      const sec = Math.floor((Date.now() - speechStart) / 1000);
+      document.getElementById('micTimer').textContent = `${sec}s`;
+    } else if (speechDetected) {
+      // Silence after speech
+      if (!silenceTimer) {
+        silenceTimer = setTimeout(() => {
+          // Silence long enough - send the utterance
+          silenceTimer = null;
+          document.getElementById('micTimer').textContent = '';
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();  // triggers onstop -> sendVoice -> restart
+          }
+        }, SILENCE_DURATION);
+      }
+    }
+
+    requestAnimationFrame(checkAudio);
+  }
+
+  checkAudio();
 }
 
 function getSupportedMimeType() {
@@ -371,7 +548,10 @@ async function sendVoice(blob, filename) {
       const idx = lines.findIndex(l => l.includes('/sethome'));
       if (idx >= 0) response = lines.slice(idx + 1).join('\n').trim();
     }
-    if (response) addMessage('bot', response, data.media);
+    if (response) {
+      addMessage('bot', response, data.media);
+      detectVoiceModeChange(response);
+    }
   } catch (e) {
     removeTyping();
     addMessage('error', 'Voice request failed: ' + e.message);

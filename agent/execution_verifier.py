@@ -191,7 +191,7 @@ def _verify_terminal(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optio
 
 
 def _verify_write_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
-    """Verify write_file: target file exists and has non-zero size."""
+    """Verify write_file: target file exists; empty files are flagged as warnings."""
     if result_data.get("error"):
         return None
 

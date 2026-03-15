@@ -78,7 +78,10 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
-_CODEX_AUX_MODEL = "gpt-5.3-codex"
+# ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
+# auxiliary flows, while gpt-5.2-codex remains broadly available and supports
+# vision via Responses.
+_CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 

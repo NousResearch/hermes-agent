@@ -2142,16 +2142,18 @@ def setup_gateway(config: dict):
         print_info("      • Create an App-Level Token with 'connections:write' scope")
         print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
         print_info("      Required scopes: chat:write, app_mentions:read,")
-        print_info("      channels:history, channels:read, groups:history,")
-        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("      channels:history, channels:read, im:history,")
+        print_info("      im:read, im:write, users:read, files:write")
+        print_info("      Optional for private channels: groups:history")
         print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-        print_info("      Required events: message.im, message.channels,")
-        print_info("      message.groups, app_mention")
-        print_warning("   ⚠ Without message.channels/message.groups events,")
-        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("      Required events: message.im, message.channels, app_mention")
+        print_info("      Optional for private channels: message.groups")
+        print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
+        print_warning("     not public channels.")
         print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. Reinstall the app after any scope or event changes")
         print_info(
-            "   6. After installing, invite the bot to channels: /invite @YourBot"
+            "   7. After installing, invite the bot to channels: /invite @YourBot"
         )
         print()
         print_info(
@@ -2173,14 +2175,17 @@ def setup_gateway(config: dict):
             )
             print()
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
             else:
+                print_warning(
+                    "⚠️  No Slack allowlist set - unpaired users will be denied by default."
+                )
                 print_info(
-                    "⚠️  No allowlist set - anyone in your workspace can use the bot!"
+                    "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
     # ── WhatsApp ──

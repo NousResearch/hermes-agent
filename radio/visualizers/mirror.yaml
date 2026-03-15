@@ -1,5 +1,5 @@
 name: mirror
-mode: bars
+mode: mirror
 chars: braille
 rows: 3
 width: 32

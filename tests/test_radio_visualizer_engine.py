@@ -109,3 +109,104 @@ def test_build_menu_items_includes_visualizer_presets(monkeypatch):
     visualizer_items = [item for item in items if item.action == 'visualizer']
     assert [item.data['name'] for item in visualizer_items] == ['braille', 'mirror']
     assert visualizer_items[1].sublabel == 'active'
+
+
+def test_mirror_mode_is_horizontally_symmetric_even_without_mirror_flag(monkeypatch):
+    from radio import visualizer_engine
+
+    monkeypatch.setattr(
+        visualizer_engine,
+        'load_preset',
+        lambda name=None: {
+            'name': 'mirror',
+            'mode': 'mirror',
+            'chars': 'ascii',
+            'rows': 1,
+            'width': 5,
+            'attack': 100.0,
+            'decay': 100.0,
+            'center_boost': 0.0,
+            'mirror': False,
+        },
+    )
+    monkeypatch.setattr(
+        visualizer_engine,
+        'get_feature_snapshot',
+        lambda width, smoothing=0.0: level_meter.VisualizerFeatures(
+            levels=[0.1, 0.2, 0.7, 1.0, 0.3][:width],
+            energy=0.5,
+            peak=1.0,
+            transient=0.2,
+            motion=0.3,
+            decay=0.0,
+            active=True,
+        ),
+    )
+
+    row = visualizer_engine.render_rows(
+        preset_name='mirror',
+        width=5,
+        rows=1,
+        paused=False,
+        position=0.0,
+        title_seed='mirror-seed',
+    )[0]
+
+    assert row == row[::-1]
+
+
+def test_scatter_mode_uses_transient_features_instead_of_fallback_bars(monkeypatch):
+    from radio import visualizer_engine
+
+    monkeypatch.setattr(
+        visualizer_engine,
+        'load_preset',
+        lambda name=None: {
+            'name': 'scatter',
+            'mode': 'scatter',
+            'chars': 'dots',
+            'rows': 3,
+            'width': 12,
+            'attack': 100.0,
+            'decay': 100.0,
+            'center_boost': 0.0,
+            'mirror': False,
+        },
+    )
+    monkeypatch.setattr(
+        visualizer_engine,
+        'get_feature_snapshot',
+        lambda width, smoothing=0.0: level_meter.VisualizerFeatures(
+            levels=[0.0] * width,
+            energy=0.2,
+            peak=0.3,
+            transient=1.0,
+            motion=0.5,
+            decay=0.0,
+            active=True,
+        ),
+    )
+    monkeypatch.setattr(
+        visualizer_engine,
+        '_synthetic_snapshot',
+        lambda width, position, title_seed: level_meter.VisualizerFeatures(
+            levels=[0.0] * width,
+            energy=0.0,
+            peak=0.0,
+            transient=0.0,
+            motion=0.0,
+            decay=0.0,
+            active=False,
+        ),
+    )
+
+    rows = visualizer_engine.render_rows(
+        preset_name='scatter',
+        width=12,
+        rows=3,
+        paused=False,
+        position=0.0,
+        title_seed='scatter-seed',
+    )
+
+    assert ''.join(rows).strip()

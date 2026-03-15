@@ -3,7 +3,7 @@
 Adapts the broad structure of the ascii-video pipeline to prompt_toolkit-safe
 terminal rendering:
 
-    feature snapshot -> scene selection -> field generation -> character mapping
+    feature snapshot -> scene selection -> character rendering
 
 This module intentionally stays cheap enough for continuous UI updates.
 """
@@ -75,7 +75,12 @@ def _synthetic_snapshot(width: int, position: float, title_seed: str) -> Visuali
 
 def _resolve_features(width: int, position: float, title_seed: str) -> VisualizerFeatures:
     snapshot = get_feature_snapshot(width)
-    if snapshot.active and any(snapshot.levels):
+    if snapshot.active and (
+        any(snapshot.levels)
+        or snapshot.energy > 0.0
+        or snapshot.transient > 0.0
+        or snapshot.motion > 0.0
+    ):
         return snapshot
     return _synthetic_snapshot(width, position, title_seed)
 
@@ -134,6 +139,19 @@ def _scalar_stack(level: float, rows: int, charset: str) -> List[str]:
     return [charset[idx]] * rows
 
 
+def _glyph_for_level(chars: str, level: float) -> str:
+    if chars == 'blocks':
+        charset = _BLOCKS
+    elif chars == 'dots':
+        charset = _DOTS
+    elif chars == 'ascii':
+        charset = _ASCII
+    else:
+        charset = _ASCII
+    idx = min(len(charset) - 1, max(0, round(level * (len(charset) - 1))))
+    return charset[idx]
+
+
 def _render_bars(levels: List[float], rows: int, chars: str) -> List[str]:
     output = [""] * rows
     for level in levels:
@@ -148,6 +166,42 @@ def _render_bars(levels: List[float], rows: int, chars: str) -> List[str]:
         for row_idx, char in enumerate(stack):
             output[row_idx] += char
     return output
+
+
+def _mirror_levels(levels: List[float], width: int) -> List[float]:
+    if not levels:
+        return [0.0] * width
+    center = (width - 1) / 2
+    mirrored: List[float] = []
+    for i in range(width):
+        left_idx = min(len(levels) - 1, int(abs(i - center)))
+        mirrored.append(levels[left_idx])
+    return mirrored
+
+
+def _render_scatter(grid: TerminalGrid, features: VisualizerFeatures, chars: str, title_seed: str, position: float) -> List[str]:
+    canvas = [[0.0 for _ in range(grid.cols)] for _ in range(grid.rows)]
+    intensity = max(features.transient, features.energy * 0.75, features.motion * 0.5)
+    points = max(1, int(round(intensity * grid.cols * grid.rows * 0.35)))
+    phase = int(position * 10)
+    for i in range(points):
+        x = int(_noise(f'{title_seed}:x:{phase}', i) * grid.cols) % grid.cols
+        y = int(_noise(f'{title_seed}:y:{phase}', i) * grid.rows) % grid.rows
+        level = 0.35 + 0.65 * _noise(f'{title_seed}:v:{phase}', i)
+        canvas[y][x] = max(canvas[y][x], level)
+    return [''.join(_glyph_for_level(chars, cell) for cell in row) for row in canvas]
+
+
+def _render_waveform(grid: TerminalGrid, levels: List[float], chars: str) -> List[str]:
+    canvas = [[0.0 for _ in range(grid.cols)] for _ in range(grid.rows)]
+    if not levels:
+        return [' ' * grid.cols for _ in range(grid.rows)]
+    for x, level in enumerate(levels[:grid.cols]):
+        y = int(round((1.0 - level) * (grid.rows - 1)))
+        canvas[y][x] = 1.0
+        if grid.rows > 1 and y + 1 < grid.rows:
+            canvas[y + 1][x] = max(canvas[y + 1][x], 0.35)
+    return [''.join(_glyph_for_level(chars, cell) for cell in row) for row in canvas]
 
 
 def render_rows(*, preset_name: str | None, width: int, rows: int, paused: bool, position: float, title_seed: str) -> List[str]:
@@ -167,11 +221,14 @@ def render_rows(*, preset_name: str | None, width: int, rows: int, paused: bool,
     levels = _apply_center_boost(levels, float(preset.get('center_boost', 0.0)))
     levels = _smooth_levels(levels, state, float(preset.get('attack', 12.0)), float(preset.get('decay', 4.0)), paused)
 
-    if preset.get('mirror') and levels:
-        half = levels[: max(1, width // 2)]
-        reflected = list(reversed(half)) + half
-        levels = reflected[:width]
-        if len(levels) < width:
-            levels.extend([levels[-1]] * (width - len(levels)))
+    mode = str(preset.get('mode', 'bars'))
+    chars = str(preset.get('chars', 'braille'))
+    grid = TerminalGrid(cols=width, rows=rows)
 
-    return _render_bars(levels, rows, str(preset.get('chars', 'braille')))
+    if mode == 'mirror' or preset.get('mirror'):
+        return _render_bars(_mirror_levels(levels, width), rows, chars)
+    if mode == 'scatter':
+        return _render_scatter(grid, features, chars, title_seed, position)
+    if mode == 'waveform':
+        return _render_waveform(grid, levels, chars)
+    return _render_bars(levels, rows, chars)

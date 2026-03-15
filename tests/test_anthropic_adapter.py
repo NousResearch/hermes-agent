@@ -100,15 +100,13 @@ class TestReadClaudeCodeCredentials:
         assert creds["refreshToken"] == "sk-ant-oat01-refresh"
         assert creds["source"] == "claude_code_credentials_file"
 
-    def test_reads_primary_api_key_with_source(self, tmp_path, monkeypatch):
+    def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         creds = read_claude_code_credentials()
-        assert creds is not None
-        assert creds["accessToken"] == "sk-ant-api03-primary"
-        assert creds["source"] == "claude_json_primary_api_key"
+        assert creds is None
 
     def test_returns_none_for_missing_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
@@ -159,6 +157,15 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert get_anthropic_token_source("sk-ant-api03-primary") == "claude_json_primary_api_key"
+
+    def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        assert resolve_anthropic_token() is None
 
     def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")

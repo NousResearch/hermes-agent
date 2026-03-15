@@ -2016,6 +2016,22 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
 
 
+def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Optional[str]:
+    stash_list = subprocess.run(
+        git_cmd + ["stash", "list", "--format=%gd %H"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in stash_list.stdout.splitlines():
+        selector, _, commit = line.partition(" ")
+        if commit.strip() == stash_ref:
+            return selector.strip()
+    return None
+
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2052,7 +2068,27 @@ def _restore_stashed_changes(
         print(f"Resolve manually with: git stash apply {stash_ref}")
         sys.exit(1)
 
-    subprocess.run(git_cmd + ["stash", "drop", stash_ref], cwd=cwd, check=True)
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
+        print("  The stash was left in place. You can remove it manually after checking the result.")
+        print(f"  Look for commit {stash_ref} in `git stash list --format='%gd %H'` and drop that selector.")
+    else:
+        drop = subprocess.run(
+            git_cmd + ["stash", "drop", stash_selector],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if drop.returncode != 0:
+            print("⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry.")
+            if drop.stdout.strip():
+                print(drop.stdout.strip())
+            if drop.stderr.strip():
+                print(drop.stderr.strip())
+            print("  The stash was left in place. You can remove it manually after checking the result.")
+            print(f"  If needed: git stash drop {stash_selector}")
+
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True

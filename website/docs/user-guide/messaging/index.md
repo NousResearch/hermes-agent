@@ -12,29 +12,33 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 
 ## Architecture
 
-```text
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              Hermes Gateway                                   │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐       │
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │       │
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│       │
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘       │
-│       │             │           │           │         │         │        │           │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘           │
-│                                     │                                                │
-│                            ┌────────▼────────┐                                       │
-│                            │  Session Store  │                                       │
-│                            │  (per-chat)     │                                       │
-│                            └────────┬────────┘                                       │
-│                                     │                                                │
-│                            ┌────────▼────────┐                                       │
-│                            │   AIAgent       │                                       │
-│                            │   (run_agent)   │                                       │
-│                            └─────────────────┘                                       │
-│                                                                                      │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Gateway["Hermes Gateway"]
+        subgraph Adapters["Platform adapters"]
+            tg[Telegram]
+            dc[Discord]
+            wa[WhatsApp]
+            sl[Slack]
+            sig[Signal]
+            em[Email]
+            ha[Home Assistant]
+        end
+
+        store["Session store<br/>per chat"]
+        agent["AIAgent<br/>run_agent.py"]
+        cron["Cron scheduler<br/>ticks every 60s"]
+    end
+
+    tg --> store
+    dc --> store
+    wa --> store
+    sl --> store
+    sig --> store
+    em --> store
+    ha --> store
+    store --> agent
+    cron --> store
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
@@ -54,10 +58,12 @@ This walks you through configuring each platform with arrow-key selection, shows
 ```bash
 hermes gateway              # Run in foreground
 hermes gateway setup        # Configure messaging platforms interactively
-hermes gateway install      # Install as systemd service (Linux) / launchd (macOS)
-hermes gateway start        # Start the service
-hermes gateway stop         # Stop the service
-hermes gateway status       # Check service status
+hermes gateway install      # Install as a user service (Linux) / launchd service (macOS)
+sudo hermes gateway install --system   # Linux only: install a boot-time system service
+hermes gateway start        # Start the default service
+hermes gateway stop         # Stop the default service
+hermes gateway status       # Check default service status
+hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
 ## Chat Commands (Inside Messaging)
@@ -175,6 +181,63 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+## Background Sessions
+
+Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
+
+```
+/background Check all servers in the cluster and report any that are down
+```
+
+Hermes confirms immediately:
+
+```
+🔄 Background task started: "Check all servers in the cluster..."
+   Task ID: bg_143022_a1b2c3
+```
+
+### How It Works
+
+Each `/background` prompt spawns a **separate agent instance** that runs asynchronously:
+
+- **Isolated session** — the background agent has its own session with its own conversation history. It has no knowledge of your current chat context and receives only the prompt you provide.
+- **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
+- **Non-blocking** — your main chat stays fully interactive. Send messages, run other commands, or start more background tasks while it works.
+- **Result delivery** — when the task finishes, the result is sent back to the **same chat or channel** where you issued the command, prefixed with "✅ Background task complete". If it fails, you'll see "❌ Background task failed" with the error.
+
+### Background Process Notifications
+
+When the agent running a background session uses `terminal(background=true)` to start long-running processes (servers, builds, etc.), the gateway can push status updates to your chat. Control this with `display.background_process_notifications` in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  background_process_notifications: all    # all | result | error | off
+```
+
+| Mode | What you receive |
+|------|-----------------|
+| `all` | Running-output updates **and** the final completion message (default) |
+| `result` | Only the final completion message (regardless of exit code) |
+| `error` | Only the final message when the exit code is non-zero |
+| `off` | No process watcher messages at all |
+
+You can also set this via environment variable:
+
+```bash
+HERMES_BACKGROUND_NOTIFICATIONS=result
+```
+
+### Use Cases
+
+- **Server monitoring** — "/background Check the health of all services and alert me if anything is down"
+- **Long builds** — "/background Build and deploy the staging environment" while you continue chatting
+- **Research tasks** — "/background Research competitor pricing and summarize in a table"
+- **File operations** — "/background Organize the photos in ~/Downloads by date into folders"
+
+:::tip
+Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.
+:::
+
 ## Service Management
 
 ### Linux (systemd)
@@ -188,7 +251,17 @@ journalctl --user -u hermes-gateway -f
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
+
+# Or install a boot-time system service that still runs as your user
+sudo hermes gateway install --system
+sudo hermes gateway start --system
+sudo hermes gateway status --system
+journalctl -u hermes-gateway -f
 ```
+
+Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
+
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 ### macOS (launchd)
 

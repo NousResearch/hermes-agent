@@ -84,14 +84,13 @@ from .browser_tool import (
 
 # Cronjob management tools (CLI-only, hermes-cli toolset)
 from .cronjob_tools import (
+    cronjob,
     schedule_cronjob,
     list_cronjobs,
     remove_cronjob,
     check_cronjob_requirements,
     get_cronjob_tool_definitions,
-    SCHEDULE_CRONJOB_SCHEMA,
-    LIST_CRONJOBS_SCHEMA,
-    REMOVE_CRONJOB_SCHEMA
+    CRONJOB_SCHEMA,
 )
 
 # RL Training tools (Tinker-Atropos)
@@ -211,14 +210,13 @@ __all__ = [
     'check_browser_requirements',
     'BROWSER_TOOL_SCHEMAS',
     # Cronjob management tools (CLI-only)
+    'cronjob',
     'schedule_cronjob',
     'list_cronjobs',
     'remove_cronjob',
     'check_cronjob_requirements',
     'get_cronjob_tool_definitions',
-    'SCHEDULE_CRONJOB_SCHEMA',
-    'LIST_CRONJOBS_SCHEMA',
-    'REMOVE_CRONJOB_SCHEMA',
+    'CRONJOB_SCHEMA',
     # RL Training tools
     'rl_list_environments',
     'rl_select_environment',

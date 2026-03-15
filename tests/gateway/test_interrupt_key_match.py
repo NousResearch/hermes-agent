@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource, build_session_key
 
 
@@ -50,11 +50,11 @@ class TestInterruptKeyConsistency:
     """Ensure adapter interrupt methods are queried with session_key, not chat_id."""
 
     def test_session_key_differs_from_chat_id_for_dm(self):
-        """Session key for a DM is NOT the same as chat_id."""
+        """Session key for a DM is namespaced and includes the DM chat_id."""
         source = _source("123456", "dm")
         session_key = build_session_key(source)
         assert session_key != source.chat_id
-        assert session_key == "agent:main:telegram:dm"
+        assert session_key == "agent:main:telegram:dm:123456"
 
     def test_session_key_differs_from_chat_id_for_group(self):
         """Session key for a group chat includes prefix, unlike raw chat_id."""
@@ -122,3 +122,29 @@ class TestInterruptKeyConsistency:
 
         # Interrupt event was set
         assert adapter._active_sessions[session_key].is_set()
+
+    @pytest.mark.asyncio
+    async def test_photo_followup_is_queued_without_interrupt(self):
+        """Photo follow-ups should queue behind the active run instead of interrupting it."""
+        adapter = StubAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        source = _source("-1001234", "group")
+        session_key = build_session_key(source)
+        interrupt_event = asyncio.Event()
+        adapter._active_sessions[session_key] = interrupt_event
+
+        event = MessageEvent(
+            text="caption",
+            source=source,
+            message_type=MessageType.PHOTO,
+            message_id="2",
+            media_urls=["/tmp/photo-a.jpg"],
+            media_types=["image/jpeg"],
+        )
+        await adapter.handle_message(event)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued is event
+        assert queued.media_urls == ["/tmp/photo-a.jpg"]
+        assert interrupt_event.is_set() is False

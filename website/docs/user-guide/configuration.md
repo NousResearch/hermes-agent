@@ -63,13 +63,13 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
-| **Anthropic** | `hermes model` (API key, setup-token, or Claude Code auto-detect) |
+| **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
+| **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -85,16 +85,22 @@ Use Claude models directly through the Anthropic API — no OpenRouter proxy nee
 
 ```bash
 # With an API key (pay-per-token)
-export ANTHROPIC_API_KEY=sk-ant-api03-...
+export ANTHROPIC_API_KEY=***
 hermes chat --provider anthropic --model claude-sonnet-4-6
 
-# With a Claude Code setup-token (Pro/Max subscription)
-export ANTHROPIC_API_KEY=sk-ant-oat01-...  # from 'claude setup-token'
+# Preferred: authenticate through `hermes model`
+# Hermes will use Claude Code's credential store directly when available
+hermes model
+
+# Manual override with a setup-token (fallback / legacy)
+export ANTHROPIC_TOKEN=***  # setup-token or manual OAuth token
 hermes chat --provider anthropic
 
-# Auto-detect Claude Code credentials (if you have Claude Code installed)
-hermes chat --provider anthropic  # reads ~/.claude.json automatically
+# Auto-detect Claude Code credentials (if you already use Claude Code)
+hermes chat --provider anthropic  # reads Claude Code credential files automatically
 ```
+
+When you choose Anthropic OAuth through `hermes model`, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable.
 
 Or set it permanently:
 ```yaml
@@ -157,9 +163,11 @@ hermes model
 ```bash
 # Add to ~/.hermes/.env
 OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=your-key-or-dummy
+OPENAI_API_KEY=***
 LLM_MODEL=your-model-name
 ```
+
+`hermes model` and the manual `.env` approach end up in the same runtime path. If you save a custom endpoint through `hermes model`, Hermes persists the provider + base URL in `config.yaml` so later sessions keep using that endpoint even if `OPENAI_BASE_URL` is not exported in your current shell.
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
@@ -413,6 +421,26 @@ provider_routing:
 
 **Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
 
+## Fallback Model
+
+Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
+
+```yaml
+fallback_model:
+  provider: openrouter                    # required
+  model: anthropic/claude-sonnet-4        # required
+  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+```
+
+When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
+
+Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+
+:::tip
+Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+:::
+
 ## Terminal Backend Configuration
 
 Configure which environment the agent uses for terminal commands:
@@ -563,11 +591,15 @@ auxiliary:
   vision:
     provider: "auto"           # "auto", "openrouter", "nous", "main"
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
+    base_url: ""               # direct OpenAI-compatible endpoint (takes precedence over provider)
+    api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
 
   # Web page summarization + browser page text extraction
   web_extract:
     provider: "auto"
     model: ""                  # e.g. "google/gemini-2.5-flash"
+    base_url: ""
+    api_key: ""
 ```
 
 ### Changing the Vision Model
@@ -594,9 +626,20 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
 | `"nous"` | Force Nous Portal | `hermes login` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
-| `"main"` | Use your custom endpoint (`OPENAI_BASE_URL` + `OPENAI_API_KEY`). Works with OpenAI, local models, or any OpenAI-compatible API. | `OPENAI_BASE_URL` + `OPENAI_API_KEY` |
+| `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. | Custom endpoint credentials + base URL |
 
 ### Common Setups
+
+**Using a direct custom endpoint** (clearer than `provider: "main"` for local/self-hosted APIs):
+```yaml
+auxiliary:
+  vision:
+    base_url: "http://localhost:1234/v1"
+    api_key: "local-key"
+    model: "qwen2.5-vl"
+```
+
+`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint.
 
 **Using OpenAI API key for vision:**
 ```yaml
@@ -630,9 +673,11 @@ auxiliary:
 ```yaml
 auxiliary:
   vision:
-    provider: "main"      # uses your OPENAI_BASE_URL endpoint
+    provider: "main"      # uses your active custom endpoint
     model: "my-local-model"
 ```
+
+`provider: "main"` follows the same custom endpoint Hermes uses for normal chat. That endpoint can be set directly with `OPENAI_BASE_URL`, or saved once through `hermes model` and persisted in `config.yaml`.
 
 :::tip
 If you use Codex OAuth as your main model provider, vision works automatically — no extra configuration needed. Codex is included in the auto-detection chain for vision.
@@ -695,6 +740,8 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
 ```
 
+This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
+
 ## Display Settings
 
 ```yaml
@@ -706,6 +753,7 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  background_process_notifications: all  # all | result | error | off (gateway only)
 ```
 
 | Mode | What you see |
@@ -719,10 +767,43 @@ display:
 
 ```yaml
 stt:
-  provider: "openai"           # STT provider
+  provider: "local"            # "local" | "groq" | "openai"
+  local:
+    model: "base"              # tiny, base, small, medium, large-v3
+  openai:
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+Provider behavior:
+
+- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
+- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
+- `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+
+If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
+
+Groq and OpenAI model overrides are environment-driven:
+
+```bash
+STT_GROQ_MODEL=whisper-large-v3-turbo
+STT_OPENAI_MODEL=whisper-1
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+STT_OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+## Voice Mode (CLI)
+
+```yaml
+voice:
+  record_key: "ctrl+b"         # Push-to-talk key inside the CLI
+  max_recording_seconds: 120    # Hard stop for long recordings
+  auto_tts: false               # Enable spoken replies automatically when /voice on
+  silence_threshold: 200        # RMS threshold for speech detection
+  silence_duration: 3.0         # Seconds of silence before auto-stop
+```
+
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
 ## Quick Commands
 
@@ -807,13 +888,17 @@ delegation:
     - web
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
+  # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
+  # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
+**Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
+
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
-**Precedence:** `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
+**Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
 ## Clarify
 

@@ -361,6 +361,24 @@ class TestDeleteAndExport:
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
+    def test_resolve_session_id_exact(self, db):
+        db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
+        assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
+
+    def test_resolve_session_id_unique_prefix(self, db):
+        db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
+        assert db.resolve_session_id("20260315_092437_c9a6") == "20260315_092437_c9a6ff"
+
+    def test_resolve_session_id_ambiguous_prefix_returns_none(self, db):
+        db.create_session(session_id="20260315_092437_c9a6aa", source="cli")
+        db.create_session(session_id="20260315_092437_c9a6bb", source="cli")
+        assert db.resolve_session_id("20260315_092437_c9a6") is None
+
+    def test_resolve_session_id_escapes_like_wildcards(self, db):
+        db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
+        db.create_session(session_id="20260315X092437_c9a6ff", source="cli")
+        assert db.resolve_session_id("20260315_092437") == "20260315_092437_c9a6ff"
+
     def test_export_session(self, db):
         db.create_session(session_id="s1", source="cli", model="test")
         db.append_message("s1", role="user", content="Hello")

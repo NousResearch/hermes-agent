@@ -35,16 +35,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
-# Load environment variables from ~/.hermes/.env first
-from dotenv import load_dotenv
+# Load environment variables from ~/.hermes/.env first.
+# User-managed env files should override stale shell exports on restart.
+from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
+from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as fallback
-load_dotenv()
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -100,24 +96,40 @@ if _config_path.exists():
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:
                     os.environ[_env_var] = str(_compression_cfg[_cfg_key])
-        # Auxiliary model overrides (vision, web_extract).
-        # Each task has provider + model; bridge non-default values to env vars.
+        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
+        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
             _aux_task_env = {
-                "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
-                "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+                "vision": {
+                    "provider": "AUXILIARY_VISION_PROVIDER",
+                    "model": "AUXILIARY_VISION_MODEL",
+                    "base_url": "AUXILIARY_VISION_BASE_URL",
+                    "api_key": "AUXILIARY_VISION_API_KEY",
+                },
+                "web_extract": {
+                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+                },
             }
-            for _task_key, (_prov_env, _model_env) in _aux_task_env.items():
+            for _task_key, _env_map in _aux_task_env.items():
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
                 _prov = str(_task_cfg.get("provider", "")).strip()
                 _model = str(_task_cfg.get("model", "")).strip()
+                _base_url = str(_task_cfg.get("base_url", "")).strip()
+                _api_key = str(_task_cfg.get("api_key", "")).strip()
                 if _prov and _prov != "auto":
-                    os.environ[_prov_env] = _prov
+                    os.environ[_env_map["provider"]] = _prov
                 if _model:
-                    os.environ[_model_env] = _model
+                    os.environ[_env_map["model"]] = _model
+                if _base_url:
+                    os.environ[_env_map["base_url"]] = _base_url
+                if _api_key:
+                    os.environ[_env_map["api_key"]] = _api_key
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
@@ -213,6 +225,33 @@ def _resolve_gateway_model() -> str:
     except Exception:
         pass
     return model
+
+
+def _resolve_hermes_bin() -> Optional[list[str]]:
+    """Resolve the Hermes update command as argv parts.
+
+    Tries in order:
+    1. ``shutil.which("hermes")`` — standard PATH lookup
+    2. ``sys.executable -m hermes_cli.main`` — fallback when Hermes is running
+       from a venv/module invocation and the ``hermes`` shim is not on PATH
+
+    Returns argv parts ready for quoting/joining, or ``None`` if neither works.
+    """
+    import shutil
+
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
+
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main"]
+    except Exception:
+        pass
+
+    return None
 
 
 class GatewayRunner:
@@ -857,8 +896,19 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
-        
+
+        for session_key, agent in list(self._running_agents.items()):
+            try:
+                agent.interrupt("Gateway shutting down")
+                logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
+            except Exception as e:
+                logger.debug("Failed interrupting agent during shutdown: %s", e)
+
         for platform, adapter in list(self.adapters.items()):
+            try:
+                await adapter.cancel_background_tasks()
+            except Exception as e:
+                logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
             try:
                 await adapter.disconnect()
                 logger.info("✓ %s disconnected", platform.value)
@@ -866,6 +916,9 @@ class GatewayRunner:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
 
         self.adapters.clear()
+        self._running_agents.clear()
+        self._pending_messages.clear()
+        self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
@@ -1052,11 +1105,36 @@ class GatewayRunner:
                         )
             return None
         
-        # PRIORITY: If an agent is already running for this session, interrupt it
-        # immediately. This is before command parsing to minimize latency -- the
-        # user's "stop" message reaches the agent as fast as possible.
+        # PRIORITY handling when an agent is already running for this session.
+        # Default behavior is to interrupt immediately so user text/stop messages
+        # are handled with minimal latency.
+        #
+        # Special case: Telegram/photo bursts often arrive as multiple near-
+        # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
+        # let the adapter-level batching/queueing logic absorb them.
         _quick_key = build_session_key(source)
         if _quick_key in self._running_agents:
+            if event.message_type == MessageType.PHOTO:
+                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    # Reuse adapter queue semantics so photo bursts merge cleanly.
+                    if _quick_key in adapter._pending_messages:
+                        existing = adapter._pending_messages[_quick_key]
+                        if getattr(existing, "message_type", None) == MessageType.PHOTO:
+                            existing.media_urls.extend(event.media_urls)
+                            existing.media_types.extend(event.media_types)
+                            if event.text:
+                                if not existing.text:
+                                    existing.text = event.text
+                                elif event.text not in existing.text:
+                                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+                        else:
+                            adapter._pending_messages[_quick_key] = event
+                    else:
+                        adapter._pending_messages[_quick_key] = event
+                return None
+
             running_agent = self._running_agents[_quick_key]
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
@@ -1071,7 +1149,7 @@ class GatewayRunner:
         
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
-                          "personality", "retry", "undo", "sethome", "set-home",
+                          "personality", "plan", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
                           "background", "reasoning", "voice"}
@@ -1106,6 +1184,28 @@ class GatewayRunner:
         
         if command == "personality":
             return await self._handle_personality_command(event)
+
+        if command == "plan":
+            try:
+                from agent.skill_commands import build_plan_path, build_skill_invocation_message
+
+                user_instruction = event.get_command_args().strip()
+                plan_path = build_plan_path(user_instruction)
+                event.text = build_skill_invocation_message(
+                    "/plan",
+                    user_instruction,
+                    task_id=_quick_key,
+                    runtime_note=(
+                        "Save the markdown plan with write_file to this exact relative path "
+                        f"inside the active workspace/backend cwd: {plan_path}"
+                    ),
+                )
+                if not event.text:
+                    return "Failed to load the bundled /plan skill."
+                command = None
+            except Exception as e:
+                logger.exception("Failed to prepare /plan command")
+                return f"Failed to enter plan mode: {e}"
         
         if command == "retry":
             return await self._handle_retry_command(event)
@@ -2331,6 +2431,13 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             adapter._voice_input_callback = None
+            err_lower = str(e).lower()
+            if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
+                return (
+                    "Voice dependencies are missing (PyNaCl / davey). "
+                    "Install or reinstall Hermes with the messaging extra, e.g. "
+                    "`pip install hermes-agent[messaging]`."
+                )
             return f"Failed to join voice channel: {e}"
 
         if success:
@@ -2471,18 +2578,9 @@ class GatewayRunner:
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input.
-        # Exception: Discord voice channel — play_tts override is a no-op,
-        # so the runner must handle VC playback.
-        skip_double = is_voice_input
-        if skip_double:
-            adapter = self.adapters.get(event.source.platform)
-            guild_id = self._get_guild_id(event)
-            if (guild_id and adapter
-                    and hasattr(adapter, "is_in_voice_channel")
-                    and adapter.is_in_voice_channel(guild_id)):
-                skip_double = False
-        if skip_double:
+        # Dedup: base adapter auto-TTS already handles voice input
+        # (play_tts plays in VC when connected, so runner can skip).
+        if is_voice_input:
             return False
 
         return True
@@ -3222,9 +3320,14 @@ class GatewayRunner:
         if not git_dir.exists():
             return "✗ Not a git repository — cannot update."
 
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return "✗ `hermes` command not found on PATH."
+        hermes_cmd = _resolve_hermes_bin()
+        if not hermes_cmd:
+            return (
+                "✗ Could not locate the `hermes` command. "
+                "Hermes is running, but the update command could not find the "
+                "executable on PATH or via the current Python interpreter. "
+                "Try running `hermes update` manually in your terminal."
+            )
 
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
@@ -3240,8 +3343,9 @@ class GatewayRunner:
 
         # Spawn `hermes update` in a separate cgroup so it survives gateway
         # restart. systemd-run --user --scope creates a transient scope unit.
+        hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
         update_cmd = (
-            f"{shlex.quote(hermes_bin)} update > {shlex.quote(str(output_path))} 2>&1; "
+            f"{hermes_cmd_str} update > {shlex.quote(str(output_path))} 2>&1; "
             f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
         )
         try:
@@ -3398,10 +3502,12 @@ class GatewayRunner:
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
+        if context.source.thread_id:
+            os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME"]:
+        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -3419,9 +3525,13 @@ class GatewayRunner:
           1. Immediately understand what the user sent (no extra tool call).
           2. Re-examine the image with vision_analyze if it needs more detail.
 
+        Athabasca persistence should happen through Athabasca's own POST
+        /api/uploads flow, using the returned asset.publicUrl rather than local
+        cache paths.
+
         Args:
-            user_text:   The user's original caption / message text.
-            image_paths: List of local file paths to cached images.
+            user_text:      The user's original caption / message text.
+            image_paths:    List of local file paths to cached images.
 
         Returns:
             The enriched message string with vision descriptions prepended.
@@ -3446,10 +3556,16 @@ class GatewayRunner:
                 result = _json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
+                    athabasca_note = (
+                        "\n[If this image needs to persist in Athabasca state, upload the cached file "
+                        "through Athabasca POST /api/uploads and use the returned asset.publicUrl. "
+                        "Do not store the local cache path as the canonical imageUrl.]"
+                    )
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
+                        f"{athabasca_note}"
                     )
                 else:
                     enriched_parts.append(
@@ -3479,7 +3595,7 @@ class GatewayRunner:
         audio_paths: List[str],
     ) -> str:
         """
-        Auto-transcribe user voice/audio messages using OpenAI Whisper API
+        Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
 
         Args:
@@ -3489,6 +3605,12 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
+        if not getattr(self.config, "stt_enabled", True):
+            disabled_note = "[The user sent voice message(s), but transcription is disabled in config.]"
+            if user_text:
+                return f"{disabled_note}\n\n{user_text}"
+            return disabled_note
+
         from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
         import asyncio
 
@@ -3761,9 +3883,7 @@ class GatewayRunner:
                 "memory": "🧠",
                 "session_search": "🔍",
                 "send_message": "📨",
-                "schedule_cronjob": "⏰",
-                "list_cronjobs": "⏰",
-                "remove_cronjob": "⏰",
+                "cronjob": "⏰",
                 "execute_code": "🐍",
                 "delegate_task": "🔀",
                 "clarify": "❓",

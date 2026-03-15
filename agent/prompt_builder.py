@@ -141,6 +141,13 @@ PLATFORM_HINTS = {
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
+    "cron": (
+        "You are running as a scheduled cron job. Your final response is automatically "
+        "delivered to the job's configured destination, so do not use send_message to "
+        "send to that same target again. If you want the user to receive something in "
+        "the scheduled destination, put it directly in your final response. Use "
+        "send_message only for additional or different targets."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."

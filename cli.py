@@ -5080,8 +5080,11 @@ class HermesCLI:
         def _radio_menu_height():
             if not cli_ref._radio_menu_state:
                 return 0
-            from radio.menu import VISIBLE_ROWS
-            return VISIBLE_ROWS + 8  # rows + header/footer/borders
+            import shutil as _sh
+            term_h = _sh.get_terminal_size((80, 24)).lines
+            # Leave room for input area (6 lines) + mini player (2)
+            available = max(8, term_h - 8)
+            return min(available, 28)
 
         radio_menu_widget = Window(
             content=FormattedTextControl(_get_radio_menu_display),

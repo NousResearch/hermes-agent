@@ -272,7 +272,12 @@ def _pad_line(text: str, width: int = INNER_WIDTH) -> str:
 
 # -- Render for FormattedTextControl ---------------------------------------
 
-VISIBLE_ROWS = 20
+def _get_visible_rows() -> int:
+    import shutil
+    term_h = shutil.get_terminal_size((80, 24)).lines
+    return max(6, term_h - 12)
+
+VISIBLE_ROWS = 20  # fallback; render_menu uses _get_visible_rows()
 
 
 def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
@@ -301,7 +306,7 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
     fragments.append(("class:radio-menu-border", f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524\n"))
 
     # Viewport calculation -- keep cursor centered in view
-    visible = VISIBLE_ROWS
+    visible = _get_visible_rows()
     vp = state.viewport_start
 
     margin = 2

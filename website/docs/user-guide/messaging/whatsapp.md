@@ -101,7 +101,8 @@ Then start the gateway:
 
 ```bash
 hermes gateway              # Foreground
-hermes gateway install      # Install as a system service
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 The gateway starts the WhatsApp bridge automatically using the saved session.

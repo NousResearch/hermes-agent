@@ -11,7 +11,7 @@ Hermes has two slash-command surfaces:
 - **Interactive CLI slash commands** — handled by `cli.py` / `hermes_cli/commands.py`
 - **Messaging slash commands** — handled by `gateway/run.py`
 
-Installed skills are also exposed as dynamic slash commands on both surfaces.
+Installed skills are also exposed as dynamic slash commands on both surfaces. That includes bundled skills like `/plan`, which opens plan mode and saves markdown plans under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 ## Interactive CLI slash commands
 
@@ -32,6 +32,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/background` | Run a prompt in the background (usage: /background &lt;prompt&gt;) |
+| `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
 ### Configuration
 
@@ -109,6 +110,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/background &lt;prompt&gt;` | Run a prompt in a separate background session. |
+| `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 | `/reload-mcp` | Reload MCP servers from config. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/help` | Show messaging help. |

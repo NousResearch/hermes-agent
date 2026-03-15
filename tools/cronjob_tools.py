@@ -8,6 +8,7 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -369,9 +370,13 @@ def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
 
+    Requires 'crontab' executable to be present in the system PATH.
     Available in interactive CLI mode and gateway/messaging platforms.
-    Cronjobs are server-side scheduled tasks so they work from any interface.
     """
+    # Ensure the system can actually install and manage cron entries.
+    if not shutil.which("crontab"):
+        return False
+
     return bool(
         os.getenv("HERMES_INTERACTIVE")
         or os.getenv("HERMES_GATEWAY_SESSION")

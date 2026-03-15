@@ -25,7 +25,11 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
 
     config = load_config()
 
-    prompt_choices = iter([0, 2])
+    # Provider selection always comes first. Depending on available vision
+    # backends, setup may either skip the optional vision step or prompt for
+    # it before the default-model choice. Provide enough selections for both
+    # paths while still ending on "keep current model".
+    prompt_choices = iter([0, 2, 2])
     monkeypatch.setattr(
         "hermes_cli.setup.prompt_choice",
         lambda *args, **kwargs: next(prompt_choices),

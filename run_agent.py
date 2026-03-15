@@ -2613,6 +2613,38 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_anthropic_client_credentials(self) -> bool:
+        if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
+            return False
+
+        try:
+            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+
+            new_token = resolve_anthropic_token()
+        except Exception as exc:
+            logger.debug("Anthropic credential refresh failed: %s", exc)
+            return False
+
+        if not isinstance(new_token, str) or not new_token.strip():
+            return False
+        new_token = new_token.strip()
+        if new_token == self._anthropic_api_key:
+            return False
+
+        try:
+            self._anthropic_client.close()
+        except Exception:
+            pass
+
+        try:
+            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
+        except Exception as exc:
+            logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
+            return False
+
+        self._anthropic_api_key = new_token
+        return True
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -4822,12 +4854,8 @@ class AIAgent:
                         and not anthropic_auth_retry_attempted
                     ):
                         anthropic_auth_retry_attempted = True
-                        # Try re-reading Claude Code credentials (they may have been refreshed)
-                        from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client, _is_oauth_token
-                        new_token = resolve_anthropic_token()
-                        if new_token and new_token != self._anthropic_api_key:
-                            self._anthropic_api_key = new_token
-                            self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
+                        from agent.anthropic_adapter import _is_oauth_token
+                        if self._try_refresh_anthropic_client_credentials():
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info

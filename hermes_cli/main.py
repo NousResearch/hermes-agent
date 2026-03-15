@@ -1591,8 +1591,30 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_adapter import run_oauth_setup_token
-    from hermes_cli.config import save_anthropic_oauth_token
+    from agent.anthropic_adapter import (
+        run_oauth_setup_token,
+        read_claude_code_credentials,
+        is_claude_code_token_valid,
+    )
+    from hermes_cli.config import (
+        save_anthropic_oauth_token,
+        use_anthropic_claude_code_credentials,
+    )
+
+    def _activate_claude_code_credentials_if_available() -> bool:
+        try:
+            creds = read_claude_code_credentials()
+        except Exception:
+            creds = None
+        if creds and (
+            is_claude_code_token_valid(creds)
+            or bool(creds.get("refreshToken"))
+        ):
+            use_anthropic_claude_code_credentials(save_fn=save_env_value)
+            print("  ✓ Claude Code credentials linked.")
+            print("    Hermes will use Claude's credential store directly instead of copying a setup-token into ~/.hermes/.env.")
+            return True
+        return False
 
     try:
         print()
@@ -1601,6 +1623,8 @@ def _run_anthropic_oauth_flow(save_env_value):
         print()
         token = run_oauth_setup_token()
         if token:
+            if _activate_claude_code_credentials_if_available():
+                return True
             save_anthropic_oauth_token(token, save_fn=save_env_value)
             print("  ✓ OAuth credentials saved.")
             return True

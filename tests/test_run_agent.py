@@ -2085,6 +2085,67 @@ class TestAnthropicBaseUrlPassthrough:
             assert not passed_url or passed_url is None
 
 
+class TestAnthropicCredentialRefresh:
+    def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            old_client = MagicMock()
+            new_client = MagicMock()
+            mock_build.side_effect = [old_client, new_client]
+            agent = AIAgent(
+                api_key="sk-ant-oat01-stale-token",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent._anthropic_client = old_client
+        agent._anthropic_api_key = "sk-ant-oat01-stale-token"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
+        ):
+            assert agent._try_refresh_anthropic_client_credentials() is True
+
+        old_client.close.assert_called_once()
+        rebuild.assert_called_once_with("sk-ant-oat01-fresh-token", "https://api.anthropic.com")
+        assert agent._anthropic_client is new_client
+        assert agent._anthropic_api_key == "sk-ant-oat01-fresh-token"
+
+    def test_try_refresh_anthropic_client_credentials_returns_false_when_token_unchanged(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-same-token",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        old_client = MagicMock()
+        agent._anthropic_client = old_client
+        agent._anthropic_api_key = "sk-ant-oat01-same-token"
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-same-token"),
+            patch("agent.anthropic_adapter.build_anthropic_client") as rebuild,
+        ):
+            assert agent._try_refresh_anthropic_client_credentials() is False
+
+        old_client.close.assert_not_called()
+        rebuild.assert_not_called()
+
+
 # ===================================================================
 # _streaming_api_call tests
 # ===================================================================

@@ -3512,7 +3512,7 @@ class GatewayRunner:
         audio_paths: List[str],
     ) -> str:
         """
-        Auto-transcribe user voice/audio messages using OpenAI Whisper API
+        Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
 
         Args:
@@ -3522,6 +3522,12 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
+        if not getattr(self.config, "stt_enabled", True):
+            disabled_note = "[The user sent voice message(s), but transcription is disabled in config.]"
+            if user_text:
+                return f"{disabled_note}\n\n{user_text}"
+            return disabled_note
+
         from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
         import asyncio
 

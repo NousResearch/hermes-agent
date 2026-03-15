@@ -56,6 +56,17 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
+        # Expanded isolation for other major providers (Issue #1002)
+        "GOOGLE_API_KEY",          # Gemini / Google AI Studio
+        "DEEPSEEK_API_KEY",        # DeepSeek
+        "MISTRAL_API_KEY",         # Mistral AI
+        "GROQ_API_KEY",            # Groq
+        "TOGETHER_API_KEY",        # Together AI
+        "PERPLEXITY_API_KEY",      # Perplexity
+        "COHERE_API_KEY",          # Cohere
+        "FIREWORKS_API_KEY",       # Fireworks AI
+        "XAI_API_KEY",             # xAI (Grok)
+        "HELICONE_API_KEY",        # LLM Observability proxy
     })
     return frozenset(blocked)
 

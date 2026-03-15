@@ -900,8 +900,19 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
-        
+
+        for session_key, agent in list(self._running_agents.items()):
+            try:
+                agent.interrupt("Gateway shutting down")
+                logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
+            except Exception as e:
+                logger.debug("Failed interrupting agent during shutdown: %s", e)
+
         for platform, adapter in list(self.adapters.items()):
+            try:
+                await adapter.cancel_background_tasks()
+            except Exception as e:
+                logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
             try:
                 await adapter.disconnect()
                 logger.info("✓ %s disconnected", platform.value)
@@ -909,6 +920,9 @@ class GatewayRunner:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
 
         self.adapters.clear()
+        self._running_agents.clear()
+        self._pending_messages.clear()
+        self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         

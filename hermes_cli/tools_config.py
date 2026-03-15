@@ -362,14 +362,21 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
 
 def _toolset_has_keys(ts_key: str) -> bool:
     """Check if a toolset's required API keys are configured."""
+    if ts_key == "vision":
+        try:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            _provider, client, _model = resolve_vision_provider_client()
+            return client is not None
+        except Exception:
+            return False
+
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
-        for provider in cat["providers"]:
+        for provider in cat.get("providers", []):
             env_vars = provider.get("env_vars", [])
-            if not env_vars:
-                return True  # Free provider (e.g., Edge TTS)
-            if all(get_env_value(v["key"]) for v in env_vars):
+            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 
@@ -628,6 +635,39 @@ def _configure_provider(provider: dict, config: dict):
 
 def _configure_simple_requirements(ts_key: str):
     """Simple fallback for toolsets that just need env vars (no provider selection)."""
+    if ts_key == "vision":
+        if _toolset_has_keys("vision"):
+            return
+        print()
+        print(color("  Vision / Image Analysis requires a multimodal backend:", Colors.YELLOW))
+        choices = [
+            "OpenRouter — uses Gemini",
+            "OpenAI-compatible endpoint — base URL, API key, and vision model",
+            "Skip",
+        ]
+        idx = _prompt_choice("  Configure vision backend", choices, 2)
+        if idx == 0:
+            _print_info("  Get key at: https://openrouter.ai/keys")
+            value = _prompt("    OPENROUTER_API_KEY", password=True)
+            if value and value.strip():
+                save_env_value("OPENROUTER_API_KEY", value.strip())
+                _print_success("    Saved")
+            else:
+                _print_warning("    Skipped")
+        elif idx == 1:
+            base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+            key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
+            api_key = _prompt(key_label, password=True)
+            if api_key and api_key.strip():
+                save_env_value("OPENAI_BASE_URL", base_url)
+                save_env_value("OPENAI_API_KEY", api_key.strip())
+                if "api.openai.com" in base_url.lower():
+                    save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
+                _print_success("    Saved")
+            else:
+                _print_warning("    Skipped")
+        return
+
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
     if not requirements:
         return

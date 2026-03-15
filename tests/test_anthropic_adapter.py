@@ -467,6 +467,59 @@ class TestConvertMessages:
         assert len(result) == 1
         assert result[0]["role"] == "user"
 
+    def test_converts_user_image_url_blocks_to_anthropic_image_blocks(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Can you see this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Can you see this?"},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                ],
+            }
+        ]
+
+    def test_converts_data_url_image_blocks_to_base64_anthropic_image_blocks(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "What is in this screenshot?"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this screenshot?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AAAA",
+                        },
+                    },
+                ],
+            }
+        ]
+
     def test_converts_tool_calls(self):
         messages = [
             {

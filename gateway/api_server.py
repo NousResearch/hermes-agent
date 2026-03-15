@@ -111,19 +111,15 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
     async def health() -> Dict[str, str]:
         return {"status": "ok"}
 
-    # ── Synchronous chat ─────────────────────────────────────────────
+    # ── Shared response collector ───────────────────────────────────
 
-    @app.post("/v1/chat", response_model=ChatResponse)
-    async def chat(req: ChatRequest, _: None = Depends(verify_api_key)) -> ChatResponse:
-        session_id = req.session_id or str(uuid4())
-        queue = adapter.register_queue(session_id)
-
+    async def _collect_response(sid: str, message: str) -> ChatResponse:
+        """Register queue, send message, collect response, unregister."""
+        queue = adapter.register_queue(sid)
         try:
-            await adapter.handle_request(session_id, req.message)
-
+            await adapter.handle_request(sid, message)
             text_parts: list[str] = []
             media: list[dict] = []
-
             while True:
                 msg = await asyncio.wait_for(queue.get(), timeout=RESPONSE_TIMEOUT)
                 if msg["type"] == "done":
@@ -133,15 +129,17 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
                 else:
                     media.append(msg)
         except asyncio.TimeoutError:
-            logger.warning("API chat timeout for session %s", session_id)
+            logger.warning("API chat timeout for session %s", sid)
         finally:
-            adapter.unregister_queue(session_id)
+            adapter.unregister_queue(sid)
+        return ChatResponse(response="\n".join(text_parts), session_id=sid, media=media)
 
-        return ChatResponse(
-            response="\n".join(text_parts),
-            session_id=session_id,
-            media=media,
-        )
+    # ── Synchronous chat ─────────────────────────────────────────────
+
+    @app.post("/v1/chat", response_model=ChatResponse)
+    async def chat(req: ChatRequest, _: None = Depends(verify_api_key)) -> ChatResponse:
+        sid = req.session_id or str(uuid4())
+        return await _collect_response(sid, req.message)
 
     # ── WebSocket streaming ──────────────────────────────────────────
 
@@ -303,34 +301,9 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
             except OSError:
                 pass
 
-        # Send transcript to agent as voice message
+        # Send transcript to agent
         sid = session_id or str(uuid4())
-        queue = adapter.register_queue(sid)
-
-        try:
-            await adapter.handle_request(sid, transcript)
-
-            text_parts: list[str] = []
-            media: list[dict] = []
-
-            while True:
-                msg = await asyncio.wait_for(queue.get(), timeout=RESPONSE_TIMEOUT)
-                if msg["type"] == "done":
-                    break
-                elif msg["type"] == "message":
-                    text_parts.append(msg["content"])
-                else:
-                    media.append(msg)
-        except asyncio.TimeoutError:
-            logger.warning("API voice chat timeout for session %s", sid)
-        finally:
-            adapter.unregister_queue(sid)
-
-        return ChatResponse(
-            response="\n".join(text_parts),
-            session_id=sid,
-            media=media,
-        )
+        return await _collect_response(sid, transcript)
 
     # ── Sessions ─────────────────────────────────────────────────────
 

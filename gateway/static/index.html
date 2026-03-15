@@ -471,33 +471,34 @@ async function uploadFile(el) {
 
 // ── Messages ───────────────────────────────────────────────────────
 
-function addUserMessage(text, save = true) {
-    const div = document.createElement('div'); div.className = 'msg user'; div.textContent = text;
-    messagesEl.insertBefore(div, typingEl); scrollToBottom();
-    if (save) saveHistory('user', text);
-}
+// ── Shared voice bubble builder ─────────────────────────────────
 
-function addUserVoiceMessage(audioUrl) {
-    const div = document.createElement('div'); div.className = 'msg user';
+function createVoiceBubble(audioUrl, opts = {}) {
+    const barColor = opts.barColor || 'var(--accent)';
+    const barPlayedOpacity = opts.barPlayedOpacity || '1';
+    const barUnplayedOpacity = opts.barUnplayedOpacity || '0.3';
+    const timeColor = opts.timeColor || 'var(--text-muted)';
+    const barCount = opts.barCount || 30;
+
     const audio = new Audio(audioUrl); audio.preload = 'metadata';
-
     const bubble = document.createElement('div'); bubble.className = 'voice-bubble';
-    const btn = document.createElement('button'); btn.className = 'voice-play-btn';
     const playSvg = '<svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>';
     const pauseSvg = '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
+    const btn = document.createElement('button'); btn.className = 'voice-play-btn';
     btn.innerHTML = playSvg; bubble.appendChild(btn);
 
     const waveform = document.createElement('div'); waveform.className = 'voice-waveform';
-    const bars = []; const barCount = 25;
+    const bars = [];
     for (let i = 0; i < barCount; i++) {
         const bar = document.createElement('div'); bar.className = 'bar';
-        bar.style.height = (6 + Math.random() * 18) + 'px';
-        bar.style.background = '#fff'; bar.style.opacity = '0.4';
+        bar.style.height = (6 + Math.random() * 22) + 'px';
+        bar.style.background = barColor; bar.style.opacity = barUnplayedOpacity;
         waveform.appendChild(bar); bars.push(bar);
     }
     bubble.appendChild(waveform);
 
-    const timeEl = document.createElement('div'); timeEl.className = 'voice-time'; timeEl.style.color = 'rgba(255,255,255,0.7)'; timeEl.textContent = '0:00';
+    const timeEl = document.createElement('div'); timeEl.className = 'voice-time';
+    timeEl.style.color = timeColor; timeEl.textContent = '0:00';
     bubble.appendChild(timeEl);
 
     const fmt = s => { const m = Math.floor(s/60); const sec = Math.floor(s%60); return m+':'+(sec<10?'0':'')+sec; };
@@ -507,16 +508,28 @@ function addUserVoiceMessage(audioUrl) {
     function updateProgress() {
         if (!isFinite(audio.duration)) return;
         const pct = audio.currentTime / audio.duration;
-        bars.forEach((b, i) => { b.style.opacity = i <= Math.floor(pct * barCount) ? '1' : '0.4'; });
+        bars.forEach((b, i) => { b.style.opacity = i <= Math.floor(pct * barCount) ? barPlayedOpacity : barUnplayedOpacity; });
         timeEl.textContent = fmt(audio.currentTime);
         if (playing) requestAnimationFrame(updateProgress);
     }
     btn.onclick = () => { if (playing) audio.pause(); else audio.play(); };
     audio.onplay = () => { playing = true; btn.innerHTML = pauseSvg; updateProgress(); };
     audio.onpause = () => { playing = false; btn.innerHTML = playSvg; };
-    audio.onended = () => { playing = false; btn.innerHTML = playSvg; bars.forEach(b => b.style.opacity = '0.4'); if (isFinite(audio.duration)) timeEl.textContent = fmt(audio.duration); };
+    audio.onended = () => { playing = false; btn.innerHTML = playSvg; bars.forEach(b => b.style.opacity = barUnplayedOpacity); if (isFinite(audio.duration)) timeEl.textContent = fmt(audio.duration); };
     waveform.onclick = (e) => { if (!isFinite(audio.duration)) return; const r = waveform.getBoundingClientRect(); audio.currentTime = ((e.clientX-r.left)/r.width)*audio.duration; if (!playing) audio.play(); };
 
+    return { bubble, audio };
+}
+
+function addUserMessage(text, save = true) {
+    const div = document.createElement('div'); div.className = 'msg user'; div.textContent = text;
+    messagesEl.insertBefore(div, typingEl); scrollToBottom();
+    if (save) saveHistory('user', text);
+}
+
+function addUserVoiceMessage(audioUrl) {
+    const div = document.createElement('div'); div.className = 'msg user';
+    const { bubble } = createVoiceBubble(audioUrl, { barColor: '#fff', barUnplayedOpacity: '0.4', barPlayedOpacity: '1', timeColor: 'rgba(255,255,255,0.7)', barCount: 25 });
     div.appendChild(bubble);
     messagesEl.insertBefore(div, typingEl); scrollToBottom(); saveHistory('user', '[Voice message]');
 }
@@ -548,27 +561,7 @@ function addImageMessage(url, caption) {
 
 function addUserAudioMessage(url, filename) {
     const div = document.createElement('div'); div.className = 'msg user';
-    const audio = new Audio(url); audio.preload = 'metadata';
-    const bubble = document.createElement('div'); bubble.className = 'voice-bubble';
-    const btn = document.createElement('button'); btn.className = 'voice-play-btn';
-    const playSvg = '<svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>';
-    const pauseSvg = '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
-    btn.innerHTML = playSvg; bubble.appendChild(btn);
-    const waveform = document.createElement('div'); waveform.className = 'voice-waveform';
-    const bars = []; const barCount = 25;
-    for (let i = 0; i < barCount; i++) { const bar = document.createElement('div'); bar.className = 'bar'; bar.style.height = (6+Math.random()*18)+'px'; bar.style.background = '#fff'; bar.style.opacity = '0.4'; waveform.appendChild(bar); bars.push(bar); }
-    bubble.appendChild(waveform);
-    const timeEl = document.createElement('div'); timeEl.className = 'voice-time'; timeEl.style.color = 'rgba(255,255,255,0.7)'; timeEl.textContent = '0:00';
-    bubble.appendChild(timeEl);
-    const fmt = s => { const m = Math.floor(s/60); const sec = Math.floor(s%60); return m+':'+(sec<10?'0':'')+sec; };
-    audio.addEventListener('loadedmetadata', () => { if (isFinite(audio.duration)) timeEl.textContent = fmt(audio.duration); });
-    let playing = false;
-    function up() { if (!isFinite(audio.duration)) return; const p = audio.currentTime/audio.duration; bars.forEach((b,i) => { b.style.opacity = i<=Math.floor(p*barCount)?'1':'0.4'; }); timeEl.textContent = fmt(audio.currentTime); if (playing) requestAnimationFrame(up); }
-    btn.onclick = () => { if (playing) audio.pause(); else audio.play(); };
-    audio.onplay = () => { playing=true; btn.innerHTML=pauseSvg; up(); };
-    audio.onpause = () => { playing=false; btn.innerHTML=playSvg; };
-    audio.onended = () => { playing=false; btn.innerHTML=playSvg; bars.forEach(b=>b.style.opacity='0.4'); if(isFinite(audio.duration)) timeEl.textContent=fmt(audio.duration); };
-    waveform.onclick = (e) => { if(!isFinite(audio.duration)) return; const r=waveform.getBoundingClientRect(); audio.currentTime=((e.clientX-r.left)/r.width)*audio.duration; if(!playing) audio.play(); };
+    const { bubble } = createVoiceBubble(url, { barColor: '#fff', barUnplayedOpacity: '0.4', barPlayedOpacity: '1', timeColor: 'rgba(255,255,255,0.7)', barCount: 25 });
     div.appendChild(bubble);
     if (filename) { const label = document.createElement('div'); label.style.cssText = 'font-size:11px;opacity:0.7;margin-top:4px'; label.textContent = filename; div.appendChild(label); }
     messagesEl.insertBefore(div, typingEl); scrollToBottom(); saveHistory('user', `[Audio: ${filename}]`);
@@ -608,43 +601,7 @@ function addVideoMessage(url, caption) {
 
 function addVoiceMessage(url) {
     const div = document.createElement('div'); div.className = 'msg bot';
-    const audio = new Audio(url); audio.preload = 'metadata';
-
-    const bubble = document.createElement('div'); bubble.className = 'voice-bubble';
-    const btn = document.createElement('button'); btn.className = 'voice-play-btn';
-    const playSvg = '<svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>';
-    const pauseSvg = '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
-    btn.innerHTML = playSvg; bubble.appendChild(btn);
-
-    const waveform = document.createElement('div'); waveform.className = 'voice-waveform';
-    const bars = []; const barCount = 35;
-    for (let i = 0; i < barCount; i++) {
-        const bar = document.createElement('div'); bar.className = 'bar';
-        bar.style.height = (6 + Math.random() * 22) + 'px';
-        waveform.appendChild(bar); bars.push(bar);
-    }
-    bubble.appendChild(waveform);
-
-    const timeEl = document.createElement('div'); timeEl.className = 'voice-time'; timeEl.textContent = '0:00';
-    bubble.appendChild(timeEl);
-
-    const fmt = s => { const m = Math.floor(s/60); const sec = Math.floor(s%60); return m+':'+(sec<10?'0':'')+sec; };
-    audio.addEventListener('loadedmetadata', () => { if (isFinite(audio.duration)) timeEl.textContent = fmt(audio.duration); });
-
-    let playing = false;
-    function updateProgress() {
-        if (!isFinite(audio.duration)) return;
-        const pct = audio.currentTime / audio.duration;
-        bars.forEach((b, i) => b.classList.toggle('played', i <= Math.floor(pct * barCount)));
-        timeEl.textContent = fmt(audio.currentTime);
-        if (playing) requestAnimationFrame(updateProgress);
-    }
-    btn.onclick = () => { if (playing) audio.pause(); else audio.play(); };
-    audio.onplay = () => { playing = true; btn.innerHTML = pauseSvg; updateProgress(); };
-    audio.onpause = () => { playing = false; btn.innerHTML = playSvg; };
-    audio.onended = () => { playing = false; btn.innerHTML = playSvg; bars.forEach(b => b.classList.remove('played')); if (isFinite(audio.duration)) timeEl.textContent = fmt(audio.duration); };
-    waveform.onclick = (e) => { if (!isFinite(audio.duration)) return; const r = waveform.getBoundingClientRect(); audio.currentTime = ((e.clientX-r.left)/r.width)*audio.duration; if (!playing) audio.play(); };
-
+    const { bubble } = createVoiceBubble(url, { barCount: 35 });
     div.appendChild(bubble);
     messagesEl.insertBefore(div, typingEl); scrollToBottom();
 }

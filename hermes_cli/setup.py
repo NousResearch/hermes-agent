@@ -23,6 +23,67 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
+# Curses-based menu helpers - avoids simple_term_menu rendering bugs in tmux/iTerm2
+
+def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
+    """Single-select menu with arrow keys. Uses curses for cross-terminal compatibility."""
+    try:
+        import curses
+        result_holder = [default]
+
+        def _curses_menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            cursor = default
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(0, 0, question, max_x - 1,
+                                   curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
+                except curses.error:
+                    pass
+
+                for i, c in enumerate(choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "→" if i == cursor else " "
+                    line = f" {arrow}  {c}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP, ord('k')):
+                    cursor = (cursor - 1) % len(choices)
+                elif key in (curses.KEY_DOWN, ord('j')):
+                    cursor = (cursor + 1) % len(choices)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = cursor
+                    return
+                elif key in (27, ord('q')):
+                    return
+
+        curses.wrapper(_curses_menu)
+        return result_holder[0]
+    except Exception:
+        return -1  # Signal to fall back
+
+
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     current_model = config.get("model")
     if isinstance(current_model, dict):
@@ -235,7 +296,17 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """
     print(color(question, Colors.YELLOW))
 
-    # Try to use interactive menu if available
+    # Try curses-based menu first (cross-platform, works in tmux/iTerm2)
+    idx = _curses_prompt_choice(question, choices, default)
+    if idx >= 0:
+        if idx == default:
+            print_info(f"  Skipped (keeping current)")
+            print()
+            return default
+        print()
+        return idx
+
+    # Fall back to simple_term_menu
     try:
         from simple_term_menu import TerminalMenu
         import re
@@ -331,97 +402,53 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
     Display a multi-select checklist and return the indices of selected items.
 
     Each item in `items` is a display string. `pre_selected` is a list of
-    indices that should be checked by default. A "Continue →" option is
-    appended at the end — the user toggles items with Space and confirms
-    with Enter on "Continue →".
+    indices that should be checked by default.
 
-    Falls back to a numbered toggle interface when simple_term_menu is
-    unavailable.
+    Uses numbered toggle interface (skips simple_term_menu due to cross-platform
+    rendering issues in tmux/iTerm2).
 
     Returns:
-        List of selected indices (not including the Continue option).
+        List of selected indices.
     """
     if pre_selected is None:
         pre_selected = []
 
     print(color(title, Colors.YELLOW))
-    print_info("  SPACE Toggle  ENTER Confirm  ESC Skip  Ctrl+C Exit")
+    print_info("  Enter # to toggle, Enter to confirm, Ctrl+C to exit")
     print()
 
-    try:
-        from simple_term_menu import TerminalMenu
-        import re
+    # Use numbered toggle interface directly (avoid simple_term_menu issues)
+    selected = set(pre_selected)
 
-        # Strip emoji characters from menu labels — simple_term_menu miscalculates
-        # visual width of emojis on macOS, causing duplicated/garbled lines.
-        _emoji_re = re.compile(
-            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
-            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+",
-            flags=re.UNICODE,
-        )
-        menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
+    while True:
+        for i, item in enumerate(items):
+            marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
+            print(f"  {marker} {i + 1}. {item}")
+        print()
 
-        # Map pre-selected indices to the actual menu entry strings
-        preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
-
-        terminal_menu = TerminalMenu(
-            menu_items,
-            multi_select=True,
-            show_multi_select_hint=False,
-            multi_select_cursor="[✓] ",
-            multi_select_select_on_accept=False,
-            multi_select_empty_ok=True,
-            preselected_entries=preselected if preselected else None,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        terminal_menu.show()
-
-        if terminal_menu.chosen_menu_entries is None:
-            print_info("  Skipped (keeping current)")
-            return list(pre_selected)
-
-        selected = list(terminal_menu.chosen_menu_indices or [])
-        return selected
-
-    except (ImportError, NotImplementedError):
-        # Fallback: numbered toggle interface (simple_term_menu doesn't support Windows)
-        selected = set(pre_selected)
-
-        while True:
-            for i, item in enumerate(items):
-                marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
-                print(f"  {marker} {i + 1}. {item}")
-            print()
-
-            try:
-                value = input(
-                    color("  Toggle # (or Enter to confirm): ", Colors.DIM)
-                ).strip()
-                if not value:
-                    break
-                idx = int(value) - 1
-                if 0 <= idx < len(items):
-                    if idx in selected:
-                        selected.discard(idx)
-                    else:
-                        selected.add(idx)
+        try:
+            value = input(
+                color("  Toggle # (or Enter to confirm): ", Colors.DIM)
+            ).strip()
+            if not value:
+                break
+            idx = int(value) - 1
+            if 0 <= idx < len(items):
+                if idx in selected:
+                    selected.discard(idx)
                 else:
-                    print_error(f"Enter a number between 1 and {len(items)}")
-            except ValueError:
-                print_error("Enter a number")
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return []
-
-            # Clear and redraw (simple approach)
+                    selected.add(idx)
+            else:
+                print_error(f"Enter a number between 1 and {len(items)}")
+        except ValueError:
+            print_error("Enter a number")
+        except (KeyboardInterrupt, EOFError):
             print()
+            return []
 
-        return sorted(selected)
+        print()
+
+    return sorted(selected)
 
 
 def _prompt_api_key(var: dict):

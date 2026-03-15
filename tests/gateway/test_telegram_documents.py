@@ -81,20 +81,21 @@ def _make_document(
     return doc
 
 
-def _make_message(document=None, caption=None):
-    """Build a mock Telegram Message with the given document."""
+def _make_message(document=None, caption=None, media_group_id=None, photo=None):
+    """Build a mock Telegram Message with the given document/photo."""
     msg = MagicMock()
     msg.message_id = 42
     msg.text = caption or ""
     msg.caption = caption
     msg.date = None
-    # Media flags — all None except document
-    msg.photo = None
+    # Media flags — all None except explicit payload
+    msg.photo = photo
     msg.video = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None
     msg.document = document
+    msg.media_group_id = media_group_id
     # Chat / user
     msg.chat = MagicMock()
     msg.chat.id = 100
@@ -164,6 +165,12 @@ class TestDocumentTypeDetection:
 # ---------------------------------------------------------------------------
 # TestDocumentDownloadBlock
 # ---------------------------------------------------------------------------
+
+def _make_photo(file_obj=None):
+    photo = MagicMock()
+    photo.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"photo-bytes"))
+    return photo
+
 
 class TestDocumentDownloadBlock:
     @pytest.mark.asyncio
@@ -337,6 +344,50 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
         # handle_message should still be called (the handler catches the exception)
         adapter.handle_message.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestMediaGroups — media group (album) buffering
+# ---------------------------------------------------------------------------
+
+class TestMediaGroups:
+    @pytest.mark.asyncio
+    async def test_photo_album_is_buffered_and_combined(self, adapter):
+        first_photo = _make_photo(_make_file_obj(b"first"))
+        second_photo = _make_photo(_make_file_obj(b"second"))
+
+        msg1 = _make_message(caption="two images", media_group_id="album-1", photo=[first_photo])
+        msg2 = _make_message(media_group_id="album-1", photo=[second_photo])
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/one.jpg", "/tmp/two.jpg"]):
+            await adapter._handle_media_message(_make_update(msg1), MagicMock())
+            await adapter._handle_media_message(_make_update(msg2), MagicMock())
+            assert adapter.handle_message.await_count == 0
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "two images"
+        assert event.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
+        assert len(event.media_types) == 2
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_media_group_flush(self, adapter):
+        first_photo = _make_photo(_make_file_obj(b"first"))
+        msg = _make_message(caption="two images", media_group_id="album-2", photo=[first_photo])
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/one.jpg"):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert "album-2" in adapter._media_group_events
+        assert "album-2" in adapter._media_group_tasks
+
+        await adapter.disconnect()
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        assert adapter._media_group_events == {}
+        assert adapter._media_group_tasks == {}
+        adapter.handle_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

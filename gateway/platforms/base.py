@@ -356,6 +356,10 @@ class BasePlatformAdapter(ABC):
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Background message-processing tasks spawned by handle_message().
+        # Gateway shutdown cancels these so an old gateway instance doesn't keep
+        # working on a task after --replace or manual restarts.
+        self._background_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
 
@@ -778,7 +782,15 @@ class BasePlatformAdapter(ABC):
             return  # Don't process now - will be handled after current task finishes
         
         # Spawn background task to process this message
-        asyncio.create_task(self._process_message_background(event, session_key))
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            # Some tests stub create_task() with lightweight sentinels that are not
+            # hashable and do not support lifecycle callbacks.
+            return
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -988,6 +1000,21 @@ class BasePlatformAdapter(ABC):
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
     
+    async def cancel_background_tasks(self) -> None:
+        """Cancel any in-flight background message-processing tasks.
+
+        Used during gateway shutdown/replacement so active sessions from the old
+        process do not keep running after adapters are being torn down.
+        """
+        tasks = [task for task in self._background_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self._pending_messages.clear()
+        self._active_sessions.clear()
+
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()

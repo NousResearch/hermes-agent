@@ -281,6 +281,52 @@ class HermesRadio:
         self._notify_state_change()
         return f"Volume: {int(level)}%"
 
+    async def start_recording(self, path: str = "") -> str:
+        """Start recording the current stream to disk."""
+        if not self._running:
+            return "Radio is not playing"
+
+        if not path:
+            import os
+            from datetime import datetime
+            rec_dir = os.path.expanduser("~/.hermes/radio/recordings")
+            os.makedirs(rec_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            station = self._now.station_name or "radio"
+            safe = "".join(c for c in station if c.isalnum() or c in "-_ ")[:30].strip()
+            path = os.path.join(rec_dir, f"{ts}_{safe}.mp3")
+
+        try:
+            await self._primary.set_property("stream-record", path)
+            self._recording_path = path
+            try:
+                from radio.log import info
+                info(f"recording started: {path}")
+            except Exception:
+                pass
+            return f"Recording to {path}"
+        except Exception as e:
+            return f"Recording failed: {e}"
+
+    async def stop_recording(self) -> str:
+        """Stop recording the current stream."""
+        try:
+            await self._primary.set_property("stream-record", "")
+            path = getattr(self, '_recording_path', '')
+            self._recording_path = ""
+            try:
+                from radio.log import info
+                info(f"recording stopped: {path}")
+            except Exception:
+                pass
+            return f"Recording saved: {path}" if path else "Recording stopped"
+        except Exception as e:
+            return f"Stop recording failed: {e}"
+
+    @property
+    def is_recording(self) -> bool:
+        return bool(getattr(self, '_recording_path', ''))
+
     async def adjust_volume(self, delta: float) -> str:
         current = await self._primary.get_volume()
         new_vol = max(0, min(100, current + delta))

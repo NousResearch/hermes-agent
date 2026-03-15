@@ -4417,6 +4417,22 @@ class HermesCLI:
             except ImportError:
                 pass
 
+        @kb.add('r', filter=_radio_control)
+        def rc_record(event):
+            """Toggle recording."""
+            try:
+                from radio.player import HermesRadio
+                if HermesRadio.active():
+                    radio = HermesRadio.get()
+                    from tools.radio_tool import _run_radio_async
+                    if radio.is_recording:
+                        _run_radio_async(radio.stop_recording())
+                    else:
+                        _run_radio_async(radio.start_recording())
+                    event.app.invalidate()
+            except Exception:
+                pass
+
         # --- History navigation: up/down browse history in normal input mode ---
         # The TextArea is multiline, so by default up/down only move the cursor.
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,

@@ -324,9 +324,9 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     fragments.append(("", "\n"))
     if control_mode:
         if is_stream:
-            fragments.append(("class:radio-control", "  Spc pause  m mute  -/+ vol  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"))
         else:
-            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  -/+ vol  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"))
     elif not is_stream and now.duration and now.duration > 0 and now.position is not None:
         bar_width = 52
         progress = max(0.0, min(1.0, now.position / now.duration))
@@ -337,7 +337,7 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         fragments.append(("class:radio-progress-bg", "\u2500" * max(0, remaining - 1)))
     elif is_stream:
         # Stream mode: show LIVE indicator instead of progress bar
-        fragments.append(("class:radio-station", "  LIVE"))
+        fragments.append(("class:radio-station", "  \u25cf LIVE"))
     else:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress-bg", "\u2500" * 52))
@@ -465,9 +465,9 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
 
     # Row 11: keyboard controls (context-aware)
     if is_stream:
-        controls = "Spc pause  m mute  -/+ vol  Tab size  Ctrl+O/q exit"
+        controls = "Spc pause  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"
     else:
-        controls = "Spc pause  n skip  m mute  -/+ vol  Tab size  Ctrl+O/q exit"
+        controls = "Spc pause  n skip  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"
     cline = controls[:W - 4]
     pad = W - 4 - len(cline)
     fragments.append(("class:radio-border", "  \u2502 "))
@@ -494,7 +494,7 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
         fragments.append(("", " " * max(0, pad + 1)))
         fragments.append(("class:radio-border", "\u2502\n"))
     elif is_stream:
-        live_text = "LIVE"
+        live_text = "\u25cf LIVE"
         pad = W - 4 - len(live_text)
         fragments.append(("class:radio-border", "  \u2502 "))
         fragments.append(("class:radio-station", live_text))

@@ -213,6 +213,21 @@ def radio_volume_tool(args: Dict[str, Any], **kwargs) -> str:
     return json.dumps({"success": True, "message": result})
 
 
+def radio_record_tool(args: Dict[str, Any], **kwargs) -> str:
+    """Start or stop recording the current radio stream to disk."""
+    from radio.player import HermesRadio
+    if not HermesRadio.active():
+        return json.dumps({"success": False, "error": "Radio is not playing"})
+    radio = _get_radio()
+    action = args.get("action", "toggle")
+    if action == "stop" or (action == "toggle" and radio.is_recording):
+        result = _run_radio_async(radio.stop_recording())
+    else:
+        path = args.get("path", "")
+        result = _run_radio_async(radio.start_recording(path))
+    return json.dumps({"success": True, "message": result})
+
+
 def radio_mic_break_tool(args: Dict[str, Any], **kwargs) -> str:
     """Trigger a mic break."""
     from radio.player import HermesRadio
@@ -431,6 +446,21 @@ RADIO_SCHEMAS = [
         },
     },
     {
+        "name": "radio_record",
+        "description": "Record (dub) the current radio stream to disk. Saves to ~/.hermes/radio/recordings/. Use action='start' to begin, 'stop' to end, or 'toggle' to flip.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop", "toggle"],
+                    "description": "Start, stop, or toggle recording",
+                },
+                "path": {"type": "string", "description": "Optional custom file path"},
+            },
+        },
+    },
+    {
         "name": "radio_search",
         "description": "Search for radio stations. Returns a list of matching stations with stream URLs.",
         "parameters": {
@@ -456,6 +486,7 @@ TOOL_HANDLERS = {
     "radio_status": radio_status_tool,
     "radio_volume": radio_volume_tool,
     "radio_mic_break": radio_mic_break_tool,
+    "radio_record": radio_record_tool,
     "radio_search": radio_search_tool,
 }
 

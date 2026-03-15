@@ -156,7 +156,8 @@ What they do:
 **Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
 
 ```bash
-hermes gateway install     # Install as system service (recommended)
+hermes gateway install     # Install as a user service
+sudo hermes gateway install --system   # Linux: boot-time system service for servers
 hermes gateway             # Or run in foreground
 
 hermes cron list

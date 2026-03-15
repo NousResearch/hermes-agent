@@ -49,15 +49,15 @@ hermes              # start chatting!
 ## Getting Started
 
 ```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+hermes                           # Interactive CLI — start a conversation
+hermes model                     # Choose your LLM provider and model
+hermes tools                     # Configure which tools are enabled
+hermes config set "KEY" "VALUE"  # Set individual config values
+hermes gateway                   # Start the messaging gateway (Telegram, Discord, etc.)
+hermes setup                     # Run the full setup wizard (configures everything at once)
+hermes claw migrate              # Migrate from OpenClaw (if coming from OpenClaw)
+hermes update                    # Update to the latest version
+hermes doctor                    # Diagnose any issues
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**

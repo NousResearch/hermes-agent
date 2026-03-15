@@ -24,7 +24,6 @@ import secrets
 import time
 from pathlib import Path
 from typing import Optional
-
 from hermes_cli.config import get_hermes_home
 
 

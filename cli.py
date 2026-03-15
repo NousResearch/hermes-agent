@@ -3271,57 +3271,12 @@ class HermesCLI:
                     _rprint(result)
 
             elif action == "search_rb":
-                print("  Enter search query: ", end="", flush=True)
-                try:
-                    query = input().strip()
-                except (EOFError, KeyboardInterrupt):
-                    return
-                if not query:
-                    return
-                from radio.radio_browser import RadioBrowserClient
-                client = RadioBrowserClient()
-                results = _run(client.search(name=query, limit=20))
-                _run(client.close())
-                if not results:
-                    client2 = RadioBrowserClient()
-                    results = _run(client2.search(tag=query, limit=20))
-                    _run(client2.close())
-                display = [
-                    {"name": s.name, "country": s.country, "tags": s.tags, "url": s.stream_url}
-                    for s in results
-                ]
-                picked = search_menu(display, title=f"Results for \"{query}\"")
-                if picked and picked.get("url"):
-                    result = _run(radio.play_stream(
-                        picked["url"], station_name=picked.get("name", ""),
-                    ))
-                    _rprint(result)
+                _rprint("Ask Hermes: \"search radio stations for [genre/name]\"")
+                _rprint("Or: \"play [station name] radio\"")
 
             elif action == "search_rg":
-                print("  Enter city name: ", end="", flush=True)
-                try:
-                    query = input().strip()
-                except (EOFError, KeyboardInterrupt):
-                    return
-                if not query:
-                    return
-                from radio.radio_garden import RadioGardenClient
-                rg = RadioGardenClient()
-                stations = _run(rg.explore(query, limit=20))
-                _run(rg.close())
-                if not stations:
-                    _rprint(f"No stations found near \"{query}\"")
-                    return
-                display = [
-                    {"name": s.title, "country": s.country or s.place, "url": s.stream_url}
-                    for s in stations
-                ]
-                picked = search_menu(display, title=f"Stations near \"{query}\"")
-                if picked and picked.get("url"):
-                    result = _run(radio.play_stream(
-                        picked["url"], station_name=picked.get("name", ""),
-                    ))
-                    _rprint(result)
+                _rprint("Ask Hermes: \"play radio from Tokyo\" or \"search radio in Lagos\"")
+                _rprint("The agent will use Radio Garden to find stations.")
 
             elif action == "toggle_pause":
                 result = _run(radio.toggle_pause())

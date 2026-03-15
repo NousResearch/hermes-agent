@@ -142,6 +142,29 @@ class TestGetTextAuxiliaryClient:
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
+    def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+
+        assert client is not None
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -319,6 +342,27 @@ class TestResolveForcedProvider:
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
         assert model == "my-local-model"
+
+    def test_forced_main_uses_config_saved_custom_endpoint(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        assert client is not None
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://local:8080/v1"
 
     def test_forced_main_skips_openrouter_nous(self, monkeypatch):
         """Even if OpenRouter key is set, 'main' skips it."""

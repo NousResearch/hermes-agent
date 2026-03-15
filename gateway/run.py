@@ -1376,6 +1376,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.BLUEBUBBLES:
+            from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+            if not check_bluebubbles_requirements():
+                logger.warning("BlueBubbles: BLUEBUBBLES_URL or BLUEBUBBLES_PASSWORD not set")
+                return None
+            return BlueBubblesAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:

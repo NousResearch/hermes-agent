@@ -218,11 +218,27 @@ def load_cli_config() -> Dict[str, Any]:
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
+        "auxiliary": {
+            "vision": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+            "web_extract": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+        },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
             "model": "",       # Subagent model override (empty = inherit parent model)
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
+            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
+            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
     }
     
@@ -363,28 +379,44 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in compression_config:
             os.environ[env_var] = str(compression_config[config_key])
     
-    # Apply auxiliary model overrides to environment variables.
-    # Vision and web_extract each have their own provider + model pair.
+    # Apply auxiliary model/direct-endpoint overrides to environment variables.
+    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
     # (Compression is handled in the compression section above.)
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
     auxiliary_config = defaults.get("auxiliary", {})
     auxiliary_task_env = {
-        # config key → (provider env var, model env var)
-        "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
-        "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+        # config key → env var mapping
+        "vision": {
+            "provider": "AUXILIARY_VISION_PROVIDER",
+            "model": "AUXILIARY_VISION_MODEL",
+            "base_url": "AUXILIARY_VISION_BASE_URL",
+            "api_key": "AUXILIARY_VISION_API_KEY",
+        },
+        "web_extract": {
+            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+        },
     }
     
-    for task_key, (prov_env, model_env) in auxiliary_task_env.items():
+    for task_key, env_map in auxiliary_task_env.items():
         task_cfg = auxiliary_config.get(task_key, {})
         if not isinstance(task_cfg, dict):
             continue
         prov = str(task_cfg.get("provider", "")).strip()
         model = str(task_cfg.get("model", "")).strip()
+        base_url = str(task_cfg.get("base_url", "")).strip()
+        api_key = str(task_cfg.get("api_key", "")).strip()
         if prov and prov != "auto":
-            os.environ[prov_env] = prov
+            os.environ[env_map["provider"]] = prov
         if model:
-            os.environ[model_env] = model
+            os.environ[env_map["model"]] = model
+        if base_url:
+            os.environ[env_map["base_url"]] = base_url
+        if api_key:
+            os.environ[env_map["api_key"]] = api_key
     
     # Security settings
     security_config = defaults.get("security", {})

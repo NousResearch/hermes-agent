@@ -10,9 +10,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js" integrity="sha384-cwS6YdhLI7XS60eoDiC+egV0qHp8zI+Cms46R0nbn8JrmoAzV9uFL60etMZhAnSu" crossorigin="anonymous"></script>
 <style>
 :root {
     --bg: #08090d;
@@ -206,7 +206,7 @@ function doAuth() {
     fetch(`${API_BASE}/v1/sessions`, { headers: { 'Authorization': `Bearer ${apiKey}` } })
     .then(r => {
         if (r.ok) {
-            if (!sessionId) { sessionId = 'web-' + Math.random().toString(36).substr(2, 8); localStorage.setItem('hermes_session_id', sessionId); }
+            if (!sessionId) { sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join(''); localStorage.setItem('hermes_session_id', sessionId); }
             document.getElementById('auth-screen').style.display = 'none';
             document.getElementById('chat-screen').style.display = 'flex';
             document.getElementById('session-label').textContent = sessionId;
@@ -219,7 +219,7 @@ function doAuth() {
 
 function resetSession() {
     if (!confirm('Start a new session?')) return;
-    sessionId = 'web-' + Math.random().toString(36).substr(2, 8);
+    sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join('');
     localStorage.setItem('hermes_session_id', sessionId);
     document.getElementById('session-label').textContent = sessionId;
     while (messagesEl.firstChild !== typingEl) messagesEl.removeChild(messagesEl.firstChild);
@@ -629,7 +629,9 @@ function addSystemMessage(text) {
 function renderMarkdown(text) {
     try {
         const html = marked.parse(text);
-        return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+        return typeof DOMPurify !== 'undefined'
+            ? DOMPurify.sanitize(html)
+            : html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     } catch(e) {
         return text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }

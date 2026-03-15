@@ -1007,7 +1007,7 @@ class TestMediaRegistration:
         # URL has token between /media/ and /filename
         parts = url.split("/")
         token = parts[-2]
-        assert len(token) == 16  # HMAC truncated to 16 hex chars
+        assert len(token) == 64  # Full SHA256 HMAC hex
 
     def test_register_media_copies_to_api_media_dir(self, tmp_path):
         adapter = _make_adapter()

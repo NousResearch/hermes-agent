@@ -51,19 +51,21 @@ class _RateLimiter:
             "upload": (20, 60),
         }
 
-    def check(self, endpoint: str) -> bool:
+    def check(self, endpoint: str, client_id: str = "") -> bool:
         """Return True if request is allowed, False if rate limited."""
         import time as _time
         if endpoint not in self._limits:
             return True
         max_tokens, window = self._limits[endpoint]
         now = _time.monotonic()
+        # Per-client bucket when client_id provided, else global
+        bucket_key = f"{endpoint}:{client_id}" if client_id else endpoint
 
-        if endpoint not in self._buckets:
-            self._buckets[endpoint] = [max_tokens - 1, now]
+        if bucket_key not in self._buckets:
+            self._buckets[bucket_key] = [max_tokens - 1, now]
             return True
 
-        bucket = self._buckets[endpoint]
+        bucket = self._buckets[bucket_key]
         elapsed = now - bucket[1]
         # Refill tokens based on elapsed time
         bucket[0] = min(max_tokens, bucket[0] + elapsed * (max_tokens / window))
@@ -97,7 +99,7 @@ def _safe_suffix(filename: str, default: str = "") -> str:
 
 def _sign_media_path(file_path: str) -> str:
     """Create an HMAC token for a media file path."""
-    return hmac.new(_MEDIA_SECRET.encode(), file_path.encode(), hashlib.sha256).hexdigest()[:16]
+    return hmac.new(_MEDIA_SECRET.encode(), file_path.encode(), hashlib.sha256).hexdigest()
 
 
 def _make_media_url(file_path: str, host: str = "") -> str:
@@ -234,7 +236,11 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
             return
 
         await ws.send_json({"type": "auth_ok"})
-        session_id = auth_msg.get("session_id") or str(uuid4())
+        raw_sid = auth_msg.get("session_id", "")
+        if not raw_sid or len(raw_sid) > 64 or not _re.match(r'^[a-zA-Z0-9_\-]+$', raw_sid):
+            session_id = str(uuid4())
+        else:
+            session_id = raw_sid
 
         try:
             while True:
@@ -245,6 +251,9 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
                     continue
                 if len(message) > 100_000:
                     await ws.send_json({"type": "error", "content": "Message too long (max 100K chars)"})
+                    continue
+                if not _rate_limiter.check("chat"):
+                    await ws.send_json({"type": "error", "content": "Rate limited. Please slow down."})
                     continue
 
                 queue = adapter.register_queue(session_id)

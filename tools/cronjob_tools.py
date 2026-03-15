@@ -103,6 +103,16 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
+def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if strip_trailing_slash:
+        text = text.rstrip("/")
+    return text or None
+
+
+
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job.get("prompt", "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
@@ -112,6 +122,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "skill": skills[0] if skills else None,
         "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
+        "model": job.get("model"),
+        "provider": job.get("provider"),
+        "base_url": job.get("base_url"),
         "schedule": job.get("schedule_display"),
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -136,6 +149,9 @@ def cronjob(
     include_disabled: bool = False,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     reason: Optional[str] = None,
     task_id: str = None,
 ) -> str:
@@ -164,6 +180,9 @@ def cronjob(
                 deliver=deliver,
                 origin=_origin_from_env(),
                 skills=canonical_skills,
+                model=_normalize_optional_job_value(model),
+                provider=_normalize_optional_job_value(provider),
+                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
             )
             return json.dumps(
                 {
@@ -240,6 +259,12 @@ def cronjob(
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
                 updates["skill"] = canonical_skills[0] if canonical_skills else None
+            if model is not None:
+                updates["model"] = _normalize_optional_job_value(model)
+            if provider is not None:
+                updates["provider"] = _normalize_optional_job_value(provider)
+            if base_url is not None:
+                updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if repeat is not None:
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = repeat
@@ -272,6 +297,9 @@ def schedule_cronjob(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     return cronjob(
@@ -281,6 +309,9 @@ def schedule_cronjob(
         name=name,
         repeat=repeat,
         deliver=deliver,
+        model=model,
+        provider=provider,
+        base_url=base_url,
         task_id=task_id,
     )
 
@@ -342,6 +373,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "deliver": {
                 "type": "string",
                 "description": "Delivery target: origin, local, telegram, discord, signal, or platform:chat_id"
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional per-job model override used when the cron job runs"
+            },
+            "provider": {
+                "type": "string",
+                "description": "Optional per-job provider override used when resolving runtime credentials"
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Optional per-job base URL override paired with provider/model routing"
             },
             "include_disabled": {
                 "type": "boolean",
@@ -407,6 +450,9 @@ registry.register(
         include_disabled=args.get("include_disabled", False),
         skill=args.get("skill"),
         skills=args.get("skills"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        base_url=args.get("base_url"),
         reason=args.get("reason"),
         task_id=kw.get("task_id"),
     ),

@@ -279,7 +279,7 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
     return True
 
 
-def _install_tirith() -> tuple[str | None, str]:
+def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     """Download and install tirith to $HERMES_HOME/bin/tirith.
 
     Verifies provenance via cosign and SHA-256 checksum.
@@ -287,6 +287,8 @@ def _install_tirith() -> tuple[str | None, str]:
     failure_reason is a short tag used by the disk marker to decide if the
     failure is retryable (e.g. "cosign_missing" clears when cosign appears).
     """
+    log = logger.warning if log_failures else logger.debug
+
     target = _detect_target()
     if not target:
         logger.info("tirith auto-install: unsupported platform %s/%s",
@@ -309,7 +311,7 @@ def _install_tirith() -> tuple[str | None, str]:
             _download_file(f"{base_url}/{archive_name}", archive_path)
             _download_file(f"{base_url}/checksums.txt", checksums_path)
         except Exception as exc:
-            logger.warning("tirith download failed: %s", exc)
+            log("tirith download failed: %s", exc)
             return None, "download_failed"
 
         # Cosign provenance verification is mandatory for auto-install.
@@ -320,25 +322,25 @@ def _install_tirith() -> tuple[str | None, str]:
             _download_file(f"{base_url}/checksums.txt.sig", sig_path)
             _download_file(f"{base_url}/checksums.txt.pem", cert_path)
         except Exception as exc:
-            logger.warning("tirith install skipped: cosign artifacts unavailable (%s). "
-                          "Install tirith manually or install cosign for auto-install.", exc)
+            log("tirith install skipped: cosign artifacts unavailable (%s). "
+                "Install tirith manually or install cosign for auto-install.", exc)
             return None, "cosign_artifacts_unavailable"
 
         # Check cosign availability before attempting verification so we can
         # distinguish "not installed" (retryable) from "installed but broken."
         if not shutil.which("cosign"):
-            logger.warning("tirith install skipped: cosign not found on PATH. "
-                          "Install cosign for auto-install, or install tirith manually.")
+            log("tirith install skipped: cosign not found on PATH. "
+                "Install cosign for auto-install, or install tirith manually.")
             return None, "cosign_missing"
 
         cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
         if cosign_result is not True:
             # False = verification rejected, None = execution failure (timeout/OSError)
             if cosign_result is None:
-                logger.warning("tirith install aborted: cosign execution failed")
+                log("tirith install aborted: cosign execution failed")
                 return None, "cosign_exec_failed"
             else:
-                logger.warning("tirith install aborted: cosign provenance verification failed")
+                log("tirith install aborted: cosign provenance verification failed")
                 return None, "cosign_verification_failed"
 
         if not _verify_checksum(archive_path, checksums_path, archive_name):
@@ -354,7 +356,7 @@ def _install_tirith() -> tuple[str | None, str]:
                     tar.extract(member, tmpdir)
                     break
             else:
-                logger.warning("tirith binary not found in archive")
+                log("tirith binary not found in archive")
                 return None, "binary_not_in_archive"
 
         src = os.path.join(tmpdir, "tirith")
@@ -473,7 +475,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
     return expanded
 
 
-def _background_install():
+def _background_install(*, log_failures: bool = True):
     """Background thread target: download and install tirith."""
     global _resolved_path, _install_failure_reason
     with _install_lock:
@@ -494,7 +496,7 @@ def _background_install():
             _install_failure_reason = ""
             return
 
-        installed, reason = _install_tirith()
+        installed, reason = _install_tirith(log_failures=log_failures)
         if installed:
             _resolved_path = installed
             _install_failure_reason = ""
@@ -505,7 +507,7 @@ def _background_install():
             _mark_install_failed(reason)
 
 
-def ensure_installed():
+def ensure_installed(*, log_failures: bool = True):
     """Ensure tirith is available, downloading in background if needed.
 
     Quick PATH/local checks are synchronous; network download runs in a
@@ -578,7 +580,10 @@ def ensure_installed():
     # Need to download — launch background thread so startup doesn't block
     if _install_thread is None or not _install_thread.is_alive():
         _install_thread = threading.Thread(
-            target=_background_install, daemon=True)
+            target=_background_install,
+            kwargs={"log_failures": log_failures},
+            daemon=True,
+        )
         _install_thread.start()
 
     return None  # Not available yet; commands will fail-open until ready

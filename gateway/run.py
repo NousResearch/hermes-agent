@@ -776,7 +776,12 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            
+
+            # Give API adapter access to session store for transcript queries
+            if platform == Platform.API:
+                adapter._session_store = self.session_store
+
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             try:
@@ -994,6 +999,17 @@ class GatewayRunner:
                 return None
             return EmailAdapter(config)
 
+        elif platform == Platform.API:
+            from gateway.platforms.api import APIPlatformAdapter, check_api_requirements
+            if not check_api_requirements():
+                logger.warning("API: fastapi not installed. Run: pip install fastapi uvicorn[standard]")
+                return None
+            api_key = os.getenv("API_KEY", "").strip()
+            if not api_key:
+                logger.warning("API: API_KEY not configured")
+                return None
+            return APIPlatformAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1011,6 +1027,11 @@ class GatewayRunner:
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
         if source.platform == Platform.HOMEASSISTANT:
+            return True
+
+        # API requests are already authenticated by the FastAPI middleware
+        # (API_KEY verified before reaching the gateway).
+        if source.platform == Platform.API:
             return True
 
         user_id = source.user_id

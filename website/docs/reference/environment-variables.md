@@ -147,6 +147,10 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `API_ENABLED` | Enable REST/WebSocket API adapter (`true`/`false`) |
+| `API_KEY` | Secret key for authenticating API requests |
+| `API_PORT` | API server port (default: `8765`) |
+| `API_RESPONSE_TIMEOUT` | Seconds before API request timeout (default: `300`) |
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |

@@ -57,6 +57,7 @@ honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
+api = ["fastapi>=0.100.0", "uvicorn[standard]>=0.20.0"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
@@ -79,6 +80,7 @@ all = [
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[acp]",
+  "hermes-agent[api]",
   "hermes-agent[voice]",
 ]
 

@@ -59,7 +59,7 @@ class HermesRadio:
         self._mic_break_active = False
         self._auto_mic_breaks = True
         self._mic_break_persona = "encyclopedic"
-        self._duck_volume = 50
+        self._duck_volume = 20
         self._duck_ramp_ms = 500
         self._tracks_since_break = 0
         self._break_every_n = 3
@@ -737,8 +737,8 @@ Source: {now.source_mode}"""
         self._now.volume = radio_cfg.get("default_volume", 80)
         self._auto_mic_breaks = mic_cfg.get("enabled", True)
         self._mic_break_persona = mic_cfg.get("persona", "encyclopedic")
-        self._duck_volume = mic_cfg.get("duck_volume", 30)
-        self._duck_ramp_ms = mic_cfg.get("duck_ramp_ms", 500)
+        self._duck_volume = mic_cfg.get("duck_volume", 20)
+        self._duck_ramp_ms = mic_cfg.get("duck_ramp_ms", 800)
 
         freq = mic_cfg.get("frequency", "every_track")
         if freq == "every_track":

@@ -5033,18 +5033,12 @@ class HermesCLI:
             except Exception:
                 return []
 
-        def _radio_menu_height():
-            if not cli_ref._radio_menu_state:
-                return 0
-            import shutil as _sh
-            term_h = _sh.get_terminal_size((80, 24)).lines
-            # Leave room for input area (6 lines) + mini player (2)
-            available = max(8, term_h - 8)
-            return min(available, 28)
-
-        radio_menu_widget = Window(
-            content=FormattedTextControl(_get_radio_menu_display),
-            height=_radio_menu_height,
+        radio_menu_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(_get_radio_menu_display),
+                dont_extend_height=True,
+            ),
+            filter=Condition(lambda: cli_ref._radio_menu_state is not None),
         )
 
         # Layout: interactive prompt widgets + ruled input at bottom.

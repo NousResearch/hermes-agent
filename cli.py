@@ -3051,7 +3051,8 @@ class HermesCLI:
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
-                                self.console.print(_rich_text_from_ansi(output))
+                                # Print plain string so tests and mocks see the raw value.
+                                self.console.print(output)
                             else:
                                 self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:

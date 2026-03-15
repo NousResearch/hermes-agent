@@ -30,6 +30,7 @@ def check_api_requirements() -> bool:
     """Check if FastAPI and uvicorn are available."""
     try:
         import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
         return True
     except ImportError:
         return False
@@ -41,6 +42,7 @@ class APIPlatformAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API)
         self._server: Optional[uvicorn.Server] = None
+        self._host = os.getenv("API_HOST", "127.0.0.1")
         self._port = int(os.getenv("API_PORT", "8765"))
         self._response_queues: Dict[str, asyncio.Queue] = {}
 
@@ -51,14 +53,14 @@ class APIPlatformAdapter(BasePlatformAdapter):
         app = create_app(self)
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=self._host,
             port=self._port,
             log_level="info",
         )
         self._server = uvicorn.Server(config)
         asyncio.create_task(self._server.serve())
         self._running = True
-        logger.info("API server starting on port %d", self._port)
+        logger.info("API server starting on %s:%d", self._host, self._port)
         return True
 
     async def disconnect(self) -> None:

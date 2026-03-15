@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from gateway.platforms.api import APIPlatformAdapter
@@ -34,7 +34,7 @@ RESPONSE_TIMEOUT = int(os.getenv("API_RESPONSE_TIMEOUT", "300"))
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., max_length=100_000)
     session_id: Optional[str] = None
 
 

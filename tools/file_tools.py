@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import errno
 import json
 import logging
 import os
@@ -10,6 +11,18 @@ from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+_EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+def _is_expected_write_exception(exc: Exception) -> bool:
+    """Return True for expected write denials that should not hit error logs."""
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError) and exc.errno in _EXPECTED_WRITE_ERRNOS:
+        return True
+    return False
+
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
@@ -238,7 +251,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
-        logger.error("write_file error: %s: %s", type(e).__name__, e)
+        if _is_expected_write_exception(e):
+            logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
+        else:
+            logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

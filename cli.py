@@ -518,6 +518,15 @@ def _git_repo_root() -> Optional[str]:
     return None
 
 
+def _path_is_within_root(path: Path, root: Path) -> bool:
+    """Return True when a resolved path stays within the expected root."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
@@ -579,18 +588,19 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     continue
                 src = Path(repo_root) / entry
                 dst = wt_path / entry
-                # Prevent path traversal: ensure src stays within repo_root
-                # and dst stays within the worktree directory
+                # Prevent path traversal and symlink escapes: both the resolved
+                # source and the resolved destination must stay inside their
+                # expected roots before any file or symlink operation happens.
                 try:
-                    src_resolved = src.resolve()
+                    src_resolved = src.resolve(strict=False)
                     dst_resolved = dst.resolve(strict=False)
                 except (OSError, ValueError):
                     logger.debug("Skipping invalid .worktreeinclude entry: %s", entry)
                     continue
-                if not str(src_resolved).startswith(str(repo_root_resolved) + os.sep) and src_resolved != repo_root_resolved:
+                if not _path_is_within_root(src_resolved, repo_root_resolved):
                     logger.warning("Skipping .worktreeinclude entry outside repo root: %s", entry)
                     continue
-                if not str(dst_resolved).startswith(str(wt_path_resolved) + os.sep) and dst_resolved != wt_path_resolved:
+                if not _path_is_within_root(dst_resolved, wt_path_resolved):
                     logger.warning("Skipping .worktreeinclude entry that escapes worktree: %s", entry)
                     continue
                 if src.is_file():

@@ -8,6 +8,7 @@ Features ASCII art branding, interactive REPL, toolset selection, and rich forma
 Usage:
     python cli.py                          # Start interactive mode with all tools
     python cli.py --toolsets web,terminal  # Start with specific toolsets
+    python cli.py --skills hermes-agent-dev,github-auth
     python cli.py -q "your question"       # Single query mode
     python cli.py --list-tools             # List available tools and exit
 """
@@ -1043,9 +1044,38 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
 
-from agent.skill_commands import scan_skill_commands, get_skill_commands, build_skill_invocation_message
+from agent.skill_commands import (
+    scan_skill_commands,
+    get_skill_commands,
+    build_skill_invocation_message,
+    build_preloaded_skills_prompt,
+)
 
 _skill_commands = scan_skill_commands()
+
+
+def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    """Normalize a CLI skills flag into a deduplicated list of skill identifiers."""
+    if not skills:
+        return []
+
+    if isinstance(skills, str):
+        raw_values = [skills]
+    elif isinstance(skills, (list, tuple)):
+        raw_values = [str(item) for item in skills if item is not None]
+    else:
+        raw_values = [str(skills)]
+
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in raw.split(","):
+            normalized = part.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            parsed.append(normalized)
+    return parsed
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -1313,6 +1343,8 @@ class HermesCLI:
         self._command_status = ""
         self._attached_images: list[Path] = []
         self._image_counter = 0
+        self.preloaded_skills: list[str] = []
+        self._startup_skills_line_shown = False
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -1599,6 +1631,13 @@ class HermesCLI:
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
+        if self.preloaded_skills and not self._startup_skills_line_shown:
+            skills_label = ", ".join(self.preloaded_skills)
+            self.console.print(
+                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
+            )
+            self.console.print()
+            self._startup_skills_line_shown = True
         
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
@@ -5829,6 +5868,7 @@ def main(
     query: str = None,
     q: str = None,
     toolsets: str = None,
+    skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
     api_key: str = None,
@@ -5853,6 +5893,7 @@ def main(
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
+        skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
@@ -5869,6 +5910,7 @@ def main(
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
+        python cli.py --skills hermes-agent-dev,github-auth
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
@@ -5938,6 +5980,8 @@ def main(
         else:
             toolsets_list = ["hermes-cli"]
     
+    parsed_skills = _parse_skills_argument(skills)
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,
@@ -5952,6 +5996,20 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
     )
+
+    if parsed_skills:
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            parsed_skills,
+            task_id=cli.session_id,
+        )
+        if missing_skills:
+            missing_display = ", ".join(missing_skills)
+            raise ValueError(f"Unknown skill(s): {missing_display}")
+        if skills_prompt:
+            cli.system_prompt = "\n\n".join(
+                part for part in (cli.system_prompt, skills_prompt) if part
+            ).strip()
+            cli.preloaded_skills = loaded_skills
 
     # Inject worktree context into agent's system prompt
     if wt_info:

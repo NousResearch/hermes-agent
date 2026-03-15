@@ -27,6 +27,10 @@ hermes chat --provider openrouter  # Force OpenRouter
 # With specific toolsets
 hermes chat --toolsets "web,terminal,skills"
 
+# Start with one or more skills preloaded
+hermes -s hermes-agent-dev,github-auth
+hermes chat -s github-pr-workflow -q "open a draft PR"
+
 # Resume previous sessions
 hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
@@ -125,6 +129,17 @@ quick_commands:
 ```
 
 Then type `/status` or `/gpu` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
+
+## Preloading Skills at Launch
+
+If you already know which skills you want active for the session, pass them at launch time:
+
+```bash
+hermes -s hermes-agent-dev,github-auth
+hermes chat -s github-pr-workflow -s github-auth
+```
+
+Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.
 
 ## Skill Slash Commands
 

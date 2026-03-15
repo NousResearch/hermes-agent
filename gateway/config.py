@@ -21,6 +21,17 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce bool-ish config values, preserving a caller-provided default."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -160,6 +171,9 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+
+    # STT settings
+    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -224,6 +238,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
         }
     
     @classmethod
@@ -260,6 +275,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        stt_enabled = data.get("stt_enabled")
+        if stt_enabled is None:
+            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -269,6 +288,7 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=_coerce_bool(stt_enabled, True),
         )
 
 
@@ -317,6 +337,12 @@ def load_gateway_config() -> GatewayConfig:
                     config.quick_commands = qc
                 else:
                     logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
+            # Bridge STT enable/disable from config.yaml into gateway runtime.
+            # This keeps the gateway aligned with the user-facing config source.
+            stt_cfg = yaml_cfg.get("stt")
+            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
+                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

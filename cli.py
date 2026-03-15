@@ -3278,6 +3278,12 @@ class HermesCLI:
                 _rprint("Ask Hermes: \"play radio from Tokyo\" or \"search radio in Lagos\"")
                 _rprint("The agent will use Radio Garden to find stations.")
 
+            elif action == "visualizer":
+                from radio.config import set_visualizer
+                name = data.get("name", "braille")
+                set_visualizer(name)
+                _rprint(f"Visualizer set to {name}")
+
             elif action == "toggle_pause":
                 result = _run(radio.toggle_pause())
                 _rprint(result)

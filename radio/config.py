@@ -87,6 +87,16 @@ def set_volume(vol: int) -> None:
     save(cfg)
 
 
+def get_visualizer() -> str:
+    return load().get("visualizer", "braille")
+
+
+def set_visualizer(name: str) -> None:
+    cfg = load()
+    cfg["visualizer"] = name
+    save(cfg)
+
+
 def get_presets() -> Dict[str, Dict[str, Any]]:
     return load().get("presets", {})
 

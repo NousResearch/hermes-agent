@@ -86,3 +86,26 @@ def test_render_rows_returns_strings_even_when_meter_inactive(monkeypatch):
     assert len(rows) == 2
     assert all(isinstance(row, str) for row in rows)
     assert all(len(row) == 12 for row in rows)
+
+
+def test_visualizer_name_round_trips_through_radio_config(tmp_path, monkeypatch):
+    from radio import config as radio_config
+
+    monkeypatch.setattr(radio_config, 'RADIO_DIR', tmp_path)
+    monkeypatch.setattr(radio_config, 'CONFIG_PATH', tmp_path / 'config.yaml')
+
+    radio_config.set_visualizer('mirror')
+
+    assert radio_config.get_visualizer() == 'mirror'
+
+
+def test_build_menu_items_includes_visualizer_presets(monkeypatch):
+    from radio import menu
+
+    monkeypatch.setattr(menu, 'list_presets', lambda: ['braille', 'mirror'])
+
+    items = menu.build_menu_items(active_visualizer='mirror')
+
+    visualizer_items = [item for item in items if item.action == 'visualizer']
+    assert [item.data['name'] for item in visualizer_items] == ['braille', 'mirror']
+    assert visualizer_items[1].sublabel == 'active'

@@ -14,6 +14,12 @@ provides the data model and rendering logic.
 import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+try:
+    from radio.visualizers import list_presets
+except Exception:
+    def list_presets() -> List[str]:
+        return []
+
 
 # -- Box-drawing characters ---------------------------------------------------
 
@@ -188,11 +194,18 @@ class RadioMenuState:
 def build_menu_items(
     soma_channels=None, now_playing=None, presets=None,
     active_decades=None, active_moods=None, mic_breaks=True,
+    active_visualizer=None,
 ) -> List[MenuItem]:
     if active_decades is None:
         active_decades = {1950, 1960, 1970, 1980, 1990}
     if active_moods is None:
         active_moods = {"slow", "fast", "weird"}
+    if active_visualizer is None:
+        try:
+            from radio.config import get_visualizer
+            active_visualizer = get_visualizer()
+        except Exception:
+            active_visualizer = "braille"
 
     items: List[MenuItem] = []
 
@@ -257,6 +270,19 @@ def build_menu_items(
     items.append(MenuItem(label="SEARCH", is_header=True))
     items.append(MenuItem(label="Search Radio Browser", sublabel="45k+ stations", action="search_rb"))
     items.append(MenuItem(label="Search Radio Garden", sublabel="by city", action="search_rg"))
+
+    # Visualizer presets
+    visualizer_names = list_presets()
+    if visualizer_names:
+        items.append(MenuItem(label="VISUALIZER", is_header=True))
+        for name in visualizer_names:
+            sublabel = "active" if name == active_visualizer else ""
+            items.append(MenuItem(
+                label=name,
+                sublabel=sublabel,
+                action="visualizer",
+                data={"name": name},
+            ))
 
     # Options
     items.append(MenuItem(label="OPTIONS", is_header=True))
@@ -419,7 +445,12 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
     decades_str = ", ".join(f"{d}s" for d in sorted(state.active_decades)) or "none"
     moods_str = ", ".join(sorted(state.active_moods)) or "none"
     mic_str = "on" if state.mic_breaks else "off"
-    footer = f"decades: {decades_str}  moods: {moods_str}  mic: {mic_str}"
+    try:
+        from radio.config import get_visualizer
+        viz_str = get_visualizer()
+    except Exception:
+        viz_str = "braille"
+    footer = f"decades: {decades_str}  moods: {moods_str}  mic: {mic_str}  viz: {viz_str}"
     fragments.append(("class:radio-menu-border", f"  {BOX_V} "))
     fragments.append(("class:radio-menu-dim", _pad_line(footer)))
     fragments.append(("class:radio-menu-border", f" {BOX_V}\n"))

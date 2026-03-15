@@ -4,6 +4,8 @@ These tests cover the headless/manual auth-code flow where the browser step and
 code exchange happen in separate process invocations.
 """
 
+from __future__ import annotations
+
 import importlib.util
 import json
 import sys
@@ -110,6 +112,7 @@ def setup_module(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "CLIENT_SECRET_PATH", tmp_path / "google_client_secret.json")
     monkeypatch.setattr(module, "TOKEN_PATH", tmp_path / "google_token.json")
     monkeypatch.setattr(module, "PENDING_AUTH_PATH", tmp_path / "google_oauth_pending.json", raising=False)
+    monkeypatch.setattr(module, "LAST_AUTH_URL_PATH", tmp_path / "google_oauth_last_url.txt", raising=False)
 
     client_secret = {
         "installed": {
@@ -123,16 +126,38 @@ def setup_module(monkeypatch, tmp_path):
     return module
 
 
-class TestGetAuthUrl:
-    def test_persists_state_and_code_verifier_for_later_exchange(self, setup_module, capsys):
-        setup_module.get_auth_url()
+class TestResolveServices:
+    def test_reduces_to_requested_services(self, setup_module):
+        services, scopes = setup_module._resolve_services("email,calendar")
+        assert services == ["email", "calendar"]
+        assert scopes == [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar",
+        ]
 
-        out = capsys.readouterr().out.strip()
-        assert out == "https://auth.example/authorize?state=generated-state"
+
+class TestGetAuthUrl:
+    def test_persists_state_verifier_scopes_and_last_url(self, setup_module, capsys):
+        setup_module.get_auth_url("email,calendar", output_format="json")
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["success"] is True
+        assert out["auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert out["services"] == ["email", "calendar"]
+        assert Path(out["auth_url_file"]).read_text() == out["auth_url"]
 
         saved = json.loads(setup_module.PENDING_AUTH_PATH.read_text())
         assert saved["state"] == "generated-state"
         assert saved["code_verifier"] == "generated-code-verifier"
+        assert saved["services"] == ["email", "calendar"]
+        assert saved["scopes"] == [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar",
+        ]
 
         flow = FakeFlow.created[-1]
         assert flow.autogenerate_code_verifier is True
@@ -142,7 +167,14 @@ class TestGetAuthUrl:
 class TestExchangeAuthCode:
     def test_reuses_saved_pkce_material_for_plain_code(self, setup_module):
         setup_module.PENDING_AUTH_PATH.write_text(
-            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "services": ["email", "calendar"],
+                    "scopes": ["scope-a", "scope-b"],
+                }
+            )
         )
 
         setup_module.exchange_auth_code("4/test-auth-code")
@@ -150,13 +182,21 @@ class TestExchangeAuthCode:
         flow = FakeFlow.created[-1]
         assert flow.state == "saved-state"
         assert flow.code_verifier == "saved-verifier"
+        assert flow.scopes == ["scope-a", "scope-b"]
         assert flow.fetch_token_calls == [{"code": "4/test-auth-code"}]
         assert json.loads(setup_module.TOKEN_PATH.read_text())["token"] == "access-token"
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
     def test_extracts_code_from_redirect_url_and_checks_state(self, setup_module):
         setup_module.PENDING_AUTH_PATH.write_text(
-            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "services": ["email"],
+                    "scopes": ["scope-a"],
+                }
+            )
         )
 
         setup_module.exchange_auth_code(
@@ -166,19 +206,34 @@ class TestExchangeAuthCode:
         flow = FakeFlow.created[-1]
         assert flow.fetch_token_calls == [{"code": "4/extracted-code"}]
 
-    def test_rejects_state_mismatch(self, setup_module, capsys):
+    def test_state_mismatch_regenerates_fresh_url(self, setup_module, capsys):
         setup_module.PENDING_AUTH_PATH.write_text(
-            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "services": ["email", "calendar"],
+                    "scopes": ["scope-a", "scope-b"],
+                }
+            )
         )
+        FakeFlow.default_state = "replacement-state"
+        FakeFlow.default_verifier = "replacement-verifier"
 
         with pytest.raises(SystemExit):
             setup_module.exchange_auth_code(
-                "http://localhost:1/?code=4/extracted-code&state=wrong-state"
+                "http://localhost:1/?code=4/extracted-code&state=wrong-state",
+                output_format="json",
             )
 
-        out = capsys.readouterr().out
-        assert "state mismatch" in out.lower()
-        assert not setup_module.TOKEN_PATH.exists()
+        out = json.loads(capsys.readouterr().out)
+        assert out["success"] is False
+        assert out["fresh_auth_url"] == "https://auth.example/authorize?state=replacement-state"
+
+        saved = json.loads(setup_module.PENDING_AUTH_PATH.read_text())
+        assert saved["state"] == "replacement-state"
+        assert saved["code_verifier"] == "replacement-verifier"
+        assert saved["services"] == ["email", "calendar"]
 
     def test_requires_pending_auth_session(self, setup_module, capsys):
         with pytest.raises(SystemExit):
@@ -188,16 +243,42 @@ class TestExchangeAuthCode:
         assert "run --auth-url first" in out.lower()
         assert not setup_module.TOKEN_PATH.exists()
 
-    def test_keeps_pending_auth_session_when_exchange_fails(self, setup_module, capsys):
+    def test_failed_exchange_regenerates_fresh_url(self, setup_module, capsys):
         setup_module.PENDING_AUTH_PATH.write_text(
-            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "services": ["email"],
+                    "scopes": ["scope-a"],
+                }
+            )
         )
+        FakeFlow.default_state = "replacement-state"
+        FakeFlow.default_verifier = "replacement-verifier"
         FakeFlow.fetch_error = Exception("invalid_grant: Missing code verifier")
 
         with pytest.raises(SystemExit):
-            setup_module.exchange_auth_code("4/test-auth-code")
+            setup_module.exchange_auth_code("4/test-auth-code", output_format="json")
 
-        out = capsys.readouterr().out
-        assert "token exchange failed" in out.lower()
+        out = json.loads(capsys.readouterr().out)
+        assert out["success"] is False
+        assert out["fresh_auth_url"] == "https://auth.example/authorize?state=replacement-state"
         assert setup_module.PENDING_AUTH_PATH.exists()
         assert not setup_module.TOKEN_PATH.exists()
+
+    def test_check_auth_rejects_missing_requested_scopes(self, setup_module, capsys):
+        setup_module.TOKEN_PATH.write_text(
+            json.dumps(
+                {
+                    "token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+                }
+            )
+        )
+
+        ok = setup_module.check_auth("email,calendar")
+        out = capsys.readouterr().out
+        assert ok is False
+        assert "missing scopes" in out.lower()

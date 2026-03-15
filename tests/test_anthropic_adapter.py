@@ -16,6 +16,7 @@ from agent.anthropic_adapter import (
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
+    get_anthropic_token_source,
     is_claude_code_token_valid,
     normalize_anthropic_response,
     normalize_model_name,
@@ -87,16 +88,27 @@ class TestReadClaudeCodeCredentials:
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
             "claudeAiOauth": {
-                "accessToken": "sk-ant-oat01-test-token",
-                "refreshToken": "sk-ant-ort01-refresh",
+                "accessToken": "sk-ant-oat01-token",
+                "refreshToken": "sk-ant-oat01-refresh",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = read_claude_code_credentials()
         assert creds is not None
-        assert creds["accessToken"] == "sk-ant-oat01-test-token"
-        assert creds["refreshToken"] == "sk-ant-ort01-refresh"
+        assert creds["accessToken"] == "sk-ant-oat01-token"
+        assert creds["refreshToken"] == "sk-ant-oat01-refresh"
+        assert creds["source"] == "claude_code_credentials_file"
+
+    def test_reads_primary_api_key_with_source(self, tmp_path, monkeypatch):
+        claude_json = tmp_path / ".claude.json"
+        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "sk-ant-api03-primary"
+        assert creds["source"] == "claude_json_primary_api_key"
 
     def test_returns_none_for_missing_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
@@ -138,6 +150,15 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
+
+    def test_reports_claude_json_primary_key_source(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        assert get_anthropic_token_source("sk-ant-api03-primary") == "claude_json_primary_api_key"
 
     def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")

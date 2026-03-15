@@ -35,16 +35,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
-# Load environment variables from ~/.hermes/.env first
-from dotenv import load_dotenv
+# Load environment variables from ~/.hermes/.env first.
+# User-managed env files should override stale shell exports on restart.
+from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
+from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as fallback
-load_dotenv()
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.

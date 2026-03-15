@@ -5314,6 +5314,9 @@ def main(
     else:
         # Check config for CLI toolsets, fallback to hermes-cli
         config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
+        if not config_cli_toolsets:
+            # Also check top-level 'toolsets' key (common config format)
+            config_cli_toolsets = CLI_CONFIG.get("toolsets")
         if config_cli_toolsets and isinstance(config_cli_toolsets, list):
             toolsets_list = config_cli_toolsets
         else:

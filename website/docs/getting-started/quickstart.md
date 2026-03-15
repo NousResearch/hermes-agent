@@ -43,7 +43,7 @@ hermes setup       # Or configure everything at once
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
-| **Anthropic** | Claude models directly (Pro/Max or API key) | API key or Claude Code setup-token |
+| **Anthropic** | Claude models directly (Pro/Max or API key) | `hermes model` with Claude Code auth, or an Anthropic API key |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
@@ -129,6 +129,25 @@ Chat with Hermes from your phone or other surfaces via Telegram, Discord, Slack,
 hermes gateway setup    # Interactive platform configuration
 ```
 
+### Add voice mode
+
+Want microphone input in the CLI or spoken replies in messaging?
+
+```bash
+pip install hermes-agent[voice]
+
+# Optional but recommended for free local speech-to-text
+pip install faster-whisper
+```
+
+Then start Hermes and enable it inside the CLI:
+
+```text
+/voice on
+```
+
+Press `Ctrl+B` to record, or use `/voice tts` to have Hermes speak its replies. See [Voice Mode](../user-guide/features/voice-mode.md) for the full setup across CLI, Telegram, Discord, and Discord voice channels.
+
 ### Schedule automated tasks
 
 ```
@@ -141,11 +160,30 @@ The agent will set up a cron job that runs automatically via the gateway.
 
 ```bash
 hermes skills search kubernetes
+hermes skills search react --source skills-sh
+hermes skills search https://mintlify.com/docs --source well-known
 hermes skills install openai/skills/k8s
 hermes skills install official/security/1password
+hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 ```
 
+Tips:
+- Use `--source skills-sh` to search the public `skills.sh` directory.
+- Use `--source well-known` with a docs/site URL to discover skills from `/.well-known/skills/index.json`.
+- Use `--force` only after reviewing a third-party skill. It can override non-dangerous policy blocks, but not a `dangerous` scan verdict.
+
 Or use the `/skills` slash command inside chat.
+
+### Use Hermes inside an editor via ACP
+
+Hermes can also run as an ACP server for ACP-compatible editors like VS Code, Zed, and JetBrains:
+
+```bash
+pip install -e '.[acp]'
+hermes acp
+```
+
+See [ACP Editor Integration](../user-guide/features/acp.md) for setup details.
 
 ### Try MCP servers
 

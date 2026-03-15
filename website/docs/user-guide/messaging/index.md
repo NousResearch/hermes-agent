@@ -1,38 +1,40 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, or your browser — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, or Home Assistant. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+
+For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
 ## Architecture
 
 ```text
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              Hermes Gateway                                   │
-├───────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐│
-│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA ││
-│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt││
-│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘│
-│       │             │           │           │         │         │        │    │
-│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘    │
-│                                     │                                         │
-│                            ┌────────▼────────┐                                │
-│                            │  Session Store  │                                │
-│                            │  (per-chat)     │                                │
-│                            └────────┬────────┘                                │
-│                                     │                                         │
-│                            ┌────────▼────────┐                                │
-│                            │   AIAgent       │                                │
-│                            │   (run_agent)   │                                │
-│                            └─────────────────┘                                │
-│                                                                               │
-└───────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                                  Hermes Gateway                                       │
+├───────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                       │
+│  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌────┐           │
+│  │ Telegram │ │ Discord │ │ WhatsApp │ │ Slack │ │Signal │ │ Email │ │ HA │           │
+│  │ Adapter  │ │ Adapter │ │ Adapter  │ │Adapter│ │Adapter│ │Adapter│ │Adpt│           │
+│  └────┬─────┘ └────┬────┘ └────┬─────┘ └──┬────┘ └──┬────┘ └──┬────┘ └─┬──┘           │
+│       │             │           │           │         │         │        │            │
+│       └─────────────┴───────────┴───────────┴─────────┴─────────┴────────┘            │
+│                                     │                                                 │
+│                            ┌────────▼────────┐                                        │
+│                            │  Session Store  │                                        │
+│                            │  (per-chat)     │                                        │
+│                            └────────┬────────┘                                        │
+│                                     │                                                 │
+│                            ┌────────▼────────┐                                        │
+│                            │   AIAgent       │                                        │
+│                            │   (run_agent)   │                                        │
+│                            └─────────────────┘                                        │
+│                                                                                       │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
@@ -52,10 +54,12 @@ This walks you through configuring each platform with arrow-key selection, shows
 ```bash
 hermes gateway              # Run in foreground
 hermes gateway setup        # Configure messaging platforms interactively
-hermes gateway install      # Install as systemd service (Linux) / launchd (macOS)
-hermes gateway start        # Start the service
-hermes gateway stop         # Stop the service
-hermes gateway status       # Check service status
+hermes gateway install      # Install as a user service (Linux) / launchd service (macOS)
+sudo hermes gateway install --system   # Linux only: install a boot-time system service
+hermes gateway start        # Start the default service
+hermes gateway stop         # Stop the default service
+hermes gateway status       # Check default service status
+hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
 ## Chat Commands (Inside Messaging)
@@ -77,6 +81,7 @@ hermes gateway status       # Check service status
 | `/usage` | Show token usage for this session |
 | `/insights [days]` | Show usage insights and analytics |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
+| `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
 | `/background <prompt>` | Run a prompt in a separate background session |
 | `/reload-mcp` | Reload MCP servers from config |
@@ -185,7 +190,17 @@ journalctl --user -u hermes-gateway -f
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
+
+# Or install a boot-time system service that still runs as your user
+sudo hermes gateway install --system
+sudo hermes gateway start --system
+sudo hermes gateway status --system
+journalctl -u hermes-gateway -f
 ```
+
+Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
+
+Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 ### macOS (launchd)
 

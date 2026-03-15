@@ -3,7 +3,8 @@
 Vision Tools Module
 
 This module provides vision analysis tools that work with image URLs.
-Uses Gemini 3 Flash Preview via OpenRouter API for intelligent image understanding.
+Uses the centralized auxiliary vision router, which can select OpenRouter,
+Nous, Codex, native Anthropic, or a custom OpenAI-compatible endpoint.
 
 Available tools:
 - vision_analyze_tool: Analyze images from URLs with custom prompts
@@ -354,6 +355,7 @@ async def vision_analyze_tool(
         # Prepare error response
         result = {
             "success": False,
+            "error": error_msg,
             "analysis": analysis,
         }
         
@@ -376,16 +378,11 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """Check if an auxiliary vision model is available."""
+    """Check if the configured runtime vision path can resolve a client."""
     try:
-        from agent.auxiliary_client import resolve_provider_client
-        client, _ = resolve_provider_client("openrouter")
-        if client is not None:
-            return True
-        client, _ = resolve_provider_client("nous")
-        if client is not None:
-            return True
-        client, _ = resolve_provider_client("custom")
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        _provider, client, _model = resolve_vision_provider_client()
         return client is not None
     except Exception:
         return False
@@ -413,7 +410,7 @@ if __name__ == "__main__":
     
     if not api_available:
         print("❌ No auxiliary vision model available")
-        print("Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools.")
+        print("Configure a supported multimodal backend (OpenRouter, Nous, Codex, Anthropic, or a custom OpenAI-compatible endpoint).")
         exit(1)
     else:
         print("✅ Vision model available")

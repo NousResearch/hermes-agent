@@ -179,6 +179,20 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
+# Security Scanning (tirith)
+# =============================================================================
+# Optional pre-exec command security scanning via tirith.
+# Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
+# Install: brew install sheeki03/tap/tirith
+# Docs: https://github.com/sheeki03/tirith
+#
+# security:
+#   tirith_enabled: true        # Enable/disable tirith scanning
+#   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
+#   tirith_timeout: 5           # Scan timeout in seconds
+#   tirith_fail_open: true      # Allow commands if tirith unavailable
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:
@@ -442,7 +456,7 @@ platform_toolsets:
 #   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI key)
-#   cronjob      - schedule_cronjob, list_cronjobs, remove_cronjob
+#   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
 #   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
 # PRESETS (curated bundles):

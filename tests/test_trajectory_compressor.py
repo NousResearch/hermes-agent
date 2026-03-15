@@ -1,7 +1,10 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
 import json
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch, MagicMock
+
+import pytest
 
 from trajectory_compressor import (
     CompressionConfig,
@@ -384,3 +387,32 @@ class TestTokenCounting:
         tc.tokenizer.encode = MagicMock(side_effect=Exception("fail"))
         # Should fallback to len(text) // 4
         assert tc.count_tokens("12345678") == 2
+
+
+class TestGenerateSummary:
+    def test_generate_summary_handles_none_content(self):
+        tc = _make_compressor()
+        tc.client = MagicMock()
+        tc.client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
+        )
+        metrics = TrajectoryMetrics()
+
+        summary = tc._generate_summary("Turn content", metrics)
+
+        assert summary == "[CONTEXT SUMMARY]:"
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_async_handles_none_content(self):
+        tc = _make_compressor()
+        tc.async_client = MagicMock()
+        tc.async_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
+            )
+        )
+        metrics = TrajectoryMetrics()
+
+        summary = await tc._generate_summary_async("Turn content", metrics)
+
+        assert summary == "[CONTEXT SUMMARY]:"

@@ -43,11 +43,12 @@ dependencies = [
 modal = ["swe-rex[modal]>=1.4.0"]
 daytona = ["daytona>=0.148.0"]
 dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
-messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
+messaging = ["python-telegram-bot>=20.0", "discord.py[voice]>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
+voice = ["sounddevice>=0.4.6", "numpy>=1.24.0"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
   "pywinpty>=2.0.0; sys_platform == 'win32'",
@@ -55,6 +56,7 @@ pty = [
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+acp = ["agent-client-protocol>=0.8.1,<1.0"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
@@ -76,17 +78,20 @@ all = [
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
+  "hermes-agent[acp]",
+  "hermes-agent[voice]",
 ]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
+hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "mini_swe_runner", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration", "acp_adapter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

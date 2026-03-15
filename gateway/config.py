@@ -21,6 +21,17 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce bool-ish config values, preserving a caller-provided default."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -151,12 +162,18 @@ class GatewayConfig:
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+
+    # User-defined quick commands (slash commands that bypass the agent loop)
+    quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+
+    # STT settings
+    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -218,8 +235,10 @@ class GatewayConfig:
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
             },
             "reset_triggers": self.reset_triggers,
+            "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
         }
     
     @classmethod
@@ -252,14 +271,24 @@ class GatewayConfig:
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
+        quick_commands = data.get("quick_commands", {})
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+
+        stt_enabled = data.get("stt_enabled")
+        if stt_enabled is None:
+            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
+            quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=_coerce_bool(stt_enabled, True),
         )
 
 
@@ -298,6 +327,22 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge quick commands from config.yaml into gateway runtime config.
+            # config.yaml is the user-facing config source, so when present it
+            # should override gateway.json for this setting.
+            qc = yaml_cfg.get("quick_commands")
+            if qc is not None:
+                if isinstance(qc, dict):
+                    config.quick_commands = qc
+                else:
+                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
+            # Bridge STT enable/disable from config.yaml into gateway runtime.
+            # This keeps the gateway aligned with the user-facing config source.
+            stt_cfg = yaml_cfg.get("stt")
+            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
+                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

@@ -105,12 +105,43 @@ class TelegramAdapter(BasePlatformAdapter):
     
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    MEDIA_GROUP_WAIT_SECONDS = 0.8
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
-    
+        self._media_group_events: Dict[str, MessageEvent] = {}
+        self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        self._token_lock_identity: Optional[str] = None
+        self._polling_error_task: Optional[asyncio.Task] = None
+
+    @staticmethod
+    def _looks_like_polling_conflict(error: Exception) -> bool:
+        text = str(error).lower()
+        return (
+            error.__class__.__name__.lower() == "conflict"
+            or "terminated by other getupdates request" in text
+            or "another bot instance is running" in text
+        )
+
+    async def _handle_polling_conflict(self, error: Exception) -> None:
+        if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
+            return
+        message = (
+            "Another Telegram bot poller is already using this token. "
+            "Hermes stopped Telegram polling to avoid endless retry spam. "
+            "Make sure only one gateway instance is running for this bot token."
+        )
+        logger.error("[%s] %s Original error: %s", self.name, message, error)
+        self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
+        try:
+            if self._app and self._app.updater:
+                await self._app.updater.stop()
+        except Exception as stop_error:
+            logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
+        await self._notify_fatal_error()
+
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
         if not TELEGRAM_AVAILABLE:
@@ -125,6 +156,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         
         try:
+            from gateway.status import acquire_scoped_lock
+
+            self._token_lock_identity = self.config.token
+            acquired, existing = acquire_scoped_lock(
+                "telegram-bot-token",
+                self._token_lock_identity,
+                metadata={"platform": self.platform.value},
+            )
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                message = (
+                    "Another local Hermes gateway is already using this Telegram bot token"
+                    + (f" (PID {owner_pid})." if owner_pid else ".")
+                    + " Stop the other gateway before starting a second Telegram poller."
+                )
+                logger.error("[%s] %s", self.name, message)
+                self._set_fatal_error("telegram_token_lock", message, retryable=False)
+                return False
+
             # Build the application
             self._app = Application.builder().token(self.config.token).build()
             self._bot = self._app.bot
@@ -150,7 +200,21 @@ class TelegramAdapter(BasePlatformAdapter):
             # Start polling in background
             await self._app.initialize()
             await self._app.start()
-            await self._app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            loop = asyncio.get_running_loop()
+
+            def _polling_error_callback(error: Exception) -> None:
+                if not self._looks_like_polling_conflict(error):
+                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
+                    return
+                if self._polling_error_task and not self._polling_error_task.done():
+                    return
+                self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                error_callback=_polling_error_callback,
+            )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             try:
@@ -159,6 +223,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("new", "Start a new conversation"),
                     BotCommand("reset", "Reset conversation history"),
                     BotCommand("model", "Show or change the model"),
+                    BotCommand("reasoning", "Show or change reasoning effort"),
                     BotCommand("personality", "Set a personality"),
                     BotCommand("retry", "Retry your last message"),
                     BotCommand("undo", "Remove the last exchange"),
@@ -173,6 +238,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("insights", "Show usage insights and analytics"),
                     BotCommand("update", "Update Hermes to the latest version"),
                     BotCommand("reload_mcp", "Reload MCP servers from config"),
+                    BotCommand("voice", "Toggle voice reply mode"),
                     BotCommand("help", "Show available commands"),
                 ])
             except Exception as e:
@@ -183,27 +249,51 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
             
-            self._running = True
+            self._mark_connected()
             logger.info("[%s] Connected and polling for Telegram updates", self.name)
             return True
             
         except Exception as e:
+            if self._token_lock_identity:
+                try:
+                    from gateway.status import release_scoped_lock
+                    release_scoped_lock("telegram-bot-token", self._token_lock_identity)
+                except Exception:
+                    pass
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     
     async def disconnect(self) -> None:
-        """Stop polling and disconnect."""
+        """Stop polling, cancel pending album flushes, and disconnect."""
+        pending_media_group_tasks = list(self._media_group_tasks.values())
+        for task in pending_media_group_tasks:
+            task.cancel()
+        if pending_media_group_tasks:
+            await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
+        self._media_group_tasks.clear()
+        self._media_group_events.clear()
+
         if self._app:
             try:
-                await self._app.updater.stop()
-                await self._app.stop()
+                # Only stop the updater if it's running
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                if self._app.running:
+                    await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
+        if self._token_lock_identity:
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("telegram-bot-token", self._token_lock_identity)
+            except Exception as e:
+                logger.warning("[%s] Error releasing Telegram token lock: %s", self.name, e, exc_info=True)
         
-        self._running = False
+        self._mark_disconnected()
         self._app = None
         self._bot = None
+        self._token_lock_identity = None
         logger.info("[%s] Disconnected from Telegram", self.name)
     
     async def send(
@@ -306,6 +396,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
@@ -866,8 +957,53 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
 
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            await self._queue_media_group_event(str(media_group_id), event)
+            return
+
         await self.handle_message(event)
     
+    async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
+        """Buffer Telegram media-group items so albums arrive as one logical event.
+
+        Telegram delivers albums as multiple updates with a shared media_group_id.
+        If we forward each item immediately, the gateway thinks the second image is a
+        new user message and interrupts the first. We debounce briefly and merge the
+        attachments into a single MessageEvent.
+        """
+        existing = self._media_group_events.get(media_group_id)
+        if existing is None:
+            self._media_group_events[media_group_id] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    if event.text not in existing.text.split("\n\n"):
+                        existing.text = f"{existing.text}\n\n{event.text}"
+                else:
+                    existing.text = event.text
+
+        prior_task = self._media_group_tasks.get(media_group_id)
+        if prior_task:
+            prior_task.cancel()
+
+        self._media_group_tasks[media_group_id] = asyncio.create_task(
+            self._flush_media_group_event(media_group_id)
+        )
+
+    async def _flush_media_group_event(self, media_group_id: str) -> None:
+        try:
+            await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
+            event = self._media_group_events.pop(media_group_id, None)
+            if event is not None:
+                await self.handle_message(event)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._media_group_tasks.pop(media_group_id, None)
+
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """
         Describe a Telegram sticker via vision analysis, with caching.

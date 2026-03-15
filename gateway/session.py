@@ -383,7 +383,11 @@ class SessionStore:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
-                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                        try:
+                            self._entries[key] = SessionEntry.from_dict(entry_data)
+                        except (ValueError, KeyError):
+                            # Skip entries with unknown/removed platform values
+                            continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
         
@@ -590,6 +594,7 @@ class SessionStore:
         input_tokens: int = 0,
         output_tokens: int = 0,
         last_prompt_tokens: int = None,
+        model: str = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -607,7 +612,8 @@ class SessionStore:
             if self._db:
                 try:
                     self._db.update_token_counts(
-                        entry.session_id, input_tokens, output_tokens
+                        entry.session_id, input_tokens, output_tokens,
+                        model=model,
                     )
                 except Exception as e:
                     logger.debug("Session DB operation failed: %s", e)

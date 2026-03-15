@@ -2,7 +2,7 @@
 
 Renders any content as colored ASCII character video. Audio, video, images, text, or pure math in, MP4/GIF/PNG sequence out. Full RGB color per character cell, 1080p 24fps default. No GPU.
 
-Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Usable in any coding agent.
+Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Usable in any coding agent. Canonical source lives here; synced to [`NousResearch/hermes-agent/skills/creative/ascii-video`](https://github.com/NousResearch/hermes-agent/tree/main/skills/creative/ascii-video) via PR.
 
 ## What this is
 
@@ -51,7 +51,7 @@ Characters render on fixed-size grids. Layer multiple densities for depth.
 
 Rendering the same scene on `sm` and `lg` then screen-blending them creates natural texture interference. Fine detail shows through gaps in coarse characters. Most scenes use two or three grids.
 
-## Character palettes (20+)
+## Character palettes (24)
 
 Each sorted dark-to-bright, each a different visual texture. Validated against the font at init so broken glyphs get dropped silently.
 
@@ -95,51 +95,78 @@ Custom palettes are built per project to match the content.
 
 Plus 10 discrete RGB palettes (neon, pastel, cyberpunk, vaporwave, earth, ice, blood, forest, mono-green, mono-amber).
 
-## Effects
+Full OKLAB/OKLCH color system: sRGB↔linear↔OKLAB conversion pipeline, perceptually uniform gradient interpolation, and color harmony generation (complementary, triadic, analogous, split-complementary, tetradic).
 
-### Backgrounds
+## Value field generators (21)
 
-| Effect | Description | Parameters |
-|--------|-------------|------------|
-| Sine field | Layered sinusoidal interference | freq, speed, octave count |
-| Smooth noise | Multi-octave Perlin approximation | octaves, scale |
-| Cellular | Voronoi-like moving cells | n_centers, speed |
-| Noise/static | Random per-cell flicker | density |
-| Video source | Downsampled video frame | brightness |
+Value fields are the core visual building blocks. Each produces a 2D float array in [0, 1] mapping every grid cell to a brightness value.
 
-### Primary effects
+### Trigonometric (12)
 
-| Effect | Description |
-|--------|-------------|
-| Concentric rings | Bass-driven pulsing rings with wobble |
-| Radial rays | Spoke pattern, beat-triggered |
-| Spiral arms | Logarithmic spiral, configurable arm count/tightness |
-| Tunnel | Infinite depth perspective |
-| Vortex | Twisting radial distortion |
-| Frequency waves | Per-band sine waves at different heights |
-| Interference | Overlapping sine waves creating moire |
+| Field | Description |
+|-------|-------------|
+| Sine field | Layered multi-sine interference, general-purpose background |
+| Smooth noise | Multi-octave sine approximation of Perlin noise |
+| Rings | Concentric rings, bass-driven count and wobble |
+| Spiral | Logarithmic spiral arms, configurable arm count/tightness |
+| Tunnel | Infinite depth perspective (inverse distance) |
+| Vortex | Twisting radial pattern, distance modulates angle |
+| Interference | N overlapping sine waves creating moire |
 | Aurora | Horizontal flowing bands |
-| Ripple | Point-source concentric waves |
-| Fire columns | Rising flames with heat-color gradient |
-| Spectrum bars | Mirrored frequency visualizer |
-| Waveform | Oscilloscope-style trace |
+| Ripple | Concentric waves from configurable source points |
+| Plasma | Sum of sines at multiple orientations/speeds |
+| Diamond | Diamond/checkerboard pattern |
+| Noise/static | Random per-cell per-frame flicker |
 
-### Particle systems
+### Noise-based (4)
 
-| Type | Behavior | Character sets |
-|------|----------|---------------|
-| Explosion | Beat-triggered radial burst | `*+#@⚡✦★█▓` |
-| Sparks | Short-lived bright dots | `·•●★✶*+` |
-| Embers | Rising from bottom with drift | `·•●★` |
-| Snow | Falling with wind sway | `❄❅❆·•*○` |
-| Rain | Fast vertical streaks | `│┃║/\` |
-| Bubbles | Rising, expanding | `○◎◉●∘∙°` |
-| Data | Falling hex/binary | `01{}[]<>/\` |
-| Runes | Mystical floating symbols | `ᚠᚢᚦᚱᚷᛁ✦★` |
-| Orbit | Circular/elliptical paths | `·•●` |
-| Gravity well | Attracted to point sources | configurable |
-| Dissolve | Spread across screen, fade | configurable |
-| Starfield | 3D projected, approaching | configurable |
+| Field | Description |
+|-------|-------------|
+| Value noise | Smooth organic noise, no axis-alignment artifacts |
+| fBM | Fractal Brownian Motion — octaved noise for clouds, terrain, smoke |
+| Domain warp | Inigo Quilez technique — fBM-driven coordinate distortion for flowing organic forms |
+| Voronoi | Moving seed points with distance, edge, and cell-ID output modes |
+
+### Simulation-based (4)
+
+| Field | Description |
+|-------|-------------|
+| Reaction-diffusion | Gray-Scott with 7 presets: coral, spots, worms, labyrinths, mitosis, pulsating, chaos |
+| Cellular automata | Game of Life + 4 rule variants with analog fade trails |
+| Strange attractors | Clifford, De Jong, Bedhead — iterated point systems binned to density fields |
+| Temporal noise | 3D noise that morphs in-place without directional drift |
+
+### SDF-based
+
+7 signed distance field primitives (circle, box, ring, line, triangle, star, heart) with smooth boolean combinators (union, intersection, subtraction, smooth union/subtraction) and infinite tiling. Render as solid fills or glowing outlines.
+
+## Hue field generators (9)
+
+Determine per-cell color independent of brightness: fixed hue, angle-mapped rainbow, distance gradient, time-cycled rotation, audio spectral centroid, horizontal/vertical gradients, plasma variation, perceptually uniform OKLCH rainbow.
+
+## Coordinate transforms (11)
+
+UV-space transforms applied before effect evaluation: rotate, scale, skew, tile (with mirror seaming), polar, inverse-polar, twist (rotation increasing with distance), fisheye, wave displacement, Möbius conformal transformation. `make_tgrid()` wraps transformed coordinates into a grid object.
+
+## Particle systems (9)
+
+| Type | Behavior |
+|------|----------|
+| Explosion | Beat-triggered radial burst with gravity and life decay |
+| Embers | Rising from bottom with horizontal drift |
+| Dissolving cloud | Spreading outward with accelerating fade |
+| Starfield | 3D projected, Z-depth stars approaching with streak trails |
+| Orbit | Circular/elliptical paths around center |
+| Gravity well | Attracted toward configurable point sources |
+| Boid flocking | Separation/alignment/cohesion with spatial hash for O(n) neighbors |
+| Flow-field | Steered by gradient of any value field |
+| Trail particles | Fading lines between current and previous positions |
+
+14 themed particle character sets (energy, spark, leaf, snow, rain, bubble, data, hex, binary, rune, zodiac, dot, dash).
+
+## Temporal coherence
+
+10 easing functions (linear, quad, cubic, expo, elastic, bounce — in/out/in-out). Keyframe interpolation with eased transitions. Value field morphing (smooth crossfade between fields). Value field sequencing (cycle through fields with crossfade). Temporal noise (3D noise evolving smoothly in-place).
 
 ## Shader pipeline
 
@@ -172,11 +199,25 @@ Plus 10 discrete RGB palettes (neon, pastel, cyberpunk, vaporwave, earth, ice, b
 
 ## Blend modes and composition
 
-20 pixel blend modes for layering canvases: normal, add, subtract, multiply, screen, overlay, softlight, hardlight, difference, exclusion, colordodge, colorburn, linearlight, vividlight, pin_light, hard_mix, lighten, darken, grain_extract, grain_merge.
+20 pixel blend modes for layering canvases: normal, add, subtract, multiply, screen, overlay, softlight, hardlight, difference, exclusion, colordodge, colorburn, linearlight, vividlight, pin_light, hard_mix, lighten, darken, grain_extract, grain_merge. Both sRGB and linear-light blending supported.
 
-Mirror modes: horizontal, vertical, quad, diagonal, kaleidoscope (6-fold radial). Beat-triggered.
+**Feedback buffer.** Temporal recursion — each frame blends with a transformed version of the previous frame. 7 spatial transforms: zoom, shrink, rotate CW/CCW, shift up/down, mirror. Optional per-frame hue shift for rainbow trails. Configurable decay, blend mode, and opacity per scene.
 
-Transitions: crossfade, directional wipe, radial wipe, dissolve, glitch cut.
+**Masking.** 16 mask types for spatial compositing: shape masks (circle, rect, ring, gradients), procedural masks (any value field as a mask, text stencils), animated masks (iris open/close, wipe, dissolve), boolean operations (union, intersection, subtraction, invert).
+
+**Transitions.** Crossfade, directional wipe, radial wipe, dissolve, glitch cut.
+
+## Scene design patterns
+
+Compositional patterns for making scenes that look intentional rather than random.
+
+**Layer hierarchy.** Background (dim atmosphere, dense grid), content (main visual, standard grid), accent (sparse highlights, coarse grid). Three distinct roles, not three competing layers.
+
+**Directional parameter arcs.** The defining parameter of each scene ramps, accelerates, or builds over its duration. Progress-based formulas (linear, ease-out, step reveal) replace aimless `sin(t)` oscillation.
+
+**Scene concepts.** Scenes built around visual metaphors (emergence, descent, collision, entropy) with motivated layer/palette/feedback choices. Not named after their effects.
+
+**Compositional techniques.** Counter-rotating dual systems, wave collision, progressive fragmentation (voronoi cells multiplying over time), entropy (geometry consumed by reaction-diffusion), staggered layer entry (crescendo buildup).
 
 ## Hardware adaptation
 

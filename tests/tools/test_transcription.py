@@ -28,6 +28,7 @@ class TestGetProvider:
 
     def test_local_fallback_to_openai(self, monkeypatch):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
@@ -57,6 +58,10 @@ class TestGetProvider:
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "local"
+
+    def test_disabled_config_returns_none(self):
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"enabled": False, "provider": "openai"}) == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +129,7 @@ class TestTranscribeLocal:
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools.WhisperModel", return_value=mock_model), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio_file), "base")
@@ -163,7 +168,7 @@ class TestTranscribeOpenAI:
         mock_client.audio.transcriptions.create.return_value = "Hello from OpenAI"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools.OpenAI", return_value=mock_client):
+             patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(str(audio_file), "whisper-1")
 
@@ -215,6 +220,18 @@ class TestTranscribeAudio:
 
         assert result["success"] is False
         assert "No STT provider" in result["error"]
+
+    def test_disabled_config_returns_disabled_error(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"enabled": False}), \
+             patch("tools.transcription_tools._get_provider", return_value="none"):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
 
     def test_invalid_file_returns_error(self):
         from tools.transcription_tools import transcribe_audio

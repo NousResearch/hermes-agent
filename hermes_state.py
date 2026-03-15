@@ -218,17 +218,19 @@ class SessionDB:
             )
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0
+        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
+        model: str = None,
     ) -> None:
-        """Increment token counters on a session."""
-        with self._conn:
-            self._conn.execute(
-                """UPDATE sessions SET
-                   input_tokens = input_tokens + ?,
-                   output_tokens = output_tokens + ?
-                   WHERE id = ?""",
-                (input_tokens, output_tokens, session_id),
-            )
+        """Increment token counters and backfill model if not already set."""
+        self._conn.execute(
+            """UPDATE sessions SET
+               input_tokens = input_tokens + ?,
+               output_tokens = output_tokens + ?,
+               model = COALESCE(model, ?)
+               WHERE id = ?""",
+            (input_tokens, output_tokens, model, session_id),
+        )
+        self._conn.commit()
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
@@ -244,7 +246,9 @@ class SessionDB:
         if not title:
             return None
 
-        # Remove ASCII control characters
+        # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
+        # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
+        # normalized to spaces by the whitespace collapsing step below
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
 
         # Remove problematic Unicode control characters
@@ -314,7 +318,12 @@ class SessionDB:
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
-        """Generate the next title in a lineage (e.g., "my session" → "my session #2")."""
+        """Generate the next title in a lineage (e.g., "my session" → "my session #2").
+
+        Strips any existing " #N" suffix to find the base name, then finds
+        the highest existing number and increments.
+        """
+        # Strip existing #N suffix to find the true base
         match = re.match(r'^(.*?) #(\d+)$', base_title)
         base = match.group(1) if match else base_title
 

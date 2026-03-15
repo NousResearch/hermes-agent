@@ -2437,7 +2437,11 @@ class GatewayRunner:
             adapter._voice_input_callback = None
             err_lower = str(e).lower()
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
-                return "Voice dependencies are missing (PyNaCl / davey). Please reinstall Hermes with voice support enabled."
+                return (
+                    "Voice dependencies are missing (PyNaCl / davey). "
+                    "Install or reinstall Hermes with the messaging extra, e.g. "
+                    "`pip install hermes-agent[messaging]`."
+                )
             return f"Failed to join voice channel: {e}"
 
         if success:

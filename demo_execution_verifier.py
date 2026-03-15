@@ -117,7 +117,7 @@ def main():
         _pp("8. web_search — no verifier, unchanged passthrough", result)
 
     print(f"\n{'='*60}")
-    print("  Demo complete. All verification checks ran successfully.")
+    print("  Demo complete. Verification checks executed across pass, warning, and mismatch scenarios.")
     print(f"{'='*60}\n")
 
 

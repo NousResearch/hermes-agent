@@ -9,7 +9,7 @@ continues reasoning.
 Supported verifications (MVP):
   - terminal / git clone  → target directory exists
   - write_file            → file exists and size is non-zero
-  - patch                 → modified files exist and contain expected changes
+  - patch                 → modified/created files still exist after the tool claims success
 
 The verifier is deliberately conservative: it only fires for operations it
 understands and attaches a structured ``_verification`` block to the tool
@@ -212,7 +212,7 @@ def _verify_write_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Opt
                     status=WARNING,
                     tool_name="write_file",
                     check="file_written",
-                    message=f"file was written but is empty: {resolved}",
+                    message=f"file exists but is empty; result may be incomplete or intentional: {resolved}",
                     details=details,
                 )
         except OSError:

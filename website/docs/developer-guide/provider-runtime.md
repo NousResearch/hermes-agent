@@ -20,6 +20,8 @@ Primary implementation:
 - `hermes_cli/auth.py`
 - `agent/auxiliary_client.py`
 
+If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:
@@ -83,6 +85,13 @@ When provider resolution selects `anthropic`, Hermes uses:
 - `api_mode = anthropic_messages`
 - the native Anthropic Messages API
 - `agent/anthropic_adapter.py` for translation
+
+Credential resolution for native Anthropic now prefers refreshable Claude Code credentials over copied env tokens when both are present. In practice that means:
+
+- Claude Code credential files are treated as the preferred source when they include refreshable auth
+- manual `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` values still work as explicit overrides
+- Hermes preflights Anthropic credential refresh before native Messages API calls
+- Hermes still retries once on a 401 after rebuilding the Anthropic client, as a fallback path
 
 ## OpenAI Codex path
 

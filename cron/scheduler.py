@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -174,6 +175,43 @@ def _deliver_result(job: dict, content: str) -> None:
             logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
+def _build_job_prompt(job: dict) -> str:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+    prompt = job.get("prompt", "")
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return prompt
+
+    from tools.skills_tool import skill_view
+
+    parts = []
+    for skill_name in skill_names:
+        loaded = json.loads(skill_view(skill_name))
+        if not loaded.get("success"):
+            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            raise RuntimeError(error)
+
+        content = str(loaded.get("content") or "").strip()
+        if parts:
+            parts.append("")
+        parts.extend(
+            [
+                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "",
+                content,
+            ]
+        )
+
+    if prompt:
+        parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
+    return "\n".join(parts)
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -194,9 +232,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
-    prompt = job["prompt"]
+    prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
-    
+
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -302,6 +340,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            disabled_toolsets=["cronjob"],
             quiet_mode=True,
             platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",

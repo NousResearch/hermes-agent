@@ -512,6 +512,10 @@ For more information on securing your Hermes Agent deployment, see the [Security
 | **Microphone not working on phone** | Browsers require HTTPS for microphone. Set `API_SSL_CERT`/`API_SSL_KEY` or use localhost. |
 | **Rate limited (429)** | Too many requests. Wait a few seconds and retry. Limits: 10 chat/min, 20 upload/min. |
 | **Voice transcription failed (422)** | Audio could not be transcribed. Check STT provider config and server logs. |
+| **Phone can't connect (macOS)** | macOS Firewall may block incoming connections. Go to System Settings → Network → Firewall → Options → allow `python` or disable firewall. |
+| **Phone can't connect (Linux)** | Check `ufw status`. If active, allow the port: `sudo ufw allow 8766/tcp`. |
+| **Phone can't connect (Windows)** | Windows Firewall may block. Allow `python.exe` through Windows Defender Firewall → Allow an app. |
+| **Voice mode not working on phone** | Browsers require HTTPS for microphone access. Set `API_SSL_CERT` and `API_SSL_KEY` in `.env` to enable HTTPS. See [TLS / HTTPS](#tls--https) section above. |
 
 ---
 

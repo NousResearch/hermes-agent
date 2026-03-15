@@ -57,7 +57,7 @@ _HERMES_CORE_TOOLS = [
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
-    "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+    "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Honcho memory tools (gated on honcho being active via check_fn)
@@ -125,8 +125,8 @@ TOOLSETS = {
     },
     
     "cronjob": {
-        "description": "Cronjob management tools - schedule, list, and remove automated tasks",
-        "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+        "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
+        "tools": ["cronjob"],
         "includes": []
     },
     

@@ -54,7 +54,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/tools` | List available tools |
 | `/toolsets` | List available toolsets |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
-| `/cron` | Manage scheduled tasks (list, add, remove) |
+| `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/reload-mcp` | Reload MCP servers from config.yaml |
 
 ### Info

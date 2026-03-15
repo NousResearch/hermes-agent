@@ -65,6 +65,7 @@ import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from agent.auxiliary_client import call_llm
+from tools.web_safety import is_blocked_url, sanitize_browser_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -990,6 +991,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         JSON string with navigation result (includes stealth features info on first nav)
     """
     effective_task_id = task_id or "default"
+
+    blocked, rule = is_blocked_url(url)
+    if blocked:
+        return json.dumps({
+            "success": False,
+            "error": f"Blocked by web safety policy: {rule}"
+        }, ensure_ascii=False)
     
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
@@ -1086,11 +1094,20 @@ def browser_snapshot(
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
         elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
             snapshot_text = _truncate_snapshot(snapshot_text)
+
+        snapshot_url = data.get("url", "")
+        snapshot_text, safety_meta = sanitize_browser_snapshot(snapshot_text, url=snapshot_url)
         
         response = {
             "success": True,
             "snapshot": snapshot_text,
-            "element_count": len(refs) if refs else 0
+            "element_count": len(refs) if refs else 0,
+            "_web_safety": {
+                "risk_level": safety_meta.get("risk_level", "low"),
+                "risk_score": safety_meta.get("risk_score", 0),
+                "finding_types": safety_meta.get("finding_types", []),
+                "finding_count": safety_meta.get("finding_count", 0),
+            }
         }
         
         return json.dumps(response, ensure_ascii=False)

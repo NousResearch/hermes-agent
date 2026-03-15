@@ -369,6 +369,16 @@ def execute_code(
     if not code or not code.strip():
         return json.dumps({"error": "No code provided."})
 
+    # Web safety check: scan code for blocked URLs
+    from tools.web_safety import check_text_for_blocked_urls
+    has_blocked, blocked_urls = check_text_for_blocked_urls(code)
+    if has_blocked:
+        blocked_list = ", ".join(f"{u['domain']} ({u['reason']})" for u in blocked_urls)
+        return json.dumps({
+            "error": f"Code contains blocked domains: {blocked_list}",
+            "blocked_urls": blocked_urls,
+        })
+
     # Import interrupt event from terminal_tool (cooperative cancellation)
     from tools.terminal_tool import _interrupt_event
 

@@ -3276,6 +3276,142 @@ For more help on a command:
     acp_parser.set_defaults(func=cmd_acp)
     
     # =========================================================================
+    # web-safety command
+    # =========================================================================
+    web_safety_parser = subparsers.add_parser(
+        "web-safety",
+        help="Manage web safety block/exempt lists",
+        description="Manage domains blocked from web access and exempt from safety checks"
+    )
+    web_safety_subparsers = web_safety_parser.add_subparsers(dest="web_safety_action")
+    
+    # web-safety status
+    ws_status = web_safety_subparsers.add_parser("status", help="Show web safety status")
+    
+    # web-safety block
+    ws_block = web_safety_subparsers.add_parser("block", help="Block a domain")
+    ws_block.add_argument("domain", help="Domain to block (e.g., example.com or *.example.com)")
+    
+    # web-safety unblock
+    ws_unblock = web_safety_subparsers.add_parser("unblock", help="Remove domain from block list")
+    ws_unblock.add_argument("domain", help="Domain to unblock")
+    
+    # web-safety list
+    web_safety_subparsers.add_parser("list", help="List all blocked domains")
+    
+    # web-safety exempt
+    ws_exempt = web_safety_subparsers.add_parser("exempt", help="Add domain to exempt list")
+    ws_exempt.add_argument("domain", help="Domain to exempt from safety checks")
+    
+    # web-safety remove-exempt
+    ws_remove_exempt = web_safety_subparsers.add_parser("remove-exempt", help="Remove domain from exempt list")
+    ws_remove_exempt.add_argument("domain", help="Domain to remove from exempt list")
+    
+    # web-safety list-exempt
+    web_safety_subparsers.add_parser("list-exempt", help="List all exempt domains")
+    
+    # web-safety restore
+    web_safety_subparsers.add_parser("restore", help="Restore default config from git if tampered")
+    
+    # web-safety verify
+    web_safety_subparsers.add_parser("verify", help="Verify config file integrity")
+    
+    def cmd_web_safety(args):
+        """Handle web-safety commands."""
+        from tools.web_safety import (
+            block_domain,
+            unblock_domain,
+            list_blocked_domains,
+            add_exempt_domain,
+            remove_exempt_domain,
+            list_exempt_domains,
+            get_web_safety_status,
+            BUILTIN_EXEMPT_DOMAINS,
+            is_config_tampered,
+            restore_default_config,
+            _verify_config_hash,
+            DEFAULT_CONFIG_FILE,
+        )
+        
+        if args.web_safety_action == "status":
+            status = get_web_safety_status()
+            print("Web Safety Status")
+            print("=" * 50)
+            print(f"Blocked domains: {status['blocked_count']}")
+            print(f"Built-in exempt: {status['builtin_exempt_count']}")
+            print(f"User exempt: {status['user_exempt_count']}")
+            print(f"\nBlocked file: {status['blocked_file']}")
+            print(f"Exempt file: {status['exempt_file']}")
+            # Show tampered status
+            if is_config_tampered():
+                print("\nWARNING: Config file TAMPERED! Using fallback defaults.")
+                print("Run 'hermes web-safety restore' to attempt restore from git.")
+            else:
+                print(f"\nConfig file: OK (verified)")
+            
+        elif args.web_safety_action == "verify":
+            print("Verifying config file integrity...")
+            if _verify_config_hash():
+                print(f"OK: {DEFAULT_CONFIG_FILE} hash verified")
+                sys.exit(0)
+            else:
+                print(f"FAILED: {DEFAULT_CONFIG_FILE} has been tampered with!")
+                print("Run 'hermes web-safety restore' to attempt restore from git.")
+                sys.exit(1)
+            
+        elif args.web_safety_action == "restore":
+            print("Attempting to restore default config from git...")
+            success, msg = restore_default_config()
+            print(msg)
+            sys.exit(0 if success else 1)
+            
+        elif args.web_safety_action == "block":
+            success, msg = block_domain(args.domain)
+            print(msg)
+            sys.exit(0 if success else 1)
+            
+        elif args.web_safety_action == "unblock":
+            success, msg = unblock_domain(args.domain)
+            print(msg)
+            sys.exit(0 if success else 1)
+            
+        elif args.web_safety_action == "list":
+            blocked = list_blocked_domains()
+            if not blocked:
+                print("No blocked domains.")
+            else:
+                print("Blocked domains:")
+                for d in blocked:
+                    print(f"  - {d}")
+                    
+        elif args.web_safety_action == "exempt":
+            success, msg = add_exempt_domain(args.domain)
+            print(msg)
+            sys.exit(0 if success else 1)
+            
+        elif args.web_safety_action == "remove-exempt":
+            success, msg = remove_exempt_domain(args.domain)
+            print(msg)
+            sys.exit(0 if success else 1)
+            
+        elif args.web_safety_action == "list-exempt":
+            builtin, user = list_exempt_domains()
+            print("Built-in exempt domains (cannot be removed):")
+            for d in builtin:
+                print(f"  - {d}")
+            if user:
+                print("\nUser-added exempt domains:")
+                for d in user:
+                    print(f"  - {d}")
+            else:
+                print("\nNo user-added exempt domains.")
+                
+        else:
+            web_safety_parser.print_help()
+    
+    web_safety_parser.set_defaults(func=cmd_web_safety)
+
+    # =========================================================================
     # Parse and execute
     # =========================================================================
     # Pre-process argv so unquoted multi-word session names after -c / -r

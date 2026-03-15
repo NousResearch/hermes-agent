@@ -15,6 +15,21 @@ The tools are imported into model_tools.py which provides a unified interface
 for the AI agent to access all capabilities.
 """
 
+# CRITICAL: Apply web safety patches BEFORE any other imports
+# This patches urllib.request and requests at the process level
+# so ALL HTTP traffic goes through safety checks
+from .web_safety import (
+    WebSafetyBlockedError,
+    check_url,
+    is_blocked_url,
+    scan_content,
+    get_web_safety_status,
+    _web_safety_patches_applied,
+)
+
+# Export web safety for external use
+__all__ = ['WebSafetyBlockedError', 'check_url', 'is_blocked_url', 'scan_content', 'get_web_safety_status']
+
 # Export all tools for easy importing
 from .web_tools import (
     web_search_tool,

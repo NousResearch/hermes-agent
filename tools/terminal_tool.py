@@ -853,6 +853,18 @@ def terminal_tool(
     """
     global _active_environments, _last_activity
 
+    # Web safety check: scan command for blocked URLs (curl, wget, etc.)
+    from tools.web_safety import check_text_for_blocked_urls
+    has_blocked, blocked_urls = check_text_for_blocked_urls(command)
+    if has_blocked:
+        blocked_list = ", ".join(f"{u['domain']} ({u['reason']})" for u in blocked_urls)
+        return json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": f"Command contains blocked domains: {blocked_list}",
+            "blocked_urls": blocked_urls,
+        })
+
     try:
         # Get configuration
         config = _get_env_config()

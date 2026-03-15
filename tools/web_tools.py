@@ -49,6 +49,7 @@ from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.web_safety import sanitize_search_results, sanitize_extracted_results, is_blocked_url
 
 logger = logging.getLogger(__name__)
 
@@ -513,16 +514,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             if 'web' in response and response['web']:
                 web_results = response['web']
         
-        results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
+        safe_results, blocked_results = sanitize_search_results(web_results)
+        results_count = len(safe_results)
+        logger.info("Found %d search results (%d blocked by web safety)", results_count, len(blocked_results))
         
         # Build response with just search metadata (URLs, titles, descriptions)
         response_data = {
             "success": True,
             "data": {
-                "web": web_results
+                "web": safe_results
             }
         }
+        if blocked_results:
+            response_data["blocked"] = blocked_results
         
         # Capture debug information
         debug_call_data["results_count"] = results_count
@@ -614,6 +618,11 @@ async def web_extract_tool(
         for url in urls:
             if _is_interrupted():
                 results.append({"url": url, "error": "Interrupted", "title": ""})
+                continue
+
+            blocked, rule = is_blocked_url(url)
+            if blocked:
+                results.append({"url": url, "error": f"Blocked by web safety policy: {rule}", "title": ""})
                 continue
 
             try:
@@ -781,7 +790,10 @@ async def web_extract_tool(
             }
             for r in response.get("results", [])
         ]
-        trimmed_response = {"results": trimmed_results}
+        safe_results, blocked_results = sanitize_extracted_results(trimmed_results)
+        trimmed_response = {"results": safe_results}
+        if blocked_results:
+            trimmed_response["blocked"] = blocked_results
 
         if trimmed_response.get("results") == []:
             result_json = json.dumps({"error": "Content was inaccessible or not found"}, ensure_ascii=False)
@@ -867,6 +879,10 @@ async def web_crawl_tool(
             url = f'https://{url}'
             logger.info("Added https:// prefix to URL: %s", url)
         
+        blocked, rule = is_blocked_url(url)
+        if blocked:
+            return json.dumps({"error": f"Blocked by web safety policy: {rule}", "success": False}, ensure_ascii=False)
+
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
@@ -1070,13 +1086,17 @@ async def web_crawl_tool(
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
+                "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "error": r.get("error")
             }
             for r in response.get("results", [])
         ]
-        trimmed_response = {"results": trimmed_results}
+        safe_results, blocked_results = sanitize_extracted_results(trimmed_results)
+        trimmed_response = {"results": safe_results}
+        if blocked_results:
+            trimmed_response["blocked"] = blocked_results
         
         result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
         # Clean base64 images from crawled content

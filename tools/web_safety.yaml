@@ -1,0 +1,12 @@
+# Web Safety Configuration
+# This file ships with Hermes and defines the default blocked domains.
+# Users can add more domains via: hermes web-safety block <domain>
+# User additions are stored in ~/.hermes/blocked-domains.txt
+
+blocked_domains:
+  # Known security risks
+  - moltbook.com
+  - "*.moltbook.com"
+
+# Note: LLM provider domains (OpenRouter, Anthropic, OpenAI, etc.) are 
+# automatically exempted in code and don't need to be listed here.

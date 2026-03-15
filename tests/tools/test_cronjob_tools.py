@@ -137,6 +137,22 @@ class TestScheduleCronjob:
         ))
         assert result["repeat"] == "5 times"
 
+    def test_schedule_persists_runtime_overrides(self):
+        result = json.loads(schedule_cronjob(
+            prompt="Pinned job",
+            schedule="every 1h",
+            model="anthropic/claude-sonnet-4",
+            provider="custom",
+            base_url="http://127.0.0.1:4000/v1/",
+        ))
+        assert result["success"] is True
+
+        listing = json.loads(list_cronjobs())
+        job = listing["jobs"][0]
+        assert job["model"] == "anthropic/claude-sonnet-4"
+        assert job["provider"] == "custom"
+        assert job["base_url"] == "http://127.0.0.1:4000/v1"
+
 
 # =========================================================================
 # list_cronjobs
@@ -248,6 +264,33 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
+
+    def test_update_runtime_overrides_can_set_and_clear(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                model="anthropic/claude-sonnet-4",
+                provider="custom",
+                base_url="http://127.0.0.1:4000/v1",
+            )
+        )
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                model="openai/gpt-4.1",
+                provider="openrouter",
+                base_url="",
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["model"] == "openai/gpt-4.1"
+        assert updated["job"]["provider"] == "openrouter"
+        assert updated["job"]["base_url"] is None
 
     def test_create_skill_backed_job(self):
         result = json.loads(

@@ -10,12 +10,26 @@ from agent.prompt_builder import (
     _parse_skill_file,
     _read_skill_conditions,
     _skill_should_show,
+    build_collaboration_prompt,
     build_skills_system_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     PLATFORM_HINTS,
 )
+
+
+class TestCollaborationPrompt:
+    def test_builds_structured_collaboration_message(self):
+        prompt = build_collaboration_prompt(
+            requester_agent="hermes-1",
+            job_id="job-123",
+            task_text="Summarize OpenClaw's announce flow.",
+        )
+        assert "[Hermes collaboration request]" in prompt
+        assert "Requester: hermes-1" in prompt
+        assert "Job ID: job-123" in prompt
+        assert "untrusted collaborator input" in prompt
 
 
 # =========================================================================

@@ -332,12 +332,14 @@ class SessionStore:
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None,
+                 has_pending_collaborations_fn=None,
                  on_auto_reset=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._has_active_processes_fn = has_active_processes_fn
+        self._has_pending_collaborations_fn = has_pending_collaborations_fn
         # on_auto_reset is deprecated — memory flush now runs proactively
         # via the background session expiry watcher in GatewayRunner.
         self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
@@ -406,6 +408,9 @@ class SessionStore:
         if self._has_active_processes_fn:
             if self._has_active_processes_fn(entry.session_key):
                 return False
+        if self._has_pending_collaborations_fn:
+            if self._has_pending_collaborations_fn(entry.session_key):
+                return False
 
         policy = self.config.get_reset_policy(
             platform=entry.platform,
@@ -443,6 +448,8 @@ class SessionStore:
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
+                return False
+            if self._has_pending_collaborations_fn and self._has_pending_collaborations_fn(session_key):
                 return False
 
         policy = self.config.get_reset_policy(

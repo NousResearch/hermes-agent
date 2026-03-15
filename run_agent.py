@@ -3207,6 +3207,15 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "collaborate_with_agent":
+            from tools.collaboration_tool import collaborate_with_agent as _collaborate_with_agent
+            return _collaborate_with_agent(
+                target_agent=function_args.get("target_agent", ""),
+                task=function_args.get("task", ""),
+                context=function_args.get("context"),
+                timeout_seconds=function_args.get("timeout_seconds"),
+                parent_agent=self,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -3528,8 +3537,38 @@ class AIAgent:
                     if spinner:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
-                        print(f"  {cute_msg}")
-            elif self.quiet_mode:
+                        self._vprint(f"  {cute_msg}")
+            elif function_name == "collaborate_with_agent":
+                from tools.collaboration_tool import collaborate_with_agent as _collaborate_with_agent
+                spinner = None
+                if self.quiet_mode:
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    target_preview = (function_args.get("target_agent") or "")[:30]
+                    spinner = KawaiiSpinner(f"{face} 🤝 {target_preview or 'collaborating'}", spinner_type='dots')
+                    spinner.start()
+                _collaboration_result = None
+                try:
+                    function_result = _collaborate_with_agent(
+                        target_agent=function_args.get("target_agent", ""),
+                        task=function_args.get("task", ""),
+                        context=function_args.get("context"),
+                        timeout_seconds=function_args.get("timeout_seconds"),
+                        parent_agent=self,
+                    )
+                    _collaboration_result = function_result
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl(
+                        'collaborate_with_agent',
+                        function_args,
+                        tool_duration,
+                        result=_collaboration_result,
+                    )
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self.quiet_mode:
+                        self._vprint(f"  {cute_msg}")
+            elif self.quiet_mode and self._stream_callback is None:
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                 tool_emoji_map = {
                     'web_search': '🔍', 'web_extract': '📄', 'web_crawl': '🕸️',

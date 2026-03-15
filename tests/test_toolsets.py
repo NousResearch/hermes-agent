@@ -141,3 +141,8 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_webhook_toolset_adds_collaboration(self):
+        tools = set(TOOLSETS["hermes-webhook"]["tools"])
+        assert "collaborate_with_agent" in tools
+        assert "delegate_task" in tools

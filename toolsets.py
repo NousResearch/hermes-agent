@@ -190,6 +190,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "collaboration": {
+        "description": "Collaborate with another configured Hermes agent session",
+        "tools": ["collaborate_with_agent"],
+        "includes": []
+    },
+
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
         "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
@@ -228,6 +234,12 @@ TOOLSETS = {
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+    
+    "hermes-webhook": {
+        "description": "Webhook/miniverse toolset - core tools plus cross-agent collaboration",
+        "tools": _HERMES_CORE_TOOLS + ["collaborate_with_agent"],
         "includes": []
     },
     
@@ -276,7 +288,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
+        "includes": ["hermes-webhook", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
     }
 }
 

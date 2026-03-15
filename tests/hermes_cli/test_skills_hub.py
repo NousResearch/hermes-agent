@@ -3,7 +3,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from hermes_cli.skills_hub import do_check, do_list, do_update
+from hermes_cli.skills_hub import do_check, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:

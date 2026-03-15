@@ -137,7 +137,7 @@ with reconnection logic.
 
 Hermes supports voice on WhatsApp:
 
-- **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY`)
+- **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
 - Agent responses are prefixed with "⚕ **Hermes Agent**" for easy identification
 

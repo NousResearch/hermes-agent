@@ -251,7 +251,6 @@ StandardError=journal
 WantedBy=default.target
 """
 
-
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
@@ -279,6 +278,65 @@ def refresh_systemd_unit_if_needed() -> bool:
     return True
 
 
+
+def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
+    print()
+    print("⚠ Linger not enabled — gateway may stop when you close this terminal.")
+    if detail:
+        print(f"  Auto-enable failed: {detail}")
+    print()
+    print("  On headless servers (VPS, cloud instances) run:")
+    print(f"    sudo loginctl enable-linger {username}")
+    print()
+    print("  Then restart the gateway:")
+    print(f"    systemctl --user restart {SERVICE_NAME}.service")
+    print()
+
+
+
+def _ensure_linger_enabled() -> None:
+    """Enable linger when possible so the user gateway survives logout."""
+    if not is_linux():
+        return
+
+    import getpass
+    import shutil
+
+    username = getpass.getuser()
+    linger_file = Path(f"/var/lib/systemd/linger/{username}")
+    if linger_file.exists():
+        print("✓ Systemd linger is enabled (service survives logout)")
+        return
+
+    linger_enabled, linger_detail = get_systemd_linger_status()
+    if linger_enabled is True:
+        print("✓ Systemd linger is enabled (service survives logout)")
+        return
+
+    if not shutil.which("loginctl"):
+        _print_linger_enable_warning(username, linger_detail or "loginctl not found")
+        return
+
+    print("Enabling linger so the gateway survives SSH logout...")
+    try:
+        result = subprocess.run(
+            ["loginctl", "enable-linger", username],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        _print_linger_enable_warning(username, str(e))
+        return
+
+    if result.returncode == 0:
+        print("✓ Linger enabled — gateway will persist after logout")
+        return
+
+    detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    _print_linger_enable_warning(username, detail or linger_detail)
+
+
 def systemd_install(force: bool = False):
     unit_path = get_systemd_unit_path()
     
@@ -302,7 +360,7 @@ def systemd_install(force: bool = False):
     print(f"  hermes gateway status             # Check status")
     print(f"  journalctl --user -u {SERVICE_NAME} -f  # View logs")
     print()
-    print_systemd_linger_guidance()
+    _ensure_linger_enabled()
 
 def systemd_uninstall():
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)
@@ -366,6 +424,13 @@ def systemd_status(deep: bool = False):
     else:
         print("✗ Gateway service is stopped")
         print("  Run: hermes gateway start")
+
+    runtime_lines = _runtime_health_lines()
+    if runtime_lines:
+        print()
+        print("Recent gateway health:")
+        for line in runtime_lines:
+            print(f"  {line}")
 
     if deep:
         print_systemd_linger_guidance()
@@ -691,6 +756,35 @@ def _platform_status(platform: dict) -> str:
     if val:
         return "configured"
     return "not configured"
+
+
+def _runtime_health_lines() -> list[str]:
+    """Summarize the latest persisted gateway runtime health state."""
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return []
+
+    state = read_runtime_status()
+    if not state:
+        return []
+
+    lines: list[str] = []
+    gateway_state = state.get("gateway_state")
+    exit_reason = state.get("exit_reason")
+    platforms = state.get("platforms", {}) or {}
+
+    for platform, pdata in platforms.items():
+        if pdata.get("state") == "fatal":
+            message = pdata.get("error_message") or "unknown error"
+            lines.append(f"⚠ {platform}: {message}")
+
+    if gateway_state == "startup_failed" and exit_reason:
+        lines.append(f"⚠ Last startup issue: {exit_reason}")
+    elif gateway_state == "stopped" and exit_reason:
+        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+
+    return lines
 
 
 def _setup_standard_platform(platform: dict):
@@ -1186,11 +1280,23 @@ def gateway_command(args):
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
+                runtime_lines = _runtime_health_lines()
+                if runtime_lines:
+                    print()
+                    print("Recent gateway health:")
+                    for line in runtime_lines:
+                        print(f"  {line}")
                 print()
                 print("To install as a service:")
                 print("  hermes gateway install")
             else:
                 print("✗ Gateway is not running")
+                runtime_lines = _runtime_health_lines()
+                if runtime_lines:
+                    print()
+                    print("Recent gateway health:")
+                    for line in runtime_lines:
+                        print(f"  {line}")
                 print()
                 print("To start:")
                 print("  hermes gateway          # Run in foreground")

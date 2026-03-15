@@ -71,15 +71,17 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 MEMORY_GUIDANCE = (
-    "You have persistent memory across sessions. Proactively save important things "
-    "you learn (user preferences, environment details, useful approaches) and do "
-    "(like a diary!) using the memory tool -- don't wait to be asked."
+    "You have persistent memory across sessions. Save durable facts using the memory "
+    "tool: user preferences, environment details, tool quirks, and stable conventions. "
+    "Memory is injected into every turn, so keep it compact. Do NOT save task progress, "
+    "session outcomes, or completed-work logs to memory; use session_search to recall "
+    "those from past transcripts."
 )
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
-    "relevant prior context exists, use session_search to recall it before asking "
-    "them to repeat themselves."
+    "relevant cross-session context exists, use session_search to recall it before "
+    "asking them to repeat themselves."
 )
 
 SKILLS_GUIDANCE = (
@@ -138,6 +140,13 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. The subject line "
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
+    ),
+    "cron": (
+        "You are running as a scheduled cron job. Your final response is automatically "
+        "delivered to the job's configured destination, so do not use send_message to "
+        "send to that same target again. If you want the user to receive something in "
+        "the scheduled destination, put it directly in your final response. Use "
+        "send_message only for additional or different targets."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "

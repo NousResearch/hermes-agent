@@ -57,6 +57,50 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _resolve_delivery_target(job: dict) -> Optional[dict]:
+    """Resolve the concrete auto-delivery target for a cron job, if any."""
+    deliver = job.get("deliver", "local")
+    origin = _resolve_origin(job)
+
+    if deliver == "local":
+        return None
+
+    if deliver == "origin":
+        if not origin:
+            return None
+        return {
+            "platform": origin["platform"],
+            "chat_id": str(origin["chat_id"]),
+            "thread_id": origin.get("thread_id"),
+        }
+
+    if ":" in deliver:
+        platform_name, chat_id = deliver.split(":", 1)
+        return {
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": None,
+        }
+
+    platform_name = deliver
+    if origin and origin.get("platform") == platform_name:
+        return {
+            "platform": platform_name,
+            "chat_id": str(origin["chat_id"]),
+            "thread_id": origin.get("thread_id"),
+        }
+
+    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    if not chat_id:
+        return None
+
+    return {
+        "platform": platform_name,
+        "chat_id": chat_id,
+        "thread_id": None,
+    }
+
+
 def _deliver_result(job: dict, content: str) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
@@ -64,36 +108,19 @@ def _deliver_result(job: dict, content: str) -> None:
     Uses the standalone platform send functions from send_message_tool so delivery
     works whether or not the gateway is running.
     """
-    deliver = job.get("deliver", "local")
-    origin = _resolve_origin(job)
-
-    if deliver == "local":
+    target = _resolve_delivery_target(job)
+    if not target:
+        if job.get("deliver", "local") != "local":
+            logger.warning(
+                "Job '%s' deliver=%s but no concrete delivery target could be resolved",
+                job["id"],
+                job.get("deliver", "local"),
+            )
         return
 
-    thread_id = None
-
-    # Resolve target platform + chat_id
-    if deliver == "origin":
-        if not origin:
-            logger.warning("Job '%s' deliver=origin but no origin stored, skipping delivery", job["id"])
-            return
-        platform_name = origin["platform"]
-        chat_id = origin["chat_id"]
-        thread_id = origin.get("thread_id")
-    elif ":" in deliver:
-        platform_name, chat_id = deliver.split(":", 1)
-    else:
-        # Bare platform name like "telegram" — need to resolve to origin or home channel
-        platform_name = deliver
-        if origin and origin.get("platform") == platform_name:
-            chat_id = origin["chat_id"]
-            thread_id = origin.get("thread_id")
-        else:
-            # Fall back to home channel
-            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
-            if not chat_id:
-                logger.warning("Job '%s' deliver=%s but no chat_id or home channel. Set via: hermes config set %s_HOME_CHANNEL <channel_id>", job["id"], deliver, platform_name.upper())
-                return
+    platform_name = target["platform"]
+    chat_id = target["chat_id"]
+    thread_id = target.get("thread_id")
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -207,6 +234,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
+    delivery_target = _resolve_delivery_target(job)
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -217,6 +245,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
         if origin.get("chat_name"):
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+    if delivery_target:
+        os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
+        os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
+        if delivery_target.get("thread_id") is not None:
+            os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -363,7 +396,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     finally:
         # Clean up injected env vars so they don't leak to other jobs
-        for key in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME"):
+        for key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+            "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+            "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+        ):
             os.environ.pop(key, None)
         if _session_db:
             try:

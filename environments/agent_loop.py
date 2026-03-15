@@ -39,7 +39,9 @@ def resize_tool_pool(max_workers: int):
     Safe to call before any tasks are submitted.
     """
     global _tool_executor
+    old_executor = _tool_executor
     _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    old_executor.shutdown(wait=False)
     logger.info("Tool thread pool resized to %d workers", max_workers)
 
 logger = logging.getLogger(__name__)

@@ -363,9 +363,35 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_thread_disabled_by_default(adapter, monkeypatch):
-    """Without DISCORD_AUTO_THREAD, messages stay in the channel."""
+async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatch):
+    """Without DISCORD_AUTO_THREAD env var, auto-threading is enabled (default: true)."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    fake_thread = _FakeThreadChannel(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel())
+
+    await adapter._handle_message(msg)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "999"  # redirected to thread
+    assert captured_events[0].source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_can_be_disabled(adapter, monkeypatch):
+    """Setting DISCORD_AUTO_THREAD=false keeps messages in the channel."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
 
     adapter._auto_create_thread = AsyncMock()

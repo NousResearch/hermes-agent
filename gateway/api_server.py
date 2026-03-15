@@ -165,6 +165,21 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
             return FileResponse(f)
         raise HTTPException(404)
 
+    @app.get("/apple-touch-icon.png")
+    @app.get("/apple-touch-icon-precomposed.png")
+    async def apple_touch_icon():
+        f = _static_dir / "icons" / "apple-touch-icon.png"
+        if f.is_file():
+            return FileResponse(f)
+        raise HTTPException(404)
+
+    @app.get("/favicon.ico")
+    async def favicon_ico():
+        f = _static_dir / "icons" / "favicon.png"
+        if f.is_file():
+            return FileResponse(f, media_type="image/png")
+        raise HTTPException(404)
+
     # ── Auth dependency ──────────────────────────────────────────────
 
     async def verify_api_key(authorization: str = Header(...)) -> None:

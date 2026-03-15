@@ -258,13 +258,23 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     )
     fragments.append(("class:radio-bars", f"  {bars} "))
 
-    # Artist - Title
+    # Artist - Title (or station name for streams)
     display = ""
     if now.artist and now.artist != "Unknown":
         display = f"{now.artist} \u2014 {now.title}" if now.title else now.artist
-    elif now.title:
+    elif now.title and now.title not in ("...", "channel.mp3"):
         display = now.title
     else:
+        display = ""
+
+    # For streams, always show station name (prepend or use as fallback)
+    if now.source_mode == "stream" and now.station_name:
+        if display and display != now.station_name:
+            display = f"{now.station_name} \u2014 {display}"
+        else:
+            display = now.station_name
+
+    if not display:
         display = now.station_name or "..."
 
     # Truncate if too long

@@ -2727,6 +2727,11 @@ class HermesCLI:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_workspace_command(self, cmd: str):
+        """Handle /workspace slash command — delegates to hermes_cli.workspace."""
+        from hermes_cli.workspace import handle_workspace_slash
+        handle_workspace_slash(cmd, ChatConsole())
+    
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -3027,6 +3032,8 @@ class HermesCLI:
         elif cmd_lower.startswith("/skills"):
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif cmd_lower.startswith("/workspace"):
+            self._handle_workspace_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         elif cmd_lower == "/verbose":

@@ -35,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
+    # Workspace knowledgebase
+    "workspace",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # MoA
@@ -76,7 +78,13 @@ TOOLSETS = {
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
     },
-    
+
+    "workspace": {
+        "description": "Hermes workspace inspection and search",
+        "tools": ["workspace"],
+        "includes": []
+    },
+
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],

@@ -18,9 +18,62 @@ All settings are stored in the `~/.hermes/` directory for easy access.
 ├── SOUL.md         # Optional: global persona (agent embodies this personality)
 ├── memories/       # Persistent memory (MEMORY.md, USER.md)
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
+├── workspace/      # User-managed docs, notes, code, uploads for workspace RAG
+├── knowledgebase/  # Workspace manifests and retrieval indexes
 ├── cron/           # Scheduled jobs
 ├── sessions/       # Gateway sessions
 └── logs/           # Logs (errors.log, gateway.log — secrets auto-redacted)
+```
+
+## Workspace Knowledgebase & Local RAG
+
+Hermes can maintain a local workspace knowledgebase under `~/.hermes/workspace` and retrieve relevant chunks into the current turn.
+
+To configure it interactively:
+
+```bash
+hermes setup workspace
+```
+
+That section lets you:
+- enable or disable workspace knowledgebase features
+- choose retrieval mode: `off`, `gated`, or `always`
+- install the optional heavier local runtime for EmbeddingGemma, local reranking, and `sqlite-vec`
+- re-run the same configuration later if you skipped it during first install
+
+Manual install for the optional local runtime:
+
+```bash
+pip install 'hermes-agent[workspace-rag]'
+```
+
+If you do not install the extra, Hermes still works — it falls back to a lightweight local dense backend.
+
+Relevant config sections:
+
+```yaml
+workspace:
+  enabled: true
+  path: ~/.hermes/workspace
+
+knowledgebase:
+  enabled: true
+  retrieval_mode: gated   # off | gated | always
+  embeddings:
+    provider: local
+    model: google/embeddinggemma-300m
+  reranker:
+    enabled: false
+    provider: local
+```
+
+Useful commands:
+
+```bash
+hermes workspace status
+hermes workspace index
+hermes workspace search "deployment plan"
+hermes workspace retrieve "rollback procedure"
 ```
 
 ## Managing Configuration

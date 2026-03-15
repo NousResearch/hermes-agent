@@ -76,6 +76,7 @@ def _discover_tools():
         "tools.web_tools",
         "tools.terminal_tool",
         "tools.file_tools",
+        "tools.workspace_tool",
         "tools.vision_tools",
         "tools.mixture_of_agents_tool",
         "tools.image_generation_tool",

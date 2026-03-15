@@ -58,6 +58,10 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `ELEVENLABS_API_KEY` | Premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
+| `GEMINI_API_KEY` | Google-hosted workspace embeddings fallback ([ai.google.dev](https://ai.google.dev/)) |
+| `GOOGLE_API_KEY` | Alias for `GEMINI_API_KEY` |
+| `COHERE_API_KEY` | Optional Cohere reranker for workspace retrieval ([cohere.com](https://cohere.com/)) |
+| `VOYAGE_API_KEY` | Optional Voyage reranker for workspace retrieval ([voyageai.com](https://www.voyageai.com/)) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |

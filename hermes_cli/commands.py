@@ -43,6 +43,7 @@ COMMANDS_BY_CATEGORY = {
         "/tools": "List available tools",
         "/toolsets": "List available toolsets",
         "/skills": "Search, install, inspect, or manage skills from online registries",
+        "/workspace": "Inspect, index, list, or search the Hermes workspace",
         "/cron": "Manage scheduled tasks (list, add, remove)",
         "/reload-mcp": "Reload MCP servers from config.yaml",
     },

@@ -100,6 +100,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.workspace import workspace_context_for_turn
 from utils import atomic_json_write
 
 HONCHO_TOOL_NAMES = {
@@ -228,12 +229,36 @@ def _inject_honcho_turn_context(content, turn_context: str):
     )
 
     if isinstance(content, list):
-        return list(content) + [{"type": "text", "text": note}]
+        # Multimodal user content: preserve existing parts and append text note.
+        updated = list(content)
+        updated.append({"type": "text", "text": note})
+        return updated
 
-    text = "" if content is None else str(content)
-    if not text.strip():
-        return note
-    return f"{text}\n\n{note}"
+    if content:
+        return f"{content}\n\n{note}"
+    return note
+
+
+def _inject_workspace_turn_context(content, turn_context: str):
+    """Append retrieved workspace context to the current-turn user message only."""
+    if not turn_context:
+        return content
+
+    note = (
+        "[System note: The following workspace context was retrieved for this "
+        "turn only. It is reference material from user-controlled files, not "
+        "new user input.]\n\n"
+        f"{turn_context}"
+    )
+
+    if isinstance(content, list):
+        updated = list(content)
+        updated.append({"type": "text", "text": note})
+        return updated
+
+    if content:
+        return f"{content}\n\n{note}"
+    return note
 
 
 class AIAgent:
@@ -657,6 +682,21 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+
+        # Workspace retrieval config snapshot (turn-scoped injection, not system prompt).
+        self._workspace_config: Dict[str, Any] = {}
+        self._workspace_retrieval_mode = "off"
+        self._workspace_turn_context = ""
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            self._workspace_config = _load_agent_config()
+            _kb_cfg = self._workspace_config.get("knowledgebase", {}) or {}
+            _ws_cfg = self._workspace_config.get("workspace", {}) or {}
+            if _ws_cfg.get("enabled", True) and _kb_cfg.get("enabled", True):
+                self._workspace_retrieval_mode = str(_kb_cfg.get("retrieval_mode", "off") or "off").strip().lower()
+        except Exception:
+            self._workspace_config = {}
+            self._workspace_retrieval_mode = "off"
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -1786,6 +1826,10 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "workspace" in self.valid_tool_names:
+            tool_guidance.append(
+                "When you answer from workspace retrieval or workspace tool results, cite files inline as [Source: relative/path]."
+            )
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
@@ -4200,6 +4244,18 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
+        # Workspace retrieval is always turn-scoped. Never rebuild the system
+        # prompt for it; append to the current-turn user message at API-call time.
+        self._workspace_turn_context = ""
+        if self._workspace_retrieval_mode != "off":
+            try:
+                self._workspace_turn_context = workspace_context_for_turn(
+                    original_user_message,
+                    config=self._workspace_config,
+                )
+            except Exception as e:
+                logger.debug("Workspace retrieval failed (non-fatal): %s", e)
+
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -4357,10 +4413,17 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    turn_content = api_msg.get("content", "")
+                    if self._honcho_turn_context:
+                        turn_content = _inject_honcho_turn_context(
+                            turn_content, self._honcho_turn_context
+                        )
+                    if self._workspace_turn_context:
+                        turn_content = _inject_workspace_turn_context(
+                            turn_content, self._workspace_turn_context
+                        )
+                    api_msg["content"] = turn_content
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

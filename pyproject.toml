@@ -57,6 +57,11 @@ honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
+workspace-rag = [
+  "sentence-transformers>=5.0.0",
+  "torch>=2.4.0",
+  "sqlite-vec>=0.1.6",
+]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",

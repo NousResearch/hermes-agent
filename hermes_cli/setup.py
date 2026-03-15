@@ -11,9 +11,12 @@ Modular wizard with independently-runnable sections:
 Config files are stored in ~/.hermes/ for easy access.
 """
 
+import copy
 import importlib.util
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -2367,6 +2370,130 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
+def _workspace_rag_dependencies_ready() -> bool:
+    """Return True when the optional local workspace RAG runtime is installed."""
+    try:
+        import sentence_transformers  # noqa: F401
+        import torch  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _install_workspace_rag_dependencies() -> bool:
+    """Install the optional local workspace RAG runtime into the current Python."""
+    package_spec = "hermes-agent[workspace-rag]"
+    source_spec = f"{PROJECT_ROOT}[workspace-rag]"
+    attempts: list[list[str]] = []
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        attempts.append([uv_bin, "pip", "install", "--python", sys.executable, package_spec])
+        if (PROJECT_ROOT / "pyproject.toml").exists():
+            attempts.append([uv_bin, "pip", "install", "--python", sys.executable, source_spec])
+    else:
+        attempts.append([sys.executable, "-m", "pip", "install", package_spec])
+        if (PROJECT_ROOT / "pyproject.toml").exists():
+            attempts.append([sys.executable, "-m", "pip", "install", source_spec])
+
+    print_info("Installing optional local workspace RAG runtime...")
+    print_info("  Includes: sentence-transformers, torch, sqlite-vec")
+
+    seen: set[tuple[str, ...]] = set()
+    last_error = ""
+    for cmd in attempts:
+        key = tuple(cmd)
+        if key in seen:
+            continue
+        seen.add(key)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print_success("Local workspace RAG runtime installed")
+            return True
+        last_error = (result.stderr or result.stdout or "").strip()
+
+    print_warning("Install failed — local workspace RAG runtime not enabled")
+    print_info("  Run manually with one of:")
+    print_info("    pip install 'hermes-agent[workspace-rag]'")
+    print_info("    pip install -e '.[workspace-rag]'   # from the repo root")
+    if last_error:
+        print_info(f"  Error: {last_error.splitlines()[-1]}")
+    return False
+
+
+def setup_workspace_rag(config: dict):
+    """Configure workspace knowledgebase behavior and optional local RAG runtime."""
+    print_header("Workspace Knowledgebase & Local RAG")
+    print_info("Hermes can index ~/.hermes/workspace and retrieve relevant chunks into the current turn.")
+    print_info("The optional local runtime enables true local EmbeddingGemma embeddings, local reranking,")
+    print_info("and sqlite-vec acceleration, but it installs heavier dependencies.")
+
+    workspace_cfg = config.setdefault("workspace", copy.deepcopy(DEFAULT_CONFIG["workspace"]))
+    kb_cfg = config.setdefault("knowledgebase", copy.deepcopy(DEFAULT_CONFIG["knowledgebase"]))
+    kb_cfg.setdefault("embeddings", copy.deepcopy(DEFAULT_CONFIG["knowledgebase"]["embeddings"]))
+    kb_cfg.setdefault("reranker", copy.deepcopy(DEFAULT_CONFIG["knowledgebase"]["reranker"]))
+
+    print()
+    print_info(f"Workspace path: {workspace_cfg.get('path') or str(get_hermes_home() / 'workspace')}")
+    current_mode = str(kb_cfg.get("retrieval_mode", "off") or "off")
+    print_info(f"Current retrieval mode: {current_mode}")
+
+    local_runtime_ready = _workspace_rag_dependencies_ready()
+    if local_runtime_ready:
+        print_success("Local workspace RAG runtime: installed")
+    else:
+        print_info("Local workspace RAG runtime: not installed")
+        print_info("  Hermes will still work with its lightweight fallback retrieval backend.")
+
+    enable_workspace = prompt_yes_no(
+        "Enable workspace knowledgebase features?",
+        bool(workspace_cfg.get("enabled", True) and kb_cfg.get("enabled", True)),
+    )
+    workspace_cfg["enabled"] = enable_workspace
+    kb_cfg["enabled"] = enable_workspace
+    if not enable_workspace:
+        kb_cfg["retrieval_mode"] = "off"
+        if kb_cfg.get("reranker", {}).get("provider") == "local":
+            kb_cfg["reranker"]["enabled"] = False
+        print_info("Workspace knowledgebase disabled. Re-run with 'hermes setup workspace' to enable it later.")
+        return
+
+    if not local_runtime_ready and prompt_yes_no(
+        "Install the optional local workspace RAG runtime now?",
+        False,
+    ):
+        local_runtime_ready = _install_workspace_rag_dependencies()
+
+    print()
+    retrieval_choices = [
+        "Off — keep workspace retrieval manual only",
+        "Gated — auto-retrieve only when the question looks workspace-related",
+        "Always — always inject retrieved workspace context",
+    ]
+    mode_to_index = {"off": 0, "gated": 1, "always": 2}
+    retrieval_idx = prompt_choice(
+        "Select workspace retrieval mode:",
+        retrieval_choices,
+        mode_to_index.get(str(kb_cfg.get("retrieval_mode", "off") or "off"), 0),
+    )
+    kb_cfg["retrieval_mode"] = ("off", "gated", "always")[retrieval_idx]
+
+    if local_runtime_ready:
+        if prompt_yes_no("Use local EmbeddingGemma by default?", True):
+            kb_cfg["embeddings"]["provider"] = "local"
+            kb_cfg["embeddings"]["model"] = "google/embeddinggemma-300m"
+        if prompt_yes_no("Enable local reranking for retrieved chunks?", bool(kb_cfg.get("reranker", {}).get("enabled", False))):
+            kb_cfg["reranker"]["enabled"] = True
+            kb_cfg["reranker"]["provider"] = "local"
+            if not str(kb_cfg["reranker"].get("model", "")).startswith("cross-encoder/"):
+                kb_cfg["reranker"]["model"] = "cross-encoder/ms-marco-MiniLM-L6-v2"
+        elif kb_cfg.get("reranker", {}).get("provider") == "local":
+            kb_cfg["reranker"]["enabled"] = False
+    else:
+        print_info("You can enable the local runtime later with: hermes setup workspace")
+
+    print_info("Use 'hermes workspace index' to build the workspace index immediately.")
+
+
 # =============================================================================
 # OpenClaw Migration
 # =============================================================================
@@ -2484,6 +2611,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("workspace", "Workspace Knowledgebase & Local RAG", setup_workspace_rag),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
@@ -2497,6 +2625,7 @@ def run_setup_wizard(args):
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
+      hermes setup workspace — just workspace knowledgebase / local RAG
       hermes setup agent     — just agent settings
     """
     ensure_hermes_home()
@@ -2604,6 +2733,7 @@ def run_setup_wizard(args):
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
+            "Workspace Knowledgebase & Local RAG",
             "Agent Settings",
             "---",
             "Exit",
@@ -2620,14 +2750,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
+        elif choice in (2, 9):
             # Separator — treat as exit
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
+        elif choice == 10:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 3 <= choice <= 7:
+        elif 3 <= choice <= 8:
             # Individual section
             section_idx = choice - 3
             _, label, func = SETUP_SECTIONS[section_idx]
@@ -2643,7 +2773,8 @@ def run_setup_wizard(args):
         print_info("  2. Terminal Backend — where your agent runs commands")
         print_info("  3. Messaging Platforms — connect Telegram, Discord, etc.")
         print_info("  4. Tools — configure TTS, web search, image generation, etc.")
-        print_info("  5. Agent Settings — iterations, compression, session reset")
+        print_info("  5. Workspace Knowledgebase & Local RAG — optional heavier local retrieval runtime")
+        print_info("  6. Agent Settings — iterations, compression, session reset")
         print()
         print_info("Press Enter to begin, or Ctrl+C to exit.")
         try:
@@ -2672,14 +2803,17 @@ def run_setup_wizard(args):
     # Section 2: Terminal Backend
     setup_terminal_backend(config)
 
-    # Section 3: Agent Settings
-    setup_agent_settings(config)
-
-    # Section 4: Messaging Platforms
+    # Section 3: Messaging Platforms
     setup_gateway(config)
 
-    # Section 5: Tools
+    # Section 4: Tools
     setup_tools(config, first_install=not is_existing)
+
+    # Section 5: Workspace Knowledgebase & Local RAG
+    setup_workspace_rag(config)
+
+    # Section 6: Agent Settings
+    setup_agent_settings(config)
 
     # Save and show summary
     save_config(config)

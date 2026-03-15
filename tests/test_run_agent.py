@@ -18,7 +18,7 @@ import pytest
 
 import run_agent
 from honcho_integration.client import HonchoClientConfig
-from run_agent import AIAgent, _inject_honcho_turn_context
+from run_agent import AIAgent, _inject_honcho_turn_context, _inject_workspace_turn_context
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -566,8 +566,18 @@ class TestBuildSystemPrompt:
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
-        # Should contain current date info like "Conversation started:"
+        # Should contain current date info like "Conversation started:"}
         assert "Conversation started:" in prompt
+
+    def test_workspace_tool_adds_citation_guidance(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search", "workspace")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(api_key="test", quiet_mode=True, skip_context_files=True, skip_memory=True)
+        prompt = agent._build_system_prompt()
+        assert "[Source: relative/path]" in prompt
 
 
 class TestInvalidateSystemPrompt:
@@ -1505,6 +1515,12 @@ class TestSystemPromptStability:
         assert "Honcho memory was retrieved from prior sessions" in content
         assert "## Honcho Memory" in content
 
+    def test_inject_workspace_turn_context_appends_system_note(self):
+        content = _inject_workspace_turn_context("hello", "[Workspace source: docs/plan.md]\nrollout plan")
+        assert "hello" in content
+        assert "workspace context was retrieved for this turn only" in content.lower()
+        assert "docs/plan.md" in content
+
     def test_honcho_continuing_session_keeps_turn_context_out_of_system_prompt(self, agent):
         captured = {}
 
@@ -1545,6 +1561,44 @@ class TestSystemPromptStability:
         assert "what were we doing?" in current_user["content"]
         assert "prior context" in current_user["content"]
         assert "Honcho memory was retrieved from prior sessions" in current_user["content"]
+
+    def test_workspace_turn_context_is_kept_out_of_system_prompt(self, agent):
+        captured = {}
+
+        def _fake_api_call(api_kwargs):
+            captured.update(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        conversation_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        agent._workspace_retrieval_mode = "always"
+
+        with (
+            patch.object(agent, "_queue_honcho_prefetch"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch("run_agent.workspace_context_for_turn", return_value="[Workspace source: docs/plan.md]\nrollout plan"),
+        ):
+            result = agent.run_conversation("where is the rollout plan?", conversation_history=conversation_history)
+
+        assert result["completed"] is True
+        api_messages = captured["messages"]
+        assert api_messages[0]["role"] == "system"
+        assert "rollout plan" not in api_messages[0]["content"]
+        current_user = api_messages[-1]
+        assert current_user["role"] == "user"
+        current_content = current_user["content"]
+        if isinstance(current_content, list):
+            joined = "\n".join(part.get("text", "") for part in current_content if isinstance(part, dict))
+        else:
+            joined = current_content
+        assert "where is the rollout plan?" in joined
+        assert "docs/plan.md" in joined
+        assert "workspace context was retrieved for this turn only" in joined.lower()
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""

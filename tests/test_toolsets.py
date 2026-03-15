@@ -141,3 +141,6 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_workspace_tool_is_exposed_in_hermes_cli(self):
+        assert "workspace" in resolve_toolset("hermes-cli")

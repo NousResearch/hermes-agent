@@ -27,7 +27,23 @@ After it finishes, reload your shell:
 source ~/.bashrc   # or source ~/.zshrc
 ```
 
-## 2. Set Up a Provider
+## 2. Optional: Enable Local Workspace RAG
+
+Hermes now has a built-in workspace knowledgebase under `~/.hermes/workspace`. If you want the heavier local runtime for true local EmbeddingGemma embeddings, local reranking, and optional `sqlite-vec` acceleration, you can enable it during setup or later:
+
+```bash
+hermes setup workspace
+```
+
+That section can install the optional runtime for you. If you prefer to install it manually:
+
+```bash
+pip install 'hermes-agent[workspace-rag]'
+```
+
+If you skip this, Hermes still works — it falls back to a lightweight local retrieval backend.
+
+## 3. Set Up a Provider
 
 The installer configures your LLM provider automatically. To change it later, use one of these commands:
 
@@ -55,7 +71,7 @@ hermes setup       # Or configure everything at once
 You can switch providers at any time with `hermes model` — no code changes, no lock-in.
 :::
 
-## 3. Start Chatting
+## 4. Start Chatting
 
 ```bash
 hermes
@@ -69,7 +85,7 @@ That's it! You'll see a welcome banner with your model, available tools, and ski
 
 The agent has access to tools for web search, file operations, terminal commands, and more — all out of the box.
 
-## 4. Try Key Features
+## 5. Try Key Features
 
 ### Ask it to use the terminal
 
@@ -108,7 +124,7 @@ hermes --continue    # Resume the most recent session
 hermes -c            # Short form
 ```
 
-## 5. Explore Further
+## 6. Explore Further
 
 Here are some things to try next:
 

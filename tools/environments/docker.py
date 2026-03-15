@@ -167,6 +167,7 @@ class DockerEnvironment(BaseEnvironment):
         # escalation, PID limits). The container filesystem is writable so agents
         # can install packages as needed.
         # User-configured volume mounts (from config.yaml docker_volumes)
+        # Supports read-only mounts: "~/.gitconfig:/root/.gitconfig:ro"
         volume_args = []
         for vol in (volumes or []):
             if not isinstance(vol, str):
@@ -175,10 +176,22 @@ class DockerEnvironment(BaseEnvironment):
             vol = vol.strip()
             if not vol:
                 continue
+            # Expand ~ in host path (first segment before first colon)
+            parts = vol.split(":", 1)
+            parts[0] = os.path.expanduser(parts[0])
+            vol = ":".join(parts)
             if ":" in vol:
                 volume_args.extend(["-v", vol])
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+
+        # Auto-mount ~/.gitconfig read-only if it exists and not already mounted
+        gitconfig = os.path.expanduser("~/.gitconfig")
+        gitconfig_target = "/root/.gitconfig"
+        already_mounted = any(gitconfig_target in v for v in (volumes or []))
+        if os.path.exists(gitconfig) and not already_mounted:
+            volume_args.extend(["-v", f"{gitconfig}:{gitconfig_target}:ro"])
+            logger.info("Auto-mounting ~/.gitconfig into container (read-only)")
 
         logger.info(f"Docker volume_args: {volume_args}")
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args

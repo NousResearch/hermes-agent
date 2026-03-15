@@ -433,6 +433,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Track threads where the bot has participated so follow-up messages
+        # in those threads don't require @mention.
+        self._bot_participated_threads: set = set()
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -613,7 +616,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a message to a Discord channel."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             # Get the channel
             channel = self._client.get_channel(int(chat_id))
@@ -1798,14 +1801,13 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
-        # UNLESS the channel is in the free-response list.
+        # UNLESS the channel is in the free-response list or the message is
+        # in a thread where the bot has already participated.
         #
-        # Config:
-        #   DISCORD_FREE_RESPONSE_CHANNELS: Comma-separated channel IDs where the
-        #       bot responds to every message without needing a mention.
-        #   DISCORD_REQUIRE_MENTION: Set to "false" to disable mention requirement
-        #       globally (all channels become free-response). Default: "true".
-        #       Can also be set via discord.require_mention in config.yaml.
+        # Config (all settable via discord.* in config.yaml):
+        #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
         parent_channel_id = None
@@ -1824,7 +1826,11 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
             is_free_channel = bool(channel_ids & free_channels)
 
-            if require_mention and not is_free_channel:
+            # Skip the mention check if the message is in a thread where
+            # the bot has previously participated (auto-created or replied in).
+            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+
+            if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions:
                     return
 
@@ -1833,17 +1839,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
         # Auto-thread: when enabled, automatically create a thread for every
-        # new message in a text channel so each conversation is isolated.
+        # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "").lower() in ("true", "1", "yes")
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             if auto_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
+                    self._bot_participated_threads.add(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -1943,7 +1950,12 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
         )
-        
+
+        # Track thread participation so the bot won't require @mention for
+        # follow-up messages in threads it has already engaged in.
+        if thread_id:
+            self._bot_participated_threads.add(thread_id)
+
         await self.handle_message(event)
 
 

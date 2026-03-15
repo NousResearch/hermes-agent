@@ -280,6 +280,7 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

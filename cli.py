@@ -5162,6 +5162,7 @@ class HermesCLI:
             'radio-menu-header': f'{_rskin.get_color("banner_accent", "#FFBF00")} bold',
             'radio-menu-border': f'{_rskin.get_color("banner_dim", "#21262d")}',
             'radio-menu-dim': f'{_rskin.get_color("session_border", "#484f58")}',
+            'radio-menu-sub': f'{_rskin.get_color("session_border", "#6e7681")} italic',
             'radio-menu-item': f'{_rskin.get_color("banner_text", "#c9d1d9")}',
             'radio-menu-selected': f'{_rskin.get_color("ui_accent", "#7eb8f6")} bold',
             'radio-menu-on': f'{_rskin.get_color("ui_ok", "#7ee6a8")}',

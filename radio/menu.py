@@ -361,13 +361,9 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
 
         if item.is_toggle:
             check = TOGGLE_ON if item.toggled else TOGGLE_OFF
-            text = f"{pointer}{check} {item.label}"
+            label_text = f"{pointer}{check} {item.label}"
         else:
-            text = f"{pointer}  {item.label}"
-
-        # Append sublabel inline
-        if item.sublabel:
-            text += f"  {item.sublabel}"
+            label_text = f"{pointer}  {item.label}"
 
         # Style based on state
         if is_selected:
@@ -379,8 +375,17 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
         else:
             style = "class:radio-menu-item"
 
+        # Render label and sublabel as separate styled fragments
         fragments.append(("class:radio-menu-border", f"  {BOX_V} "))
-        fragments.append((style, _pad_line(text)))
+        if item.sublabel:
+            sub_text = f"  {item.sublabel}"
+            total_len = len(label_text) + len(sub_text)
+            pad = max(0, INNER_WIDTH - total_len)
+            fragments.append((style, label_text))
+            fragments.append(("class:radio-menu-sub", sub_text))
+            fragments.append(("", " " * pad))
+        else:
+            fragments.append((style, _pad_line(label_text)))
         fragments.append(("class:radio-menu-border", f" {BOX_V}\n"))
         rendered += 1
 

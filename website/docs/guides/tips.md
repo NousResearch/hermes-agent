@@ -232,3 +232,28 @@ GATEWAY_ALLOWED_USERS=123456789,987654321
 ---
 
 *Have a tip that should be on this page? Open an issue or PR — community contributions are welcome.*
+
+## Localization Tips
+
+### Build a Locale Skill Pack for Your Language
+
+Hermes works best when its skills speak your language. If you're a non-English speaker, consider building a locale skill pack — a collection of skills tailored to your region's news sources, currency, and market data.
+
+A locale pack typically includes:
+- A news aggregation skill with local RSS sources
+- A market data skill fetching prices in local currency
+- A briefing card generator for visual delivery
+- A Telegram cron automation for daily delivery
+
+See the [Localized Skill Pack Tutorial](./localized-skill-pack) for a complete step-by-step guide using Turkish locale as a working example. The same pattern works for any language or region.
+
+### Use CoinGecko for Zero-API-Key Crypto Prices
+
+CoinGecko's public API requires no registration and supports 50+ fiat currencies including TRY, BRL, JPY, KRW. Use it in locale packs for instant market data without signup friction:
+```
+https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=try
+```
+
+### Customize SOUL.md for Your Language
+
+Add a `~/.hermes/SOUL.md` that instructs the agent to respond in your language by default. This makes Hermes feel native rather than translated.

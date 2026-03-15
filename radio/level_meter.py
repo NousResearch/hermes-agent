@@ -8,6 +8,7 @@ Uses no audio output (-f null) so it doesn't interfere with mpv playback.
 The bandwidth cost is minimal for most streams (MP3/OGG are small).
 """
 
+from dataclasses import dataclass
 import logging
 import os
 import re
@@ -30,6 +31,46 @@ _current_url = ""
 
 # Regex to extract RMS level from ffmpeg ametadata output
 _RMS_RE = re.compile(r"lavfi\.astats\.Overall\.RMS_level=([-\d.]+)")
+
+
+@dataclass
+class VisualizerFeatures:
+    levels: List[float]
+    energy: float
+    peak: float
+    transient: float
+    motion: float
+    decay: float
+    active: bool
+
+
+def _normalize_db(db: float) -> float:
+    """Convert RMS dB (roughly -60..0) to [0,1] with a mild lift."""
+    db = max(-60.0, min(0.0, db))
+    normalized = (db + 60.0) / 60.0
+    return normalized ** 0.7
+
+
+def _resample(values: List[float], width: int) -> List[float]:
+    """Resample values to width using simple linear interpolation."""
+    width = max(1, width)
+    if not values:
+        return [0.0] * width
+    if len(values) == 1:
+        return [values[0]] * width
+    if len(values) == width:
+        return list(values)
+
+    src_last = len(values) - 1
+    out: List[float] = []
+    for i in range(width):
+        pos = i * src_last / max(1, width - 1)
+        left = int(pos)
+        right = min(src_last, left + 1)
+        frac = pos - left
+        sample = values[left] * (1.0 - frac) + values[right] * frac
+        out.append(sample)
+    return out
 
 
 def start(url: str) -> None:
@@ -79,17 +120,69 @@ def get_levels(n: int = 12) -> List[float]:
     with _lock:
         raw = list(_levels)[-n:] if _levels else []
 
-    # Convert dB (typically -60 to 0) to 0.0-1.0 range
     result = []
     for db in raw:
-        # Clamp to [-60, 0] range then normalize
-        db = max(-60.0, min(0.0, db))
-        # Map -60..0 to 0..1 with slight curve for better visual dynamics
-        normalized = (db + 60.0) / 60.0
-        normalized = normalized ** 0.7  # slight compression for livelier bars
-        result.append(normalized)
+        result.append(_normalize_db(db))
 
     return result
+
+
+def get_feature_snapshot(width: int, *, smoothing: float = 0.0) -> VisualizerFeatures:
+    """Return a compact feature snapshot for terminal visualizer rendering."""
+    width = max(1, width)
+
+    if not is_active():
+        return VisualizerFeatures(
+            levels=[0.0] * width,
+            energy=0.0,
+            peak=0.0,
+            transient=0.0,
+            motion=0.0,
+            decay=0.0,
+            active=False,
+        )
+
+    with _lock:
+        raw_db = list(_levels)
+
+    if not raw_db:
+        return VisualizerFeatures(
+            levels=[0.0] * width,
+            energy=0.0,
+            peak=0.0,
+            transient=0.0,
+            motion=0.0,
+            decay=0.0,
+            active=False,
+        )
+
+    normalized = [_normalize_db(db) for db in raw_db]
+    levels = _resample(normalized, width)
+
+    if smoothing > 0.0:
+        smoothed: List[float] = []
+        prev = levels[0]
+        alpha = max(0.0, min(1.0, smoothing))
+        for value in levels:
+            prev = prev * alpha + value * (1.0 - alpha)
+            smoothed.append(prev)
+        levels = smoothed
+
+    recent = normalized[-min(4, len(normalized)):]
+    previous = recent[:-1]
+    last = recent[-1]
+    previous_mean = sum(previous) / len(previous) if previous else last
+    diffs = [abs(b - a) for a, b in zip(levels, levels[1:])]
+
+    return VisualizerFeatures(
+        levels=levels,
+        energy=sum(recent) / len(recent),
+        peak=max(recent),
+        transient=max(0.0, last - previous_mean),
+        motion=(sum(diffs) / len(diffs)) if diffs else 0.0,
+        decay=max(0.0, previous_mean - last),
+        active=True,
+    )
 
 
 def is_active() -> bool:

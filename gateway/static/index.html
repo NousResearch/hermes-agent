@@ -2,84 +2,137 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hermes Agent API</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hermes Agent</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; }
+  :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e; --accent: #1f6feb; --accent-hover: #388bfd; --gold: #cd7f32; --green: #3fb950; --red: #f85149; --red-bg: #3d1214; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
 
   /* Header */
-  .header { padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; }
-  .header h1 { font-size: 16px; color: #f0e6d3; }
-  .header .status { font-size: 12px; color: #3fb950; }
-  .header .status.error { color: #f85149; }
+  .header { padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .header-left { display: flex; align-items: center; gap: 8px; }
+  .header h1 { font-size: 15px; color: #f0e6d3; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .dot.off { background: var(--red); }
+  .header-right { display: flex; align-items: center; gap: 8px; }
+  .session-badge { font-size: 11px; color: var(--text-dim); background: var(--bg); padding: 3px 8px; border-radius: 10px; }
+  .settings-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 18px; padding: 4px; }
+  .settings-btn:hover { color: var(--text); }
 
-  /* Auth */
-  .auth-bar { padding: 8px 20px; background: #1c2128; border-bottom: 1px solid #30363d; display: flex; gap: 8px; align-items: center; }
-  .auth-bar input { flex: 1; max-width: 300px; padding: 6px 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 13px; }
-  .auth-bar button { padding: 6px 14px; background: #238636; border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 13px; }
-  .auth-bar button:hover { background: #2ea043; }
-  .auth-bar .session-id { font-size: 12px; color: #8b949e; margin-left: 8px; }
+  /* Auth overlay */
+  .auth-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .auth-overlay.hidden { display: none; }
+  .auth-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px; width: 90%; max-width: 360px; text-align: center; }
+  .auth-box h2 { font-size: 20px; color: #f0e6d3; margin-bottom: 8px; }
+  .auth-box p { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+  .auth-box input { width: 100%; padding: 12px 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 14px; outline: none; margin-bottom: 12px; }
+  .auth-box input:focus { border-color: var(--accent); }
+  .auth-box button { width: 100%; padding: 12px; background: var(--accent); border: none; border-radius: 10px; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .auth-box button:hover { background: var(--accent-hover); }
+  .auth-box .error { color: var(--red); font-size: 12px; margin-top: 8px; }
 
   /* Messages */
-  .messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; font-size: 14px; word-wrap: break-word; }
-  .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
-  .msg.bot { align-self: flex-start; background: #21262d; border: 1px solid #30363d; border-bottom-left-radius: 4px; }
-  .msg.system { align-self: center; background: transparent; color: #8b949e; font-size: 12px; font-style: italic; }
-  .msg.error { align-self: center; background: #3d1214; border: 1px solid #f85149; color: #f85149; font-size: 13px; }
-  .msg pre { background: #161b22; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
+  .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; -webkit-overflow-scrolling: touch; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; line-height: 1.5; font-size: 14px; word-wrap: break-word; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.system { align-self: center; background: transparent; color: var(--text-dim); font-size: 12px; padding: 4px 0; }
+  .msg.error { align-self: center; background: var(--red-bg); border: 1px solid var(--red); color: var(--red); font-size: 13px; border-radius: 10px; max-width: 90%; }
+  .msg pre { background: var(--bg); padding: 8px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 13px; }
   .msg code { font-family: 'SF Mono', Monaco, monospace; font-size: 13px; }
+  .msg audio { margin-top: 8px; width: 100%; max-width: 280px; height: 32px; border-radius: 16px; }
+  .msg .voice-label { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .msg .voice-msg-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 
-  /* Audio player */
-  .msg audio { margin-top: 8px; width: 100%; max-width: 300px; height: 36px; }
-  .msg .media-label { font-size: 11px; color: #8b949e; margin-top: 4px; }
+  /* Input bar */
+  .input-bar { padding: 8px 12px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 6px; align-items: flex-end; flex-shrink: 0; }
+  .input-bar .text-input { flex: 1; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; color: var(--text); font-size: 14px; outline: none; resize: none; max-height: 100px; line-height: 1.4; font-family: inherit; }
+  .input-bar .text-input:focus { border-color: var(--accent); }
+  .input-bar .text-input:disabled { opacity: 0.4; }
 
-  /* Input */
-  .input-area { padding: 12px 20px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; align-items: center; }
-  .input-area input[type="text"] { flex: 1; padding: 10px 14px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #c9d1d9; font-size: 14px; outline: none; }
-  .input-area input[type="text"]:focus { border-color: #1f6feb; }
-  .input-area input[type="text"]:disabled { opacity: 0.5; }
-  .input-area button { padding: 10px 16px; background: #1f6feb; border: none; border-radius: 8px; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; min-width: 44px; }
-  .input-area button:hover { background: #388bfd; }
-  .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .input-area .icon-btn { background: #21262d; border: 1px solid #30363d; padding: 10px; border-radius: 8px; font-size: 18px; line-height: 1; }
-  .input-area .icon-btn:hover { background: #30363d; }
-  .input-area .icon-btn.recording { background: #da3633; border-color: #f85149; animation: pulse 1s infinite; }
-  .input-area .file-input { display: none; }
+  .btn-icon { width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; transition: all 0.15s; }
+  .btn-mic { background: var(--surface); border: 2px solid var(--border); color: var(--text); }
+  .btn-mic:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-mic.recording { background: var(--red); border-color: var(--red); color: #fff; animation: pulse 1.2s infinite; }
+  .btn-mic.streaming { background: var(--green); border-color: var(--green); color: #fff; animation: pulse 2s infinite; }
+  .btn-attach { background: none; border: 1px solid transparent; color: var(--text-dim); }
+  .btn-attach:hover { color: var(--text); }
+  .btn-send { background: var(--accent); color: #fff; }
+  .btn-send:hover { background: var(--accent-hover); }
+  .btn-send:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .file-input { display: none; }
+  .mic-status { font-size: 11px; color: var(--red); font-variant-numeric: tabular-nums; min-width: 30px; text-align: center; }
+
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-  .mic-timer { font-size: 12px; color: #f85149; font-variant-numeric: tabular-nums; min-width: 35px; }
 
-  /* Loading */
+  /* Voice mode indicator */
+  .voice-indicator { display: none; padding: 4px 12px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-dim); text-align: center; flex-shrink: 0; }
+  .voice-indicator.active { display: block; }
+
+  /* Typing indicator */
   .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
-  .typing span { width: 6px; height: 6px; background: #8b949e; border-radius: 50%; animation: bounce 1.4s infinite; }
+  .typing span { width: 6px; height: 6px; background: var(--text-dim); border-radius: 50%; animation: bounce 1.4s infinite; }
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
+  @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
+
+  /* Mobile */
+  @media (max-width: 600px) {
+    .msg { max-width: 92%; font-size: 15px; }
+    .header h1 { font-size: 14px; }
+    .input-bar { padding: 6px 8px; gap: 4px; }
+    .btn-icon { width: 38px; height: 38px; }
+    .auth-box { padding: 24px; }
+  }
 </style>
 </head>
 <body>
 
+<!-- Auth -->
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-box">
+    <h2>Hermes Agent</h2>
+    <p>Enter your API key to connect</p>
+    <input type="password" id="apiKey" placeholder="API Key" onkeydown="if(event.key==='Enter')connect()" />
+    <button onclick="connect()">Connect</button>
+    <div class="error" id="authError"></div>
+  </div>
+</div>
+
+<!-- Header -->
 <div class="header">
-  <h1>Hermes Agent</h1>
-  <span class="status" id="status">checking...</span>
+  <div class="header-left">
+    <div class="dot" id="statusDot"></div>
+    <h1>Hermes Agent</h1>
+  </div>
+  <div class="header-right">
+    <span class="session-badge" id="sessionBadge"></span>
+    <button class="settings-btn" onclick="resetSession()" title="New session">&#8634;</button>
+  </div>
 </div>
 
-<div class="auth-bar">
-  <input type="password" id="apiKey" placeholder="API Key" />
-  <button onclick="connect()">Connect</button>
-  <span class="session-id" id="sessionInfo"></span>
-</div>
+<!-- Voice mode bar -->
+<div class="voice-indicator" id="voiceIndicator"></div>
 
+<!-- Messages -->
 <div class="messages" id="messages"></div>
 
-<div class="input-area">
-  <button class="icon-btn" id="micBtn" onclick="toggleMic()" disabled title="Push to talk">&#127908;</button>
-  <span class="mic-timer" id="micTimer"></span>
-  <input type="text" id="input" placeholder="Type a message..." disabled onkeydown="if(event.key==='Enter')sendMessage()" />
+<!-- Input -->
+<div class="input-bar">
+  <button class="btn-icon btn-mic" id="micBtn" onclick="toggleMic()" disabled title="Microphone">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+  </button>
+  <span class="mic-status" id="micTimer"></span>
+  <input type="text" class="text-input" id="input" placeholder="Message..." disabled onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" />
   <input type="file" id="fileInput" class="file-input" onchange="uploadFile(this)" />
-  <button class="icon-btn" id="attachBtn" onclick="document.getElementById('fileInput').click()" disabled title="Upload file">&#128206;</button>
-  <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+  <button class="btn-icon btn-attach" onclick="document.getElementById('fileInput').click()" disabled id="attachBtn" title="Attach file">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+  </button>
+  <button class="btn-icon btn-send" id="sendBtn" onclick="sendMessage()" disabled title="Send">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+  </button>
 </div>
 
 <script>
@@ -92,26 +145,22 @@ let audioChunks = [];
 let micActive = false;
 let micStartTime = 0;
 let micTimerInterval = null;
-let voiceMode = 'off';  // 'off', 'voice_only', 'all'
-let streamingMic = false;  // continuous listening mode
+let voiceMode = 'off';
+let streamingMic = false;
 let silenceTimer = null;
 let audioContext = null;
 let analyser = null;
 let micStream = null;
+let micPausedForPlayback = false;
 
-// Check health on load
-fetch(`${API_BASE}/v1/health`)
-  .then(r => r.json())
-  .then(d => {
-    document.getElementById('status').textContent = 'online';
-    document.getElementById('status').className = 'status';
-  })
-  .catch(() => {
-    document.getElementById('status').textContent = 'offline';
-    document.getElementById('status').className = 'status error';
-  });
+// ── Init ───────────────────────────────────────────────────────────
 
-// Try loading saved key
+fetch(`${API_BASE}/v1/health`).then(r => r.json()).then(() => {
+  document.getElementById('statusDot').className = 'dot';
+}).catch(() => {
+  document.getElementById('statusDot').className = 'dot off';
+});
+
 const savedKey = localStorage.getItem('hermes_api_key');
 const savedSession = localStorage.getItem('hermes_session_id');
 if (savedKey) {
@@ -123,106 +172,93 @@ if (savedKey) {
 function connect() {
   apiKey = document.getElementById('apiKey').value.trim();
   if (!apiKey) return;
-
   localStorage.setItem('hermes_api_key', apiKey);
-
   if (!sessionId) {
     sessionId = 'web-' + Math.random().toString(36).substr(2, 8);
     localStorage.setItem('hermes_session_id', sessionId);
   }
 
-  // Test auth
-  fetch(`${API_BASE}/v1/sessions`, {
-    headers: { 'Authorization': `Bearer ${apiKey}` }
-  }).then(r => {
+  fetch(`${API_BASE}/v1/sessions`, { headers: { 'Authorization': `Bearer ${apiKey}` } })
+  .then(r => {
     if (r.ok) {
       connected = true;
+      document.getElementById('authOverlay').classList.add('hidden');
       document.getElementById('input').disabled = false;
       document.getElementById('sendBtn').disabled = false;
       document.getElementById('micBtn').disabled = false;
       document.getElementById('attachBtn').disabled = false;
-      document.getElementById('sessionInfo').textContent = `Session: ${sessionId}`;
-      document.getElementById('status').textContent = 'connected';
-      addMessage('system', 'Connected to Hermes Agent API');
-
-      // Load chat history from localStorage
+      document.getElementById('sessionBadge').textContent = sessionId;
       loadHistory();
     } else {
-      addMessage('error', 'Invalid API key');
+      document.getElementById('authError').textContent = 'Invalid API key';
     }
-  }).catch(e => addMessage('error', 'Connection failed: ' + e.message));
+  }).catch(() => {
+    document.getElementById('authError').textContent = 'Cannot connect to server';
+  });
 }
 
+function resetSession() {
+  if (!confirm('Start a new session?')) return;
+  sessionId = 'web-' + Math.random().toString(36).substr(2, 8);
+  localStorage.setItem('hermes_session_id', sessionId);
+  document.getElementById('sessionBadge').textContent = sessionId;
+  document.getElementById('messages').innerHTML = '';
+  addMessage('system', 'New session started');
+}
+
+// ── Messages ───────────────────────────────────────────────────────
+
 function addMessage(type, content, media) {
-  const messages = document.getElementById('messages');
+  const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = `msg ${type}`;
 
-  // Format content
-  let html = escapeHtml(content)
-    .replace(/\n/g, '<br>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>');
-
+  let html = escapeHtml(content).replace(/\n/g, '<br>').replace(/`([^`]+)`/g, '<code>$1</code>');
   div.innerHTML = html;
 
-  // Add media (audio, images, etc.)
   if (media && media.length > 0) {
     media.forEach(m => {
       if (m.type === 'audio' && m.url) {
-        const audioUrl = m.url.startsWith('http') ? m.url : `${API_BASE}${m.url}`;
+        const url = m.url.startsWith('http') ? m.url : `${API_BASE}${m.url}`;
         const audio = document.createElement('audio');
         audio.controls = true;
-        audio.src = audioUrl;
+        audio.src = url;
         audio.preload = 'auto';
-        div.appendChild(audio);
-
-        const label = document.createElement('div');
-        label.className = 'media-label';
-        label.textContent = 'Voice response';
-        div.appendChild(label);
-
-        // Pause mic during TTS playback to prevent echo loop
         audio.onplay = () => pauseMicDuringPlayback(true);
         audio.onended = () => pauseMicDuringPlayback(false);
         audio.onpause = () => pauseMicDuringPlayback(false);
+        div.appendChild(audio);
+        const label = document.createElement('div');
+        label.className = 'voice-label';
+        label.textContent = 'Voice reply';
+        div.appendChild(label);
         audio.play().catch(() => {});
       } else if (m.type === 'image' && (m.url || m.path)) {
         const img = document.createElement('img');
-        const imgUrl = (m.url || m.path);
-        img.src = imgUrl.startsWith('http') ? imgUrl : `${API_BASE}${imgUrl}`;
-        img.style.maxWidth = '100%';
-        img.style.borderRadius = '8px';
-        img.style.marginTop = '8px';
+        const u = m.url || m.path;
+        img.src = u.startsWith('http') ? u : `${API_BASE}${u}`;
+        img.style.cssText = 'max-width:100%;border-radius:8px;margin-top:8px';
         div.appendChild(img);
       }
     });
   }
 
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
-
-  // Save to history (skip system messages)
-  if (type !== 'system' && type !== 'error') {
-    saveToHistory(type, content, media);
-  }
-
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  if (type !== 'system' && type !== 'error') saveToHistory(type, content, media);
   return div;
 }
 
 function showTyping() {
-  const messages = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = 'msg bot';
-  div.id = 'typing';
-  div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
+  const c = document.getElementById('messages');
+  const d = document.createElement('div');
+  d.className = 'msg bot'; d.id = 'typing';
+  d.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+  c.appendChild(d); c.scrollTop = c.scrollHeight;
 }
+function removeTyping() { const e = document.getElementById('typing'); if (e) e.remove(); }
 
-function removeTyping() {
-  const el = document.getElementById('typing');
-  if (el) el.remove();
-}
+// ── Send text ──────────────────────────────────────────────────────
 
 async function sendMessage() {
   const input = document.getElementById('input');
@@ -232,101 +268,55 @@ async function sendMessage() {
   input.value = '';
   addMessage('user', text);
   showTyping();
-
-  // Disable input while processing
-  input.disabled = true;
-  document.getElementById('sendBtn').disabled = true;
+  setInputEnabled(false);
 
   try {
     const resp = await fetch(`${API_BASE}/v1/chat`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, session_id: sessionId }),
     });
-
     removeTyping();
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      addMessage('error', `Error ${resp.status}: ${err.detail || JSON.stringify(err)}`);
-      return;
-    }
-
+    if (!resp.ok) { addMessage('error', `Error ${resp.status}`); return; }
     const data = await resp.json();
-
-    // Filter out noise from response
-    let response = data.response || '';
-    // Remove home channel prompt if present
-    if (response.includes('No home channel is set')) {
-      const lines = response.split('\n');
-      const idx = lines.findIndex(l => l.includes('/sethome'));
-      if (idx >= 0) {
-        response = lines.slice(idx + 1).join('\n').trim();
-      }
-    }
-
-    if (response) {
-      addMessage('bot', response, data.media);
-      detectVoiceModeChange(response);
-    }
+    const response = cleanResponse(data.response || '');
+    if (response) { addMessage('bot', response, data.media); detectVoiceModeChange(response); }
   } catch (e) {
     removeTyping();
-    addMessage('error', 'Request failed: ' + e.message);
-  } finally {
-    input.disabled = false;
-    document.getElementById('sendBtn').disabled = false;
-    input.focus();
-  }
+    addMessage('error', 'Connection failed');
+  } finally { setInputEnabled(true); }
 }
 
-function detectVoiceModeChange(response) {
-  const lower = response.toLowerCase();
-  if (lower.includes('voice mode enabled') || lower.includes('voice mode:') && lower.includes('on')) {
-    voiceMode = 'voice_only';
-  } else if (lower.includes('auto-tts enabled')) {
-    voiceMode = 'all';
-  } else if (lower.includes('voice mode disabled') || lower.includes('text-only')) {
-    voiceMode = 'off';
-    if (streamingMic) stopStreamingMic();
-  }
-  updateMicButton();
+function setInputEnabled(enabled) {
+  document.getElementById('input').disabled = !enabled;
+  document.getElementById('sendBtn').disabled = !enabled;
+  if (enabled) document.getElementById('input').focus();
 }
 
-function updateMicButton() {
-  const btn = document.getElementById('micBtn');
-  if (voiceMode === 'off') {
-    btn.title = 'Push to talk';
-    btn.innerHTML = '&#127908;';
-  } else {
-    btn.title = streamingMic ? 'Stop listening' : 'Start listening (continuous)';
-    btn.innerHTML = streamingMic ? '&#9209;' : '&#127908;';
+function cleanResponse(text) {
+  // Remove home channel noise
+  if (text.includes('No home channel is set')) {
+    const lines = text.split('\n');
+    const idx = lines.findIndex(l => l.includes('/sethome'));
+    if (idx >= 0) text = lines.slice(idx + 1).join('\n').trim();
   }
+  // Shorten API errors
+  if (text.includes('Error code: 429')) {
+    const match = text.match(/retry in ([\d.]+)s/i);
+    text = `Rate limited. ${match ? `Try again in ${Math.ceil(parseFloat(match[1]))}s.` : 'Please wait.'}`;
+  }
+  return text;
 }
 
-// ── Microphone (push-to-talk) ──────────────────────────────────────
+// ── Microphone ─────────────────────────────────────────────────────
 
 async function toggleMic() {
   if (voiceMode === 'off') {
-    // Push-to-talk mode
-    if (micActive) {
-      stopPushToTalk();
-    } else {
-      startPushToTalk();
-    }
+    micActive ? stopPushToTalk() : startPushToTalk();
   } else {
-    // Streaming mode (voice on/tts)
-    if (streamingMic) {
-      stopStreamingMic();
-    } else {
-      startStreamingMic();
-    }
+    streamingMic ? stopStreamingMic() : startStreamingMic();
   }
 }
-
-// ── Push-to-talk (voice off) ─────────────────────────────────────
 
 async function startPushToTalk() {
   try {
@@ -335,53 +325,37 @@ async function startPushToTalk() {
     });
     audioChunks = [];
     mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType() });
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
-    };
-
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       clearInterval(micTimerInterval);
       document.getElementById('micTimer').textContent = '';
-
       if (audioChunks.length === 0) return;
-
       const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
       const ext = mediaRecorder.mimeType.includes('webm') ? '.webm' : '.ogg';
       await sendVoice(blob, `voice${ext}`);
     };
-
     mediaRecorder.start();
     micActive = true;
     micStartTime = Date.now();
     document.getElementById('micBtn').classList.add('recording');
-    document.getElementById('micBtn').title = 'Stop recording';
-
     micTimerInterval = setInterval(() => {
-      const sec = Math.floor((Date.now() - micStartTime) / 1000);
-      document.getElementById('micTimer').textContent = `${sec}s`;
+      document.getElementById('micTimer').textContent = Math.floor((Date.now() - micStartTime) / 1000) + 's';
     }, 200);
-
-  } catch (e) {
-    addMessage('error', 'Microphone access denied: ' + e.message);
-  }
+  } catch (e) { addMessage('error', 'Mic access denied'); }
 }
 
 function stopPushToTalk() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-  }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   micActive = false;
   document.getElementById('micBtn').classList.remove('recording');
-  document.getElementById('micBtn').title = 'Push to talk';
 }
 
-// ── Streaming mic (voice on/tts) ─────────────────────────────────
+// ── Streaming mic ──────────────────────────────────────────────────
 
-const SILENCE_THRESHOLD = 0.01;  // RMS below this = silence
-const SILENCE_DURATION = 1500;   // ms of silence to trigger send
-const MIN_SPEECH_MS = 500;       // minimum speech to process
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_DURATION = 1500;
+const MIN_SPEECH_MS = 500;
 
 async function startStreamingMic() {
   try {
@@ -393,259 +367,170 @@ async function startStreamingMic() {
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 512;
     source.connect(analyser);
-
-    streamingMic = true;
-    micActive = true;
-    document.getElementById('micBtn').classList.add('recording');
-    updateMicButton();
-    addMessage('system', 'Listening... speak and I will respond');
-
+    streamingMic = true; micActive = true;
+    document.getElementById('micBtn').classList.add('streaming');
+    updateVoiceIndicator();
     startStreamingRecording();
-  } catch (e) {
-    addMessage('error', 'Microphone access denied: ' + e.message);
-  }
+  } catch (e) { addMessage('error', 'Mic access denied'); }
 }
 
 function stopStreamingMic() {
-  streamingMic = false;
-  micActive = false;
-
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-  }
-  if (micStream) {
-    micStream.getTracks().forEach(t => t.stop());
-    micStream = null;
-  }
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
-  if (silenceTimer) {
-    clearTimeout(silenceTimer);
-    silenceTimer = null;
-  }
+  streamingMic = false; micActive = false;
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
   clearInterval(micTimerInterval);
   document.getElementById('micTimer').textContent = '';
-  document.getElementById('micBtn').classList.remove('recording');
-  updateMicButton();
-  addMessage('system', 'Stopped listening');
+  document.getElementById('micBtn').classList.remove('streaming');
+  updateVoiceIndicator();
 }
 
 function startStreamingRecording() {
   if (!streamingMic || !micStream) return;
-
   audioChunks = [];
   mediaRecorder = new MediaRecorder(micStream, { mimeType: getSupportedMimeType() });
-  let speechDetected = false;
-  let speechStart = 0;
+  let speechDetected = false, speechStart = 0;
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) audioChunks.push(e.data);
-  };
-
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
   mediaRecorder.onstop = async () => {
-    if (!streamingMic) return;  // stopped by user, don't process
-
+    if (!streamingMic) return;
     const duration = Date.now() - speechStart;
     if (audioChunks.length > 0 && speechDetected && duration >= MIN_SPEECH_MS) {
       const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
       const ext = mediaRecorder.mimeType.includes('webm') ? '.webm' : '.ogg';
       await sendVoice(blob, `voice${ext}`);
     }
-
-    // Restart recording for next utterance
-    if (streamingMic) {
-      setTimeout(() => startStreamingRecording(), 100);
-    }
+    if (streamingMic) setTimeout(() => startStreamingRecording(), 100);
   };
 
-  mediaRecorder.start(100);  // collect data every 100ms
-  micStartTime = Date.now();
-
-  // Monitor audio levels for silence detection
+  mediaRecorder.start(100);
   const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
   function checkAudio() {
     if (!streamingMic) return;
-
     analyser.getByteTimeDomainData(dataArray);
-
-    // Calculate RMS
     let sum = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      const v = (dataArray[i] - 128) / 128;
-      sum += v * v;
-    }
+    for (let i = 0; i < dataArray.length; i++) { const v = (dataArray[i] - 128) / 128; sum += v * v; }
     const rms = Math.sqrt(sum / dataArray.length);
 
     if (rms > SILENCE_THRESHOLD) {
-      // Speech detected
-      if (!speechDetected) {
-        speechDetected = true;
-        speechStart = Date.now();
-      }
-      // Reset silence timer
-      if (silenceTimer) {
-        clearTimeout(silenceTimer);
+      if (!speechDetected) { speechDetected = true; speechStart = Date.now(); }
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+      document.getElementById('micTimer').textContent = Math.floor((Date.now() - speechStart) / 1000) + 's';
+    } else if (speechDetected && !silenceTimer) {
+      silenceTimer = setTimeout(() => {
         silenceTimer = null;
-      }
-      // Update timer display
-      const sec = Math.floor((Date.now() - speechStart) / 1000);
-      document.getElementById('micTimer').textContent = `${sec}s`;
-    } else if (speechDetected) {
-      // Silence after speech
-      if (!silenceTimer) {
-        silenceTimer = setTimeout(() => {
-          // Silence long enough - send the utterance
-          silenceTimer = null;
-          document.getElementById('micTimer').textContent = '';
-          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-            mediaRecorder.stop();  // triggers onstop -> sendVoice -> restart
-          }
-        }, SILENCE_DURATION);
-      }
+        document.getElementById('micTimer').textContent = '';
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+      }, SILENCE_DURATION);
     }
-
     requestAnimationFrame(checkAudio);
   }
-
   checkAudio();
 }
 
-function getSupportedMimeType() {
-  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
-  for (const t of types) {
-    if (MediaRecorder.isTypeSupported(t)) return t;
-  }
-  return '';
-}
+// ── Send voice ─────────────────────────────────────────────────────
 
 async function sendVoice(blob, filename) {
   addMessage('user', '[Voice message]');
   showTyping();
-
-  const input = document.getElementById('input');
-  input.disabled = true;
-  document.getElementById('sendBtn').disabled = true;
-
+  setInputEnabled(false);
   try {
     const form = new FormData();
     form.append('file', blob, filename);
     form.append('session_id', sessionId);
-
     const resp = await fetch(`${API_BASE}/v1/chat/voice`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-      body: form,
+      method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}` }, body: form,
     });
-
     removeTyping();
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      addMessage('error', `Voice error: ${err.detail || JSON.stringify(err)}`);
-      return;
-    }
-
+    if (!resp.ok) { addMessage('error', 'Voice processing failed'); return; }
     const data = await resp.json();
-    let response = data.response || '';
-    if (response.includes('No home channel is set')) {
-      const lines = response.split('\n');
-      const idx = lines.findIndex(l => l.includes('/sethome'));
-      if (idx >= 0) response = lines.slice(idx + 1).join('\n').trim();
-    }
-    if (response) {
-      addMessage('bot', response, data.media);
-      detectVoiceModeChange(response);
-    }
-  } catch (e) {
-    removeTyping();
-    addMessage('error', 'Voice request failed: ' + e.message);
-  } finally {
-    input.disabled = false;
-    document.getElementById('sendBtn').disabled = false;
-    input.focus();
-  }
+    const response = cleanResponse(data.response || '');
+    if (response) { addMessage('bot', response, data.media); detectVoiceModeChange(response); }
+  } catch (e) { removeTyping(); addMessage('error', 'Voice request failed'); }
+  finally { setInputEnabled(true); }
 }
 
 // ── File upload ────────────────────────────────────────────────────
 
-async function uploadFile(inputEl) {
-  const file = inputEl.files[0];
+async function uploadFile(el) {
+  const file = el.files[0];
   if (!file || !connected) return;
-  inputEl.value = '';
-
-  addMessage('user', `[File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)]`);
-  showTyping();
-
+  el.value = '';
+  addMessage('user', `[File: ${file.name}]`);
   try {
     const form = new FormData();
     form.append('file', file);
-
     const resp = await fetch(`${API_BASE}/v1/upload`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-      body: form,
+      method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}` }, body: form,
     });
-
-    removeTyping();
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      addMessage('error', `Upload error: ${err.detail || JSON.stringify(err)}`);
-      return;
-    }
-
+    if (!resp.ok) { addMessage('error', 'Upload failed'); return; }
     const data = await resp.json();
-    addMessage('system', `Uploaded: ${data.filename} (${data.url})`);
-  } catch (e) {
-    removeTyping();
-    addMessage('error', 'Upload failed: ' + e.message);
+    addMessage('system', `Uploaded: ${data.filename}`);
+  } catch (e) { addMessage('error', 'Upload failed'); }
+}
+
+// ── Voice mode ─────────────────────────────────────────────────────
+
+function detectVoiceModeChange(response) {
+  const l = response.toLowerCase();
+  if (l.includes('voice mode enabled')) voiceMode = 'voice_only';
+  else if (l.includes('auto-tts enabled')) voiceMode = 'all';
+  else if (l.includes('voice mode disabled') || l.includes('text-only')) {
+    voiceMode = 'off';
+    if (streamingMic) stopStreamingMic();
+  }
+  updateVoiceIndicator();
+}
+
+function updateVoiceIndicator() {
+  const el = document.getElementById('voiceIndicator');
+  if (voiceMode === 'off' && !streamingMic) {
+    el.classList.remove('active');
+  } else {
+    el.classList.add('active');
+    const mode = voiceMode === 'all' ? 'TTS' : voiceMode === 'voice_only' ? 'Voice' : '';
+    const mic = streamingMic ? ' | Listening...' : '';
+    el.textContent = `${mode}${mic}`;
   }
 }
 
 // ── Echo prevention ────────────────────────────────────────────────
 
-let micPausedForPlayback = false;
-
 function pauseMicDuringPlayback(pause) {
-  if (!streamingMic) return;  // only affects streaming mode
-
+  if (!streamingMic) return;
   if (pause && !micPausedForPlayback) {
     micPausedForPlayback = true;
-    // Mute the mic input (stop feeding audio to recorder)
-    if (micStream) {
-      micStream.getAudioTracks().forEach(t => t.enabled = false);
-    }
+    if (micStream) micStream.getAudioTracks().forEach(t => t.enabled = false);
   } else if (!pause && micPausedForPlayback) {
     micPausedForPlayback = false;
-    if (micStream) {
-      micStream.getAudioTracks().forEach(t => t.enabled = true);
-    }
+    if (micStream) micStream.getAudioTracks().forEach(t => t.enabled = true);
   }
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+// ── Helpers ────────────────────────────────────────────────────────
+
+function getSupportedMimeType() {
+  for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
 }
 
-// Chat history (localStorage)
+function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
 function saveToHistory(type, content, media) {
-  const key = `hermes_history_${sessionId}`;
-  const history = JSON.parse(localStorage.getItem(key) || '[]');
-  history.push({ type, content, media, time: Date.now() });
-  // Keep last 100 messages
-  if (history.length > 100) history.splice(0, history.length - 100);
-  localStorage.setItem(key, JSON.stringify(history));
+  const k = `hermes_history_${sessionId}`;
+  const h = JSON.parse(localStorage.getItem(k) || '[]');
+  h.push({ type, content, media, time: Date.now() });
+  if (h.length > 100) h.splice(0, h.length - 100);
+  localStorage.setItem(k, JSON.stringify(h));
 }
 
 function loadHistory() {
-  const key = `hermes_history_${sessionId}`;
-  const history = JSON.parse(localStorage.getItem(key) || '[]');
-  history.forEach(h => addMessage(h.type, h.content, h.media));
+  const h = JSON.parse(localStorage.getItem(`hermes_history_${sessionId}`) || '[]');
+  h.forEach(m => addMessage(m.type, m.content, m.media));
 }
 </script>
 </body>

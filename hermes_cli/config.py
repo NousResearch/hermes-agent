@@ -185,6 +185,12 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
         },
+        "approval": {
+            "provider": "auto",
+            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "base_url": "",
+            "api_key": "",
+        },
         "mcp": {
             "provider": "auto",
             "model": "",

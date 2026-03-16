@@ -395,7 +395,13 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
             "model": "AUXILIARY_WEB_EXTRACT_MODEL",
             "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+            "api_key": "AUXILI..._KEY",
+        },
+        "approval": {
+            "provider": "AUXILIARY_APPROVAL_PROVIDER",
+            "model": "AUXILIARY_APPROVAL_MODEL",
+            "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+            "api_key": "AUXILIARY_APPROVAL_API_KEY",
         },
     }
     

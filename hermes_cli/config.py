@@ -291,6 +291,14 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
     },
 
+    # Approval mode for dangerous commands:
+    #   manual — always prompt the user (default)
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   off    — skip all approval prompts (equivalent to --yolo)
+    "approvals": {
+        "mode": "manual",
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)

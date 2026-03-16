@@ -51,3 +51,27 @@ async def test_enrich_message_with_transcription_skips_when_stt_disabled():
 
     assert "transcription is disabled" in result.lower()
     assert "caption" in result
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_avoids_bogus_no_provider_message_for_backend_key_errors():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": False, "error": "VOICE_TOOLS_OPENAI_KEY not set"},
+    ), patch(
+        "tools.transcription_tools.get_stt_model_from_config",
+        return_value=None,
+    ):
+        result = await runner._enrich_message_with_transcription(
+            "caption",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "No STT provider is configured" not in result
+    assert "trouble transcribing" in result
+    assert "caption" in result

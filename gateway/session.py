@@ -183,6 +183,16 @@ class SessionContext:
         }
 
 
+_PII_SAFE_PLATFORMS = frozenset({
+    Platform.WHATSAPP,
+    Platform.SIGNAL,
+    Platform.TELEGRAM,
+})
+"""Platforms where user IDs can be safely redacted (no in-message mention system
+that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
+and the LLM needs the real ID to tag users."""
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -196,10 +206,14 @@ def build_session_context_prompt(
     - What platforms are connected
     - Where it can deliver scheduled task outputs
 
-    When *redact_pii* is True, phone numbers are stripped and user/chat IDs
+    When *redact_pii* is True **and** the source platform is in
+    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
     are replaced with deterministic hashes before being sent to the LLM.
+    Platforms like Discord are excluded because mentions need real IDs.
     Routing still uses the original values (they stay in SessionSource).
     """
+    # Only apply redaction on platforms where IDs aren't needed for mentions
+    redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
     lines = [
         "## Current Session Context",
         "",

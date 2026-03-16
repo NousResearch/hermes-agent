@@ -839,7 +839,7 @@ privacy:
   redact_pii: false  # Strip PII from LLM context (gateway only)
 ```
 
-When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM:
+When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
 
 | Field | Treatment |
 |-------|-----------|
@@ -848,6 +848,8 @@ When `redact_pii` is `true`, the gateway redacts personally identifiable informa
 | Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
 | Home channel IDs | Numeric portion hashed |
 | User names / usernames | **Not affected** (user-chosen, publicly visible) |
+
+**Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
 
 Hashes are deterministic — the same user always maps to the same hash, so the model can still distinguish between users in group chats. Routing and delivery use the original values internally.
 

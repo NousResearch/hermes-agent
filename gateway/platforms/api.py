@@ -143,8 +143,13 @@ class APIPlatformAdapter(BasePlatformAdapter):
         return self._response_queues.get(session_key)
 
     def register_queue(self, chat_id: str) -> asyncio.Queue:
-        """Create and register a response queue for a session."""
+        """Create and register a response queue for a session.
+
+        Raises ValueError if a queue already exists (session busy).
+        """
         session_key = self._build_session_key(chat_id)
+        if session_key in self._response_queues:
+            raise ValueError(f"Session {chat_id} is busy")
         queue = asyncio.Queue()
         self._response_queues[session_key] = queue
         return queue

@@ -172,24 +172,20 @@ class TestSessionIsolationContract:
         assert "1" in r1.json()["response"]
         assert "2" in r2.json()["response"]
 
-    @pytest.mark.xfail(reason="Server-side queue replacement bug: concurrent requests on same session corrupt each other")
-    def test_should_handle_concurrent_same_session_without_corruption(self):
-        """Two concurrent requests on the same session SHOULD both get their own response.
-        Currently: second request replaces first's queue, causing 300s timeout on first."""
+    def test_concurrent_same_session_should_return_409(self):
+        """Second concurrent request on busy session SHOULD get 409 Conflict."""
         from fastapi.testclient import TestClient
         import concurrent.futures
+        import time
 
         adapter = _make_adapter()
-        n = {"c": 0}
 
         async def slow_handler(event):
-            n["c"] += 1
-            num = n["c"]
-            await asyncio.sleep(0.1)  # simulate processing time
+            await asyncio.sleep(0.5)  # simulate slow processing
             sk = adapter._build_session_key(event.source.chat_id)
             q = adapter._response_queues.get(sk)
             if q:
-                await q.put({"type": "message", "content": f"Reply {num}"})
+                await q.put({"type": "message", "content": "ok"})
                 await q.put({"type": "done"})
 
         adapter.handle_message = slow_handler
@@ -200,6 +196,7 @@ class TestSessionIsolationContract:
                 f1 = pool.submit(lambda: client.post("/v1/chat",
                     json={"message": "a", "session_id": "shared"},
                     headers={"Authorization": "Bearer k"}))
+                time.sleep(0.05)  # ensure first request registers queue first
                 f2 = pool.submit(lambda: client.post("/v1/chat",
                     json={"message": "b", "session_id": "shared"},
                     headers={"Authorization": "Bearer k"}))
@@ -207,9 +204,9 @@ class TestSessionIsolationContract:
                 r1 = f1.result(timeout=10)
                 r2 = f2.result(timeout=10)
 
-        # Both should succeed (currently first one times out)
-        assert r1.status_code == 200
-        assert r2.status_code == 200
+        # One succeeds, the other gets 409
+        codes = sorted([r1.status_code, r2.status_code])
+        assert codes == [200, 409]
 
 
 # ═══════════════════════════════════════════════════════════════════════

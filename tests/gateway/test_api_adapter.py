@@ -99,6 +99,12 @@ class TestQueueManagement:
         expected_key = _build_api_session_key("session-1")
         assert expected_key in adapter._response_queues
 
+    def test_register_queue_rejects_busy_session(self):
+        adapter = _make_adapter()
+        adapter.register_queue("session-1")
+        with pytest.raises(ValueError, match="busy"):
+            adapter.register_queue("session-1")
+
     def test_unregister_queue_removes(self):
         adapter = _make_adapter()
         adapter.register_queue("session-1")

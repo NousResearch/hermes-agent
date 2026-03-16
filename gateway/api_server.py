@@ -202,7 +202,10 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
 
     async def _collect_response(sid: str, message: str, message_type: MessageType = MessageType.TEXT) -> ChatResponse:
         """Register queue, send message, collect response, unregister."""
-        queue = adapter.register_queue(sid)
+        try:
+            queue = adapter.register_queue(sid)
+        except ValueError:
+            raise HTTPException(409, "Session is busy. Wait for the previous request to complete.")
         try:
             await adapter.handle_request(sid, message, message_type=message_type)
             text_parts: list[str] = []
@@ -273,7 +276,11 @@ def create_app(adapter: APIPlatformAdapter) -> FastAPI:
                     await ws.send_json({"type": "error", "content": "Rate limited. Please slow down."})
                     continue
 
-                queue = adapter.register_queue(session_id)
+                try:
+                    queue = adapter.register_queue(session_id)
+                except ValueError:
+                    await ws.send_json({"type": "error", "content": "Session is busy. Wait for the previous response."})
+                    continue
                 try:
                     await adapter.handle_request(session_id, message)
 

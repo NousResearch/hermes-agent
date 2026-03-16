@@ -125,3 +125,15 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_windows_sandbox_mode_syncs_to_env(self, _isolated_hermes_home):
+        set_config_value("terminal.windows_sandbox_mode", "read-only")
+        env_content = _read_env(_isolated_hermes_home)
+        assert "TERMINAL_WINDOWS_SANDBOX_MODE=read-only" in env_content
+        config = _read_config(_isolated_hermes_home)
+        assert "windows_sandbox_mode: read-only" in config
+
+    def test_windows_sandbox_network_syncs_to_env(self, _isolated_hermes_home):
+        set_config_value("terminal.windows_sandbox_network", "true")
+        env_content = _read_env(_isolated_hermes_home)
+        assert "TERMINAL_WINDOWS_SANDBOX_NETWORK=True" in env_content

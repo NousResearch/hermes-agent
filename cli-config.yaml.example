@@ -97,7 +97,22 @@ terminal:
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
 
 # -----------------------------------------------------------------------------
-# OPTION 2: SSH remote execution
+# OPTION 2: Windows Sandbox (Windows 11 only)
+# Commands run in a native Windows sandbox through Hermes-managed helper binaries
+# Great for: PowerShell/cmd workflows, MSI installers, registry/.NET/SDK tooling
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "windows-sandbox"
+#   cwd: "C:\\Users\\myuser\\project"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   windows_sandbox_mode: "workspace-write"   # or: "read-only"
+#   windows_sandbox_setup: "explicit"         # first release: explicit only
+#   windows_sandbox_network: false
+#   windows_sandbox_writable_roots: []        # Optional extra writable host paths
+
+# -----------------------------------------------------------------------------
+# OPTION 3: SSH remote execution
 # Commands run on a remote server - agent code stays local (sandboxed)
 # Great for: keeping agent isolated from its own code, using powerful remote hardware
 # -----------------------------------------------------------------------------
@@ -112,7 +127,7 @@ terminal:
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
 
 # -----------------------------------------------------------------------------
-# OPTION 3: Docker container
+# OPTION 4: Docker container
 # Commands run in an isolated Docker container
 # Great for: reproducible environments, testing, isolation
 # -----------------------------------------------------------------------------
@@ -131,7 +146,7 @@ terminal:
 #     - "NPM_TOKEN"
 
 # -----------------------------------------------------------------------------
-# OPTION 4: Singularity/Apptainer container
+# OPTION 5: Singularity/Apptainer container
 # Commands run in a Singularity container (common in HPC environments)
 # Great for: HPC clusters, shared compute environments
 # -----------------------------------------------------------------------------
@@ -143,7 +158,7 @@ terminal:
 #   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 5: Modal cloud execution
+# OPTION 6: Modal cloud execution
 # Commands run on Modal's cloud infrastructure
 # Great for: GPU access, scalable compute, serverless execution
 # -----------------------------------------------------------------------------
@@ -155,7 +170,7 @@ terminal:
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 6: Daytona cloud execution
+# OPTION 7: Daytona cloud execution
 # Commands run in Daytona cloud sandboxes
 # Great for: Cloud dev environments, persistent workspaces, team collaboration
 # Requires: pip install daytona, DAYTONA_API_KEY env var
@@ -169,7 +184,7 @@ terminal:
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh/windows-sandbox) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

@@ -10,10 +10,11 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from pathlib import PurePosixPath
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
+from hermes_cli.config import ensure_process_hermes_home_env, get_env_value, get_hermes_home, save_env_value
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -390,6 +391,19 @@ def get_hermes_cli_path() -> str:
     return f"{get_python_path()} -m hermes_cli.main"
 
 
+def _service_hermes_home(system: bool = False, run_as_user: str | None = None) -> str:
+    """Resolve the Hermes home path that service managers should use."""
+    configured_home = os.getenv("HERMES_HOME", "").strip()
+    if configured_home:
+        return configured_home
+
+    if system:
+        _, _, home_dir = _system_service_identity(run_as_user)
+        return str(PurePosixPath(home_dir) / ".hermes")
+
+    return str(get_hermes_home())
+
+
 # =============================================================================
 # Systemd (Linux)
 # =============================================================================
@@ -397,14 +411,13 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    hermes_home = _service_hermes_home(system=system, run_as_user=run_as_user)
     venv_dir = str(PROJECT_ROOT / "venv")
     venv_bin = str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     # Build a PATH that includes the venv, node_modules, and standard system dirs
     sane_path = f"{venv_bin}:{node_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -422,9 +435,9 @@ WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
+Environment="HERMES_HOME={hermes_home}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
-Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
 RestartSec=10
 KillMode=mixed
@@ -445,9 +458,9 @@ After=network.target
 Type=simple
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
 WorkingDirectory={working_dir}
+Environment="HERMES_HOME={hermes_home}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
-Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
 RestartSec=10
 KillMode=mixed
@@ -718,7 +731,8 @@ def systemd_status(deep: bool = False, system: bool = False):
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    log_dir = get_hermes_home() / "logs"
+    hermes_home = get_hermes_home()
+    log_dir = hermes_home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -740,6 +754,12 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>
@@ -813,7 +833,7 @@ def launchd_install(force: bool = False):
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
-    print("  tail -f ~/.hermes/logs/gateway.log  # View logs")
+    print(f"  tail -f {get_hermes_home() / 'logs' / 'gateway.log'}  # View logs")
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
@@ -896,6 +916,7 @@ def run_gateway(verbose: bool = False, replace: bool = False):
                  hasn't fully exited yet.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
+    ensure_process_hermes_home_env()
     
     from gateway.run import start_gateway
     

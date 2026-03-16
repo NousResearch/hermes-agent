@@ -54,14 +54,19 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# Load .env from HERMES_HOME first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import (
+    ensure_process_hermes_home_env,
+    get_hermes_home,
+    warn_legacy_windows_hermes_state,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
-load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
+ensure_process_hermes_home_env()
+load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
+os.environ["MSWEA_GLOBAL_CONFIG_DIR"] = str(get_hermes_home())
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
@@ -72,6 +77,27 @@ from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_warn_legacy_windows_state(args) -> None:
+    """Warn interactive Windows users about unsupported legacy ~/.hermes state."""
+    command = getattr(args, "command", None)
+    follow_up = None
+
+    if command in (None, "chat"):
+        follow_up = "hermes setup or hermes model"
+    elif command == "setup":
+        follow_up = "hermes setup"
+    elif command == "model":
+        follow_up = "hermes model"
+    elif command == "gateway":
+        if getattr(args, "gateway_command", None) == "setup":
+            follow_up = "hermes gateway setup"
+        else:
+            follow_up = "hermes gateway"
+
+    if follow_up:
+        warn_legacy_windows_hermes_state(follow_up_command=follow_up)
 
 
 def _relative_time(ts) -> str:
@@ -3595,6 +3621,8 @@ For more help on a command:
     # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
     args = parser.parse_args(_processed_argv)
+
+    _maybe_warn_legacy_windows_state(args)
     
     # Handle --version flag
     if args.version:

@@ -43,6 +43,8 @@ import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from hermes_cli.config import ensure_process_hermes_home_env, get_hermes_bin_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -374,6 +376,11 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.windows_sandbox import (
+    WindowsSandboxEnvironment as _WindowsSandboxEnvironment,
+    find_setup_helper_executable as _find_windows_sandbox_setup_helper,
+    find_wrapper_executable as _find_windows_sandbox_wrapper,
+)
 
 
 # Tool description for LLM
@@ -471,7 +478,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default cwd: local uses the host's current directory, everything
     # else starts in the user's home (~ resolves to whatever account
     # is running inside the container/remote).
-    if env_type == "local":
+    if env_type in ("local", "windows-sandbox"):
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
@@ -514,6 +521,16 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "windows_sandbox_mode": os.getenv("TERMINAL_WINDOWS_SANDBOX_MODE", "workspace-write"),
+        "windows_sandbox_setup": os.getenv("TERMINAL_WINDOWS_SANDBOX_SETUP", "explicit"),
+        "windows_sandbox_network": os.getenv("TERMINAL_WINDOWS_SANDBOX_NETWORK", "false").lower() in ("true", "1", "yes"),
+        "windows_sandbox_bin_dir": os.getenv("TERMINAL_WINDOWS_SANDBOX_BIN_DIR", ""),
+        "windows_sandbox_writable_roots": _parse_env_var(
+            "TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS",
+            "[]",
+            json.loads,
+            "valid JSON",
+        ),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -539,13 +556,14 @@ def _get_env_config() -> Dict[str, Any]:
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
+                        windows_sandbox_config: dict = None,
                         task_id: str = "default",
                         host_cwd: str = None):
     """
     Create an execution environment from mini-swe-agent.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
+        env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh", "windows-sandbox"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -569,6 +587,18 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         lc = local_config or {}
         return _LocalEnvironment(cwd=cwd, timeout=timeout,
                                  persistent=lc.get("persistent", False))
+
+    elif env_type == "windows-sandbox":
+        wc = windows_sandbox_config or {}
+        return _WindowsSandboxEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            mode=wc.get("mode", "workspace-write"),
+            network_enabled=wc.get("network_enabled", False),
+            writable_roots=wc.get("writable_roots", []),
+            bin_dir=wc.get("bin_dir", ""),
+            setup_mode=wc.get("setup_mode", "explicit"),
+        )
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -631,7 +661,10 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
+        raise ValueError(
+            f"Unknown environment type: {env_type}. "
+            "Use 'local', 'windows-sandbox', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'"
+        )
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -915,6 +948,22 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        if env_type == "windows-sandbox" and background:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "windows-sandbox does not support background execution in the first release",
+                "status": "error",
+            }, ensure_ascii=False)
+
+        if env_type == "windows-sandbox" and pty:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "windows-sandbox does not support PTY mode in the first release",
+                "status": "error",
+            }, ensure_ascii=False)
+
         # Start cleanup thread
         _start_cleanup_thread()
 
@@ -977,6 +1026,16 @@ def terminal_tool(
                                 "persistent": config.get("local_persistent", False),
                             }
 
+                        windows_sandbox_config = None
+                        if env_type == "windows-sandbox":
+                            windows_sandbox_config = {
+                                "mode": config.get("windows_sandbox_mode", "workspace-write"),
+                                "network_enabled": config.get("windows_sandbox_network", False),
+                                "writable_roots": config.get("windows_sandbox_writable_roots", []),
+                                "bin_dir": config.get("windows_sandbox_bin_dir", ""),
+                                "setup_mode": config.get("windows_sandbox_setup", "explicit"),
+                            }
+
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
@@ -985,6 +1044,7 @@ def terminal_tool(
                             ssh_config=ssh_config,
                             container_config=container_config,
                             local_config=local_config,
+                            windows_sandbox_config=windows_sandbox_config,
                             task_id=effective_task_id,
                             host_cwd=config.get("host_cwd"),
                         )
@@ -1203,6 +1263,48 @@ def check_terminal_requirements() -> bool:
             # not depend on minisweagent being importable.
             return True
 
+        elif env_type == "windows-sandbox":
+            ensure_process_hermes_home_env()
+            if platform.system() != "Windows":
+                logger.error("windows-sandbox backend is only supported on Windows hosts")
+                return False
+            architecture = platform.machine().strip().lower()
+            if architecture not in {"amd64", "x86_64"}:
+                logger.error(
+                    "windows-sandbox backend is only supported on x64 Windows hosts (got %s)",
+                    architecture or "unknown",
+                )
+                return False
+            if config.get("windows_sandbox_setup", "explicit") != "explicit":
+                logger.error(
+                    "windows-sandbox backend only supports explicit setup in the first release. "
+                    "Set TERMINAL_WINDOWS_SANDBOX_SETUP=explicit."
+                )
+                return False
+            wrapper = _find_windows_sandbox_wrapper(config.get("windows_sandbox_bin_dir", ""))
+            if not wrapper:
+                logger.error(
+                    "windows-sandbox wrapper executable not found. "
+                    "Install Hermes-owned Windows sandbox helpers under %s or set "
+                    "TERMINAL_WINDOWS_SANDBOX_BIN_DIR for a custom development location.",
+                    get_hermes_bin_dir(),
+                )
+                return False
+            setup_helper = _find_windows_sandbox_setup_helper(
+                config.get("windows_sandbox_bin_dir", ""),
+                wrapper_path=wrapper,
+            )
+            if not setup_helper:
+                logger.error(
+                    "windows-sandbox setup helper executable not found. "
+                    "Install Hermes-owned Windows sandbox helpers under %s or set "
+                    "TERMINAL_WINDOWS_SANDBOX_BIN_DIR for a custom development location.",
+                    get_hermes_bin_dir(),
+                )
+                return False
+            result = subprocess.run([str(wrapper), "--version"], capture_output=True, timeout=5)
+            return result.returncode == 0
+
         elif env_type == "docker":
             ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
             if importlib.util.find_spec("minisweagent") is None:
@@ -1257,8 +1359,8 @@ def check_terminal_requirements() -> bool:
 
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, windows-sandbox, "
+                "docker, singularity, modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -1298,11 +1400,14 @@ if __name__ == "__main__":
 
     print("\nEnvironment Variables:")
     default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
-    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/daytona/ssh)")
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/windows-sandbox/docker/singularity/modal/daytona/ssh)")
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
+    print(f"  TERMINAL_WINDOWS_SANDBOX_MODE: {os.getenv('TERMINAL_WINDOWS_SANDBOX_MODE', 'workspace-write')}")
+    print(f"  TERMINAL_WINDOWS_SANDBOX_SETUP: {os.getenv('TERMINAL_WINDOWS_SANDBOX_SETUP', 'explicit')}")
+    print(f"  TERMINAL_WINDOWS_SANDBOX_BIN_DIR: {os.getenv('TERMINAL_WINDOWS_SANDBOX_BIN_DIR', '')}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")

@@ -4,6 +4,7 @@ import time
 import pytest
 from pathlib import Path
 
+import hermes_state
 from hermes_state import SessionDB
 
 
@@ -21,6 +22,14 @@ def db(tmp_path):
 # =========================================================================
 
 class TestSessionLifecycle:
+    def test_default_db_path_uses_current_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        db = hermes_state.SessionDB()
+        try:
+            assert db.db_path == tmp_path / "state.db"
+        finally:
+            db.close()
+
     def test_create_and_get_session(self, db):
         sid = db.create_session(
             session_id="s1",

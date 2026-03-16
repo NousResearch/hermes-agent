@@ -1,9 +1,9 @@
 """
 Configuration management for Hermes Agent.
 
-Config files are stored in ~/.hermes/ for easy access:
-- ~/.hermes/config.yaml  - All settings (model, toolsets, terminal, etc.)
-- ~/.hermes/.env         - API keys and secrets
+Config files are stored in HERMES_HOME for easy access:
+- HERMES_HOME/config.yaml  - All settings (model, toolsets, terminal, etc.)
+- HERMES_HOME/.env         - API keys and secrets
 
 This module provides:
 - hermes config          - Show current configuration
@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import json
 import os
 import platform
 import re
@@ -39,6 +40,21 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
 })
+_LEGACY_WINDOWS_MARKERS = (
+    "config.yaml",
+    ".env",
+    "auth.json",
+    "state.db",
+    "SOUL.md",
+    "sessions",
+    "logs",
+    "memories",
+    "cron",
+    "skills",
+    "sandboxes",
+    "whatsapp",
+)
+_legacy_windows_home_warning_emitted = False
 
 import yaml
 
@@ -50,9 +66,143 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 # Config paths
 # =============================================================================
 
+def get_default_hermes_home() -> Path:
+    """Return the platform default Hermes home path."""
+    if _IS_WINDOWS:
+        local_appdata = os.getenv("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "hermes"
+    return Path.home() / ".hermes"
+
+
+def get_legacy_windows_hermes_home() -> Path:
+    """Return the pre-cutover Windows Hermes home path."""
+    return Path.home() / ".hermes"
+
+
+def _paths_equivalent(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def ensure_process_hermes_home_env() -> Path:
+    """Set HERMES_HOME for this process when it is not already configured."""
+    hermes_home = os.getenv("HERMES_HOME")
+    if hermes_home:
+        return Path(hermes_home)
+
+    default_home = get_default_hermes_home()
+    os.environ["HERMES_HOME"] = str(default_home)
+    return default_home
+
+
 def get_hermes_home() -> Path:
-    """Get the Hermes home directory (~/.hermes)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    """Get the Hermes home directory."""
+    hermes_home = os.getenv("HERMES_HOME")
+    if hermes_home:
+        return Path(hermes_home)
+    return get_default_hermes_home()
+
+
+def get_hermes_bin_dir() -> Path:
+    """Return the Hermes bin directory under HERMES_HOME."""
+    return get_hermes_home() / "bin"
+
+
+def get_windows_sandbox_root() -> Path:
+    """Return the windows-sandbox state root under HERMES_HOME."""
+    return get_hermes_home() / "sandboxes" / "windows-sandbox"
+
+
+def get_windows_sandbox_codex_home() -> Path:
+    """Return the Codex helper/state root used by windows-sandbox."""
+    return get_windows_sandbox_root() / "codex-home"
+
+
+def detect_legacy_windows_hermes_state() -> tuple[Path | None, list[str]]:
+    """Detect unsupported legacy Windows Hermes state under ~/.hermes."""
+    if not _IS_WINDOWS:
+        return None, []
+
+    current_home = get_hermes_home()
+    legacy_home = get_legacy_windows_hermes_home()
+    if _paths_equivalent(current_home, legacy_home):
+        return None, []
+    if not legacy_home.exists():
+        return None, []
+
+    markers = [name for name in _LEGACY_WINDOWS_MARKERS if (legacy_home / name).exists()]
+    if not markers:
+        return None, []
+
+    return legacy_home, markers
+
+
+def format_legacy_windows_hermes_state_message(
+    *, follow_up_command: str | None = None
+) -> str | None:
+    """Return a hard-cutover warning when legacy Windows Hermes state is detected."""
+    legacy_home, markers = detect_legacy_windows_hermes_state()
+    if legacy_home is None:
+        return None
+
+    current_home = get_hermes_home()
+    marker_preview = ", ".join(markers[:4])
+    if len(markers) > 4:
+        marker_preview = f"{marker_preview}, +{len(markers) - 4} more"
+
+    lines = [
+        "Legacy Windows Hermes state detected.",
+        f"  Unsupported legacy path: {legacy_home}",
+        f"  Current Hermes home:     {current_home}",
+        "  Hermes now uses the current path on Windows and will not read the legacy path.",
+    ]
+    if marker_preview:
+        lines.append(f"  Detected legacy items:   {marker_preview}")
+    lines.append("  Move the state manually if you want to keep it.")
+    if follow_up_command:
+        lines.append(f"  After moving it, rerun:   {follow_up_command}")
+    return "\n".join(lines)
+
+
+def warn_legacy_windows_hermes_state(*, follow_up_command: str | None = None) -> bool:
+    """Print the hard-cutover warning once per process when legacy Windows state exists."""
+    global _legacy_windows_home_warning_emitted
+
+    message = format_legacy_windows_hermes_state_message(
+        follow_up_command=follow_up_command
+    )
+    if not message or _legacy_windows_home_warning_emitted:
+        return False
+
+    print()
+    print(color("⚠ Legacy Windows Hermes state detected", Colors.YELLOW, Colors.BOLD))
+    print(color(message, Colors.YELLOW))
+    print()
+    _legacy_windows_home_warning_emitted = True
+    return True
+
+
+def probe_writable_directory(path: Path, *, create: bool = False) -> tuple[bool, str]:
+    """Check whether a directory is writable by creating and deleting a probe file."""
+    directory = Path(path)
+    try:
+        if create:
+            directory.mkdir(parents=True, exist_ok=True)
+        elif not directory.exists():
+            return False, "directory does not exist"
+
+        if not directory.is_dir():
+            return False, "path is not a directory"
+
+        probe = directory / f".hermes-write-probe-{os.getpid()}"
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -93,11 +243,12 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions."""
+    """Ensure HERMES_HOME directory structure exists with secure permissions."""
+    ensure_process_hermes_home_env()
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
-    for subdir in ("cron", "sessions", "logs", "memories"):
+    for subdir in ("bin", "cron", "sessions", "logs", "memories"):
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
@@ -124,6 +275,11 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "windows_sandbox_mode": "workspace-write",
+        "windows_sandbox_setup": "explicit",
+        "windows_sandbox_network": False,
+        "windows_sandbox_bin_dir": "",
+        "windows_sandbox_writable_roots": [],
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -1577,6 +1733,12 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+    elif terminal.get('backend') == 'windows-sandbox':
+        helper_dir = terminal.get('windows_sandbox_bin_dir') or str(get_hermes_bin_dir())
+        print(f"  Mode:         {terminal.get('windows_sandbox_mode', 'workspace-write')}")
+        print(f"  Setup:        {terminal.get('windows_sandbox_setup', 'explicit')}")
+        print(f"  Network:      {'on' if terminal.get('windows_sandbox_network', False) else 'off'}")
+        print(f"  Helper dir:   {helper_dir}")
     
     # Timezone
     print()
@@ -1735,13 +1897,22 @@ def set_config_value(key: str, value: str):
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "terminal.windows_sandbox_mode": "TERMINAL_WINDOWS_SANDBOX_MODE",
+        "terminal.windows_sandbox_setup": "TERMINAL_WINDOWS_SANDBOX_SETUP",
+        "terminal.windows_sandbox_network": "TERMINAL_WINDOWS_SANDBOX_NETWORK",
+        "terminal.windows_sandbox_bin_dir": "TERMINAL_WINDOWS_SANDBOX_BIN_DIR",
+        "terminal.windows_sandbox_writable_roots": "TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        if isinstance(value, list):
+            env_value = json.dumps(value)
+        else:
+            env_value = str(value)
+        save_env_value(_config_to_env_sync[key], env_value)
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

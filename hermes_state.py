@@ -23,8 +23,16 @@ import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from hermes_cli.config import ensure_process_hermes_home_env, get_hermes_home
 
-DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+
+def get_default_db_path() -> Path:
+    """Return the default SQLite state DB path under the shared Hermes home."""
+    ensure_process_hermes_home_env()
+    return get_hermes_home() / "state.db"
+
+
+DEFAULT_DB_PATH = get_default_db_path()
 
 SCHEMA_VERSION = 5
 
@@ -113,7 +121,7 @@ class SessionDB:
     """
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or get_default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()

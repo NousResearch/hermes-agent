@@ -8,7 +8,13 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    detect_legacy_windows_hermes_state,
+    ensure_process_hermes_home_env,
+    format_legacy_windows_hermes_state_message,
+    get_default_hermes_home,
     get_hermes_home,
+    get_windows_sandbox_codex_home,
+    get_windows_sandbox_root,
     ensure_hermes_home,
     load_config,
     load_env,
@@ -26,12 +32,91 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            assert home == get_default_hermes_home()
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):
             home = get_hermes_home()
             assert home == Path("/custom/path")
+
+
+class TestHermesHomeEnvInitialization:
+    def test_sets_process_env_when_missing(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HOME", None)
+            home = ensure_process_hermes_home_env()
+            assert home == get_default_hermes_home()
+            assert os.environ["HERMES_HOME"] == str(home)
+
+    def test_preserves_existing_env_override(self):
+        with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}, clear=False):
+            home = ensure_process_hermes_home_env()
+            assert home == Path("/custom/path")
+            assert os.environ["HERMES_HOME"] == "/custom/path"
+
+
+class TestLegacyWindowsHomeDetection:
+    def test_ignores_non_windows_hosts(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config._IS_WINDOWS", False)
+        legacy_home, markers = detect_legacy_windows_hermes_state()
+        assert legacy_home is None
+        assert markers == []
+
+    def test_detects_legacy_windows_state_when_current_home_differs(self, monkeypatch, tmp_path):
+        current_home = tmp_path / "current-hermes"
+        legacy_home = tmp_path / "legacy-hermes"
+        legacy_home.mkdir()
+        (legacy_home / ".env").write_text("OPENROUTER_API_KEY=test", encoding="utf-8")
+        (legacy_home / "auth.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr("hermes_cli.config._IS_WINDOWS", True)
+        monkeypatch.setattr("hermes_cli.config.get_legacy_windows_hermes_home", lambda: legacy_home)
+        monkeypatch.setenv("HERMES_HOME", str(current_home))
+
+        detected_home, markers = detect_legacy_windows_hermes_state()
+        assert detected_home == legacy_home
+        assert markers == [".env", "auth.json"]
+
+    def test_skips_warning_when_current_home_is_legacy_path(self, monkeypatch, tmp_path):
+        legacy_home = tmp_path / ".hermes"
+        legacy_home.mkdir()
+        (legacy_home / "config.yaml").write_text("model: test", encoding="utf-8")
+
+        monkeypatch.setattr("hermes_cli.config._IS_WINDOWS", True)
+        monkeypatch.setattr("hermes_cli.config.get_legacy_windows_hermes_home", lambda: legacy_home)
+        monkeypatch.setenv("HERMES_HOME", str(legacy_home))
+
+        detected_home, markers = detect_legacy_windows_hermes_state()
+        assert detected_home is None
+        assert markers == []
+
+    def test_formats_hard_cutover_message_with_exact_paths(self, monkeypatch, tmp_path):
+        current_home = tmp_path / "current-hermes"
+        legacy_home = tmp_path / "legacy-hermes"
+        legacy_home.mkdir()
+        (legacy_home / ".env").write_text("OPENROUTER_API_KEY=test", encoding="utf-8")
+
+        monkeypatch.setattr("hermes_cli.config._IS_WINDOWS", True)
+        monkeypatch.setattr("hermes_cli.config.get_legacy_windows_hermes_home", lambda: legacy_home)
+        monkeypatch.setenv("HERMES_HOME", str(current_home))
+
+        message = format_legacy_windows_hermes_state_message(
+            follow_up_command="hermes model"
+        )
+        assert message is not None
+        assert str(legacy_home) in message
+        assert str(current_home) in message
+        assert "will not read the legacy path" in message
+        assert "hermes model" in message
+
+
+class TestWindowsSandboxPaths:
+    def test_windows_sandbox_paths_live_under_hermes_home(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            assert get_windows_sandbox_root() == tmp_path / "sandboxes" / "windows-sandbox"
+            assert get_windows_sandbox_codex_home() == (
+                tmp_path / "sandboxes" / "windows-sandbox" / "codex-home"
+            )
 
 
 class TestEnsureHermesHome:
@@ -42,6 +127,7 @@ class TestEnsureHermesHome:
             assert (tmp_path / "sessions").is_dir()
             assert (tmp_path / "logs").is_dir()
             assert (tmp_path / "memories").is_dir()
+            assert (tmp_path / "bin").is_dir()
 
     def test_creates_default_soul_md_if_missing(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -67,6 +153,11 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert config["terminal"]["windows_sandbox_mode"] == "workspace-write"
+            assert config["terminal"]["windows_sandbox_setup"] == "explicit"
+            assert config["terminal"]["windows_sandbox_network"] is False
+            assert config["terminal"]["windows_sandbox_bin_dir"] == ""
+            assert config["terminal"]["windows_sandbox_writable_roots"] == []
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

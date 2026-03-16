@@ -69,17 +69,18 @@ from hermes_cli.banner import _format_context_length
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# Load .env from HERMES_HOME first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.config import ensure_process_hermes_home_env, get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = ensure_process_hermes_home_env()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
+# Point mini-swe-agent at the same Hermes home used by the rest of the process.
+os.environ["MSWEA_GLOBAL_CONFIG_DIR"] = str(_hermes_home)
 
 # =============================================================================
 # Configuration Loading
@@ -170,6 +171,11 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "windows_sandbox_mode": "workspace-write",
+            "windows_sandbox_setup": "explicit",
+            "windows_sandbox_network": False,
+            "windows_sandbox_bin_dir": "",
+            "windows_sandbox_writable_roots": [],
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
         },
@@ -336,6 +342,11 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "windows_sandbox_mode": "TERMINAL_WINDOWS_SANDBOX_MODE",
+        "windows_sandbox_setup": "TERMINAL_WINDOWS_SANDBOX_SETUP",
+        "windows_sandbox_network": "TERMINAL_WINDOWS_SANDBOX_NETWORK",
+        "windows_sandbox_bin_dir": "TERMINAL_WINDOWS_SANDBOX_BIN_DIR",
+        "windows_sandbox_writable_roots": "TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
@@ -2100,12 +2111,12 @@ class HermesCLI:
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
 
-        Saves the image to ~/.hermes/images/ and appends the path to
+        Saves the image to HERMES_HOME/images/ and appends the path to
         ``_attached_images``.  Returns True if an image was attached.
         """
         from hermes_cli.clipboard import save_clipboard_image
 
-        img_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "images"
+        img_dir = get_hermes_home() / "images"
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"

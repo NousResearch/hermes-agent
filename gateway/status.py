@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.config import ensure_process_hermes_home_env
+
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
@@ -26,8 +28,7 @@ _LOCKS_DIRNAME = "gateway-locks"
 
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
-    home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home / "gateway.pid"
+    return ensure_process_hermes_home_env() / "gateway.pid"
 
 
 def _get_runtime_status_path() -> Path:

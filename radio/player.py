@@ -342,7 +342,7 @@ class HermesRadio:
             os.makedirs(rec_dir, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             station = self._now.station_name or "radio"
-            safe = "".join(c for c in station if c.isalnum() or c in "-_ ")[:30].strip()
+            safe = "".join(c for c in station if c.isalnum() or c in "-_")[:30].strip().replace(" ", "_")
             path = os.path.join(rec_dir, f"{ts}_{safe}.mp3")
 
         try:

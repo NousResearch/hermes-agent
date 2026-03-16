@@ -276,11 +276,17 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         fragments.append(("class:radio-progress", "\u2501" * filled + "\u2578"))
         fragments.append(("class:radio-progress-bg", "\u2500" * max(0, remaining - 1)))
     elif is_stream:
-        # Stream mode: show LIVE indicator instead of progress bar
+        # Stream mode: show LIVE + Ctrl+O hint
         fragments.append(("class:radio-station", "  \u25cf LIVE"))
+        if not control_mode:
+            fragments.append(("class:radio-vol", "  Ctrl+O controls"))
     else:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress-bg", "\u2500" * 52))
+
+    # Also show hint for crate dig when not in control mode
+    if not is_stream and not control_mode:
+        fragments.append(("class:radio-vol", "  Ctrl+O controls"))
 
     return fragments
 

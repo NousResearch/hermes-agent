@@ -2503,6 +2503,25 @@ class GatewayRunner:
 
         def _resolve_prompt(value):
             if isinstance(value, dict):
+                if "file" in value:
+                    file_path = value["file"]
+                    path = Path(file_path).expanduser()
+                    if not path.is_absolute():
+                        path = _hermes_home / path
+                    loaded = None
+                    if path.exists():
+                        try:
+                            loaded = path.read_text(encoding="utf-8")
+                        except Exception:
+                            pass
+                    if loaded is None:
+                        return ""
+                    parts = [loaded]
+                    if value.get("tone"):
+                        parts.append(f'Tone: {value["tone"]}')
+                    if value.get("style"):
+                        parts.append(f'Style: {value["style"]}')
+                    return "\n".join(p for p in parts if p)
                 parts = [value.get("system_prompt", "")]
                 if value.get("tone"):
                     parts.append(f'Tone: {value["tone"]}')

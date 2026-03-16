@@ -2106,6 +2106,12 @@ class GatewayRunner:
 
         # Parse provider:model syntax
         target_provider, new_model = parse_model_input(args, current_provider)
+        # Auto-detect provider when no explicit provider:model syntax was used
+        if target_provider == current_provider:
+            from hermes_cli.models import detect_provider_for_model
+            detected = detect_provider_for_model(new_model, current_provider)
+            if detected:
+                target_provider, new_model = detected
         provider_changed = target_provider != current_provider
 
         # Resolve credentials for the target provider (for API probe)

@@ -118,6 +118,9 @@ DEFAULT_CONFIG = {
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
         "docker_volumes": [],
+        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
+        # Default off because passing host directories into a sandbox weakens isolation.
+        "docker_mount_cwd_to_workspace": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in
@@ -143,6 +146,12 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
+    },
+    "smart_model_routing": {
+        "enabled": False,
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "cheap_model": {},
     },
     
     # Auxiliary model config — provider:model for each side task.
@@ -182,6 +191,12 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
         },
+        "approval": {
+            "provider": "auto",
+            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "base_url": "",
+            "api_key": "",
+        },
         "mcp": {
             "provider": "auto",
             "model": "",
@@ -203,7 +218,13 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+    },
+
+    # Privacy settings
+    "privacy": {
+        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
     
     # Text-to-speech configuration
@@ -287,6 +308,14 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+    },
+
+    # Approval mode for dangerous commands:
+    #   manual — always prompt the user (default)
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   off    — skip all approval prompts (equivalent to --yolo)
+    "approvals": {
+        "mode": "manual",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -988,6 +1017,19 @@ _FALLBACK_COMMENT = """
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
+#
+# ── Smart Model Routing ────────────────────────────────────────────────
+# Optional cheap-vs-strong routing for simple turns.
+# Keeps the primary model for complex work, but can route short/simple
+# messages to a cheaper model across providers.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
 """
 
 
@@ -1018,6 +1060,19 @@ _COMMENTED_SECTIONS = """
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
+#
+# ── Smart Model Routing ────────────────────────────────────────────────
+# Optional cheap-vs-strong routing for simple turns.
+# Keeps the primary model for complex work, but can route short/simple
+# messages to a cheaper model across providers.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
 """
 
 
@@ -1408,6 +1463,7 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",

@@ -26,7 +26,7 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "start", gateway_cli.SERVICE_NAME],
+            ["systemctl", "--user", "start", gateway_cli.get_service_name()],
         ]
 
     def test_systemd_restart_refreshes_outdated_unit(self, tmp_path, monkeypatch):
@@ -49,8 +49,25 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "restart", gateway_cli.SERVICE_NAME],
+            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
         ]
+
+
+class TestGeneratedSystemdUnits:
+    def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "ExecStart=" in unit
+        assert "ExecStop=" not in unit
+        assert "TimeoutStopSec=60" in unit
+
+    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "ExecStart=" in unit
+        assert "ExecStop=" not in unit
+        assert "TimeoutStopSec=60" in unit
+        assert "WantedBy=multi-user.target" in unit
 
 
 class TestGatewayStopCleanup:
@@ -92,9 +109,9 @@ class TestGatewayServiceDetection:
         )
 
         def fake_run(cmd, capture_output=True, text=True, **kwargs):
-            if cmd == ["systemctl", "--user", "is-active", gateway_cli.SERVICE_NAME]:
+            if cmd == ["systemctl", "--user", "is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
-            if cmd == ["systemctl", "is-active", gateway_cli.SERVICE_NAME]:
+            if cmd == ["systemctl", "is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
             raise AssertionError(f"Unexpected command: {cmd}")
 

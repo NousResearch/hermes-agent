@@ -277,6 +277,7 @@ function doAuth() {
             document.getElementById('auth-screen').style.display = 'none';
             document.getElementById('chat-screen').style.display = 'flex';
             document.getElementById('session-label').textContent = sessionId;
+            connectWebSocket();
             loadHistory();
         } else {
             document.getElementById('auth-error').style.display = 'block';
@@ -293,9 +294,107 @@ function resetSession() {
     document.getElementById('session-label').textContent = sessionId;
     while (messagesEl.firstChild !== typingEl) messagesEl.removeChild(messagesEl.firstChild);
     addSystemMessage('New session started');
+    connectWebSocket(); // reconnect with new session
 }
 
-// ── Send text ──────────────────────────────────────────────────────
+// ── WebSocket connection ────────────────────────────────────────────
+
+let _ws = null;
+let _wsReconnectTimer = null;
+let _streamingDiv = null; // current bot message being streamed
+let _streamingText = '';  // accumulated text for current stream
+let _streamingMedia = []; // accumulated media for current stream
+
+function connectWebSocket() {
+    if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) {
+        _ws.close();
+    }
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _ws = new WebSocket(`${wsProto}//${location.host}/v1/chat/stream`);
+
+    _ws.onopen = () => {
+        _ws.send(JSON.stringify({ type: 'auth', token: apiKey, session_id: sessionId }));
+    };
+
+    _ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === 'auth_ok') {
+            document.getElementById('status-dot').style.background = '#4ade80';
+            return;
+        }
+
+        if (msg.type === 'message') {
+            hideTyping();
+            _streamingText += msg.content;
+            if (!_streamingDiv) {
+                _streamingDiv = document.createElement('div');
+                _streamingDiv.className = 'msg bot';
+                messagesEl.insertBefore(_streamingDiv, typingEl);
+            }
+            _streamingDiv.innerHTML = renderMarkdown(_streamingText);
+            highlightCode(_streamingDiv);
+            scrollToBottom();
+            return;
+        }
+
+        if (msg.type === 'done') {
+            hideTyping();
+            // Finalize streamed message
+            if (_streamingDiv && _streamingText) {
+                // Add copy button
+                const copyBtn = document.createElement('button'); copyBtn.className = 'copy-btn'; copyBtn.textContent = 'Copy'; copyBtn.setAttribute('aria-label', 'Copy message');
+                const finalText = _streamingText;
+                copyBtn.onclick = () => { navigator.clipboard.writeText(finalText).then(() => { copyBtn.textContent = 'Copied'; copyBtn.classList.add('copied'); setTimeout(() => { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 1500); }); };
+                _streamingDiv.appendChild(copyBtn);
+                detectVoiceMode(_streamingText);
+                saveHistory('bot', _streamingText, _streamingMedia.length ? _streamingMedia : null);
+            }
+            // Handle accumulated media
+            _streamingMedia.forEach(m => {
+                const url = m.url ? (m.url.startsWith('http') ? m.url : `${API_BASE}${m.url}`) : null;
+                if (m.type === 'audio' && url) playTtsAndMaybeRestart(url);
+                else if (m.type === 'image' && url) addImageMessage(url, m.caption);
+                else if (m.type === 'video' && url) addVideoMessage(url, m.caption);
+                else if (m.type === 'document' && url) addDocumentMessage(url, m.filename || 'file', m.caption);
+            });
+            // Voice mode: restart listening if no TTS
+            if (voiceMode && !_streamingMedia.some(m => m.type === 'audio')) {
+                setAvatarState('listening');
+                setTimeout(() => { if (voiceMode && !currentTtsAudio) startRecording(); }, 500);
+            }
+            // Reset streaming state
+            _streamingDiv = null;
+            _streamingText = '';
+            _streamingMedia = [];
+            return;
+        }
+
+        if (msg.type === 'error') {
+            hideTyping();
+            addSystemMessage(msg.content || 'Server error');
+            _streamingDiv = null; _streamingText = ''; _streamingMedia = [];
+            return;
+        }
+
+        // Media messages (image, audio, video, document) during stream
+        if (['image', 'audio', 'video', 'document'].includes(msg.type)) {
+            _streamingMedia.push(msg);
+            return;
+        }
+    };
+
+    _ws.onclose = () => {
+        document.getElementById('status-dot').style.background = '#ef4444';
+        // Auto-reconnect after 3 seconds
+        clearTimeout(_wsReconnectTimer);
+        _wsReconnectTimer = setTimeout(() => { if (apiKey) connectWebSocket(); }, 3000);
+    };
+
+    _ws.onerror = () => {}; // onclose handles reconnect
+}
+
+// ── Send text (via WebSocket) ───────────────────────────────────────
 
 function sendMessage() {
     const input = document.getElementById('input');
@@ -305,27 +404,31 @@ function sendMessage() {
     addUserMessage(text);
     showTyping();
 
-    fetch(`${API_BASE}/v1/chat`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: sessionId }),
-    }).then(r => r.json()).then(data => {
-        hideTyping();
-        handleResponse(data);
-    }).catch(e => { hideTyping(); addSystemMessage('Request failed'); });
+    if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(JSON.stringify({ message: text }));
+    } else {
+        // Fallback to HTTP if WS not connected
+        fetch(`${API_BASE}/v1/chat`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text, session_id: sessionId }),
+        }).then(r => r.json()).then(data => {
+            hideTyping();
+            handleResponse(data);
+        }).catch(e => { hideTyping(); addSystemMessage('Request failed'); });
+    }
 }
 
 function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
 function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
 
-// ── Handle response ────────────────────────────────────────────────
+// ── Handle response (HTTP fallback + voice) ─────────────────────────
 
 function handleResponse(data) {
     let text = data.response || '';
     if (text) {
         addBotMessage(text);
         detectVoiceMode(text);
-        // Save bot message with media for history reload
         saveHistory('bot', text, data.media);
     }
     if (data.media) {
@@ -337,7 +440,6 @@ function handleResponse(data) {
             else if (m.type === 'document' && url) addDocumentMessage(url, m.filename || 'file', m.caption);
         });
     }
-    // In voice mode, if no TTS audio in response, restart listening
     if (voiceMode && !data.media?.some(m => m.type === 'audio')) {
         setAvatarState('listening');
         setTimeout(() => { if (voiceMode && !currentTtsAudio) startRecording(); }, 500);
@@ -663,13 +765,27 @@ async function exitVoiceMode() {
 }
 
 async function sendCommand(cmd) {
+    if (_ws && _ws.readyState === WebSocket.OPEN) {
+        // Send via WS and wait for done signal
+        return new Promise((resolve) => {
+            const origHandler = _ws.onmessage;
+            _ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'done') { _ws.onmessage = origHandler; resolve(); return; }
+                if (msg.type === 'message') return; // discard command response text
+                if (origHandler) origHandler(e);
+            };
+            _ws.send(JSON.stringify({ message: cmd }));
+        });
+    }
+    // HTTP fallback
     try {
         const resp = await fetch(`${API_BASE}/v1/chat`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: cmd, session_id: sessionId }),
         });
-        await resp.json(); // consume response body
+        await resp.json();
     } catch (e) {}
 }
 

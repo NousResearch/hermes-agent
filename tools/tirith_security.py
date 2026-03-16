@@ -163,16 +163,16 @@ def _mark_install_failed(reason: str = ""):
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w") as f:
             f.write(reason)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("Failed to write tirith install failure marker: %s", exc, exc_info=True)
 
 
 def _clear_install_failed():
     """Remove the failure marker after successful install."""
     try:
         os.unlink(_failure_marker_path())
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("Failed to clear tirith install failure marker: %s", exc, exc_info=True)
 
 
 def _hermes_bin_dir() -> str:
@@ -246,11 +246,15 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
             logger.info("cosign provenance verification passed")
             return True
         else:
-            logger.warning("cosign verification failed (exit %d): %s",
-                          result.returncode, result.stderr.strip())
+            logger.warning(
+                "cosign verification failed (exit %d): %s",
+                result.returncode,
+                result.stderr.strip(),
+                exc_info=True,
+            )
             return False
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("cosign execution failed: %s", exc)
+        logger.warning("cosign execution failed: %s", exc, exc_info=True)
         return None
 
 
@@ -265,7 +269,7 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
                 expected = parts[0]
                 break
     if not expected:
-        logger.warning("No checksum entry for %s", archive_name)
+        logger.warning("No checksum entry for %s", archive_name, exc_info=True)
         return False
 
     sha = hashlib.sha256()
@@ -274,7 +278,12 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
             sha.update(chunk)
     actual = sha.hexdigest()
     if actual != expected:
-        logger.warning("Checksum mismatch: expected %s, got %s", expected, actual)
+        logger.warning(
+            "Checksum mismatch: expected %s, got %s",
+            expected,
+            actual,
+            exc_info=True,
+        )
         return False
     return True
 

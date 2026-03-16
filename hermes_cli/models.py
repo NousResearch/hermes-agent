@@ -138,16 +138,23 @@ def list_available_providers() -> list[dict[str, str]]:
 
     Each dict has ``id``, ``label``, and ``aliases``.
     Checks which providers have valid credentials configured.
+    Also detects custom endpoints configured in config.yaml.
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
         "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+        "custom",  # Custom OpenAI-compatible endpoints
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
+
+    # Check if custom endpoint is configured in config.yaml
+    custom_base_url = _get_custom_base_url()
+    custom_models = _get_custom_models_from_config()
+    custom_configured = bool(custom_base_url) or bool(custom_models)
 
     result = []
     for pid in _PROVIDER_ORDER:
@@ -156,9 +163,14 @@ def list_available_providers() -> list[dict[str, str]]:
         # Check if this provider has credentials available
         has_creds = False
         try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            runtime = resolve_runtime_provider(requested=pid)
-            has_creds = bool(runtime.get("api_key"))
+            # Special case: custom endpoint is "authenticated" if base_url is configured
+            # (some custom endpoints don't require API keys)
+            if pid == "custom":
+                has_creds = custom_configured
+            else:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=pid)
+                has_creds = bool(runtime.get("api_key"))
         except Exception:
             pass
         result.append({
@@ -197,15 +209,70 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     return (current_provider, stripped)
 
 
+def _get_custom_models_from_config() -> list[str]:
+    """Fetch custom_models list from config.yaml for custom endpoints."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            custom = model_cfg.get("custom_models", [])
+            if isinstance(custom, list):
+                return [str(m) for m in custom if m]
+    except Exception:
+        pass
+    return []
+
+
+def _get_custom_base_url() -> str:
+    """Get the custom endpoint base_url from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            return str(model_cfg.get("base_url", "")).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]]:
     """Return ``(model_id, description)`` tuples for a provider's model list.
 
     Tries to fetch the live model list from the provider's API first,
     falling back to the static ``_PROVIDER_MODELS`` catalog if the API
     is unreachable.
+    
+    For custom endpoints, reads from config.yaml ``custom_models`` list
+    and/or probes the endpoint's ``/models`` API.
     """
     normalized = normalize_provider(provider)
+    
+    # Handle custom provider - read from config or probe API
+    if normalized == "custom":
+        # First try reading from config.yaml custom_models list
+        custom_models = _get_custom_models_from_config()
+        if custom_models:
+            return [(m, "") for m in custom_models]
+        # Fall back to probing the endpoint's /models API
+        base_url = _get_custom_base_url()
+        if base_url:
+            from os import getenv
+            api_key = getenv("OPENAI_API_KEY", "") or getenv("OPENROUTER_API_KEY", "")
+            live = fetch_api_models(api_key, base_url)
+            if live:
+                return [(m, "") for m in live]
+        return []
+    
+    # Handle OpenRouter - only show models if actually using OpenRouter
     if normalized == "openrouter":
+        base_url = _get_custom_base_url()
+        # If base_url is set and NOT pointing to openrouter.ai, user is not using OpenRouter
+        # Return empty - their models are on the custom provider, not OpenRouter
+        if base_url and "openrouter.ai" not in base_url:
+            return []
+        # Standard OpenRouter - return curated list
         return list(OPENROUTER_MODELS)
 
     # Try live API first (Codex, Nous, etc. all support /models)

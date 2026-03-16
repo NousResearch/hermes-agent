@@ -25,6 +25,57 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 
 
+def _find_singularity_executable() -> str:
+    """Locate the apptainer or singularity CLI binary.
+
+    Returns the executable name (``"apptainer"`` or ``"singularity"``).
+    Raises ``RuntimeError`` with install instructions if neither is found.
+    """
+    if shutil.which("apptainer"):
+        return "apptainer"
+    if shutil.which("singularity"):
+        return "singularity"
+    raise RuntimeError(
+        "Neither 'apptainer' nor 'singularity' was found in PATH. "
+        "Install Apptainer (https://apptainer.org/docs/admin/main/installation.html) "
+        "or Singularity and ensure the CLI is available."
+    )
+
+
+def _ensure_singularity_available() -> str:
+    """Preflight check: resolve the executable and verify it responds.
+
+    Returns the executable name on success.
+    Raises ``RuntimeError`` with an actionable message on failure.
+    """
+    exe = _find_singularity_executable()
+
+    try:
+        result = subprocess.run(
+            [exe, "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Singularity backend selected but the resolved executable '{exe}' "
+            "could not be executed. Check your installation."
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"'{exe} version' timed out. The runtime may be misconfigured."
+        )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()[:200]
+        raise RuntimeError(
+            f"'{exe} version' failed (exit code {result.returncode}): {stderr}"
+        )
+
+    return exe
+
+
 def _load_snapshots() -> Dict[str, str]:
     if _SNAPSHOT_STORE.exists():
         try:
@@ -169,7 +220,7 @@ class SingularityEnvironment(BaseEnvironment):
         task_id: str = "default",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
-        self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
+        self.executable = _ensure_singularity_available()
         self.image = _get_or_build_sif(image, self.executable)
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
         self._instance_started = False

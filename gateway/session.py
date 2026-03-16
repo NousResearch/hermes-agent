@@ -328,7 +328,9 @@ def build_session_key(source: SessionSource) -> str:
 
     Group/channel rules:
       - chat_id identifies the parent group/channel.
+      - user_id/user_id_alt isolates participants within that parent chat when available.
       - thread_id differentiates threads within that parent chat.
+      - Without participant identifiers, messages fall back to one shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
@@ -340,13 +342,18 @@ def build_session_key(source: SessionSource) -> str:
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"
+
+    participant_id = source.user_id_alt or source.user_id
+    key_parts = ["agent:main", platform, source.chat_type]
+
     if source.chat_id:
-        if source.thread_id:
-            return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
-        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+        key_parts.append(source.chat_id)
     if source.thread_id:
-        return f"agent:main:{platform}:{source.chat_type}:{source.thread_id}"
-    return f"agent:main:{platform}:{source.chat_type}"
+        key_parts.append(source.thread_id)
+    if participant_id:
+        key_parts.append(str(participant_id))
+
+    return ":".join(key_parts)
 
 
 class SessionStore:

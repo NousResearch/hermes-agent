@@ -369,6 +369,29 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         assert store._generate_session_key(source) == build_session_key(source)
 
+    def test_store_creates_distinct_group_sessions_per_user(self, store):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123:alice"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123:bob"
+        assert first_entry.session_id != second_entry.session_id
+
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(
@@ -398,6 +421,24 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:discord:group:guild-123"
 
+    def test_group_sessions_are_isolated_per_user_when_user_id_present(self):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert build_session_key(first) == "agent:main:discord:group:guild-123:alice"
+        assert build_session_key(second) == "agent:main:discord:group:guild-123:bob"
+        assert build_session_key(first) != build_session_key(second)
+
     def test_group_thread_includes_thread_id(self):
         """Forum-style threads need a distinct session key within one group."""
         source = SessionSource(
@@ -408,6 +449,17 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
+
+    def test_group_thread_sessions_are_isolated_per_user(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:group:-1002285219667:17585:42"
 
 
 class TestSessionStoreEntriesAttribute:

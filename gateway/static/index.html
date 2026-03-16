@@ -54,19 +54,57 @@ body {
 #auth-btn:hover { background: var(--accent-hover); box-shadow: 0 4px 24px var(--accent-glow); transform: translateY(-1px); }
 #auth-error { color: var(--error); font-size: 13px; display: none; }
 
+/* Layout */
+#app-layout { display: none; height: 100dvh; }
+@media (min-width: 800px) { #app-layout { display: none; } #app-layout.visible { display: flex; } }
+
+/* Sidebar */
+#sidebar {
+    width: 260px; min-width: 260px; background: var(--bg-secondary); border-right: 1px solid var(--glass-border);
+    display: flex; flex-direction: column; height: 100dvh; flex-shrink: 0;
+}
+#sidebar-header { padding: 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--glass-border); }
+#sidebar-header h2 { font-size: 15px; font-weight: 700; background: linear-gradient(135deg, #e2e8f0, #a29bfe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+#new-chat-btn { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+#new-chat-btn:hover { background: var(--accent-hover); }
+#session-list { flex: 1; overflow-y: auto; padding: 8px; }
+#session-list::-webkit-scrollbar { width: 3px; }
+#session-list::-webkit-scrollbar-thumb { background: rgba(100,120,200,0.2); border-radius: 3px; }
+.session-item {
+    padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-muted);
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    transition: all 0.15s; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-item:hover { background: rgba(108,92,231,0.1); color: var(--text); }
+.session-item.active { background: rgba(108,92,231,0.15); color: var(--accent); border: 1px solid rgba(108,92,231,0.2); }
+.session-item .session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.session-item .session-delete { opacity: 0; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 4px; }
+.session-item:hover .session-delete { opacity: 1; }
+.session-item .session-delete:hover { color: var(--error); }
+
+/* Mobile sidebar */
+@media (max-width: 799px) {
+    #sidebar { position: fixed; left: -280px; z-index: 200; width: 280px; transition: left 0.3s; box-shadow: none; }
+    #sidebar.open { left: 0; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
+    #sidebar-overlay { position: fixed; inset: 0; z-index: 199; background: rgba(0,0,0,0.4); display: none; }
+    #sidebar-overlay.visible { display: block; }
+}
+@media (min-width: 800px) { #sidebar-overlay { display: none !important; } }
+
 /* Chat */
-#chat-screen { display: none; flex-direction: column; height: 100dvh; max-width: 760px; margin: 0 auto; position: relative; }
-@media (min-width: 800px) { #chat-screen { border-left: 1px solid var(--glass-border); border-right: 1px solid var(--glass-border); background: rgba(8,9,13,0.5); backdrop-filter: blur(8px); } }
+#chat-screen { display: flex; flex-direction: column; height: 100dvh; flex: 1; min-width: 0; position: relative; }
+@media (min-width: 800px) { #chat-screen { border-right: 1px solid var(--glass-border); background: rgba(8,9,13,0.5); backdrop-filter: blur(8px); } }
 
 /* Status bar */
 #status-bar { background: var(--bg-secondary); backdrop-filter: blur(16px); border-bottom: 1px solid var(--glass-border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.menu-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 20px; padding: 4px 8px; margin-right: 8px; display: none; }
+@media (max-width: 799px) { .menu-btn { display: inline-block; } }
+.menu-btn:hover { color: var(--text); }
 #status-bar .title { font-weight: 700; font-size: 16px; letter-spacing: -0.3px; }
 #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 8px; box-shadow: 0 0 8px rgba(81,207,102,0.5); }
 #status-dot.off { background: var(--error); box-shadow: 0 0 8px rgba(255,107,107,0.5); }
 .status-right { display: flex; align-items: center; gap: 8px; }
 .session-label { font-size: 11px; color: var(--text-muted); }
-.reset-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; padding: 4px; }
-.reset-btn:hover { color: var(--text); }
 
 /* Messages */
 #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 10px; scroll-behavior: smooth; }
@@ -184,15 +222,31 @@ body {
     <div id="avatar-status">Listening...</div>
 </div>
 
-<!-- Chat -->
-<div id="chat-screen">
-    <header id="status-bar">
-        <div><span id="status-dot"></span><span class="title">Hermes Agent</span></div>
-        <div class="status-right">
-            <span class="session-label" id="session-label"></span>
-            <button class="reset-btn" onclick="resetSession()" title="New session">&#8634;</button>
+<!-- Sidebar overlay (mobile) -->
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- App layout -->
+<div id="app-layout">
+    <!-- Sidebar -->
+    <nav id="sidebar">
+        <div id="sidebar-header">
+            <h2>Hermes Agent</h2>
+            <button id="new-chat-btn" onclick="newSession()" aria-label="New chat">+ New</button>
         </div>
-    </header>
+        <div id="session-list"></div>
+    </nav>
+
+    <!-- Chat -->
+    <div id="chat-screen">
+        <header id="status-bar">
+            <div>
+                <button class="menu-btn" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button>
+                <span id="status-dot"></span><span class="title">Hermes Agent</span>
+            </div>
+            <div class="status-right">
+                <span class="session-label" id="session-label"></span>
+            </div>
+        </header>
     <div id="messages" aria-live="polite">
         <div class="typing-indicator" id="typing"><span></span><span></span><span></span></div>
     </div>
@@ -214,7 +268,8 @@ body {
             <svg id="stop-icon" viewBox="0 0 24 24" style="display:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
         </button>
     </div>
-</div>
+</div><!-- /chat-screen -->
+</div><!-- /app-layout -->
 
 <script>
 const API_BASE = window.location.origin;
@@ -275,8 +330,10 @@ function doAuth() {
             else localStorage.removeItem('hermes_api_key');
             if (!sessionId) { sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join(''); localStorage.setItem('hermes_session_id', sessionId); }
             document.getElementById('auth-screen').style.display = 'none';
-            document.getElementById('chat-screen').style.display = 'flex';
+            document.getElementById('app-layout').style.display = 'flex';
+            document.getElementById('app-layout').classList.add('visible');
             document.getElementById('session-label').textContent = sessionId;
+            loadSessions();
             connectWebSocket();
             loadHistory();
         } else {
@@ -285,16 +342,99 @@ function doAuth() {
     }).catch(() => { document.getElementById('auth-error').textContent = 'Cannot connect'; document.getElementById('auth-error').style.display = 'block'; });
 }
 
-function resetSession() {
-    if (!confirm('Start a new session?')) return;
-    const oldKey = `hermes_history_${sessionId}`;
-    localStorage.removeItem(oldKey);
-    sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join('');
+// ── Session management ──────────────────────────────────────────
+
+function _generateSessionId() {
+    return 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function _getSessionList() {
+    return JSON.parse(localStorage.getItem('hermes_sessions') || '[]');
+}
+
+function _saveSessionList(list) {
+    localStorage.setItem('hermes_sessions', JSON.stringify(list));
+}
+
+function _addSessionToList(sid) {
+    const list = _getSessionList();
+    if (!list.find(s => s.id === sid)) {
+        list.unshift({ id: sid, title: sid, time: Date.now() });
+        _saveSessionList(list);
+    }
+}
+
+function switchSession(sid) {
+    if (sid === sessionId) { closeSidebar(); return; }
+    sessionId = sid;
     localStorage.setItem('hermes_session_id', sessionId);
     document.getElementById('session-label').textContent = sessionId;
     while (messagesEl.firstChild !== typingEl) messagesEl.removeChild(messagesEl.firstChild);
+    loadHistory();
+    loadSessions();
+    connectWebSocket();
+    closeSidebar();
+}
+
+function newSession() {
+    _addSessionToList(sessionId); // save current before switching
+    sessionId = _generateSessionId();
+    localStorage.setItem('hermes_session_id', sessionId);
+    _addSessionToList(sessionId);
+    document.getElementById('session-label').textContent = sessionId;
+    while (messagesEl.firstChild !== typingEl) messagesEl.removeChild(messagesEl.firstChild);
     addSystemMessage('New session started');
-    connectWebSocket(); // reconnect with new session
+    loadSessions();
+    connectWebSocket();
+    closeSidebar();
+}
+
+function deleteSession(sid, e) {
+    e.stopPropagation();
+    const list = _getSessionList().filter(s => s.id !== sid);
+    _saveSessionList(list);
+    localStorage.removeItem(`hermes_history_${sid}`);
+    if (sid === sessionId) newSession();
+    else loadSessions();
+}
+
+function loadSessions() {
+    _addSessionToList(sessionId); // ensure current is in list
+    const list = _getSessionList();
+    const container = document.getElementById('session-list');
+    container.innerHTML = '';
+    list.forEach(s => {
+        const div = document.createElement('div');
+        div.className = 'session-item' + (s.id === sessionId ? ' active' : '');
+        div.onclick = () => switchSession(s.id);
+
+        const name = document.createElement('span');
+        name.className = 'session-name';
+        // Show first message as title, or session ID
+        const history = JSON.parse(localStorage.getItem(`hermes_history_${s.id}`) || '[]');
+        const firstMsg = history.find(m => m.type === 'user');
+        name.textContent = firstMsg ? firstMsg.content.substring(0, 40) : s.id;
+        div.appendChild(name);
+
+        const del = document.createElement('button');
+        del.className = 'session-delete';
+        del.textContent = '\u00d7';
+        del.setAttribute('aria-label', 'Delete session');
+        del.onclick = (e) => deleteSession(s.id, e);
+        div.appendChild(del);
+
+        container.appendChild(div);
+    });
+}
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebar-overlay').classList.toggle('visible');
+}
+
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebar-overlay').classList.remove('visible');
 }
 
 // ── WebSocket connection ────────────────────────────────────────────

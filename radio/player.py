@@ -349,8 +349,23 @@ class HermesRadio:
             rec_dir = os.path.expanduser("~/.hermes/radio/recordings")
             os.makedirs(rec_dir, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            station = self._now.station_name or "radio"
-            safe = "".join(c for c in station if c.isalnum() or c in "-_")[:30].strip().replace(" ", "_")
+
+            # Build a meaningful name from station + track
+            name_parts = []
+            station = self._now.station_name or ""
+            title = self._now.title or ""
+            # Skip ID-like names (short alphanumeric, no spaces)
+            if station and (len(station) > 10 or " " in station):
+                name_parts.append(station)
+            if title and title != station:
+                name_parts.append(title)
+            if not name_parts:
+                name_parts.append(self._source_mode.value)
+
+            raw_name = " - ".join(name_parts)
+            # Sanitize: keep alphanumeric, spaces->underscores, strip non-ASCII
+            safe = "".join(c for c in raw_name if c.isascii() and (c.isalnum() or c in " -_"))
+            safe = safe.strip().replace(" ", "_")[:60] or "recording"
             path = os.path.join(rec_dir, f"{ts}_{safe}.mp3")
 
         try:

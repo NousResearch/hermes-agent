@@ -321,7 +321,7 @@ class TestStreamingCallbacks:
 
 
 class TestStreamingFallback:
-    """Verify fallback to non-streaming on unsupported providers."""
+    """Verify fallback to non-streaming on ANY streaming error."""
 
     @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -367,15 +367,62 @@ class TestStreamingFallback:
         assert response.choices[0].message.content == "fallback response"
         mock_non_stream.assert_called_once()
 
+    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_non_stream_error_raises(self, mock_close, mock_create):
-        """Non-streaming errors propagate normally."""
+    def test_any_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
+        """ANY streaming error triggers fallback — not just specific messages."""
         from run_agent import AIAgent
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("Rate limit exceeded")
+        mock_client.chat.completions.create.side_effect = Exception(
+            "Connection reset by peer"
+        )
         mock_create.return_value = mock_client
+
+        fallback_response = SimpleNamespace(
+            id="fallback",
+            model="test",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="fallback after connection error",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        mock_non_stream.return_value = fallback_response
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "fallback after connection error"
+        mock_non_stream.assert_called_once()
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_fallback_error_propagates(self, mock_close, mock_create, mock_non_stream):
+        """When both streaming AND fallback fail, the fallback error propagates."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception("stream broke")
+        mock_create.return_value = mock_client
+
+        mock_non_stream.side_effect = Exception("Rate limit exceeded")
 
         agent = AIAgent(
             model="test/model",

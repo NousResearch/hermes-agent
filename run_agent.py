@@ -3208,23 +3208,17 @@ class AIAgent:
                 else:
                     result["response"] = _call_chat_completions()
             except Exception as e:
-                err_text = str(e).lower()
-                # Fall back to non-streaming if provider doesn't support it.
-                # Be specific in matching — "stream" alone is too broad and
-                # catches unrelated errors like "stream_options" rejections.
-                stream_unsupported = any(
-                    kw in err_text
-                    for kw in ("streaming is not", "streaming not support",
-                               "does not support stream", "not available")
-                )
-                if stream_unsupported:
-                    logger.info("Streaming not supported by provider, falling back to non-streaming: %s", e)
-                    try:
-                        result["response"] = self._interruptible_api_call(api_kwargs)
-                    except Exception as fallback_err:
-                        result["error"] = fallback_err
-                else:
-                    result["error"] = e
+                # Always fall back to non-streaming on ANY streaming error.
+                # Many third-party/extrinsic providers have partial or broken
+                # streaming support — rejecting stream=True, crashing on
+                # stream_options, dropping connections mid-stream, etc.
+                # A clean fallback to the standard request path ensures the
+                # agent still works even if streaming doesn't.
+                logger.info("Streaming failed, falling back to non-streaming: %s", e)
+                try:
+                    result["response"] = self._interruptible_api_call(api_kwargs)
+                except Exception as fallback_err:
+                    result["error"] = fallback_err
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:

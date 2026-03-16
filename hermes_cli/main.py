@@ -513,6 +513,18 @@ def cmd_chat(args):
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
+    # Register --resume session with the gateway for orphan cleanup tracking
+    resume_id = getattr(args, "resume", None)
+    if resume_id:
+        try:
+            from gateway.orphan_cleanup import register_cli_session
+            register_cli_session(resume_id)
+            import atexit as _atexit
+            from gateway.orphan_cleanup import unregister_cli_session
+            _atexit.register(unregister_cli_session, resume_id)
+        except Exception:
+            pass
+
     try:
         cli_main(**kwargs)
     except ValueError as e:

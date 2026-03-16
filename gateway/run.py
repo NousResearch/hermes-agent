@@ -4518,6 +4518,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     write_pid_file()
     atexit.register(remove_pid_file)
     
+    # Set as child subreaper + clean up orphaned hermes processes from previous runs
+    try:
+        from gateway.orphan_cleanup import set_subreaper, scan_and_cleanup_orphans
+        set_subreaper()
+        cleanup_result = scan_and_cleanup_orphans(gateway_pid=os.getpid())
+        if cleanup_result.get("orphans_found", 0) > 0:
+            logger.info(
+                "Startup orphan cleanup: found %d, terminated %d, killed %d",
+                cleanup_result["orphans_found"],
+                len(cleanup_result.get("cleanup_result", {}).get("terminated", [])),
+                len(cleanup_result.get("cleanup_result", {}).get("killed", [])),
+            )
+    except Exception as exc:
+        logger.warning("Orphan cleanup failed (non-fatal): %s", exc)
+
     # Start background cron ticker so scheduled jobs fire automatically
     cron_stop = threading.Event()
     cron_thread = threading.Thread(

@@ -149,7 +149,7 @@ class PlatformConfig:
 @dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
-    enabled: bool = True
+    enabled: bool = False
     transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
     edit_interval: float = 0.3    # Seconds between message edits
     buffer_threshold: int = 40    # Chars before forcing an edit
@@ -169,7 +169,7 @@ class StreamingConfig:
         if not data:
             return cls()
         return cls(
-            enabled=data.get("enabled", True),
+            enabled=data.get("enabled", False),
             transport=data.get("transport", "edit"),
             edit_interval=float(data.get("edit_interval", 0.3)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),

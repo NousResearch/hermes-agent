@@ -1864,8 +1864,16 @@ class GatewayRunner:
                 session_key=session_key
             )
             
-            response = agent_result.get("final_response", "")
+            response = agent_result.get("final_response") or ""
             agent_messages = agent_result.get("messages", [])
+
+            # Surface error details when the agent failed silently (final_response=None)
+            if not response and agent_result.get("failed"):
+                error_detail = agent_result.get("error", "unknown error")
+                response = (
+                    f"The request failed: {str(error_detail)[:300]}\n"
+                    "Try again or use /reset to start a fresh session."
+                )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -1988,9 +1996,20 @@ class GatewayRunner:
             
         except Exception as e:
             logger.exception("Agent error in session %s", session_key)
+            error_type = type(e).__name__
+            error_detail = str(e)[:300] if str(e) else "no details available"
+            status_hint = ""
+            status_code = getattr(e, "status_code", None)
+            if status_code == 401:
+                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+            elif status_code == 429:
+                status_hint = " You are being rate-limited. Please wait a moment and try again."
+            elif status_code == 529:
+                status_hint = " The API is temporarily overloaded. Please try again shortly."
             return (
-                "Sorry, I encountered an unexpected error. "
-                "The details have been logged for debugging. "
+                f"Sorry, I encountered an error ({error_type}).\n"
+                f"{error_detail}\n"
+                f"{status_hint}"
                 "Try again or use /reset to start a fresh session."
             )
         finally:

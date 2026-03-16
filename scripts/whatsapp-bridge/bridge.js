@@ -203,10 +203,12 @@ async function startSocket() {
 
       // Skip empty messages
       if (!body && !hasMedia) {
-        try { 
-          console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
-        } catch (err) {
-          console.error('Failed to log empty message event:', err);
+        if (process.env.WHATSAPP_DEBUG) {
+          try { 
+            console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
+          } catch (err) {
+            console.error('Failed to log empty message event:', err);
+          }
         }
         continue;
       }

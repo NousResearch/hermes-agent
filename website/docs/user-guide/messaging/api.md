@@ -70,6 +70,63 @@ The Web UI is installable as a Progressive Web App:
 
 ---
 
+## Web UI Features
+
+The built-in Web UI provides a full chat experience with voice, camera, and file support.
+
+### Text Chat
+
+Type a message and press Send (or Enter). The agent responds with text, and optionally with media (images, audio, documents). All standard agent capabilities are available — tool use, memory, skills, and more.
+
+### Push-to-Talk (Tap Mic)
+
+Tap the microphone button to start recording. Tap again to stop and send. The recording is transcribed server-side and sent to the agent. Works in any voice mode.
+
+- When voice mode is active (default), the agent responds with both text and a voice message (auto-TTS)
+- Send `/voice off` to disable voice responses and get text-only replies
+
+### Streaming Voice Mode (Long Press Mic)
+
+Long press (hold 500ms) the microphone button to enter streaming mode. A pixel avatar appears showing the current state:
+
+- **Listening** — VAD (Voice Activity Detection) monitors the microphone. Speak naturally.
+- **Thinking** — Your speech was sent to the agent, waiting for a response.
+- **Speaking** — The agent's TTS response is playing. Microphone is muted to prevent echo.
+- After TTS finishes, the mic automatically resumes — creating a continuous conversation loop.
+
+Streaming mode sends `/voice tts` to the backend, enabling TTS replies for all messages (including text). Long press again or tap the ✕ button on the avatar to exit. On exit, voice mode switches to `/voice on` so push-to-talk still receives voice responses.
+
+### Camera
+
+Tap the camera button (next to the mic) to take a photo with your device camera. The photo is uploaded and sent to the agent for analysis. On desktop, this opens a file picker filtered to images.
+
+:::note
+Camera access requires HTTPS. See [TLS / HTTPS](#tls--https) below.
+:::
+
+### File Upload
+
+Tap the attachment button to upload files (images, videos, audio, documents — max 25 MB). The file is uploaded via `/v1/upload`, and the agent receives the file URL as a message for processing.
+
+### Voice Mode Control
+
+Voice mode can be controlled by sending commands as chat messages:
+
+| Command | Effect |
+|---------|--------|
+| `/voice on` | Voice replies to voice messages only |
+| `/voice tts` | Voice replies to all messages (text and voice) |
+| `/voice off` | Text-only replies, no TTS |
+| `/voice status` | Show current voice mode |
+
+### iOS / Mobile Compatibility
+
+- **Microphone**: Requires HTTPS. Enable TLS via `API_SSL_CERT`/`API_SSL_KEY` in `.env`.
+- **TTS Playback**: The Web UI pre-unlocks audio on first user interaction to bypass iOS autoplay restrictions.
+- **Audio Format**: The UI uses `MediaRecorder.isTypeSupported()` to select the best audio format (WebM Opus on Chrome/Android, fallback on Safari/iOS).
+
+---
+
 ## Endpoints
 
 ### Health Check
@@ -207,6 +264,8 @@ POST /v1/chat/voice
 ```
 
 Upload a voice recording, transcribe it via the configured STT provider, and send the transcript to the agent. Returns the same `ChatResponse` as `/v1/chat`.
+
+The voice endpoint marks the message as `MessageType.VOICE`, which triggers auto-TTS — the agent includes a voice message in the response (unless disabled via `/voice off`). This matches the behavior of voice messages on Telegram, Discord, and other platforms.
 
 ```bash
 curl -X POST http://localhost:8766/v1/chat/voice \

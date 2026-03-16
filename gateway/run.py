@@ -157,6 +157,12 @@ if _config_path.exists():
                     "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
                     "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
                 },
+                "approval": {
+                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
+                    "model": "AUXILIARY_APPROVAL_MODEL",
+                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
+                },
             }
             for _task_key, _env_map in _aux_task_env.items():
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})

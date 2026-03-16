@@ -1413,15 +1413,43 @@ class HermesCLI:
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
-    #
-    # Future: When display.show_reasoning is also enabled, stream reasoning
-    # tokens into a dim box above the response (like the existing static
-    # reasoning display, but live). The infrastructure exists — reasoning
-    # deltas fire via _fire_reasoning_delta() during streaming. The display
-    # layer needs: a dim reasoning box that opens on first reasoning token,
-    # accumulates live, then transitions to the response box when content
-    # tokens start arriving. See PR #1214 (raulvidis) for gateway-side
-    # reasoning visibility modes as a reference implementation.
+
+    def _stream_reasoning_delta(self, text: str) -> None:
+        """Stream reasoning/thinking tokens into a dim box above the response.
+
+        Opens a dim reasoning box on first token, streams line-by-line.
+        The box is closed automatically when content tokens start arriving
+        (via _stream_delta → _emit_stream_text).
+        """
+        if not text:
+            return
+
+        # Open reasoning box on first reasoning token
+        if not getattr(self, "_reasoning_box_opened", False):
+            self._reasoning_box_opened = True
+            w = shutil.get_terminal_size().columns
+            r_label = " Reasoning "
+            r_fill = w - 2 - len(r_label)
+            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+
+        self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+
+        # Emit complete lines
+        while "\n" in self._reasoning_buf:
+            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            _cprint(f"{_DIM}{line}{_RST}")
+
+    def _close_reasoning_box(self) -> None:
+        """Close the live reasoning box if it's open."""
+        if getattr(self, "_reasoning_box_opened", False):
+            # Flush remaining reasoning buffer
+            buf = getattr(self, "_reasoning_buf", "")
+            if buf:
+                _cprint(f"{_DIM}{buf}{_RST}")
+                self._reasoning_buf = ""
+            w = shutil.get_terminal_size().columns
+            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
+            self._reasoning_box_opened = False
 
     def _stream_delta(self, text: str) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -1504,6 +1532,9 @@ class HermesCLI:
         if not text:
             return
 
+        # Close the live reasoning box before opening the response box
+        self._close_reasoning_box()
+
         # Open the response box header on the very first visible text
         if not self._stream_box_opened:
             # Strip leading whitespace/newlines before first visible content
@@ -1530,6 +1561,9 @@ class HermesCLI:
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
+        # Close reasoning box if still open (in case no content tokens arrived)
+        self._close_reasoning_box()
+
         if self._stream_buf:
             _cprint(self._stream_buf)
             self._stream_buf = ""
@@ -1546,6 +1580,8 @@ class HermesCLI:
         self._stream_box_opened = False
         self._stream_prefilt = ""
         self._in_reasoning_block = False
+        self._reasoning_box_opened = False
+        self._reasoning_buf = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -1724,7 +1760,11 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
-                reasoning_callback=self._on_reasoning if (self.show_reasoning or self.verbose) else None,
+                reasoning_callback=(
+                    self._stream_reasoning_delta if (self.streaming_enabled and self.show_reasoning)
+                    else self._on_reasoning if (self.show_reasoning or self.verbose)
+                    else None
+                ),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -4935,8 +4975,9 @@ class HermesCLI:
 
             response_previewed = result.get("response_previewed", False) if result else False
 
-            # Display reasoning (thinking) box if enabled and available
-            if self.show_reasoning and result:
+            # Display reasoning (thinking) box if enabled and available.
+            # Skip when streaming already showed reasoning live.
+            if self.show_reasoning and result and not self._stream_started:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
                     w = shutil.get_terminal_size().columns

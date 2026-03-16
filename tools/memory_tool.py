@@ -496,6 +496,7 @@ registry.register(
         old_text=args.get("old_text"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
+    emoji="🧠",
 )
 
 

@@ -544,4 +544,5 @@ registry.register(
     check_fn=check_moa_requirements,
     requires_env=["OPENROUTER_API_KEY"],
     is_async=True,
+    emoji="🧠",
 )

@@ -1979,6 +1979,11 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
 
+            # If streaming already delivered the response, return None so
+            # _process_message_background doesn't send it again.
+            if agent_result.get("already_sent"):
+                return None
+
             return response
             
         except Exception as e:
@@ -4135,6 +4140,7 @@ class GatewayRunner:
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
+        stream_consumer_holder = [None]  # Mutable container for stream consumer
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_event_loop()
@@ -4197,6 +4203,35 @@ class GatewayRunner:
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            # Set up streaming consumer if enabled
+            _stream_consumer = None
+            _stream_delta_cb = None
+            _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
+            if _scfg is None:
+                from gateway.config import StreamingConfig
+                _scfg = StreamingConfig()
+
+            if _scfg.enabled and _scfg.transport != "off":
+                try:
+                    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        _consumer_cfg = StreamConsumerConfig(
+                            edit_interval=_scfg.edit_interval,
+                            buffer_threshold=_scfg.buffer_threshold,
+                            cursor=_scfg.cursor,
+                        )
+                        _stream_consumer = GatewayStreamConsumer(
+                            adapter=_adapter,
+                            chat_id=source.chat_id,
+                            config=_consumer_cfg,
+                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                        )
+                        _stream_delta_cb = _stream_consumer.on_delta
+                        stream_consumer_holder[0] = _stream_consumer
+                except Exception as _sc_err:
+                    logger.debug("Could not set up stream consumer: %s", _sc_err)
+
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
             agent = AIAgent(
                 model=turn_route["model"],
@@ -4217,6 +4252,7 @@ class GatewayRunner:
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
+                stream_delta_callback=_stream_delta_cb,
                 platform=platform_key,
                 honcho_session_key=session_key,
                 honcho_manager=honcho_manager,
@@ -4287,6 +4323,10 @@ class GatewayRunner:
             
             result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             result_holder[0] = result
+
+            # Signal the stream consumer that the agent is done
+            if _stream_consumer is not None:
+                _stream_consumer.finish()
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -4386,6 +4426,20 @@ class GatewayRunner:
         progress_task = None
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
+
+        # Start stream consumer task — polls for consumer creation since it
+        # happens inside run_sync (thread pool) after the agent is constructed.
+        stream_task = None
+
+        async def _start_stream_consumer():
+            """Wait for the stream consumer to be created, then run it."""
+            for _ in range(200):  # Up to 10s wait
+                if stream_consumer_holder[0] is not None:
+                    await stream_consumer_holder[0].run()
+                    return
+                await asyncio.sleep(0.05)
+
+        stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -4468,6 +4522,17 @@ class GatewayRunner:
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
+
+            # Wait for stream consumer to finish its final edit
+            if stream_task:
+                try:
+                    await asyncio.wait_for(stream_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stream_task.cancel()
+                    try:
+                        await stream_task
+                    except asyncio.CancelledError:
+                        pass
             
             # Clean up tracking
             tracking_task.cancel()
@@ -4481,6 +4546,12 @@ class GatewayRunner:
                         await task
                     except asyncio.CancelledError:
                         pass
+
+        # If streaming already delivered the response, mark it so the
+        # caller's send() is skipped (avoiding duplicate messages).
+        _sc = stream_consumer_holder[0]
+        if _sc and _sc.already_sent and isinstance(response, dict):
+            response["already_sent"] = True
         
         return response
 

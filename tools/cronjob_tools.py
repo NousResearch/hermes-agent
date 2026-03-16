@@ -458,4 +458,5 @@ registry.register(
         task_id=kw.get("task_id"),
     ),
     check_fn=check_cronjob_requirements,
+    emoji="⏰",
 )

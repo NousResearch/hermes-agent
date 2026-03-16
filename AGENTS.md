@@ -235,6 +235,7 @@ hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
 | Spinner verbs | `spinner.thinking_verbs` | `display.py` |
 | Spinner wings (optional) | `spinner.wings` | `display.py` |
 | Tool output prefix | `tool_prefix` | `display.py` |
+| Per-tool emojis | `tool_emojis` | `display.py` → `get_tool_emoji()` |
 | Agent name | `branding.agent_name` | `banner.py`, `cli.py` |
 | Welcome message | `branding.welcome` | `cli.py` |
 | Response box label | `branding.response_label` | `cli.py` |

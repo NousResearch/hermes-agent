@@ -1261,6 +1261,7 @@ registry.register(
         category=args.get("category"), task_id=kw.get("task_id")
     ),
     check_fn=check_skills_requirements,
+    emoji="📚",
 )
 registry.register(
     name="skill_view",
@@ -1270,4 +1271,5 @@ registry.register(
         args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
     ),
     check_fn=check_skills_requirements,
+    emoji="📚",
 )

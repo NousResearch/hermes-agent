@@ -90,6 +90,7 @@ from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
     _detect_tool_failure,
+    get_tool_emoji as _get_tool_emoji,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
@@ -4085,23 +4086,7 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             elif self.quiet_mode and self._stream_callback is None:
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                tool_emoji_map = {
-                    'web_search': '🔍', 'web_extract': '📄', 'web_crawl': '🕸️',
-                    'terminal': '💻', 'process': '⚙️',
-                    'read_file': '📖', 'write_file': '✍️', 'patch': '🔧', 'search_files': '🔎',
-                    'browser_navigate': '🌐', 'browser_snapshot': '📸',
-                    'browser_click': '👆', 'browser_type': '⌨️',
-                    'browser_scroll': '📜', 'browser_back': '◀️',
-                    'browser_press': '⌨️', 'browser_close': '🚪',
-                    'browser_get_images': '🖼️', 'browser_vision': '👁️',
-                    'image_generate': '🎨', 'text_to_speech': '🔊',
-                    'vision_analyze': '👁️', 'mixture_of_agents': '🧠',
-                    'skills_list': '📚', 'skill_view': '📚',
-                    'cronjob': '⏰',
-                    'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
-                    'clarify': '❓', 'execute_code': '🐍', 'delegate_task': '🔀',
-                }
-                emoji = tool_emoji_map.get(function_name, '⚡')
+                emoji = _get_tool_emoji(function_name)
                 preview = _build_tool_preview(function_name, function_args) or function_name
                 if len(preview) > 30:
                     preview = preview[:27] + "..."

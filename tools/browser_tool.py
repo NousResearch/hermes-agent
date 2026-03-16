@@ -1833,6 +1833,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🌐",
 )
 registry.register(
     name="browser_snapshot",
@@ -1841,6 +1842,7 @@ registry.register(
     handler=lambda args, **kw: browser_snapshot(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
+    emoji="📸",
 )
 registry.register(
     name="browser_click",
@@ -1848,6 +1850,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
     handler=lambda args, **kw: browser_click(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👆",
 )
 registry.register(
     name="browser_type",
@@ -1855,6 +1858,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
     handler=lambda args, **kw: browser_type(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
@@ -1862,6 +1866,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
     handler=lambda args, **kw: browser_scroll(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="📜",
 )
 registry.register(
     name="browser_back",
@@ -1869,6 +1874,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="◀️",
 )
 registry.register(
     name="browser_press",
@@ -1876,6 +1882,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="⌨️",
 )
 registry.register(
     name="browser_close",
@@ -1883,6 +1890,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_close"],
     handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🚪",
 )
 registry.register(
     name="browser_get_images",
@@ -1890,6 +1898,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖼️",
 )
 registry.register(
     name="browser_vision",
@@ -1897,6 +1906,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="👁️",
 )
 registry.register(
     name="browser_console",
@@ -1904,4 +1914,5 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    emoji="🖥️",
 )

@@ -385,4 +385,5 @@ registry.register(
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,
+    emoji="🔍",
 )

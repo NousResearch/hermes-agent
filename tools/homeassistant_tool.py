@@ -451,6 +451,7 @@ HA_CALL_SERVICE_SCHEMA = {
 # Registration
 # ---------------------------------------------------------------------------
 
+from tools.access_control import build_static_access_fn
 from tools.registry import registry
 
 registry.register(
@@ -460,6 +461,8 @@ registry.register(
     handler=_handle_list_entities,
     check_fn=_check_ha_available,
     emoji="🏠",
+    access_fn=build_static_access_fn("homeassistant", "read"),
+    access_static=True,
 )
 
 registry.register(
@@ -469,6 +472,8 @@ registry.register(
     handler=_handle_get_state,
     check_fn=_check_ha_available,
     emoji="🏠",
+    access_fn=build_static_access_fn("homeassistant", "read"),
+    access_static=True,
 )
 
 registry.register(
@@ -478,6 +483,8 @@ registry.register(
     handler=_handle_list_services,
     check_fn=_check_ha_available,
     emoji="🏠",
+    access_fn=build_static_access_fn("homeassistant", "read"),
+    access_static=True,
 )
 
 registry.register(
@@ -487,4 +494,6 @@ registry.register(
     handler=_handle_call_service,
     check_fn=_check_ha_available,
     emoji="🏠",
+    access_fn=build_static_access_fn("homeassistant", "write"),
+    access_static=True,
 )

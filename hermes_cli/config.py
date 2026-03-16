@@ -306,8 +306,29 @@ DEFAULT_CONFIG = {
         "tirith_fail_open": True,
     },
 
+    # Connected-account scope controls. Toolsets answer "which classes of
+    # tools exist"; scoped access answers "what those connected tools may do"
+    # on each platform/account.
+    "access_control": {
+        "enabled": True,
+        "default_scope": "full",
+        "platform_profiles": {
+            "cli": "full",
+            "cron": "read-only",
+            "telegram": "read-only",
+            "discord": "read-only",
+            "slack": "read-only",
+            "whatsapp": "read-only",
+            "signal": "read-only",
+            "email": "read-only",
+            "acp": "full",
+        },
+        "services": {},
+        "accounts": {},
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 8,
+    "_config_version": 9,
 }
 
 # =============================================================================

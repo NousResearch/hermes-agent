@@ -165,6 +165,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    platform: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -223,7 +224,7 @@ def get_tool_definitions(
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode, platform=platform)
 
     # Rebuild execute_code schema to only list sandbox tools that are actually
     # enabled.  Without this, the model sees "web_search is available in
@@ -269,6 +270,7 @@ def handle_function_call(
     enabled_tools: Optional[List[str]] = None,
     honcho_manager: Optional[Any] = None,
     honcho_session_key: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -310,6 +312,7 @@ def handle_function_call(
                 enabled_tools=sandbox_enabled,
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
+                platform=platform,
             )
 
         return registry.dispatch(
@@ -318,6 +321,7 @@ def handle_function_call(
             user_task=user_task,
             honcho_manager=honcho_manager,
             honcho_session_key=honcho_session_key,
+            platform=platform,
         )
 
     except Exception as e:

@@ -27,10 +27,11 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
+        "access_fn", "access_static",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+                 requires_env, is_async, description, emoji, access_fn, access_static):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -40,6 +41,8 @@ class ToolEntry:
         self.is_async = is_async
         self.description = description
         self.emoji = emoji
+        self.access_fn = access_fn
+        self.access_static = access_static
 
 
 class ToolRegistry:
@@ -64,6 +67,8 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        access_fn: Callable = None,
+        access_static: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         self._tools[name] = ToolEntry(
@@ -76,6 +81,8 @@ class ToolRegistry:
             is_async=is_async,
             description=description or schema.get("description", ""),
             emoji=emoji,
+            access_fn=access_fn,
+            access_static=access_static,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -84,7 +91,7 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: Set[str], quiet: bool = False, platform: Optional[str] = None) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -105,6 +112,23 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s check raised; skipping", name)
                     continue
+            if entry.access_fn and entry.access_static:
+                try:
+                    from tools.access_control import evaluate_access
+
+                    decision = evaluate_access(
+                        name,
+                        entry.access_fn({}, tool_name=name),
+                        platform=platform,
+                    )
+                    if not decision.allowed:
+                        if not quiet:
+                            logger.debug("Tool %s hidden by scoped access policy: %s", name, decision.reason)
+                        continue
+                except Exception:
+                    if not quiet:
+                        logger.debug("Tool %s access evaluation raised; skipping", name, exc_info=True)
+                    continue
             result.append({"type": "function", "function": entry.schema})
         return result
 
@@ -123,6 +147,38 @@ class ToolRegistry:
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
+            if entry.access_fn:
+                from tools.access_control import evaluate_access
+
+                decision = evaluate_access(
+                    name,
+                    entry.access_fn(args, tool_name=name, **kwargs),
+                    platform=kwargs.get("platform"),
+                )
+                if not decision.allowed:
+                    logger.warning(
+                        "Scoped access denied tool=%s platform=%s service=%s account=%s operation=%s scope=%s",
+                        name,
+                        decision.platform,
+                        decision.service,
+                        decision.account,
+                        decision.operation,
+                        decision.scope,
+                    )
+                    return json.dumps({
+                        "error": (
+                            f"Tool '{name}' is outside the configured scope for platform "
+                            f"'{decision.platform}' (service='{decision.service}', "
+                            f"account='{decision.account}', scope='{decision.scope}', "
+                            f"required='{decision.operation}')."
+                        ),
+                        "error_type": "scope_violation",
+                        "platform": decision.platform,
+                        "service": decision.service,
+                        "account": decision.account,
+                        "scope": decision.scope,
+                        "required_operation": decision.operation,
+                    })
             if entry.is_async:
                 from model_tools import _run_async
                 return _run_async(entry.handler(args, **kwargs))

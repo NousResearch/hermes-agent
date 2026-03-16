@@ -932,6 +932,7 @@ class TestConcurrentToolExecution:
                 enabled_tools=list(agent.valid_tool_names),
                 honcho_manager=None,
                 honcho_session_key=None,
+                platform=agent.platform,
             )
             assert result == "result"
 

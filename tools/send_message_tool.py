@@ -21,6 +21,17 @@ _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
 _VOICE_EXTS = {".ogg", ".opus"}
 
 
+def _send_message_access(args, **_kwargs):
+    target = str((args or {}).get("target") or "").strip().lower()
+    platform = target.split(":", 1)[0] if ":" in target else target
+    platform = platform or os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower() or "default"
+    return {
+        "service": "messaging",
+        "account": f"messaging.{platform}",
+        "operation": "write",
+    }
+
+
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
@@ -513,4 +524,5 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
     emoji="📨",
+    access_fn=_send_message_access,
 )

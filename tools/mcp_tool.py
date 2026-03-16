@@ -80,6 +80,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from tools.access_control import infer_mcp_operation
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1441,6 +1443,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],
+            access_fn=lambda args, tool_name=tool_name_prefixed, server_name=name, **_kwargs: {
+                "service": "mcp",
+                "account": f"mcp.{server_name}",
+                "operation": infer_mcp_operation(tool_name),
+            },
+            access_static=True,
         )
         registered_names.append(tool_name_prefixed)
 
@@ -1466,6 +1474,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            access_fn=lambda args, tool_name=schema["name"], server_name=name, **_kwargs: {
+                "service": "mcp",
+                "account": f"mcp.{server_name}",
+                "operation": infer_mcp_operation(tool_name),
+            },
+            access_static=True,
         )
         registered_names.append(schema["name"])
 

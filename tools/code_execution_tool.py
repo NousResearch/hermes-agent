@@ -304,7 +304,7 @@ def _rpc_server_loop(
                     sys.stderr = open(os.devnull, "w")
                     try:
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            tool_name, tool_args, task_id=task_id, platform=platform
                         )
                     finally:
                         sys.stdout.close()
@@ -347,6 +347,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -774,7 +775,8 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+        enabled_tools=kw.get("enabled_tools"),
+        platform=kw.get("platform")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
 )

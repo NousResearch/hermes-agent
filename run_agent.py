@@ -598,6 +598,7 @@ class AIAgent:
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
+            platform=self.platform,
         )
         
         # Show tool configuration and store valid tool names for validation
@@ -1605,6 +1606,7 @@ class AIAgent:
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=True,
+            platform=self.platform,
         )
         self.valid_tool_names = {
             tool["function"]["name"] for tool in self.tools
@@ -3792,6 +3794,7 @@ class AIAgent:
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 honcho_manager=self._honcho,
                 honcho_session_key=self._honcho_session_key,
+                platform=self.platform,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -4136,6 +4139,7 @@ class AIAgent:
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         honcho_manager=self._honcho,
                         honcho_session_key=self._honcho_session_key,
+                        platform=self.platform,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -4152,6 +4156,7 @@ class AIAgent:
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         honcho_manager=self._honcho,
                         honcho_session_key=self._honcho_session_key,
+                        platform=self.platform,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"

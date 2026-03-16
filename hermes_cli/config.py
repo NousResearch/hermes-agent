@@ -185,6 +185,12 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
         },
+        "approval": {
+            "provider": "auto",
+            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "base_url": "",
+            "api_key": "",
+        },
         "mcp": {
             "provider": "auto",
             "model": "",
@@ -205,6 +211,7 @@ DEFAULT_CONFIG = {
         "resume_display": "full",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
     },
 
@@ -294,6 +301,14 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+    },
+
+    # Approval mode for dangerous commands:
+    #   manual — always prompt the user (default)
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   off    — skip all approval prompts (equivalent to --yolo)
+    "approvals": {
+        "mode": "manual",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

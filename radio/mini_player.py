@@ -281,7 +281,7 @@ _control_mode_active = False
 
 _expanded = False  # toggled by 'v' key binding in cli.py
 
-_BARS_EXPANDED = 32  # wider visualizer in expanded mode
+_BARS_EXPANDED = 52  # fill the 58-char box (minus 4 for borders + padding)
 _bar_levels_exp = [0.0] * _BARS_EXPANDED
 
 
@@ -352,27 +352,30 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
     fragments.append(("class:radio-border", "\u2502\n"))
 
     # Row 8: Artist
-    artist = now.artist if now.artist and now.artist != "Unknown" else ""
-    if artist:
-        aline = artist[:W - 4]
-        pad = W - 4 - len(aline)
+    def _boxline(text: str, style: str):
+        line = text[:W - 4]
+        pad = W - 4 - len(line)
         fragments.append(("class:radio-border", "  \u2502 "))
-        fragments.append(("class:radio-title", aline))
+        fragments.append((style, line))
         fragments.append(("", " " * max(0, pad + 1)))
         fragments.append(("class:radio-border", "\u2502\n"))
 
-    # Row 9: Title
-    title = now.title or now.station_name or "..."
-    tline = title[:W - 4]
-    pad = W - 4 - len(tline)
-    fragments.append(("class:radio-border", "  \u2502 "))
-    fragments.append(("class:radio-title-dim", tline))
-    fragments.append(("", " " * max(0, pad + 1)))
-    fragments.append(("class:radio-border", "\u2502\n"))
-
-    # Row 10: Tags / station info
-    tags = ""
-    if now.source_mode == "crate":
+    if now.source_mode == "stream":
+        # Stream: station name (bright) + ICY track title (dim)
+        if now.station_name:
+            _boxline(now.station_name, "class:radio-title")
+        icy_title = now.title or ""
+        if icy_title and icy_title != now.station_name:
+            _boxline(icy_title, "class:radio-title-dim")
+    else:
+        # Crate dig / local: artist (bright) + title (dim) + tags
+        artist = now.artist if now.artist and now.artist != "Unknown" else ""
+        if artist:
+            _boxline(artist, "class:radio-title")
+        title = now.title or "..."
+        if title != artist:
+            _boxline(title, "class:radio-title-dim")
+        # Decade/country/mood tags
         parts = []
         if now.decade:
             parts.append(f"{now.decade}s")
@@ -380,17 +383,8 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
             parts.append(now.country)
         if now.mood:
             parts.append(now.mood)
-        tags = " \u00b7 ".join(parts)
-    elif now.source_mode == "stream" and now.station_name:
-        tags = now.station_name
-
-    if tags:
-        tline = tags[:W - 4]
-        pad = W - 4 - len(tline)
-        fragments.append(("class:radio-border", "  \u2502 "))
-        fragments.append(("class:radio-tags", tline))
-        fragments.append(("", " " * max(0, pad + 1)))
-        fragments.append(("class:radio-border", "\u2502\n"))
+        if parts:
+            _boxline(" \u00b7 ".join(parts), "class:radio-tags")
 
     # Row 11: keyboard controls (context-aware)
     is_stream = now.source_mode == "stream"

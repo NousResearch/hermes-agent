@@ -789,6 +789,22 @@ Source: {now.source_mode}"""
                         self._now.duration = await self._primary.get_duration()
                         self._now.volume = await self._primary.get_volume()
                         self._muted = self._now.volume <= 0
+
+                        # Poll ICY metadata for streams (catches title changes)
+                        if self._source_mode == SourceMode.STREAM:
+                            try:
+                                title = await self._primary.get_media_title()
+                                if title and title != self._now.title and title not in ("channel.mp3",):
+                                    self._now.title = title
+                                    # Try to split "Artist - Title"
+                                    if " - " in title:
+                                        parts = title.split(" - ", 1)
+                                        self._now.artist = parts[0].strip()
+                                        self._now.title = parts[1].strip()
+                                    else:
+                                        self._now.artist = ""
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 await asyncio.sleep(0.3)

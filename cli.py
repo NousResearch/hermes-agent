@@ -1414,7 +1414,7 @@ class HermesCLI:
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
-                quiet_mode=True,
+                quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
@@ -1428,7 +1428,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
-                reasoning_callback=self._on_reasoning if self.show_reasoning else None,
+                reasoning_callback=self._on_reasoning if (self.show_reasoning or self.verbose) else None,
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -3285,12 +3285,17 @@ class HermesCLI:
         if self.agent:
             self.agent.verbose_logging = self.verbose
             self.agent.quiet_mode = not self.verbose
+            # Auto-enable reasoning display in verbose mode
+            if self.verbose:
+                self.agent.reasoning_callback = self._on_reasoning
+            elif not self.show_reasoning:
+                self.agent.reasoning_callback = None
 
         labels = {
             "off": "[dim]Tool progress: OFF[/] — silent mode, just the final response.",
             "new": "[yellow]Tool progress: NEW[/] — show each new tool (skip repeats).",
             "all": "[green]Tool progress: ALL[/] — show every tool call.",
-            "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, and debug logs.",
+            "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, think blocks, and debug logs.",
         }
         self.console.print(labels.get(self.tool_progress_mode, ""))
 
@@ -3357,13 +3362,17 @@ class HermesCLI:
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
-        lines = reasoning_text.strip().splitlines()
-        if len(lines) > 5:
-            preview = "\n".join(lines[:5])
-            preview += f"\n  ... ({len(lines) - 5} more lines)"
+        if self.verbose:
+            # Verbose mode: show full reasoning text
+            _cprint(f"  {_DIM}[thinking] {reasoning_text.strip()}{_RST}")
         else:
-            preview = reasoning_text.strip()
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+            lines = reasoning_text.strip().splitlines()
+            if len(lines) > 5:
+                preview = "\n".join(lines[:5])
+                preview += f"\n  ... ({len(lines) - 5} more lines)"
+            else:
+                preview = reasoning_text.strip()
+            _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
 
     def _manual_compress(self):
         """Manually trigger context compression on the current conversation."""

@@ -115,3 +115,35 @@ class TestSlashCommandPrefixMatching:
         mock_help.assert_called_once()
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed
+
+    def test_shortest_match_preferred_over_longer_skill(self):
+        """/qui should dispatch to /quit (5 chars) not report ambiguous with /quint-pipeline (15 chars)."""
+        cli_obj = _make_cli()
+        fake_skill = {"/quint-pipeline": {"name": "Quint Pipeline", "description": "test"}}
+        dispatched = []
+
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill):
+            # /quit is caught by the exact "/quit" branch → process_command returns False
+            result = cli_obj.process_command("/qui")
+
+        # Returns False because /quit was dispatched (exits chat loop)
+        assert result is False
+        # No ambiguous message should have been printed
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_tied_shortest_matches_still_ambiguous(self):
+        """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
+        cli_obj = _make_cli()
+        cli_obj.process_command("/re")
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" in printed or "Did you mean" in printed
+
+    def test_exact_typed_name_preferred_when_also_a_prefix(self):
+        """/reset typed exactly should dispatch /reset, not be confused with /retry."""
+        cli_obj = _make_cli()
+        with patch.object(cli_obj, 'new_session') as mock_reset:
+            cli_obj.process_command("/reset")
+        # /reset maps to new_session (the clear/reset action)
+        mock_reset.assert_called_once()

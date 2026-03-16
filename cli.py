@@ -3076,6 +3076,17 @@ class HermesCLI:
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(_skill_commands)
                 matches = [c for c in all_known if c.startswith(typed_base)]
+                if len(matches) > 1:
+                    # Prefer an exact match (typed the full command name).
+                    exact = [c for c in matches if c == typed_base]
+                    if len(exact) == 1:
+                        matches = exact
+                    else:
+                        # Prefer the unique shortest match: /qui → /quit wins over /quint-pipeline.
+                        min_len = min(len(c) for c in matches)
+                        shortest = [c for c in matches if len(c) == min_len]
+                        if len(shortest) == 1:
+                            matches = shortest
                 if len(matches) == 1:
                     # Expand the prefix to the full command name, preserving arguments.
                     # Guard against redispatching the same token to avoid infinite

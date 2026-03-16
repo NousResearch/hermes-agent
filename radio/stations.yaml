@@ -153,6 +153,32 @@ stations:
     genre: ritual / dark ambient
     location: Moscow
 
+  # Africa
+  - name: Amapiano FM
+    url: https://stream.zeno.fm/xs6zeac1ts8uv
+    region: africa
+    genre: amapiano
+    location: South Africa
+
+  - name: Softlife Afrofusion
+    url: https://eu4.fastcast4u.com/proxy/softlife?mp=/1
+    region: africa
+    genre: afrohouse / amapiano
+    location: Lagos
+
+  - name: Radio Hits 88.2
+    url: https://radiohits882.radioca.st/;
+    region: africa
+    genre: arabic / electronic
+    location: Cairo
+
+  # Australia
+  - name: FBi Radio 94.5
+    url: https://streamer.fbiradio.com/stream
+    region: australia
+    genre: indie / community
+    location: Sydney
+
   # Dub Techno
   - name: Radio Schizoid Dub Techno
     url: http://94.130.113.214:8000/dubtechno

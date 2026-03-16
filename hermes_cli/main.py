@@ -2306,14 +2306,16 @@ def cmd_update(args):
         # installation's gateway — safe with multiple installations.
         try:
             from gateway.status import get_running_pid, remove_pid_file
+            from hermes_cli.gateway import get_service_name
             import signal as _signal
 
+            _gw_service_name = get_service_name()
             existing_pid = get_running_pid()
             has_systemd_service = False
 
             try:
                 check = subprocess.run(
-                    ["systemctl", "--user", "is-active", "hermes-gateway"],
+                    ["systemctl", "--user", "is-active", _gw_service_name],
                     capture_output=True, text=True, timeout=5,
                 )
                 has_systemd_service = check.stdout.strip() == "active"
@@ -2340,7 +2342,7 @@ def cmd_update(args):
                     _time.sleep(1)  # Brief pause for port/socket release
                     print("→ Restarting gateway service...")
                     restart = subprocess.run(
-                        ["systemctl", "--user", "restart", "hermes-gateway"],
+                        ["systemctl", "--user", "restart", _gw_service_name],
                         capture_output=True, text=True, timeout=15,
                     )
                     if restart.returncode == 0:

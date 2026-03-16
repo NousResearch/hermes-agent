@@ -315,7 +315,7 @@ class SessionEntry:
         )
 
 
-def build_session_key(source: SessionSource) -> str:
+def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
@@ -328,9 +328,11 @@ def build_session_key(source: SessionSource) -> str:
 
     Group/channel rules:
       - chat_id identifies the parent group/channel.
-      - user_id/user_id_alt isolates participants within that parent chat when available.
+      - user_id/user_id_alt isolates participants within that parent chat when available when
+        ``group_sessions_per_user`` is enabled.
       - thread_id differentiates threads within that parent chat.
-      - Without participant identifiers, messages fall back to one shared session per chat.
+      - Without participant identifiers, or when isolation is disabled, messages fall back to one
+        shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
@@ -350,7 +352,7 @@ def build_session_key(source: SessionSource) -> str:
         key_parts.append(source.chat_id)
     if source.thread_id:
         key_parts.append(source.thread_id)
-    if participant_id:
+    if group_sessions_per_user and participant_id:
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
@@ -432,7 +434,10 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(source)
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+        )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

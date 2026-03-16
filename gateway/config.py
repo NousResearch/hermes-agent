@@ -174,7 +174,10 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    
+
+    # Session isolation in shared chats
+    group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -239,6 +242,7 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
+            "group_sessions_per_user": self.group_sessions_per_user,
         }
     
     @classmethod
@@ -279,6 +283,8 @@ class GatewayConfig:
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
+        group_sessions_per_user = data.get("group_sessions_per_user")
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -289,6 +295,7 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
         )
 
 
@@ -343,6 +350,14 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
                 config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+
+            # Bridge group session isolation from config.yaml into gateway runtime.
+            # Secure default is per-user isolation in shared chats.
+            if "group_sessions_per_user" in yaml_cfg:
+                config.group_sessions_per_user = _coerce_bool(
+                    yaml_cfg.get("group_sessions_per_user"),
+                    True,
+                )
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)

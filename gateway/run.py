@@ -984,6 +984,16 @@ class GatewayRunner:
         ):
             self._schedule_update_notification_watch()
 
+        # Drain any recovered process watchers (from crash recovery checkpoint)
+        try:
+            from tools.process_registry import process_registry
+            while process_registry.pending_watchers:
+                watcher = process_registry.pending_watchers.pop(0)
+                asyncio.create_task(self._run_process_watcher(watcher))
+                logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
+        except Exception as e:
+            logger.error("Recovered watcher setup error: %s", e)
+
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
 

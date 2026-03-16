@@ -114,12 +114,31 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "container_persistent": config.get("container_persistent", True),
                     "docker_volumes": config.get("docker_volumes", []),
                 }
+
+            ssh_config = None
+            if env_type == "ssh":
+                ssh_config = {
+                    "host": config.get("ssh_host", ""),
+                    "user": config.get("ssh_user", ""),
+                    "port": config.get("ssh_port", 22),
+                    "key": config.get("ssh_key", ""),
+                    "persistent": config.get("ssh_persistent", False),
+                }
+
+            local_config = None
+            if env_type == "local":
+                local_config = {
+                    "persistent": config.get("local_persistent", False),
+                }
+
             terminal_env = _create_environment(
                 env_type=env_type,
                 image=image,
                 cwd=cwd,
                 timeout=config["timeout"],
+                ssh_config=ssh_config,
                 container_config=container_config,
+                local_config=local_config,
                 task_id=task_id,
             )
 

@@ -37,6 +37,24 @@ import weakref
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+from contextlib import nullcontext
+
+
+# Langfuse warnings: avoid spamming in gateway mode (per-message agents)
+_langfuse_warned_trace_init = False
+_langfuse_warned_trace_lock = threading.Lock()
+
+
+def _warn_langfuse_trace_once(message: str, *args, exc: Exception | None = None) -> None:
+    global _langfuse_warned_trace_init
+    with _langfuse_warned_trace_lock:
+        if _langfuse_warned_trace_init:
+            return
+        _langfuse_warned_trace_init = True
+    if exc is not None:
+        logger.warning(message, *args, exc_info=exc)
+    else:
+        logger.warning(message, *args)
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -101,6 +119,13 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write
+from agent.observability import (
+    get_langfuse_client,
+    observe,
+    LANGFUSE_AVAILABLE,
+    set_langfuse_enabled,
+    validate_langfuse_sample_rate,
+)
 
 HONCHO_TOOL_NAMES = {
     "honcho_context",
@@ -288,6 +313,12 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        langfuse_enabled: bool = False,
+        langfuse_sampling: bool = True,
+        parent_trace_id: str = None,
+        parent_observation_id: str = None,
+        langfuse_trace: Any = None,
+        langfuse_span: Any = None,
     ):
         """
         Initialize the AI Agent.
@@ -504,6 +535,57 @@ class AIAgent:
         self._persist_user_message_idx = None
         self._persist_user_message_override = None
 
+        # Langfuse observability state (optional)
+        self._parent_trace_id = (
+            parent_trace_id.strip()
+            if isinstance(parent_trace_id, str) and parent_trace_id.strip()
+            else None
+        )
+        self._parent_observation_id = (
+            parent_observation_id.strip()
+            if isinstance(parent_observation_id, str) and parent_observation_id.strip()
+            else None
+        )
+        self._current_trace_id = None
+        self._current_observation_id = None
+
+        # Optional externally provided Langfuse handles (used by subprocess
+        # runners or advanced callers). When present, tool-call spans should
+        # prefer these as the parent context.
+        self._langfuse_trace_obj = langfuse_trace
+        self._langfuse_span_obj = langfuse_span
+
+        # Enable Langfuse only if requested AND available.
+        self._langfuse_enabled = bool(langfuse_enabled) and LANGFUSE_AVAILABLE
+        if langfuse_enabled and not LANGFUSE_AVAILABLE:
+            logger.warning("Langfuse enabled but not installed; disabling observability.")
+
+        # Sampling: allow explicit opt-out via langfuse_sampling=False.
+        self._langfuse_sampling = False
+        if self._langfuse_enabled:
+            if not langfuse_sampling:
+                self._langfuse_sampling = False
+            else:
+                sample_rate = validate_langfuse_sample_rate()
+                try:
+                    self._langfuse_sampling = random.random() < sample_rate
+                except Exception:
+                    self._langfuse_sampling = sample_rate >= 1.0
+
+            # Root agent: initialize a stable trace ID up front.
+            if self._langfuse_sampling and not self._parent_trace_id:
+                try:
+                    lf_client = get_langfuse_client()
+                    if lf_client is not None:
+                        self._current_trace_id = lf_client.create_trace_id()
+                except Exception as exc:
+                    _warn_langfuse_trace_once(
+                        "Langfuse enabled but trace ID initialization failed; proceeding without observability.",
+                        exc=exc,
+                    )
+
+        set_langfuse_enabled(self._langfuse_enabled and self._langfuse_sampling)
+
         # Initialize LLM client via centralized provider router.
         # The router handles auth resolution, base URL, headers, and
         # Codex/Anthropic wrapping for all known providers.
@@ -652,6 +734,13 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+
+        # Observability session scope: used to validate Langfuse context capture
+        # in async gateway environments where multiple conversations may run in
+        # the same process.
+        self._observability_session_id = self.session_id
+        self._last_injected_trace_id = None
+        self._last_injected_parent_observation_id = None
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -2247,6 +2336,7 @@ class AIAgent:
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
+            "metadata", "trace_id",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -2277,6 +2367,12 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
+
+        # Pass through observability metadata if present
+        if "metadata" in api_kwargs:
+            normalized["metadata"] = api_kwargs.get("metadata")
+        if "trace_id" in api_kwargs:
+            normalized["trace_id"] = api_kwargs.get("trace_id")
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -2499,13 +2595,28 @@ class AIAgent:
         return bool(getattr(http_client, "is_closed", False))
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-        client = OpenAI(**client_kwargs)
-        logger.info(
-            "OpenAI client created (%s, shared=%s) %s",
-            reason,
-            shared,
-            self._client_log_context(),
-        )
+        # Use Langfuse-wrapped OpenAI client if observability is enabled
+        if (
+            getattr(self, "_langfuse_enabled", False)
+            and getattr(self, "_langfuse_sampling", False)
+            and LANGFUSE_AVAILABLE
+        ):
+            from langfuse.openai import OpenAI as LangfuseOpenAI
+            client = LangfuseOpenAI(**client_kwargs)
+            logger.info(
+                "Langfuse OpenAI client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+        else:
+            client = OpenAI(**client_kwargs)
+            logger.info(
+                "OpenAI client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
         return client
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
@@ -3034,6 +3145,159 @@ class AIAgent:
 
     # ── End provider fallback ──────────────────────────────────────────────
 
+    def _ensure_trace_id(self) -> Optional[str]:
+        """Ensure a trace_id exists for Langfuse metadata injection."""
+        if self._current_trace_id:
+            return self._current_trace_id
+        if not self._langfuse_enabled or not self._langfuse_sampling or not LANGFUSE_AVAILABLE:
+            return None
+        try:
+            lf_client = get_langfuse_client()
+            if lf_client is None:
+                return None
+            trace_id = lf_client.create_trace_id()
+            if trace_id:
+                self._current_trace_id = trace_id
+                return trace_id
+        except Exception as exc:
+            _warn_langfuse_trace_once(
+                "Langfuse enabled but create_trace_id failed; proceeding without observability.",
+                exc=exc,
+            )
+        return None
+
+    def _capture_trace_context(self, response: Any = None) -> None:
+        """Capture Langfuse trace/observation IDs from decorator context."""
+        if not self._langfuse_enabled or not self._langfuse_sampling or not LANGFUSE_AVAILABLE:
+            return
+        # Validate session scope (defense-in-depth for gateway async). If the
+        # agent's session_id was mutated mid-run, refresh the expected scope.
+        try:
+            if getattr(self, "_observability_session_id", None) != self.session_id:
+                self._observability_session_id = self.session_id
+        except Exception:
+            pass
+        try:
+            lf_client = get_langfuse_client()
+        except Exception:
+            return
+        if lf_client is None:
+            return
+        try:
+            trace_id = lf_client.get_current_trace_id()
+            observation_id = lf_client.get_current_observation_id()
+        except Exception:
+            return
+
+        # Validation: only accept captured IDs if they match the trace context we
+        # injected for this agent/session. This prevents cross-session bleed if
+        # OpenTelemetry context propagation is misconfigured.
+        expected = getattr(self, "_last_injected_trace_id", None)
+        if expected and trace_id and trace_id != expected:
+            logger.debug(
+                "Langfuse context mismatch; ignoring capture (expected trace_id=%s got=%s session_id=%s)",
+                expected,
+                trace_id,
+                getattr(self, "session_id", None),
+            )
+            return
+        if trace_id:
+            self._current_trace_id = trace_id
+        if observation_id:
+            self._current_observation_id = observation_id
+
+    def _inject_observability_metadata(self, api_kwargs: dict) -> dict:
+        """Inject Langfuse trace_id and metadata into API kwargs."""
+        if not self._langfuse_enabled or not self._langfuse_sampling:
+            return api_kwargs
+        if not isinstance(api_kwargs, dict):
+            return api_kwargs
+
+        # Use parent trace context (gateway session root / delegation span) when
+        # available so all observations join the same trace tree.
+        trace_id = self._parent_trace_id or self._ensure_trace_id()
+        if trace_id:
+            api_kwargs["trace_id"] = trace_id
+
+        # Parent observation chaining: links this generation under the parent's
+        # latest observation when the integration supports it (OpenAI wrapper).
+        if self._parent_observation_id:
+            api_kwargs["parent_observation_id"] = self._parent_observation_id
+
+        # Track injected context for validation in _capture_trace_context.
+        self._last_injected_trace_id = trace_id
+        self._last_injected_parent_observation_id = self._parent_observation_id
+
+        metadata = api_kwargs.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        is_subagent = bool(self._parent_trace_id)
+        metadata["session_id"] = self.session_id
+        metadata["user_id"] = f"hermes-agent/{self.platform or 'cli'}"
+        # Langfuse OpenAI integration: special metadata keys set trace attributes.
+        metadata["langfuse_session_id"] = self.session_id
+        metadata["langfuse_user_id"] = metadata["user_id"]
+        metadata["is_subagent"] = is_subagent
+
+        if self._parent_trace_id:
+            metadata["parent_trace_id"] = self._parent_trace_id
+        if self._parent_observation_id:
+            metadata["parent_observation_id"] = self._parent_observation_id
+
+        tags = metadata.get("tags")
+        if not isinstance(tags, list):
+            tags = [str(tags)] if tags else []
+        if is_subagent and "subagent" not in tags:
+            tags.append("subagent")
+        metadata["tags"] = tags
+        metadata["langfuse_tags"] = tags
+
+        api_kwargs["metadata"] = metadata
+        return api_kwargs
+
+    def _tool_span_context(self, tool_name: str, tool_args: dict):
+        """Best-effort Langfuse span context for agent-loop tools.
+
+        Registry-dispatched tools are traced in model_tools.handle_function_call.
+        This is for agent-loop tools (todo/memory/session_search/clarify).
+        """
+        try:
+            if not self._langfuse_enabled or not self._langfuse_sampling or not LANGFUSE_AVAILABLE:
+                return nullcontext(None)
+            lf_client = get_langfuse_client()
+            if lf_client is None:
+                return nullcontext(None)
+        except Exception:
+            return nullcontext(None)
+
+        trace_id = self._current_trace_id or self._parent_trace_id
+        parent_obs_id = self._current_observation_id
+        if not trace_id or not parent_obs_id:
+            return nullcontext(None)
+
+        name = f"tool:{tool_name}"
+        input_obj = {"args": tool_args}
+        try:
+            if hasattr(lf_client, "start_as_current_observation"):
+                return lf_client.start_as_current_observation(
+                    as_type="span",
+                    name=name,
+                    input=input_obj,
+                    trace_context={"trace_id": trace_id, "parent_span_id": parent_obs_id},
+                )
+            if hasattr(lf_client, "start_as_current_span"):
+                return lf_client.start_as_current_span(
+                    name=name,
+                    trace_id=trace_id,
+                    parent_observation_id=parent_obs_id,
+                    metadata={"input": input_obj},
+                )
+        except Exception:
+            return nullcontext(None)
+
+        return nullcontext(None)
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -3084,7 +3348,7 @@ class AIAgent:
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
 
-            return kwargs
+            return self._inject_observability_metadata(kwargs)
 
         sanitized_messages = api_messages
         needs_sanitization = False
@@ -3181,7 +3445,7 @@ class AIAgent:
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        return api_kwargs
+        return self._inject_observability_metadata(api_kwargs)
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3571,43 +3835,47 @@ class AIAgent:
         """
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
-                todos=function_args.get("todos"),
-                merge=function_args.get("merge", False),
-                store=self._todo_store,
-            )
+            with self._tool_span_context("todo", function_args):
+                return _todo_tool(
+                    todos=function_args.get("todos"),
+                    merge=function_args.get("merge", False),
+                    store=self._todo_store,
+                )
         elif function_name == "session_search":
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
-                query=function_args.get("query", ""),
-                role_filter=function_args.get("role_filter"),
-                limit=function_args.get("limit", 3),
-                db=self._session_db,
-                current_session_id=self.session_id,
-            )
+            with self._tool_span_context("session_search", function_args):
+                return _session_search(
+                    query=function_args.get("query", ""),
+                    role_filter=function_args.get("role_filter"),
+                    limit=function_args.get("limit", 3),
+                    db=self._session_db,
+                    current_session_id=self.session_id,
+                )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=self._memory_store,
-            )
+            with self._tool_span_context("memory", function_args):
+                result = _memory_tool(
+                    action=function_args.get("action"),
+                    target=target,
+                    content=function_args.get("content"),
+                    old_text=function_args.get("old_text"),
+                    store=self._memory_store,
+                )
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
             return result
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
-                question=function_args.get("question", ""),
-                choices=function_args.get("choices"),
-                callback=self.clarify_callback,
-            )
+            with self._tool_span_context("clarify", function_args):
+                return _clarify_tool(
+                    question=function_args.get("question", ""),
+                    choices=function_args.get("choices"),
+                    callback=self.clarify_callback,
+                )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
             return _delegate_task(
@@ -3622,6 +3890,7 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                parent_agent=self,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -3858,11 +4127,12 @@ class AIAgent:
 
             if function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
-                function_result = _todo_tool(
-                    todos=function_args.get("todos"),
-                    merge=function_args.get("merge", False),
-                    store=self._todo_store,
-                )
+                with self._tool_span_context("todo", function_args):
+                    function_result = _todo_tool(
+                        todos=function_args.get("todos"),
+                        merge=function_args.get("merge", False),
+                        store=self._todo_store,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
@@ -3871,26 +4141,28 @@ class AIAgent:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
                 else:
                     from tools.session_search_tool import session_search as _session_search
-                    function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
-                        db=self._session_db,
-                        current_session_id=self.session_id,
-                    )
+                    with self._tool_span_context("session_search", function_args):
+                        function_result = _session_search(
+                            query=function_args.get("query", ""),
+                            role_filter=function_args.get("role_filter"),
+                            limit=function_args.get("limit", 3),
+                            db=self._session_db,
+                            current_session_id=self.session_id,
+                        )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
+                with self._tool_span_context("memory", function_args):
+                    function_result = _memory_tool(
+                        action=function_args.get("action"),
+                        target=target,
+                        content=function_args.get("content"),
+                        old_text=function_args.get("old_text"),
+                        store=self._memory_store,
+                    )
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
@@ -3899,11 +4171,12 @@ class AIAgent:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
-                function_result = _clarify_tool(
-                    question=function_args.get("question", ""),
-                    choices=function_args.get("choices"),
-                    callback=self.clarify_callback,
-                )
+                with self._tool_span_context("clarify", function_args):
+                    function_result = _clarify_tool(
+                        question=function_args.get("question", ""),
+                        choices=function_args.get("choices"),
+                        callback=self.clarify_callback,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
@@ -3969,6 +4242,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        parent_agent=self,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -3983,6 +4257,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        parent_agent=self,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -4665,6 +4940,9 @@ class AIAgent:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+
+                    # Capture Langfuse trace context (if enabled) after the call
+                    self._capture_trace_context(response)
                     
                     # Validate response shape before proceeding
                     response_invalid = False

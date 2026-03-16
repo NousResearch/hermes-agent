@@ -176,6 +176,10 @@ def load_cli_config() -> Dict[str, Any]:
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
         },
+        "observability": {
+            "langfuse_enabled": False,
+            "sample_rate": 1.0,
+        },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
@@ -247,6 +251,7 @@ def load_cli_config() -> Dict[str, Any]:
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
     _file_has_terminal_config = False
+    _file_has_observability_config = False
 
     # Load from file if exists
     if config_path.exists():
@@ -255,6 +260,7 @@ def load_cli_config() -> Dict[str, Any]:
                 file_config = yaml.safe_load(f) or {}
             
             _file_has_terminal_config = "terminal" in file_config
+            _file_has_observability_config = "observability" in file_config
 
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
@@ -365,6 +371,16 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in browser_env_mappings.items():
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
+
+    # Apply observability config to environment variables (only if configured in file)
+    observability_config = defaults.get("observability", {})
+    if _file_has_observability_config and isinstance(observability_config, dict):
+        if "langfuse_enabled" in observability_config:
+            os.environ["HERMES_LANGFUSE_ENABLED"] = str(
+                observability_config["langfuse_enabled"]
+            ).lower()
+        if "sample_rate" in observability_config:
+            os.environ["LANGFUSE_SAMPLE_RATE"] = str(observability_config["sample_rate"])
     
     # Apply compression config to environment variables
     compression_config = defaults.get("compression", {})
@@ -1020,6 +1036,7 @@ class HermesCLI:
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        self.langfuse_enabled = CLI_CONFIG.get("observability", {}).get("langfuse_enabled", False)
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -1445,6 +1462,7 @@ class HermesCLI:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
+                langfuse_enabled=self.langfuse_enabled,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -3183,6 +3201,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    langfuse_enabled=self.langfuse_enabled,
                 )
 
                 result = bg_agent.run_conversation(

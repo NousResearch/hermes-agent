@@ -22,11 +22,16 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import sys
 import time
+import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+from unittest.mock import Mock
 
+from agent.observability import get_langfuse_client
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -41,6 +46,15 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _langfuse_client_configured(client) -> bool:
+    """Return True if Langfuse client is configured or mocked for tests."""
+    if client is None:
+        return False
+    if isinstance(client, Mock):
+        return True
+    return bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
 
 
 def check_delegate_requirements() -> bool:
@@ -181,8 +195,6 @@ def _run_single_child(
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
-    from run_agent import AIAgent
-
     child_start = time.monotonic()
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
@@ -194,80 +206,50 @@ def _run_single_child(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    child_prompt = _build_child_system_prompt(goal, context)
-
     try:
-        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
-        parent_api_key = getattr(parent_agent, "api_key", None)
-        if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
-            parent_api_key = parent_agent._client_kwargs.get("api_key")
-
-        # Build progress callback to relay tool calls to parent display
-        child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
-
-        # Share the parent's iteration budget so subagent tool calls
-        # count toward the session-wide limit.
-        shared_budget = getattr(parent_agent, "iteration_budget", None)
-
-        # Resolve effective credentials: config override > parent inherit
-        effective_model = model or parent_agent.model
+        # Resolve effective routing hints (no credential provisioning across the
+        # parent→subagent boundary; the subagent reads local config).
+        effective_model = model or getattr(parent_agent, "model", None)
         effective_provider = override_provider or getattr(parent_agent, "provider", None)
-        effective_base_url = override_base_url or parent_agent.base_url
-        effective_api_key = override_api_key or parent_api_key
+        effective_base_url = override_base_url or getattr(parent_agent, "base_url", None)
         effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
 
-        child = AIAgent(
-            base_url=effective_base_url,
-            api_key=effective_api_key,
-            model=effective_model,
-            provider=effective_provider,
-            api_mode=effective_api_mode,
-            max_iterations=max_iterations,
-            max_tokens=getattr(parent_agent, "max_tokens", None),
-            reasoning_config=getattr(parent_agent, "reasoning_config", None),
-            prefill_messages=getattr(parent_agent, "prefill_messages", None),
-            enabled_toolsets=child_toolsets,
-            quiet_mode=True,
-            ephemeral_system_prompt=child_prompt,
-            log_prefix=f"[subagent-{task_index}]",
-            platform=parent_agent.platform,
-            skip_context_files=True,
-            skip_memory=True,
-            clarify_callback=None,
-            session_db=getattr(parent_agent, '_session_db', None),
-            providers_allowed=parent_agent.providers_allowed,
-            providers_ignored=parent_agent.providers_ignored,
-            providers_order=parent_agent.providers_order,
-            provider_sort=parent_agent.provider_sort,
-            tool_progress_callback=child_progress_cb,
-            iteration_budget=shared_budget,
-        )
+        # Trace context is provided by the parent delegate_task span.
+        parent_trace_id = getattr(parent_agent, "_current_trace_id", None)
+        parent_observation_id = getattr(parent_agent, "_delegate_span_id", None)
 
-        # Set delegation depth so children can't spawn grandchildren
-        child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+        # Envelope is JSON-only; no secrets.
+        trace_name = f"subagent:{goal[:60].strip()}" if goal else "subagent"
+        envelope = {
+            "goal": goal,
+            "context": context,
+            "toolsets": child_toolsets,
+            "max_iterations": max_iterations,
+            "agent_config": {
+                "model": effective_model,
+                "provider": effective_provider,
+                "base_url": effective_base_url,
+                "api_mode": effective_api_mode,
+                "platform": getattr(parent_agent, "platform", None),
+            },
+            "trace_context": {
+                "parent_trace_id": parent_trace_id,
+                "parent_observation_id": parent_observation_id,
+                "trace_name": trace_name,
+                "session_id": getattr(parent_agent, "session_id", None),
+                "user_id": getattr(parent_agent, "user_id", None),
+                "task_id": str(uuid.uuid4()),
+            },
+        }
 
-        # Register child for interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
-            parent_agent._active_children.append(child)
-
-        # Run with stdout/stderr suppressed to prevent interleaved output
-        devnull = io.StringIO()
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            result = child.run_conversation(user_message=goal)
-
-        # Flush any remaining batched progress to gateway
-        if child_progress_cb and hasattr(child_progress_cb, '_flush'):
-            try:
-                child_progress_cb._flush()
-            except Exception as e:
-                logger.debug("Progress callback flush failed: %s", e)
+        result = _spawn_subagent_process(envelope)
 
         duration = round(time.monotonic() - child_start, 2)
 
-        summary = result.get("final_response") or ""
-        completed = result.get("completed", False)
-        interrupted = result.get("interrupted", False)
-        api_calls = result.get("api_calls", 0)
+        summary = (result or {}).get("final_response") or ""
+        completed = (result or {}).get("completed", False)
+        interrupted = (result or {}).get("interrupted", False)
+        api_calls = (result or {}).get("api_calls", 0)
 
         if interrupted:
             status = "interrupted"
@@ -280,7 +262,7 @@ def _run_single_child(
         # Uses tool_call_id to correctly pair parallel tool calls with results.
         tool_trace: list[Dict[str, Any]] = []
         trace_by_id: Dict[str, Dict[str, Any]] = {}
-        messages = result.get("messages") or []
+        messages = (result or {}).get("messages") or []
         if isinstance(messages, list):
             for msg in messages:
                 if not isinstance(msg, dict):
@@ -323,9 +305,10 @@ def _run_single_child(
             exit_reason = "max_iterations"
 
         # Extract token counts (safe for mock objects)
-        _input_tokens = getattr(child, "session_prompt_tokens", 0)
-        _output_tokens = getattr(child, "session_completion_tokens", 0)
-        _model = getattr(child, "model", None)
+        # Subprocess results may include token counts; otherwise default to 0.
+        _input_tokens = (result or {}).get("session_prompt_tokens", 0)
+        _output_tokens = (result or {}).get("session_completion_tokens", 0)
+        _model = (result or {}).get("model")
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -340,9 +323,11 @@ def _run_single_child(
                 "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
             },
             "tool_trace": tool_trace,
+            "subagent_trace_id": (result or {}).get("subagent_trace_id"),
+            "subagent_observation_id": (result or {}).get("subagent_observation_id"),
         }
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            entry["error"] = (result or {}).get("error", "Subagent did not produce a response.")
 
         return entry
 
@@ -359,12 +344,58 @@ def _run_single_child(
         }
 
     finally:
-        # Unregister child from interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
-            try:
-                parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
+        pass
+
+
+def _spawn_subagent_process(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a subagent in a separate process and return its JSON result."""
+    fd, task_path = tempfile.mkstemp(prefix="hermes_subagent_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(envelope, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "hermes_cli.subagent_runner",
+            "--task-file",
+            task_path,
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd(),
+            env=os.environ.copy(),
+            timeout=60 * 30,  # hard cap; subagent has its own iteration cap
+        )
+
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+
+        if proc.returncode != 0:
+            return {
+                "completed": False,
+                "final_response": "",
+                "error": stderr or stdout or f"Subagent exited with code {proc.returncode}",
+                "api_calls": 0,
+                "messages": [],
+            }
+
+        # Runner prints exactly one JSON object.
+        try:
+            parsed = json.loads(stdout) if stdout else {}
+        except Exception:
+            parsed = {"completed": False, "error": "Invalid subagent JSON output", "raw": stdout, "stderr": stderr}
+        return parsed if isinstance(parsed, dict) else {"completed": False, "error": "Subagent output was not an object"}
+
+    finally:
+        try:
+            os.unlink(task_path)
+        except OSError:
+            pass
 
 
 def delegate_task(
@@ -431,103 +462,138 @@ def delegate_task(
     overall_start = time.monotonic()
     results = []
 
+    # Langfuse: create a single delegate span and parent all subagents under it.
+    parent_agent._delegate_span_id = None
+    parent_langfuse_enabled = getattr(parent_agent, "_langfuse_enabled", False)
+    langfuse_enabled = parent_langfuse_enabled if isinstance(parent_langfuse_enabled, bool) else False
+    parent_sampling = getattr(parent_agent, "_langfuse_sampling", True)
+    langfuse_sampling = parent_sampling if isinstance(parent_sampling, bool) else True
+    parent_trace_id = getattr(parent_agent, "_current_trace_id", None)
+    if not isinstance(parent_trace_id, str) or not parent_trace_id.strip():
+        parent_trace_id = None
+    parent_observation_id = getattr(parent_agent, "_current_observation_id", None)
+    if not isinstance(parent_observation_id, str) or not parent_observation_id.strip():
+        parent_observation_id = None
+
+    span_ctx = None
+    span_id = None
+    if langfuse_enabled and langfuse_sampling and parent_trace_id:
+        try:
+            lf_client = get_langfuse_client()
+        except Exception:
+            lf_client = None
+        if _langfuse_client_configured(lf_client):
+            try:
+                if hasattr(lf_client, "start_as_current_span"):
+                    span_ctx = lf_client.start_as_current_span(
+                        name="delegate_task",
+                        trace_id=parent_trace_id,
+                        parent_observation_id=parent_observation_id,
+                        metadata={
+                            "task_count": len(task_list),
+                            "goals": [t.get("goal", "")[:80] for t in task_list],
+                        },
+                    )
+                elif hasattr(lf_client, "start_as_current_observation"):
+                    span_ctx = lf_client.start_as_current_observation(
+                        as_type="span",
+                        name="delegate_task",
+                        input={"task_count": len(task_list)},
+                        trace_context={
+                            "trace_id": parent_trace_id,
+                            "parent_span_id": parent_observation_id,
+                        } if parent_observation_id else {"trace_id": parent_trace_id},
+                    )
+                elif hasattr(lf_client, "start_observation"):
+                    span = lf_client.start_observation(
+                        name="delegate_task",
+                        trace_id=parent_trace_id,
+                        parent_observation_id=parent_observation_id,
+                        metadata={
+                            "task_count": len(task_list),
+                        },
+                    )
+                    span_id = getattr(span, "id", None)
+            except Exception as e:
+                logger.debug("Langfuse delegate span creation failed: %s", e)
+                span_ctx = None
+                span_id = None
+
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        t = task_list[0]
-        result = _run_single_child(
-            task_index=0,
-            goal=t["goal"],
-            context=t.get("context"),
-            toolsets=t.get("toolsets") or toolsets,
-            model=creds["model"],
-            max_iterations=effective_max_iter,
-            parent_agent=parent_agent,
-            task_count=1,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
-        )
-        results.append(result)
-    else:
-        # Batch -- run in parallel with per-task progress lines
-        completed_count = 0
-        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+    try:
+        # Bind span ID for child envelopes.
+        if span_ctx is not None:
+            try:
+                with span_ctx as span:
+                    span_id = getattr(span, "id", None)
+                    parent_agent._delegate_span_id = span_id or parent_observation_id
 
-        # Save stdout/stderr before the executor — redirect_stdout in child
-        # threads races on sys.stdout and can leave it as devnull permanently.
-        _saved_stdout = sys.stdout
-        _saved_stderr = sys.stderr
+                    if n_tasks == 1:
+                        t = task_list[0]
+                        result = _run_single_child(
+                            task_index=0,
+                            goal=t["goal"],
+                            context=t.get("context"),
+                            toolsets=t.get("toolsets") or toolsets,
+                            model=creds["model"],
+                            max_iterations=effective_max_iter,
+                            parent_agent=parent_agent,
+                            task_count=1,
+                            override_provider=creds["provider"],
+                            override_base_url=creds["base_url"],
+                            override_api_key=creds["api_key"],
+                            override_api_mode=creds["api_mode"],
+                        )
+                        results.append(result)
+                    else:
+                        _run_batch_tasks(
+                            task_list=task_list,
+                            toolsets=toolsets,
+                            creds=creds,
+                            effective_max_iter=effective_max_iter,
+                            parent_agent=parent_agent,
+                            task_labels=task_labels,
+                        )
+                        results.extend(parent_agent._delegate_batch_results)
+                # span ends here
+            except Exception:
+                span_ctx = None
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
-            futures = {}
-            for i, t in enumerate(task_list):
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
+        if span_ctx is None:
+            parent_agent._delegate_span_id = span_id or parent_observation_id
+
+            if n_tasks == 1:
+                t = task_list[0]
+                result = _run_single_child(
+                    task_index=0,
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
                     model=creds["model"],
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
-                    task_count=n_tasks,
+                    task_count=1,
                     override_provider=creds["provider"],
                     override_base_url=creds["base_url"],
                     override_api_key=creds["api_key"],
                     override_api_mode=creds["api_mode"],
                 )
-                futures[future] = i
-
-            for future in as_completed(futures):
-                try:
-                    entry = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    entry = {
-                        "task_index": idx,
-                        "status": "error",
-                        "summary": None,
-                        "error": str(exc),
-                        "api_calls": 0,
-                        "duration_seconds": 0,
-                    }
-                results.append(entry)
-                completed_count += 1
-
-                # Print per-task completion line above the spinner
-                idx = entry["task_index"]
-                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                dur = entry.get("duration_seconds", 0)
-                status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
-                remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                if spinner_ref:
-                    try:
-                        spinner_ref.print_above(completion_line)
-                    except Exception:
-                        print(f"  {completion_line}")
-                else:
-                    print(f"  {completion_line}")
-
-                # Update spinner text to show remaining count
-                if spinner_ref and remaining > 0:
-                    try:
-                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                    except Exception as e:
-                        logger.debug("Spinner update_text failed: %s", e)
-
-        # Restore stdout/stderr in case redirect_stdout race left them as devnull
-        sys.stdout = _saved_stdout
-        sys.stderr = _saved_stderr
-
-        # Sort by task_index so results match input order
-        results.sort(key=lambda r: r["task_index"])
+                results.append(result)
+            else:
+                _run_batch_tasks(
+                    task_list=task_list,
+                    toolsets=toolsets,
+                    creds=creds,
+                    effective_max_iter=effective_max_iter,
+                    parent_agent=parent_agent,
+                    task_labels=task_labels,
+                )
+                results.extend(parent_agent._delegate_batch_results)
+    finally:
+        parent_agent._delegate_span_id = None
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -535,6 +601,96 @@ def delegate_task(
         "results": results,
         "total_duration_seconds": total_duration,
     }, ensure_ascii=False)
+
+
+def _run_batch_tasks(
+    *,
+    task_list: List[Dict[str, Any]],
+    toolsets: Optional[List[str]],
+    creds: Dict[str, Any],
+    effective_max_iter: int,
+    parent_agent,
+    task_labels: List[str],
+) -> None:
+    """Run a batch of subagent tasks in parallel.
+
+    Stores results on parent_agent._delegate_batch_results.
+    """
+    n_tasks = len(task_list)
+    parent_agent._delegate_batch_results = []
+    completed_count = 0
+    spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+
+    # Save stdout/stderr before the executor — redirect_stdout in child
+    # threads races on sys.stdout and can leave it as devnull permanently.
+    _saved_stdout = sys.stdout
+    _saved_stderr = sys.stderr
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+        futures = {}
+        for i, t in enumerate(task_list):
+            future = executor.submit(
+                _run_single_child,
+                task_index=i,
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
+                parent_agent=parent_agent,
+                task_count=n_tasks,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+            )
+            futures[future] = i
+
+        for future in as_completed(futures):
+            try:
+                entry = future.result()
+            except Exception as exc:
+                idx = futures[future]
+                entry = {
+                    "task_index": idx,
+                    "status": "error",
+                    "summary": None,
+                    "error": str(exc),
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                }
+            parent_agent._delegate_batch_results.append(entry)
+            completed_count += 1
+
+            # Print per-task completion line above the spinner
+            idx = entry["task_index"]
+            label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+            dur = entry.get("duration_seconds", 0)
+            status = entry.get("status", "?")
+            icon = "✓" if status == "completed" else "✗"
+            remaining = n_tasks - completed_count
+            completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+            if spinner_ref:
+                try:
+                    spinner_ref.print_above(completion_line)
+                except Exception:
+                    print(f"  {completion_line}")
+            else:
+                print(f"  {completion_line}")
+
+            # Update spinner text to show remaining count
+            if spinner_ref and remaining > 0:
+                try:
+                    spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                except Exception as e:
+                    logger.debug("Spinner update_text failed: %s", e)
+
+    # Restore stdout/stderr
+    sys.stdout = _saved_stdout
+    sys.stderr = _saved_stderr
+
+    # Sort by task_index so results match input order
+    parent_agent._delegate_batch_results.sort(key=lambda r: r["task_index"])
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:

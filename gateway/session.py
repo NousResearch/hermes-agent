@@ -267,6 +267,10 @@ class SessionEntry:
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
+
+    # Observability trace context (stable per gateway session)
+    langfuse_parent_trace_id: Optional[str] = None
+    langfuse_parent_observation_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -281,6 +285,8 @@ class SessionEntry:
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "langfuse_parent_trace_id": self.langfuse_parent_trace_id,
+            "langfuse_parent_observation_id": self.langfuse_parent_observation_id,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -312,6 +318,8 @@ class SessionEntry:
             output_tokens=data.get("output_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            langfuse_parent_trace_id=data.get("langfuse_parent_trace_id"),
+            langfuse_parent_observation_id=data.get("langfuse_parent_observation_id"),
         )
 
 
@@ -587,6 +595,72 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
         
         return entry
+
+    def ensure_langfuse_parent_trace_id(self, entry: SessionEntry) -> Optional[str]:
+        """Ensure a stable Langfuse parent trace ID exists for this session.
+
+        Gateway mode creates a fresh AIAgent per incoming message. To preserve
+        a parent-child trace hierarchy across the session, we persist a stable
+        parent trace ID on the SessionEntry and pass it into each AIAgent.
+        """
+        existing = getattr(entry, "langfuse_parent_trace_id", None)
+        if isinstance(existing, str) and existing.strip():
+            return existing.strip()
+
+        try:
+            from agent.observability import LANGFUSE_AVAILABLE, get_langfuse_client
+        except Exception:
+            return None
+
+        if not LANGFUSE_AVAILABLE:
+            return None
+
+        try:
+            lf_client = get_langfuse_client()
+            if lf_client is None:
+                logger.warning(
+                    "Langfuse enabled but client unavailable; no parent trace for session %s",
+                    entry.session_id,
+                )
+                return None
+            trace_id = lf_client.create_trace_id()
+        except Exception as exc:
+            logger.warning(
+                "Failed to create Langfuse parent trace ID for session %s: %s",
+                entry.session_id,
+                exc,
+            )
+            return None
+
+        if not (isinstance(trace_id, str) and trace_id.strip()):
+            logger.warning(
+                "Langfuse create_trace_id returned empty; no parent trace for session %s",
+                entry.session_id,
+            )
+            return None
+
+        entry.langfuse_parent_trace_id = trace_id.strip()
+        try:
+            self._save()
+        except Exception:
+            # Non-fatal: we still return the trace ID for this process lifetime.
+            logger.debug("Could not persist parent trace ID for session %s", entry.session_id)
+        return entry.langfuse_parent_trace_id
+
+
+    def update_langfuse_parent_observation_id(self, entry: SessionEntry, observation_id: Optional[str]) -> None:
+        """Persist the most recent observation ID for session-level chaining."""
+        obs = observation_id.strip() if isinstance(observation_id, str) and observation_id.strip() else None
+        if obs == getattr(entry, "langfuse_parent_observation_id", None):
+            return
+        entry.langfuse_parent_observation_id = obs
+        try:
+            self._save()
+        except Exception:
+            logger.debug(
+                "Could not persist parent observation ID for session %s",
+                entry.session_id,
+            )
     
     def update_session(
         self, 

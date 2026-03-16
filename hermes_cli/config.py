@@ -125,6 +125,12 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
 
+    # Observability (Langfuse) — tracing + metrics
+    "observability": {
+        "langfuse_enabled": False,
+        "sample_rate": 1.0,
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
@@ -314,6 +320,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    7: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -501,6 +508,46 @@ OPTIONAL_ENV_VARS = {
         "url": "https://github.com/settings/tokens",
         "password": True,
         "category": "tool",
+    },
+
+    # ── Observability (Langfuse) ──
+    "LANGFUSE_PUBLIC_KEY": {
+        "description": "Langfuse public key for observability tracing",
+        "prompt": "Langfuse public key",
+        "url": "https://cloud.langfuse.com",
+        "password": True,
+        "category": "observability",
+    },
+    "LANGFUSE_SECRET_KEY": {
+        "description": "Langfuse secret key for observability tracing",
+        "prompt": "Langfuse secret key",
+        "url": "https://cloud.langfuse.com",
+        "password": True,
+        "category": "observability",
+    },
+    "LANGFUSE_BASE_URL": {
+        "description": "Langfuse base URL for self-hosted instances (optional)",
+        "prompt": "Langfuse base URL (leave empty for cloud)",
+        "url": None,
+        "password": False,
+        "category": "observability",
+        "advanced": True,
+    },
+    "HERMES_LANGFUSE_ENABLED": {
+        "description": "Enable Langfuse tracing (true/false). Overridden by config.yaml observability.langfuse_enabled when set.",
+        "prompt": "Enable Langfuse (true/false)",
+        "url": None,
+        "password": False,
+        "category": "observability",
+        "advanced": True,
+    },
+    "HERMES_LANGFUSE_SAMPLE_RATE": {
+        "description": "Langfuse sampling rate (0.0-1.0). Overridden by config.yaml observability.sample_rate when set.",
+        "prompt": "Langfuse sample rate (0-1)",
+        "url": None,
+        "password": False,
+        "category": "observability",
+        "advanced": True,
     },
 
     # ── Honcho ──
@@ -1141,6 +1188,63 @@ def get_env_value(key: str) -> Optional[str]:
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
+
+
+# =============================================================================
+# Observability helpers
+# =============================================================================
+
+def get_langfuse_config() -> Dict[str, Any]:
+    """Resolve Langfuse configuration without mutating process environment.
+
+    Sources:
+    - ~/.hermes/config.yaml: observability.langfuse_enabled + observability.sample_rate
+    - ~/.hermes/.env: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL (or LANGFUSE_HOST)
+    - os.environ: same keys (if already present)
+
+    Returns a dict suitable for initializing a Langfuse client.
+    """
+    cfg = {}
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+
+    obs = cfg.get("observability", {}) if isinstance(cfg, dict) else {}
+    enabled = bool(obs.get("langfuse_enabled", False))
+    try:
+        sample_rate = float(obs.get("sample_rate", 1.0))
+    except Exception:
+        sample_rate = 1.0
+    if not (0.0 <= sample_rate <= 1.0):
+        sample_rate = 1.0
+
+    # Prefer already-present environment variables, else fall back to ~/.hermes/.env.
+    env_file = {}
+    try:
+        env_file = load_env()
+    except Exception:
+        env_file = {}
+
+    public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or env_file.get("LANGFUSE_PUBLIC_KEY") or "").strip()
+    secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or env_file.get("LANGFUSE_SECRET_KEY") or "").strip()
+
+    # Langfuse docs use LANGFUSE_BASE_URL; some setups use LANGFUSE_HOST.
+    host = (
+        os.getenv("LANGFUSE_BASE_URL")
+        or os.getenv("LANGFUSE_HOST")
+        or env_file.get("LANGFUSE_BASE_URL")
+        or env_file.get("LANGFUSE_HOST")
+        or ""
+    ).strip()
+
+    return {
+        "enabled": enabled,
+        "sample_rate": sample_rate,
+        "public_key": public_key,
+        "secret_key": secret_key,
+        "host": host,
+    }
 
 
 # =============================================================================

@@ -1784,7 +1784,113 @@ def setup_terminal_backend(config: dict):
 
 
 # =============================================================================
-# Section 3: Agent Settings
+# Section 3: Observability
+# =============================================================================
+
+
+def setup_observability(config: dict):
+    """Configure observability with Langfuse for tracing and metrics."""
+    print_header("Observability (Langfuse)")
+    print_info("Set up tracing to debug agent behavior and track costs.")
+    print_info("Uses Langfuse — you can use cloud.langfuse.com or self-host.")
+    print()
+
+    # Check current observability settings
+    observability = config.get("observability", {})
+    current_enabled = observability.get("langfuse_enabled", False)
+    existing_public = get_env_value("LANGFUSE_PUBLIC_KEY")
+    existing_secret = get_env_value("LANGFUSE_SECRET_KEY")
+    existing_base_url = get_env_value("LANGFUSE_BASE_URL")
+
+    # Check if already configured
+    if existing_public and existing_secret:
+        print_info("Langfuse is already configured")
+        if not prompt_yes_no("Reconfigure observability settings?", False):
+            return
+
+    # Ask if user wants to enable observability
+    enable = prompt_yes_no("Enable Langfuse observability?", default=current_enabled)
+
+    if not enable:
+        config.setdefault("observability", {})["langfuse_enabled"] = False
+        save_config(config)
+        print_info("Observability disabled")
+        return
+
+    config["observability"]["langfuse_enabled"] = True
+
+    # Prompt for endpoint (optional - defaults to cloud)
+    print()
+    print_info("Leave empty to use cloud.langfuse.com")
+    default_base_url = existing_base_url or ""
+    base_url = prompt("Custom Langfuse endpoint (optional)", default_base_url)
+
+    if base_url:
+        save_env_value("LANGFUSE_BASE_URL", base_url.rstrip("/"))
+        print_success(f"Custom endpoint set: {base_url}")
+    elif existing_base_url:
+        # If clearing the custom endpoint, remove it
+        save_env_value("LANGFUSE_BASE_URL", "")
+
+    # Prompt for public key
+    print()
+    print_info("Get your API keys at: https://cloud.langfuse.com (or your self-hosted instance)")
+    print_info("Navigate to Settings → API Keys to generate a new key pair.")
+    print()
+
+    if existing_public:
+        print_info(f"Current public key: {existing_public[:8]}...")
+        public_key = prompt("Langfuse public key (Enter to keep current)", "")
+        if not public_key:
+            public_key = existing_public
+    else:
+        public_key = prompt("Langfuse public key", password=True)
+
+    if public_key:
+        save_env_value("LANGFUSE_PUBLIC_KEY", public_key)
+
+    # Prompt for secret key
+    if existing_secret:
+        print_info(f"Current secret key: {existing_secret[:8]}...")
+        secret_key = prompt("Langfuse secret key (Enter to keep current)", "", password=True)
+        if not secret_key:
+            secret_key = existing_secret
+    else:
+        secret_key = prompt("Langfuse secret key", password=True)
+
+    if secret_key:
+        save_env_value("LANGFUSE_SECRET_KEY", secret_key)
+
+    # Validate that both keys are present
+    if public_key and secret_key:
+        print_success("Langfuse observability configured!")
+        print_info("Traces will be sent to Langfuse for analysis.")
+    else:
+        print_warning("Langfuse configuration incomplete")
+        print_info("Both public and secret keys are required for observability to work.")
+        print_info("You can configure them later with 'hermes setup observability'")
+
+    # Configure sample rate (optional)
+    print()
+    print_info("Sample rate controls what percentage of requests are traced.")
+    print_info("1.0 = trace all requests, 0.1 = trace 10% of requests")
+    current_sample_rate = observability.get("sample_rate", 1.0)
+    sample_rate_str = prompt("Sample rate", str(current_sample_rate))
+    try:
+        sample_rate = float(sample_rate_str)
+        if 0.0 <= sample_rate <= 1.0:
+            config["observability"]["sample_rate"] = sample_rate
+            print_success(f"Sample rate set to {sample_rate}")
+        else:
+            print_warning("Sample rate must be between 0.0 and 1.0, keeping default")
+    except ValueError:
+        print_warning("Invalid sample rate, keeping default")
+
+    save_config(config)
+
+
+# =============================================================================
+# Section 4: Agent Settings
 # =============================================================================
 
 
@@ -2454,6 +2560,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("terminal", "Terminal Backend", setup_terminal_backend),
+    ("observability", "Observability (Langfuse)", setup_observability),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
@@ -2574,6 +2681,7 @@ def run_setup_wizard(args):
             "---",
             "Model & Provider",
             "Terminal Backend",
+            "Observability (Langfuse)",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
@@ -2592,14 +2700,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
+        elif choice in (2, 9):
             # Separator — treat as exit
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
+        elif choice == 10:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 3 <= choice <= 7:
+        elif 3 <= choice <= 8:
             # Individual section
             section_idx = choice - 3
             _, label, func = SETUP_SECTIONS[section_idx]
@@ -2613,9 +2721,10 @@ def run_setup_wizard(args):
         print_info("We'll walk you through:")
         print_info("  1. Model & Provider — choose your AI provider and model")
         print_info("  2. Terminal Backend — where your agent runs commands")
-        print_info("  3. Messaging Platforms — connect Telegram, Discord, etc.")
-        print_info("  4. Tools — configure TTS, web search, image generation, etc.")
-        print_info("  5. Agent Settings — iterations, compression, session reset")
+        print_info("  3. Observability — set up tracing and debugging with Langfuse")
+        print_info("  4. Messaging Platforms — connect Telegram, Discord, etc.")
+        print_info("  5. Tools — configure TTS, web search, image generation, etc.")
+        print_info("  6. Agent Settings — iterations, compression, session reset")
         print()
         print_info("Press Enter to begin, or Ctrl+C to exit.")
         try:
@@ -2644,13 +2753,16 @@ def run_setup_wizard(args):
     # Section 2: Terminal Backend
     setup_terminal_backend(config)
 
-    # Section 3: Agent Settings
+    # Section 3: Observability
+    setup_observability(config)
+
+    # Section 4: Agent Settings
     setup_agent_settings(config)
 
-    # Section 4: Messaging Platforms
+    # Section 5: Messaging Platforms
     setup_gateway(config)
 
-    # Section 5: Tools
+    # Section 6: Tools
     setup_tools(config, first_install=not is_existing)
 
     # Save and show summary

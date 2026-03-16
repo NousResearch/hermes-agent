@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,19 +73,37 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     try:
         raw = cmdline_path.read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
+        return _read_process_cmdline_ps(pid)
 
     if not raw:
         return None
     return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
 
+def _read_process_cmdline_ps(pid: int) -> Optional[str]:
+    """Fallback for platforms without /proc by using ps."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+
+    if result.returncode != 0:
+        return None
+    cmdline = result.stdout.strip()
+    return cmdline or None
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
-        # If we cannot inspect the process, fall back to the liveness check.
-        return True
+        # If we cannot inspect the process, do not trust the PID.
+        return False
 
     patterns = (
         "hermes_cli.main gateway",

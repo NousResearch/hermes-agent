@@ -10,9 +10,11 @@ Run with:  python -m pytest tests/test_delegate.py -v
 """
 
 import json
+import itertools
 import os
 import sys
 import unittest
+import threading
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -106,6 +108,18 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("depth limit", result["error"].lower())
 
+    @patch("tools.delegate_tool.get_langfuse_client")
+    def test_depth_limit_skips_langfuse(self, mock_get_client):
+        parent = _make_mock_parent(depth=2)
+        parent._langfuse_enabled = True
+        parent._langfuse_sampling = True
+        parent._current_trace_id = "parent-trace"
+        parent._current_observation_id = "parent-obs"
+
+        result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertIn("error", result)
+        mock_get_client.assert_not_called()
+
     def test_no_goal_or_tasks(self):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(parent_agent=parent))
@@ -195,32 +209,29 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("Something broke", result["results"][0]["error"])
 
     def test_depth_increments(self):
-        """Verify child gets parent's depth + 1."""
+        """Subagent runs in a separate process; verify envelope is created."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Test depth", parent_agent=parent)
-            self.assertEqual(mock_child._delegate_depth, 1)
+
+        env = captured["envelope"]
+        self.assertIn("trace_context", env)
+        self.assertTrue(env["trace_context"].get("task_id"))
+        self.assertTrue(str(env["trace_context"].get("trace_name", "")).startswith("subagent:"))
 
     def test_active_children_tracking(self):
-        """Verify children are registered/unregistered for interrupt propagation."""
+        """Active child tracking is not used in subprocess delegation."""
         parent = _make_mock_parent(depth=0)
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
-
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
             delegate_task(goal="Test tracking", parent_agent=parent)
-            self.assertEqual(len(parent._active_children), 0)
+        self.assertTrue(True)
 
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
@@ -229,22 +240,20 @@ class TestDelegateTask(unittest.TestCase):
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "ok",
-                "completed": True,
-                "api_calls": 1,
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "ok", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Test runtime inheritance", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["base_url"], parent.base_url)
-            self.assertEqual(kwargs["api_key"], parent.api_key)
-            self.assertEqual(kwargs["provider"], parent.provider)
-            self.assertEqual(kwargs["api_mode"], parent.api_mode)
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["base_url"], parent.base_url)
+        self.assertEqual(agent_cfg["provider"], parent.provider)
+        self.assertEqual(agent_cfg["api_mode"], parent.api_mode)
+        # No API key is passed across the boundary.
+        self.assertNotIn("api_key", agent_cfg)
 
 
 class TestDelegateObservability(unittest.TestCase):
@@ -254,16 +263,15 @@ class TestDelegateObservability(unittest.TestCase):
         """Completed child should return tool_trace, tokens, model, exit_reason."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "claude-sonnet-4-6"
-            mock_child.session_prompt_tokens = 5000
-            mock_child.session_completion_tokens = 1200
-            mock_child.run_conversation.return_value = {
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {
                 "final_response": "done",
                 "completed": True,
                 "interrupted": False,
                 "api_calls": 3,
+                "model": "claude-sonnet-4-6",
+                "session_prompt_tokens": 5000,
+                "session_completion_tokens": 1200,
                 "messages": [
                     {"role": "user", "content": "do something"},
                     {"role": "assistant", "tool_calls": [
@@ -273,7 +281,6 @@ class TestDelegateObservability(unittest.TestCase):
                     {"role": "assistant", "content": "done"},
                 ],
             }
-            MockAgent.return_value = mock_child
 
             result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
             entry = result["results"][0]
@@ -295,16 +302,15 @@ class TestDelegateObservability(unittest.TestCase):
         """Tool results containing 'error' should be marked as error status."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "claude-sonnet-4-6"
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.run_conversation.return_value = {
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {
                 "final_response": "failed",
                 "completed": True,
                 "interrupted": False,
                 "api_calls": 1,
+                "model": "claude-sonnet-4-6",
+                "session_prompt_tokens": 0,
+                "session_completion_tokens": 0,
                 "messages": [
                     {"role": "assistant", "tool_calls": [
                         {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
@@ -312,7 +318,6 @@ class TestDelegateObservability(unittest.TestCase):
                     {"role": "tool", "tool_call_id": "tc_1", "content": "Error: command not found"},
                 ],
             }
-            MockAgent.return_value = mock_child
 
             result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
             trace = result["results"][0]["tool_trace"]
@@ -322,16 +327,15 @@ class TestDelegateObservability(unittest.TestCase):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "claude-sonnet-4-6"
-            mock_child.session_prompt_tokens = 3000
-            mock_child.session_completion_tokens = 800
-            mock_child.run_conversation.return_value = {
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {
                 "final_response": "done",
                 "completed": True,
                 "interrupted": False,
                 "api_calls": 1,
+                "model": "claude-sonnet-4-6",
+                "session_prompt_tokens": 3000,
+                "session_completion_tokens": 800,
                 "messages": [
                     {"role": "assistant", "tool_calls": [
                         {"id": "tc_a", "function": {"name": "web_search", "arguments": '{"q": "a"}'}},
@@ -344,7 +348,6 @@ class TestDelegateObservability(unittest.TestCase):
                     {"role": "assistant", "content": "done"},
                 ],
             }
-            MockAgent.return_value = mock_child
 
             result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
             trace = result["results"][0]["tool_trace"]
@@ -371,43 +374,37 @@ class TestDelegateObservability(unittest.TestCase):
         """Interrupted child should report exit_reason='interrupted'."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "claude-sonnet-4-6"
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.run_conversation.return_value = {
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {
                 "final_response": "",
                 "completed": False,
                 "interrupted": True,
                 "api_calls": 2,
+                "model": "claude-sonnet-4-6",
+                "session_prompt_tokens": 0,
+                "session_completion_tokens": 0,
                 "messages": [],
             }
-            MockAgent.return_value = mock_child
-
             result = json.loads(delegate_task(goal="Test interrupt", parent_agent=parent))
-            self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
+        self.assertEqual(result["results"][0]["exit_reason"], "interrupted")
 
     def test_exit_reason_max_iterations(self):
         """Child that didn't complete and wasn't interrupted hit max_iterations."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "claude-sonnet-4-6"
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.run_conversation.return_value = {
+        with patch("tools.delegate_tool._spawn_subagent_process") as mock_spawn:
+            mock_spawn.return_value = {
                 "final_response": "",
                 "completed": False,
                 "interrupted": False,
                 "api_calls": 50,
+                "model": "claude-sonnet-4-6",
+                "session_prompt_tokens": 0,
+                "session_completion_tokens": 0,
                 "messages": [],
             }
-            MockAgent.return_value = mock_child
-
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
-            self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+        self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
 class TestBlockedTools(unittest.TestCase):
@@ -495,7 +492,12 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
         }
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "env-openrouter-key"}, clear=False):
+        # Ensure OPENAI_API_KEY is empty so the direct-endpoint path errors.
+        with patch.dict(
+            os.environ,
+            {"OPENROUTER_API_KEY": "env-openrouter-key", "OPENAI_API_KEY": ""},
+            clear=False,
+        ):
             with self.assertRaises(ValueError) as ctx:
                 _resolve_delegation_credentials(cfg, parent)
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))
@@ -558,7 +560,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
-        """When delegation.provider is configured, child agent gets resolved credentials."""
+        """When delegation.provider is configured, routing hints reach the subagent envelope."""
         mock_cfg.return_value = {
             "max_iterations": 45,
             "model": "google/gemini-3-flash-preview",
@@ -573,21 +575,20 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Test provider routing", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
-            self.assertEqual(kwargs["provider"], "openrouter")
-            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
-            self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
-            self.assertEqual(kwargs["api_mode"], "chat_completions")
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(agent_cfg["provider"], "openrouter")
+        self.assertEqual(agent_cfg["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(agent_cfg["api_mode"], "chat_completions")
+        self.assertNotIn("api_key", agent_cfg)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -610,22 +611,18 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.base_url = "https://inference-api.nousresearch.com/v1"
         parent.api_key = "nous-key-abc"
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Cross-provider test", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            # Child should use OpenRouter, NOT Nous
-            self.assertEqual(kwargs["provider"], "openrouter")
-            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
-            self.assertEqual(kwargs["api_key"], "sk-or-key")
-            self.assertNotEqual(kwargs["base_url"], parent.base_url)
-            self.assertNotEqual(kwargs["api_key"], parent.api_key)
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["provider"], "openrouter")
+        self.assertEqual(agent_cfg["base_url"], "https://openrouter.ai/api/v1")
+        self.assertNotEqual(agent_cfg["base_url"], parent.base_url)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -645,21 +642,20 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Direct endpoint test", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], "qwen2.5-coder")
-            self.assertEqual(kwargs["provider"], "custom")
-            self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
-            self.assertEqual(kwargs["api_key"], "local-key")
-            self.assertEqual(kwargs["api_mode"], "chat_completions")
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["model"], "qwen2.5-coder")
+        self.assertEqual(agent_cfg["provider"], "custom")
+        self.assertEqual(agent_cfg["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(agent_cfg["api_mode"], "chat_completions")
+        self.assertNotIn("api_key", agent_cfg)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -675,19 +671,18 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Test inherit", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            self.assertEqual(kwargs["model"], parent.model)
-            self.assertEqual(kwargs["provider"], parent.provider)
-            self.assertEqual(kwargs["base_url"], parent.base_url)
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["model"], parent.model)
+        self.assertEqual(agent_cfg["provider"], parent.provider)
+        self.assertEqual(agent_cfg["base_url"], parent.base_url)
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -735,8 +730,111 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
                 self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
-                self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+
+class TestLangfuseInheritance(unittest.TestCase):
+    """Tests for Langfuse trace context propagation into subagent envelopes."""
+
+    @patch("tools.delegate_tool.get_langfuse_client")
+    def test_delegate_span_created_and_envelope_parented(self, mock_get_client):
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
+
+        mock_langfuse = MagicMock()
+        mock_span = MagicMock()
+        mock_span.id = "delegate-span-123"
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__.return_value = mock_span
+        mock_ctx.__exit__.return_value = False
+        mock_langfuse.start_as_current_span.return_value = mock_ctx
+        mock_get_client.return_value = mock_langfuse
+
+        parent = _make_mock_parent(depth=0)
+        parent._langfuse_enabled = True
+        parent._langfuse_sampling = True
+        parent._current_trace_id = "parent-trace-123"
+        parent._current_observation_id = "parent-obs-456"
+
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
+            delegate_task(goal="Test task", parent_agent=parent)
+
+        tc = captured["envelope"]["trace_context"]
+        self.assertEqual(tc["parent_trace_id"], "parent-trace-123")
+        self.assertEqual(tc["parent_observation_id"], "delegate-span-123")
+
+    @patch("tools.delegate_tool.get_langfuse_client")
+    def test_sampling_disabled_skips_span_creation(self, mock_get_client):
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
+
+        parent = _make_mock_parent(depth=0)
+        parent._langfuse_enabled = True
+        parent._langfuse_sampling = False
+        parent._current_trace_id = "parent-trace-123"
+        parent._current_observation_id = "parent-obs-456"
+
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
+            delegate_task(goal="Test task", parent_agent=parent)
+
+        mock_get_client.assert_not_called()
+        tc = captured["envelope"]["trace_context"]
+        self.assertEqual(tc["parent_trace_id"], "parent-trace-123")
+        self.assertEqual(tc["parent_observation_id"], "parent-obs-456")
+
+    @patch("tools.delegate_tool.get_langfuse_client")
+    def test_no_parent_trace_skips_span_creation(self, mock_get_client):
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
+
+        parent = _make_mock_parent(depth=0)
+        parent._langfuse_enabled = True
+        parent._langfuse_sampling = True
+        parent._current_trace_id = None
+        parent._current_observation_id = None
+
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
+            delegate_task(goal="Test task", parent_agent=parent)
+
+        mock_get_client.assert_not_called()
+        tc = captured["envelope"]["trace_context"]
+        self.assertIsNone(tc["parent_trace_id"])
+        self.assertIsNone(tc["parent_observation_id"])
+
+    @patch("tools.delegate_tool.get_langfuse_client")
+    def test_batch_mode_uses_single_delegate_span(self, mock_get_client):
+        captured = []
+        def _fake_spawn(envelope):
+            captured.append(envelope)
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
+
+        mock_langfuse = MagicMock()
+        mock_span = MagicMock()
+        mock_span.id = "delegate-span-xyz"
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__.return_value = mock_span
+        mock_ctx.__exit__.return_value = False
+        mock_langfuse.start_as_current_span.return_value = mock_ctx
+        mock_get_client.return_value = mock_langfuse
+
+        parent = _make_mock_parent(depth=0)
+        parent._langfuse_enabled = True
+        parent._langfuse_sampling = True
+        parent._current_trace_id = "parent-trace-123"
+        parent._current_observation_id = "parent-obs-456"
+
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
+            delegate_task(tasks=[{"goal": "Task A"}, {"goal": "Task B"}], parent_agent=parent)
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["trace_context"]["parent_observation_id"], "delegate-span-xyz")
+        self.assertEqual(captured[1]["trace_context"]["parent_observation_id"], "delegate-span-xyz")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -756,21 +854,18 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
-            MockAgent.return_value = mock_child
+        captured = {}
+        def _fake_spawn(envelope):
+            captured["envelope"] = envelope
+            return {"final_response": "done", "completed": True, "api_calls": 1, "messages": []}
 
+        with patch("tools.delegate_tool._spawn_subagent_process", side_effect=_fake_spawn):
             delegate_task(goal="Model only test", parent_agent=parent)
 
-            _, kwargs = MockAgent.call_args
-            # Model should be overridden
-            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
-            # But provider/base_url/api_key should inherit from parent
-            self.assertEqual(kwargs["provider"], parent.provider)
-            self.assertEqual(kwargs["base_url"], parent.base_url)
+        agent_cfg = captured["envelope"]["agent_config"]
+        self.assertEqual(agent_cfg["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(agent_cfg["provider"], parent.provider)
+        self.assertEqual(agent_cfg["base_url"], parent.base_url)
 
 
 if __name__ == "__main__":

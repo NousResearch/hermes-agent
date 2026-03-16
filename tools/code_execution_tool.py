@@ -343,6 +343,11 @@ def _rpc_server_loop(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+# Langfuse decorator support (import from centralized observability module)
+from agent.observability import observe, LANGFUSE_AVAILABLE
+
+
+@observe(name="code_execution", as_type="span")
 def execute_code(
     code: str,
     task_id: Optional[str] = None,

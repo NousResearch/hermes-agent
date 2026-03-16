@@ -53,3 +53,9 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+
+# Nix
+.direnv/
+result/
+result
+benchmark_results_*.json

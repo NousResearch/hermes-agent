@@ -325,10 +325,18 @@ def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
 def get_python_path() -> str:
+    """Get the path to the Python interpreter, preferring the project venv."""
+    # Check both .venv (common convention) and venv directory names
     if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+        # Try .venv first, then venv
+        venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+        if not venv_python.exists():
+            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
     else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+        # Try .venv first, then venv
+        venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+        if not venv_python.exists():
+            venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
     if venv_python.exists():
         return str(venv_python)
     return sys.executable
@@ -354,8 +362,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    # Use .venv if it exists, otherwise fall back to venv
+    venv_dir = str(PROJECT_ROOT / ".venv") if (PROJECT_ROOT / ".venv").exists() else str(PROJECT_ROOT / "venv")
+    venv_bin = str(Path(venv_dir) / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     # Build a PATH that includes the venv, node_modules, and standard system dirs
@@ -670,6 +679,15 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     
+    # Determine venv directory for PATH and VIRTUAL_ENV
+    venv_path = PROJECT_ROOT / ".venv"
+    if not venv_path.exists():
+        venv_path = PROJECT_ROOT / "venv"
+    venv_bin = venv_path / "bin"
+    
+    # Build PATH that includes venv and standard system directories
+    path_env = f"{venv_bin}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -688,6 +706,14 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path_env}</string>
+        <key>VIRTUAL_ENV</key>
+        <string>{venv_path}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>

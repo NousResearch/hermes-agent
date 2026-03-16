@@ -138,6 +138,15 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+        # Observability settings - bridge to env vars for AIAgent initialization
+        _observability_cfg = _cfg.get("observability", {})
+        if _observability_cfg and isinstance(_observability_cfg, dict):
+            if "langfuse_enabled" in _observability_cfg:
+                os.environ["HERMES_LANGFUSE_ENABLED"] = str(_observability_cfg["langfuse_enabled"]).lower()
+            if "sample_rate" in _observability_cfg:
+                # Canonical Hermes env var, plus legacy fallback for older code.
+                os.environ["HERMES_LANGFUSE_SAMPLE_RATE"] = str(_observability_cfg["sample_rate"])
+                os.environ.setdefault("LANGFUSE_SAMPLE_RATE", str(_observability_cfg["sample_rate"]))
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
@@ -438,12 +447,13 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
-    def _flush_memories_for_session(self, old_session_id: str):
+    def _flush_memories_for_session(self, entry):
         """Prompt the agent to save memories/skills before context is lost.
 
         Synchronous worker — meant to be called via run_in_executor from
         an async context so it doesn't block the event loop.
         """
+        old_session_id = getattr(entry, "session_id", None) or ""
         try:
             history = self.session_store.load_transcript(old_session_id)
             if not history or len(history) < 4:
@@ -459,6 +469,17 @@ class GatewayRunner:
             # active provider is openai-codex.
             model = _resolve_gateway_model()
 
+            parent_trace_id = None
+            parent_observation_id = None
+            if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                try:
+                    parent_trace_id = self.session_store.ensure_langfuse_parent_trace_id(entry)
+                except Exception:
+                    parent_trace_id = None
+                existing_obs = getattr(entry, "langfuse_parent_observation_id", None)
+                if isinstance(existing_obs, str) and existing_obs.strip():
+                    parent_observation_id = existing_obs.strip()
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -466,6 +487,9 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
+                langfuse_enabled=os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true",
+                parent_trace_id=parent_trace_id,
+                parent_observation_id=parent_observation_id,
             )
 
             # Build conversation history from transcript
@@ -494,6 +518,16 @@ class GatewayRunner:
                 user_message=flush_prompt,
                 conversation_history=msgs,
             )
+
+            if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                new_obs = getattr(tmp_agent, "_current_observation_id", None)
+                try:
+                    if hasattr(self.session_store, "update_langfuse_parent_observation_id"):
+                        self.session_store.update_langfuse_parent_observation_id(entry, new_obs)
+                    else:
+                        entry.langfuse_parent_observation_id = new_obs
+                except Exception:
+                    pass
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
             # Flush any queued Honcho writes before the session is dropped
             if getattr(tmp_agent, '_honcho', None):
@@ -504,10 +538,10 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
-    async def _async_flush_memories(self, old_session_id: str):
+    async def _async_flush_memories(self, entry):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._flush_memories_for_session, old_session_id)
+        await loop.run_in_executor(None, self._flush_memories_for_session, entry)
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -883,7 +917,7 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id)
+                        await self._async_flush_memories(entry)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
@@ -1292,6 +1326,27 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        # Langfuse trace context: create/persist a stable session-level parent
+        # trace so per-message AIAgent instances become children (hierarchical).
+        langfuse_parent_trace_id = None
+        langfuse_parent_observation_id = None
+        if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+            try:
+                langfuse_parent_trace_id = self.session_store.ensure_langfuse_parent_trace_id(
+                    session_entry
+                )
+            except Exception as _exc:
+                logger.warning(
+                    "Langfuse enabled but failed to ensure session parent trace ID: %s",
+                    _exc,
+                )
+            try:
+                existing_obs = getattr(session_entry, "langfuse_parent_observation_id", None)
+                if isinstance(existing_obs, str) and existing_obs.strip():
+                    langfuse_parent_observation_id = existing_obs.strip()
+            except Exception:
+                pass
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -1460,6 +1515,9 @@ class GatewayRunner:
                                     quiet_mode=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    langfuse_enabled=os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true",
+                                    parent_trace_id=langfuse_parent_trace_id,
+                                    parent_observation_id=langfuse_parent_observation_id,
                                 )
 
                                 loop = asyncio.get_event_loop()
@@ -1470,6 +1528,15 @@ class GatewayRunner:
                                         approx_tokens=_approx_tokens,
                                     ),
                                 )
+
+                                if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                                    try:
+                                        self.session_store.update_langfuse_parent_observation_id(
+                                            session_entry,
+                                            getattr(_hyg_agent, "_current_observation_id", None),
+                                        )
+                                    except Exception:
+                                        pass
 
                                 self.session_store.rewrite_transcript(
                                     session_entry.session_id, _compressed
@@ -1679,11 +1746,23 @@ class GatewayRunner:
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
-                session_key=session_key
+                session_key=session_key,
+                parent_trace_id=langfuse_parent_trace_id,
+                parent_observation_id=langfuse_parent_observation_id,
             )
             
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
+
+            if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                new_obs = agent_result.get("langfuse_current_observation_id")
+                try:
+                    if hasattr(self.session_store, "update_langfuse_parent_observation_id"):
+                        self.session_store.update_langfuse_parent_observation_id(session_entry, new_obs)
+                    else:
+                        session_entry.langfuse_parent_observation_id = new_obs
+                except Exception:
+                    pass
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -2788,6 +2867,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    langfuse_enabled=os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true",
                 )
 
                 return agent.run_conversation(
@@ -2974,6 +3054,17 @@ class GatewayRunner:
             original_count = len(msgs)
             approx_tokens = estimate_messages_tokens_rough(msgs)
 
+            parent_trace_id = None
+            parent_observation_id = None
+            if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                try:
+                    parent_trace_id = self.session_store.ensure_langfuse_parent_trace_id(session_entry)
+                except Exception:
+                    parent_trace_id = None
+                existing_obs = getattr(session_entry, "langfuse_parent_observation_id", None)
+                if isinstance(existing_obs, str) and existing_obs.strip():
+                    parent_observation_id = existing_obs.strip()
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -2981,6 +3072,9 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                langfuse_enabled=os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true",
+                parent_trace_id=parent_trace_id,
+                parent_observation_id=parent_observation_id,
             )
 
             loop = asyncio.get_event_loop()
@@ -2988,6 +3082,15 @@ class GatewayRunner:
                 None,
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
             )
+
+            if os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true":
+                try:
+                    self.session_store.update_langfuse_parent_observation_id(
+                        session_entry,
+                        getattr(tmp_agent, "_current_observation_id", None),
+                    )
+                except Exception:
+                    pass
 
             self.session_store.rewrite_transcript(session_entry.session_id, compressed)
             # Reset stored token count — transcript changed, old value is stale
@@ -3702,7 +3805,9 @@ class GatewayRunner:
         history: List[Dict[str, Any]],
         source: SessionSource,
         session_id: str,
-        session_key: str = None
+        session_key: str = None,
+        parent_trace_id: str | None = None,
+        parent_observation_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -4052,6 +4157,9 @@ class GatewayRunner:
                 honcho_config=honcho_config,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
+                langfuse_enabled=os.getenv("HERMES_LANGFUSE_ENABLED", "false").lower() == "true",
+                parent_trace_id=parent_trace_id,
+                parent_observation_id=parent_observation_id,
             )
             
             # Store agent reference for interrupt support
@@ -4115,6 +4223,11 @@ class GatewayRunner:
                                 _history_media_paths.add(_p)
             
             result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+
+            # Bubble up current Langfuse context so the gateway can persist it.
+            if isinstance(result, dict):
+                result["langfuse_current_trace_id"] = getattr(agent, "_current_trace_id", None)
+                result["langfuse_current_observation_id"] = getattr(agent, "_current_observation_id", None)
             result_holder[0] = result
             
             # Return final response, or a message if something went wrong
@@ -4282,7 +4395,8 @@ class GatewayRunner:
                     history=updated_history,
                     source=source,
                     session_id=session_id,
-                    session_key=session_key
+                    session_key=session_key,
+                    parent_trace_id=parent_trace_id,
                 )
         finally:
             # Stop progress sender and interrupt monitor

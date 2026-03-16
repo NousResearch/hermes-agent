@@ -267,6 +267,7 @@ def handle_function_call(
     task_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    parent_agent: Any = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -298,21 +299,84 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+        # Optional Langfuse tool-call span.
+        span_ctx = None
+        span_obj = None
+        lf_client = None
+        trace_id = None
+        parent_obs_id = None
+        if parent_agent is not None:
+            try:
+                from agent.observability import get_langfuse_client, LANGFUSE_AVAILABLE
+                if LANGFUSE_AVAILABLE and bool(getattr(parent_agent, "_langfuse_enabled", False)) and bool(getattr(parent_agent, "_langfuse_sampling", False)):
+                    lf_client = get_langfuse_client()
+            except Exception:
+                lf_client = None
+
+        if lf_client is not None:
+            trace_id = getattr(parent_agent, "_current_trace_id", None) or getattr(parent_agent, "_parent_trace_id", None)
+            parent_obs_id = getattr(parent_agent, "_current_observation_id", None)
+            # If we have a current observation, nest under it; otherwise rely on SDK defaults.
+            try:
+                span_name = f"tool:{function_name}"
+                tool_input = {"args": function_args}
+
+                if hasattr(lf_client, "start_as_current_observation") and trace_id and parent_obs_id:
+                    span_ctx = lf_client.start_as_current_observation(
+                        as_type="span",
+                        name=span_name,
+                        input=tool_input,
+                        trace_context={"trace_id": trace_id, "parent_span_id": parent_obs_id},
+                    )
+                elif hasattr(lf_client, "start_as_current_span") and trace_id:
+                    span_ctx = lf_client.start_as_current_span(
+                        name=span_name,
+                        trace_id=trace_id,
+                        parent_observation_id=parent_obs_id,
+                        metadata={"input": tool_input},
+                    )
+                elif hasattr(lf_client, "start_as_current_observation"):
+                    span_ctx = lf_client.start_as_current_observation(
+                        as_type="span",
+                        name=span_name,
+                        input=tool_input,
+                    )
+            except Exception:
+                span_ctx = None
+
+        def _dispatch() -> str:
+            if function_name == "execute_code":
+                # Prefer the caller-provided list so subagents can't overwrite
+                # the parent's tool set via the process-global.
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                return registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    enabled_tools=sandbox_enabled,
+                )
+
             return registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
-                enabled_tools=sandbox_enabled,
+                user_task=user_task,
             )
 
-        return registry.dispatch(
-            function_name, function_args,
-            task_id=task_id,
-            user_task=user_task,
-        )
+        if span_ctx is not None:
+            try:
+                with span_ctx as span:
+                    span_obj = span
+                    result = _dispatch()
+                    try:
+                        if span_obj is not None and hasattr(span_obj, "update"):
+                            span_obj.update(output={"result": result})
+                    except Exception:
+                        pass
+                    return result
+            except Exception:
+                # Fall back to untraced dispatch.
+                pass
+
+        return _dispatch()
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

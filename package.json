@@ -16,7 +16,8 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
-    "agent-browser": "^0.13.0"
+    "agent-browser": "^0.13.0",
+    "langfuse-cli": "^0.0.7"
   },
   "engines": {
     "node": ">=18.0.0"

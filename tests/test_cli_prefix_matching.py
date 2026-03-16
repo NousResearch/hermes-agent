@@ -147,3 +147,57 @@ class TestSlashCommandPrefixMatching:
             cli_obj.process_command("/reset")
         # /reset maps to new_session (the clear/reset action)
         mock_reset.assert_called_once()
+
+    def test_shortest_match_with_args_dispatches_correctly(self):
+        """/qui extra args should expand to /quit extra args without showing ambiguous."""
+        cli_obj = _make_cli()
+        fake_skill = {"/quint-pipeline": {"name": "Quint Pipeline", "description": "test"}}
+
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill):
+            cli_obj.process_command("/qui ignored-args")
+
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_three_matches_unique_shortest_dispatches(self):
+        """When three skills share a prefix but one built-in is shorter, prefer the built-in."""
+        cli_obj = _make_cli()
+        fake_skills = {
+            "/quint-pipeline": {"name": "A", "description": ""},
+            "/quint-analysis": {"name": "B", "description": ""},
+        }
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skills):
+            result = cli_obj.process_command("/qui")
+
+        # /quit (5) is shortest among /quit, /quint-pipeline, /quint-analysis
+        assert result is False
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_multiple_skills_same_length_no_builtin_stays_ambiguous(self):
+        """Two skill commands of equal shortest length with no shorter built-in → ambiguous."""
+        cli_obj = _make_cli()
+        fake_skills = {
+            "/foo-alpha": {"name": "A", "description": ""},
+            "/foo-beta-": {"name": "B", "description": ""},
+        }
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skills):
+            cli_obj.process_command("/foo")
+
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" in printed or "Did you mean" in printed or "Unknown" in printed
+
+    def test_prefix_exactly_equals_a_known_command_dispatches(self):
+        """/help typed with /help-extra skill installed → exact match wins, no ambiguous."""
+        cli_obj = _make_cli()
+        fake_skill = {"/help-extra": {"name": "Help Extra", "description": ""}}
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill), \
+             patch.object(cli_obj, 'show_help') as mock_help:
+            cli_obj.process_command("/help")
+        mock_help.assert_called_once()
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed

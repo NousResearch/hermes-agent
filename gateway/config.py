@@ -16,7 +16,20 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
 
+from hermes_cli.config import get_hermes_home
+
 logger = logging.getLogger(__name__)
+
+
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce bool-ish config values, preserving a caller-provided default."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
 
 
 class Platform(Enum):
@@ -84,10 +97,14 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        # Handle both missing keys and explicit null values (YAML null → None)
+        mode = data.get("mode")
+        at_hour = data.get("at_hour")
+        idle_minutes = data.get("idle_minutes")
         return cls(
-            mode=data.get("mode", "both"),
-            at_hour=data.get("at_hour", 4),
-            idle_minutes=data.get("idle_minutes", 1440),
+            mode=mode if mode is not None else "both",
+            at_hour=at_hour if at_hour is not None else 4,
+            idle_minutes=idle_minutes if idle_minutes is not None else 1440,
         )
 
 
@@ -147,13 +164,22 @@ class GatewayConfig:
     
     # Reset trigger commands
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+
+    # User-defined quick commands (slash commands that bypass the agent loop)
+    quick_commands: Dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
-    sessions_dir: Path = field(default_factory=lambda: Path.home() / ".hermes" / "sessions")
+    sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
-    
+
+    # STT settings
+    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+
+    # Session isolation in shared chats
+    group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -214,8 +240,11 @@ class GatewayConfig:
                 p.value: v.to_dict() for p, v in self.reset_by_platform.items()
             },
             "reset_triggers": self.reset_triggers,
+            "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "stt_enabled": self.stt_enabled,
+            "group_sessions_per_user": self.group_sessions_per_user,
         }
     
     @classmethod
@@ -244,18 +273,31 @@ class GatewayConfig:
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
         
-        sessions_dir = Path.home() / ".hermes" / "sessions"
+        sessions_dir = get_hermes_home() / "sessions"
         if "sessions_dir" in data:
             sessions_dir = Path(data["sessions_dir"])
         
+        quick_commands = data.get("quick_commands", {})
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
+
+        stt_enabled = data.get("stt_enabled")
+        if stt_enabled is None:
+            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+
+        group_sessions_per_user = data.get("group_sessions_per_user")
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
             reset_by_type=reset_by_type,
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
+            quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
+            stt_enabled=_coerce_bool(stt_enabled, True),
+            group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
         )
 
 
@@ -272,7 +314,8 @@ def load_gateway_config() -> GatewayConfig:
     config = GatewayConfig()
     
     # Try loading from ~/.hermes/gateway.json
-    gateway_config_path = Path.home() / ".hermes" / "gateway.json"
+    _home = get_hermes_home()
+    gateway_config_path = _home / "gateway.json"
     if gateway_config_path.exists():
         try:
             with open(gateway_config_path, "r", encoding="utf-8") as f:
@@ -280,19 +323,43 @@ def load_gateway_config() -> GatewayConfig:
                 config = GatewayConfig.from_dict(data)
         except Exception as e:
             print(f"[gateway] Warning: Failed to load {gateway_config_path}: {e}")
-    
+
     # Bridge session_reset from config.yaml (the user-facing config file)
     # into the gateway config. config.yaml takes precedence over gateway.json
     # for session reset policy since that's where hermes setup writes it.
     try:
         import yaml
-        config_yaml_path = Path.home() / ".hermes" / "config.yaml"
+        config_yaml_path = _home / "config.yaml"
         if config_yaml_path.exists():
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+
+            # Bridge quick commands from config.yaml into gateway runtime config.
+            # config.yaml is the user-facing config source, so when present it
+            # should override gateway.json for this setting.
+            qc = yaml_cfg.get("quick_commands")
+            if qc is not None:
+                if isinstance(qc, dict):
+                    config.quick_commands = qc
+                else:
+                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+
+            # Bridge STT enable/disable from config.yaml into gateway runtime.
+            # This keeps the gateway aligned with the user-facing config source.
+            stt_cfg = yaml_cfg.get("stt")
+            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
+                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+
+            # Bridge group session isolation from config.yaml into gateway runtime.
+            # Secure default is per-user isolation in shared chats.
+            if "group_sessions_per_user" in yaml_cfg:
+                config.group_sessions_per_user = _coerce_bool(
+                    yaml_cfg.get("group_sessions_per_user"),
+                    True,
+                )
 
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
@@ -305,6 +372,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
+                    os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     except Exception:
         pass
 
@@ -498,7 +567,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
 def save_gateway_config(config: GatewayConfig) -> None:
     """Save gateway configuration to ~/.hermes/gateway.json."""
-    gateway_config_path = Path.home() / ".hermes" / "gateway.json"
+    gateway_config_path = get_hermes_home() / "gateway.json"
     gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
     
     with open(gateway_config_path, "w", encoding="utf-8") as f:

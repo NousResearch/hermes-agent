@@ -82,6 +82,72 @@ _SECURITY_ARGS = [
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
 
 
+def _ensure_docker_available() -> None:
+    """Best-effort check that the docker CLI is available before use.
+
+    Reuses ``find_docker()`` so this preflight stays consistent with the rest of
+    the Docker backend, including known non-PATH Docker Desktop locations.
+    """
+    docker_exe = find_docker()
+    if not docker_exe:
+        logger.error(
+            "Docker backend selected but no docker executable was found in PATH "
+            "or known install locations. Install Docker Desktop and ensure the "
+            "CLI is available."
+        )
+        raise RuntimeError(
+            "Docker executable not found in PATH or known install locations. "
+            "Install Docker and ensure the 'docker' command is available."
+        )
+
+    try:
+        result = subprocess.run(
+            [docker_exe, "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "Docker backend selected but the resolved docker executable '%s' could "
+            "not be executed.",
+            docker_exe,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            "Docker executable could not be executed. Check your Docker installation."
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "Docker backend selected but '%s version' timed out. "
+            "The Docker daemon may not be running.",
+            docker_exe,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            "Docker daemon is not responding. Ensure Docker is running and try again."
+        )
+    except Exception:
+        logger.error(
+            "Unexpected error while checking Docker availability.",
+            exc_info=True,
+        )
+        raise
+    else:
+        if result.returncode != 0:
+            logger.error(
+                "Docker backend selected but '%s version' failed "
+                "(exit code %d, stderr=%s)",
+                docker_exe,
+                result.returncode,
+                result.stderr.strip(),
+            )
+            raise RuntimeError(
+                "Docker command is available but 'docker version' failed. "
+                "Check your Docker installation."
+            )
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
@@ -119,6 +185,10 @@ class DockerEnvironment(BaseEnvironment):
         if volumes is not None and not isinstance(volumes, list):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
+
+        # Fail fast if Docker is not available rather than surfacing a cryptic
+        # FileNotFoundError deep inside the mini-swe-agent stack.
+        _ensure_docker_available()
 
         from minisweagent.environments.docker import DockerEnvironment as _Docker
 

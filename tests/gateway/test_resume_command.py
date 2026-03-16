@@ -36,6 +36,7 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner._voice_mode = {}
     runner._session_db = session_db
     runner._running_agents = {}
 
@@ -197,4 +198,29 @@ class TestHandleResumeCommand:
         await runner._handle_resume_command(event)
 
         assert real_key not in runner._running_agents
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_flushes_memories_with_gateway_session_key(self, tmp_path):
+        """Resume should preserve the gateway session key for Honcho flushes."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        await runner._handle_resume_command(event)
+
+        runner._async_flush_memories.assert_called_once_with(
+            "current_session_001",
+            _session_key_for_event(event),
+        )
         db.close()

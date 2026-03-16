@@ -177,6 +177,26 @@ def build_session_context_prompt(context: SessionContext) -> str:
     elif context.source.user_id:
         lines.append(f"**User ID:** {context.source.user_id}")
     
+    # Platform-specific behavioral notes
+    if context.source.platform == Platform.SLACK:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Slack. "
+            "You do NOT have access to Slack-specific APIs — you cannot search "
+            "channel history, pin/unpin messages, manage channels, or list users. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+    elif context.source.platform == Platform.DISCORD:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Discord. "
+            "You do NOT have access to Discord-specific APIs — you cannot search "
+            "channel history, pin messages, manage roles, or list server members. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:
@@ -295,31 +315,47 @@ class SessionEntry:
         )
 
 
-def build_session_key(source: SessionSource) -> str:
+def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
 
     DM rules:
-      - WhatsApp DMs include chat_id (multi-user support).
-      - Other DMs include thread_id when present (e.g. Slack threaded DMs),
-        so each DM thread gets its own session while top-level DMs share one.
-      - Without thread_id or chat_id, all DMs share a single session.
+      - DMs include chat_id when present, so each private conversation is isolated.
+      - thread_id further differentiates threaded DMs within the same DM chat.
+      - Without chat_id, thread_id is used as a best-effort fallback.
+      - Without thread_id or chat_id, DMs share a single session.
 
     Group/channel rules:
-      - thread_id differentiates threads within a channel.
-      - Without thread_id, all messages in a channel share one session.
+      - chat_id identifies the parent group/channel.
+      - user_id/user_id_alt isolates participants within that parent chat when available when
+        ``group_sessions_per_user`` is enabled.
+      - thread_id differentiates threads within that parent chat.
+      - Without participant identifiers, or when isolation is disabled, messages fall back to one
+        shared session per chat.
+      - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
+        if source.chat_id:
+            if source.thread_id:
+                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{source.chat_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
-        if platform == "whatsapp" and source.chat_id:
-            return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+
+    participant_id = source.user_id_alt or source.user_id
+    key_parts = ["agent:main", platform, source.chat_type]
+
+    if source.chat_id:
+        key_parts.append(source.chat_id)
     if source.thread_id:
-        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
-    return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+        key_parts.append(source.thread_id)
+    if group_sessions_per_user and participant_id:
+        key_parts.append(str(participant_id))
+
+    return ":".join(key_parts)
 
 
 class SessionStore:
@@ -363,7 +399,11 @@ class SessionStore:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
-                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                        try:
+                            self._entries[key] = SessionEntry.from_dict(entry_data)
+                        except (ValueError, KeyError):
+                            # Skip entries with unknown/removed platform values
+                            continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
         
@@ -394,7 +434,10 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(source)
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+        )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -570,6 +613,7 @@ class SessionStore:
         input_tokens: int = 0,
         output_tokens: int = 0,
         last_prompt_tokens: int = None,
+        model: str = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -587,7 +631,8 @@ class SessionStore:
             if self._db:
                 try:
                     self._db.update_token_counts(
-                        entry.session_id, input_tokens, output_tokens
+                        entry.session_id, input_tokens, output_tokens,
+                        model=model,
                     )
                 except Exception as e:
                     logger.debug("Session DB operation failed: %s", e)

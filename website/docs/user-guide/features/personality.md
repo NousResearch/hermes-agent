@@ -1,67 +1,177 @@
 ---
 sidebar_position: 9
 title: "Personality & SOUL.md"
-description: "Customize Hermes Agent's personality — SOUL.md, built-in personalities, and custom persona definitions"
+description: "Customize Hermes Agent's personality with a global SOUL.md, built-in personalities, and custom persona definitions"
 ---
 
 # Personality & SOUL.md
 
-Hermes Agent's personality is fully customizable. You can use the built-in personality presets, create a global SOUL.md file, or define your own custom personas in config.yaml.
+Hermes Agent's personality is customizable, but there are two different layers that matter:
 
-## SOUL.md — Custom Personality File
+- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and is loaded automatically for that Hermes instance
+- built-in or custom `/personality` presets — session-level system-prompt overlays
 
-SOUL.md is a special context file that defines the agent's personality, tone, and communication style. It's injected into the system prompt at session start.
+If you want a stable default voice that follows you across sessions, `SOUL.md` is the right tool.
 
-### Where to Place It
+## How SOUL.md works now
 
-| Location | Scope |
-|----------|-------|
-| `./SOUL.md` (project directory) | Per-project personality |
-| `~/.hermes/SOUL.md` | Global default personality |
+Hermes now seeds a default `SOUL.md` automatically in:
 
-The project-level file takes precedence. If no SOUL.md exists in the current directory, Hermes falls back to the global one in `~/.hermes/`.
+```text
+~/.hermes/SOUL.md
+```
 
-### How It Affects the System Prompt
+More precisely, it uses the current instance's `HERMES_HOME`, so if you run Hermes with a custom home directory, it will use:
 
-When a SOUL.md file is found, it's included in the system prompt with this instruction:
+```text
+$HERMES_HOME/SOUL.md
+```
 
-> *"If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it."*
+### Important behavior
 
-The content appears under a `## SOUL.md` section within the `# Project Context` block of the system prompt.
+- Hermes creates a starter `SOUL.md` automatically if one does not exist yet
+- Existing user `SOUL.md` files are never overwritten
+- Hermes loads `SOUL.md` only from `HERMES_HOME`
+- Hermes does not look in the current working directory for `SOUL.md`
+- If `SOUL.md` exists but is empty, Hermes adds nothing from it to the prompt
+- If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
+- Hermes does not add wrapper language like "If SOUL.md is present..." around the file anymore
 
-### Example SOUL.md
+That makes `SOUL.md` a true per-user or per-instance default personality, not a repo-local trick.
+
+## Why this design
+
+This keeps personality predictable.
+
+If Hermes loaded `SOUL.md` from whatever directory you happened to launch it in, your personality could change unexpectedly between projects. By loading only from `HERMES_HOME`, the personality belongs to the Hermes instance itself.
+
+That also makes it easier to teach users:
+- "Edit `~/.hermes/SOUL.md` to change Hermes' default personality."
+
+## Where to edit it
+
+For most users:
+
+```bash
+~/.hermes/SOUL.md
+```
+
+If you use a custom home:
+
+```bash
+$HERMES_HOME/SOUL.md
+```
+
+## What should go in SOUL.md?
+
+Use it for durable voice and personality guidance, such as:
+- tone
+- communication style
+- level of directness
+- default interaction style
+- what to avoid stylistically
+- how Hermes should handle uncertainty, disagreement, or ambiguity
+
+Use it less for:
+- one-off project instructions
+- file paths
+- repo conventions
+- temporary workflow details
+
+Those belong in `AGENTS.md`, not `SOUL.md`.
+
+## Good SOUL.md content
+
+A good SOUL file is:
+- stable across contexts
+- broad enough to apply in many conversations
+- specific enough to materially shape the voice
+- focused on communication and identity, not task-specific instructions
+
+### Example
 
 ```markdown
 # Personality
 
-You are a pragmatic senior engineer with strong opinions about code quality.
-You prefer simple solutions over complex ones.
+You are a pragmatic senior engineer with strong taste.
+You optimize for truth, clarity, and usefulness over politeness theater.
 
-## Communication Style
-- Be direct and to the point
-- Use dry humor sparingly
-- When something is a bad idea, say so clearly
-- Give concrete recommendations, not vague suggestions
+## Style
+- Be direct without being cold
+- Prefer substance over filler
+- Push back when something is a bad idea
+- Admit uncertainty plainly
+- Keep explanations compact unless depth is useful
 
-## Code Preferences  
-- Favor readability over cleverness
-- Prefer explicit over implicit
-- Always explain WHY, not just what
-- Suggest tests for any non-trivial code
+## What to avoid
+- Sycophancy
+- Hype language
+- Repeating the user's framing if it's wrong
+- Overexplaining obvious things
 
-## Pet Peeves
-- Unnecessary abstractions
-- Comments that restate the code
-- Over-engineering for hypothetical future requirements
+## Technical posture
+- Prefer simple systems over clever systems
+- Care about operational reality, not idealized architecture
+- Treat edge cases as part of the design, not cleanup
 ```
 
-:::tip
-SOUL.md is scanned for prompt injection patterns before being loaded. Keep the content focused on personality and communication guidance — avoid instructions that look like system prompt overrides.
-:::
+## What Hermes injects into the prompt
 
-## Built-In Personalities
+If `SOUL.md` contains text, Hermes injects the file's text itself — not a wrapper explanation.
 
-Hermes ships with 14 built-in personalities defined in the CLI config. Switch between them with the `/personality` command.
+So the system prompt gets the content directly, after:
+- prompt-injection scanning
+- truncation if it is too large
+
+If the file is empty or whitespace-only, nothing from `SOUL.md` is added.
+
+## Security scanning
+
+`SOUL.md` is scanned like other context-bearing files for prompt injection patterns before inclusion.
+
+That means you should still keep it focused on persona/voice rather than trying to sneak in strange meta-instructions.
+
+## SOUL.md vs AGENTS.md
+
+This is the most important distinction.
+
+### SOUL.md
+Use for:
+- identity
+- tone
+- style
+- communication defaults
+- personality-level behavior
+
+### AGENTS.md
+Use for:
+- project architecture
+- coding conventions
+- tool preferences
+- repo-specific workflows
+- commands, ports, paths, deployment notes
+
+A useful rule:
+- if it should follow you everywhere, it belongs in `SOUL.md`
+- if it belongs to a project, it belongs in `AGENTS.md`
+
+## SOUL.md vs `/personality`
+
+`SOUL.md` is your durable default personality.
+
+`/personality` is a session-level overlay that changes or supplements the current system prompt.
+
+So:
+- `SOUL.md` = baseline voice
+- `/personality` = temporary mode switch
+
+Examples:
+- keep a pragmatic default SOUL, then use `/personality teacher` for a tutoring conversation
+- keep a concise SOUL, then use `/personality creative` for brainstorming
+
+## Built-in personalities
+
+Hermes ships with built-in personalities you can switch to with `/personality`.
 
 | Name | Description |
 |------|-------------|
@@ -80,149 +190,79 @@ Hermes ships with 14 built-in personalities defined in the CLI config. Switch be
 | **philosopher** | Deep contemplation on every query |
 | **hype** | MAXIMUM ENERGY AND ENTHUSIASM!!! |
 
-### Examples
+## Switching personalities with commands
 
-**kawaii:**
-`You are a kawaii assistant! Use cute expressions and sparkles, be super enthusiastic about everything! Every response should feel warm and adorable desu~!`
+### CLI
 
-**noir:**
-> The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?
-
-**pirate:**
-> Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!
-
-## Switching Personalities
-
-### CLI: /personality Command
-
-```
-/personality            — List all available personalities
-/personality kawaii      — Switch to kawaii personality
-/personality technical   — Switch to technical personality
+```text
+/personality
+/personality concise
+/personality technical
 ```
 
-When you set a personality via `/personality`, it:
-1. Sets the system prompt to that personality's text
-2. Forces the agent to reinitialize
-3. Saves the choice to `agent.system_prompt` in `~/.hermes/config.yaml`
+### Messaging platforms
 
-The change persists across sessions until you set a different personality or clear it.
-
-### Gateway: /personality Command
-
-On messaging platforms (Telegram, Discord, etc.), the `/personality` command works the same way:
-
-```
-/personality kawaii
+```text
+/personality teacher
 ```
 
-### Config File
+These are convenient overlays, but your global `SOUL.md` still gives Hermes its persistent default personality unless the overlay meaningfully changes it.
 
-Set a personality directly in config:
+## Custom personalities in config
 
-```yaml
-# In ~/.hermes/config.yaml
-agent:
-  system_prompt: "You are a concise assistant. Keep responses brief and to the point."
-```
-
-Or via environment variable:
-
-```bash
-# In ~/.hermes/.env
-HERMES_EPHEMERAL_SYSTEM_PROMPT="You are a pragmatic engineer who gives direct answers."
-```
-
-:::info
-The environment variable `HERMES_EPHEMERAL_SYSTEM_PROMPT` takes precedence over the config file's `agent.system_prompt` value.
-:::
-
-## Custom Personalities
-
-### Defining Custom Personalities in Config
-
-Add your own personalities to `~/.hermes/config.yaml` under `agent.personalities`:
+You can also define named custom personalities in `~/.hermes/config.yaml` under `agent.personalities`.
 
 ```yaml
 agent:
   personalities:
-    # Built-in personalities are still available
-    # Add your own:
     codereviewer: >
-      You are a meticulous code reviewer. For every piece of code shown,
-      identify potential bugs, performance issues, security vulnerabilities,
-      and style improvements. Be thorough but constructive.
-    
-    mentor: >
-      You are a kind, encouraging coding mentor. Break down complex concepts
-      into digestible pieces. Celebrate small wins. When the user makes a
-      mistake, guide them to the answer rather than giving it directly.
-    
-    sysadmin: >
-      You are an experienced Linux sysadmin. You think in terms of
-      infrastructure, reliability, and automation. Always consider
-      security implications and prefer battle-tested solutions.
-    
-    dataengineer: >
-      You are a data engineering expert specializing in ETL pipelines,
-      data modeling, and analytics infrastructure. You think in SQL
-      and prefer dbt for transformations.
+      You are a meticulous code reviewer. Identify bugs, security issues,
+      performance concerns, and unclear design choices. Be precise and constructive.
 ```
 
-Then use them with `/personality`:
+Then switch to it with:
 
-```
+```text
 /personality codereviewer
-/personality mentor
 ```
 
-### Using SOUL.md for Project-Specific Personas
+## Recommended workflow
 
-For project-specific personalities that don't need to be in your global config, use SOUL.md:
+A strong default setup is:
 
-```bash
-# Create a project-level personality
-cat > ./SOUL.md << 'EOF'
-You are assisting with a machine learning research project.
+1. Keep a thoughtful global `SOUL.md` in `~/.hermes/SOUL.md`
+2. Put project instructions in `AGENTS.md`
+3. Use `/personality` only when you want a temporary mode shift
 
-## Tone
-- Academic but accessible
-- Always cite relevant papers when applicable
-- Be precise with mathematical notation
-- Prefer PyTorch over TensorFlow
+That gives you:
+- a stable voice
+- project-specific behavior where it belongs
+- temporary control when needed
 
-## Workflow
-- Suggest experiment tracking (W&B, MLflow) for any training run
-- Always ask about compute constraints before suggesting model sizes
-- Recommend data validation before training
-EOF
-```
+## How personality interacts with the full prompt
 
-This personality only applies when running Hermes from that project directory.
+At a high level, the prompt stack includes:
+1. default Hermes identity
+2. memory/user context
+3. skills guidance
+4. context files such as `AGENTS.md`, `.cursorrules`, and global `SOUL.md`
+5. platform-specific formatting hints
+6. optional system-prompt overlays such as `/personality`
 
-## How Personality Interacts with the System Prompt
+So `SOUL.md` is important, but it is one layer in a broader system.
 
-The system prompt is assembled in layers (from `agent/prompt_builder.py` and `run_agent.py`):
+## Related docs
 
-1. **Default identity**: *"You are Hermes Agent, an intelligent AI assistant created by Nous Research..."*
-2. **Platform hint**: formatting guidance based on the platform (CLI, Telegram, etc.)
-3. **Memory**: MEMORY.md and USER.md contents
-4. **Skills index**: available skills listing
-5. **Context files**: AGENTS.md, .cursorrules, **SOUL.md** (personality lives here)
-6. **Ephemeral system prompt**: `agent.system_prompt` or `HERMES_EPHEMERAL_SYSTEM_PROMPT` (overlaid)
-7. **Session context**: platform, user info, connected platforms (gateway only)
+- [Context Files](/docs/user-guide/features/context-files)
+- [Configuration](/docs/user-guide/configuration)
+- [Tips & Best Practices](/docs/guides/tips)
+- [SOUL.md Guide](/docs/guides/use-soul-with-hermes)
 
-:::info
-**SOUL.md vs agent.system_prompt**: SOUL.md is part of the "Project Context" section and coexists with the default identity. The `agent.system_prompt` (set via `/personality` or config) is an ephemeral overlay. Both can be active simultaneously — SOUL.md for tone/personality, system_prompt for additional instructions.
-:::
+## CLI appearance vs conversational personality
 
-## Display Personality (CLI Banner)
+Conversational personality and CLI appearance are separate:
 
-The `display.personality` config option controls the CLI's **visual** personality (banner art, spinner messages), independent of the agent's conversational personality:
+- `SOUL.md`, `agent.system_prompt`, and `/personality` affect how Hermes speaks
+- `display.skin` and `/skin` affect how Hermes looks in the terminal
 
-```yaml
-display:
-  personality: kawaii  # Affects CLI banner and spinner art
-```
-
-This is purely cosmetic and doesn't affect the agent's responses — only the ASCII art and loading messages shown in the terminal.
+For terminal appearance, see [Skins & Themes](./skins.md).

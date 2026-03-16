@@ -1,231 +1,392 @@
 ---
 sidebar_position: 1
 title: "CLI Commands Reference"
-description: "Comprehensive reference for all hermes CLI commands and slash commands"
+description: "Authoritative reference for Hermes terminal commands and command families"
 ---
 
 # CLI Commands Reference
 
-## Terminal Commands
+This page covers the **terminal commands** you run from your shell.
 
-These are commands you run from your shell.
+For in-chat slash commands, see [Slash Commands Reference](./slash-commands.md).
 
-### Core Commands
+## Global entrypoint
+
+```bash
+hermes [global-options] <command> [subcommand/options]
+```
+
+### Global options
+
+| Option | Description |
+|--------|-------------|
+| `--version`, `-V` | Show version and exit. |
+| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
+| `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
+| `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
+| `--yolo` | Bypass dangerous-command approval prompts. |
+| `--pass-session-id` | Include the session ID in the agent's system prompt. |
+
+## Top-level commands
+
+| Command | Purpose |
+|---------|---------|
+| `hermes chat` | Interactive or one-shot chat with the agent. |
+| `hermes model` | Interactively choose the default provider and model. |
+| `hermes gateway` | Run or manage the messaging gateway service. |
+| `hermes setup` | Interactive setup wizard for all or part of the configuration. |
+| `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
+| `hermes status` | Show agent, auth, and platform status. |
+| `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes config` | Show, edit, migrate, and query configuration files. |
+| `hermes pairing` | Approve or revoke messaging pairing codes. |
+| `hermes skills` | Browse, install, publish, audit, and configure skills. |
+| `hermes honcho` | Manage Honcho cross-session memory integration. |
+| `hermes acp` | Run Hermes as an ACP server for editor integration. |
+| `hermes tools` | Configure enabled tools per platform. |
+| `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
+| `hermes insights` | Show token/cost/activity analytics. |
+| `hermes claw` | OpenClaw migration helpers. |
+| `hermes version` | Show version information. |
+| `hermes update` | Pull latest code and reinstall dependencies. |
+| `hermes uninstall` | Remove Hermes from the system. |
+
+## `hermes chat`
+
+```bash
+hermes chat [options]
+```
+
+Common options:
+
+| Option | Description |
+|--------|-------------|
+| `-q`, `--query "..."` | One-shot, non-interactive prompt. |
+| `-m`, `--model <model>` | Override the model for this run. |
+| `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. |
+| `-v`, `--verbose` | Verbose output. |
+| `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
+| `--worktree` | Create an isolated git worktree for this run. |
+| `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
+| `--yolo` | Skip approval prompts. |
+| `--pass-session-id` | Pass the session ID into the system prompt. |
+
+Examples:
+
+```bash
+hermes
+hermes chat -q "Summarize the latest PRs"
+hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
+hermes chat --toolsets web,terminal,skills
+hermes chat --quiet -q "Return only JSON"
+hermes chat --worktree -q "Review this repo and open a PR"
+```
+
+## `hermes model`
+
+Interactive provider + model selector.
+
+```bash
+hermes model
+```
+
+Use this when you want to:
+- switch default providers
+- log into OAuth-backed providers during model selection
+- pick from provider-specific model lists
+- save the new default into config
+
+## `hermes gateway`
+
+```bash
+hermes gateway <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `run` | Run the gateway in the foreground. |
+| `start` | Start the installed gateway service. |
+| `stop` | Stop the service. |
+| `restart` | Restart the service. |
+| `status` | Show service status. |
+| `install` | Install as a user service (`systemd` on Linux, `launchd` on macOS). |
+| `uninstall` | Remove the installed service. |
+| `setup` | Interactive messaging-platform setup. |
+
+## `hermes setup`
+
+```bash
+hermes setup [model|terminal|gateway|tools|agent] [--non-interactive] [--reset]
+```
+
+Use the full wizard or jump into one section:
+
+| Section | Description |
+|---------|-------------|
+| `model` | Provider and model setup. |
+| `terminal` | Terminal backend and sandbox setup. |
+| `gateway` | Messaging platform setup. |
+| `tools` | Enable/disable tools per platform. |
+| `agent` | Agent behavior settings. |
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--non-interactive` | Use defaults / environment values without prompts. |
+| `--reset` | Reset configuration to defaults before setup. |
+
+## `hermes whatsapp`
+
+```bash
+hermes whatsapp
+```
+
+Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes login` / `hermes logout`
+
+```bash
+hermes login [--provider nous|openai-codex] [--portal-url ...] [--inference-url ...]
+hermes logout [--provider nous|openai-codex]
+```
+
+`login` supports:
+- Nous Portal OAuth/device flow
+- OpenAI Codex OAuth/device flow
+
+Useful options for `login`:
+- `--no-browser`
+- `--timeout <seconds>`
+- `--ca-bundle <pem>`
+- `--insecure`
+
+## `hermes status`
+
+```bash
+hermes status [--all] [--deep]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--all` | Show all details in a shareable redacted format. |
+| `--deep` | Run deeper checks that may take longer. |
+
+## `hermes cron`
+
+```bash
+hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Show scheduled jobs. |
+| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`. |
+| `edit` | Update a job's schedule, prompt, name, delivery, repeat count, or attached skills. Supports `--clear-skills`, `--add-skill`, and `--remove-skill`. |
+| `pause` | Pause a job without deleting it. |
+| `resume` | Resume a paused job and compute its next future run. |
+| `run` | Trigger a job on the next scheduler tick. |
+| `remove` | Delete a scheduled job. |
+| `status` | Check whether the cron scheduler is running. |
+| `tick` | Run due jobs once and exit. |
+
+## `hermes doctor`
+
+```bash
+hermes doctor [--fix]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--fix` | Attempt automatic repairs where possible. |
+
+## `hermes config`
+
+```bash
+hermes config <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `show` | Show current config values. |
+| `edit` | Open `config.yaml` in your editor. |
+| `set <key> <value>` | Set a config value. |
+| `path` | Print the config file path. |
+| `env-path` | Print the `.env` file path. |
+| `check` | Check for missing or stale config. |
+| `migrate` | Add newly introduced options interactively. |
+
+## `hermes pairing`
+
+```bash
+hermes pairing <list|approve|revoke|clear-pending>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Show pending and approved users. |
+| `approve <platform> <code>` | Approve a pairing code. |
+| `revoke <platform> <user-id>` | Revoke a user's access. |
+| `clear-pending` | Clear pending pairing codes. |
+
+## `hermes skills`
+
+```bash
+hermes skills <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `browse` | Paginated browser for skill registries. |
+| `search` | Search skill registries. |
+| `install` | Install a skill. |
+| `inspect` | Preview a skill without installing it. |
+| `list` | List installed skills. |
+| `check` | Check installed hub skills for upstream updates. |
+| `update` | Reinstall hub skills with upstream changes when available. |
+| `audit` | Re-scan installed hub skills. |
+| `uninstall` | Remove a hub-installed skill. |
+| `publish` | Publish a skill to a registry. |
+| `snapshot` | Export/import skill configurations. |
+| `tap` | Manage custom skill sources. |
+| `config` | Interactive enable/disable configuration for skills by platform. |
+
+Common examples:
+
+```bash
+hermes skills browse
+hermes skills browse --source official
+hermes skills search react --source skills-sh
+hermes skills search https://mintlify.com/docs --source well-known
+hermes skills inspect official/security/1password
+hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
+hermes skills install official/migration/openclaw-migration
+hermes skills install skills-sh/anthropics/skills/pdf --force
+hermes skills check
+hermes skills update
+hermes skills config
+```
+
+Notes:
+- `--force` can override non-dangerous policy blocks for third-party/community skills.
+- `--force` does not override a `dangerous` scan verdict.
+- `--source skills-sh` searches the public `skills.sh` directory.
+- `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+
+## `hermes honcho`
+
+```bash
+hermes honcho <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `setup` | Interactive Honcho setup wizard. |
+| `status` | Show current Honcho config and connection status. |
+| `sessions` | List known Honcho session mappings. |
+| `map` | Map the current directory to a Honcho session name. |
+| `peer` | Show or update peer names and dialectic reasoning level. |
+| `mode` | Show or set memory mode: `hybrid`, `honcho`, or `local`. |
+| `tokens` | Show or set token budgets for context and dialectic. |
+| `identity` | Seed or show the AI peer identity representation. |
+| `migrate` | Migration guide from openclaw-honcho to Hermes Honcho. |
+
+## `hermes acp`
+
+```bash
+hermes acp
+```
+
+Starts Hermes as an ACP (Agent Client Protocol) stdio server for editor integration.
+
+Related entrypoints:
+
+```bash
+hermes-acp
+python -m acp_adapter
+```
+
+Install support first:
+
+```bash
+pip install -e '.[acp]'
+```
+
+See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
+
+## `hermes tools`
+
+```bash
+hermes tools [--summary]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--summary` | Print the current enabled-tools summary and exit. |
+
+Without `--summary`, this launches the interactive per-platform tool configuration UI.
+
+## `hermes sessions`
+
+```bash
+hermes sessions <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List recent sessions. |
+| `browse` | Interactive session picker with search and resume. |
+| `export <output> [--session-id ID]` | Export sessions to JSONL. |
+| `delete <session-id>` | Delete one session. |
+| `prune` | Delete old sessions. |
+| `stats` | Show session-store statistics. |
+| `rename <session-id> <title>` | Set or change a session title. |
+
+## `hermes insights`
+
+```bash
+hermes insights [--days N] [--source platform]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--days <n>` | Analyze the last `n` days (default: 30). |
+| `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+
+## `hermes claw`
+
+```bash
+hermes claw migrate
+```
+
+Used to migrate settings, memories, skills, and keys from OpenClaw to Hermes.
+
+## Maintenance commands
 
 | Command | Description |
 |---------|-------------|
-| `hermes` | Start interactive chat (default) |
-| `hermes chat -q "Hello"` | Single query mode (non-interactive) |
-| `hermes chat --continue` / `-c` | Resume the most recent session |
-| `hermes chat -c "my project"` | Resume a session by name (latest in lineage) |
-| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session by ID or title |
-| `hermes chat --model <name>` | Use a specific model |
-| `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`) |
-| `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
-| `hermes chat --verbose` | Enable verbose/debug output |
-| `hermes --worktree` / `-w` | Start in an isolated git worktree (for parallel agents) |
-| `hermes --checkpoints` | Enable filesystem checkpoints before destructive file operations |
+| `hermes version` | Print version information. |
+| `hermes update` | Pull latest changes and reinstall dependencies. |
+| `hermes uninstall [--full] [--yes]` | Remove Hermes, optionally deleting all config/data. |
 
-### Provider & Model Management
+## See also
 
-| Command | Description |
-|---------|-------------|
-| `hermes model` | Switch provider and model interactively |
-| `hermes login` | OAuth login to a provider (use `--provider` to specify) |
-| `hermes logout` | Clear provider authentication |
-
-### Configuration
-
-| Command | Description |
-|---------|-------------|
-| `hermes setup` | Full setup wizard — configures provider, model, terminal, and messaging all at once |
-| `hermes config` | View current configuration |
-| `hermes config edit` | Open config.yaml in your editor |
-| `hermes config set KEY VAL` | Set a specific value |
-| `hermes config check` | Check for missing config (useful after updates) |
-| `hermes config migrate` | Interactively add missing options |
-| `hermes tools` | Interactive tool configuration per platform |
-| `hermes status` | Show configuration status (including auth) |
-| `hermes doctor` | Diagnose issues |
-
-### Maintenance
-
-| Command | Description |
-|---------|-------------|
-| `hermes update` | Update to latest version |
-| `hermes uninstall` | Uninstall (can keep configs for later reinstall) |
-| `hermes version` | Show version info |
-
-### Gateway (Messaging + Cron)
-
-| Command | Description |
-|---------|-------------|
-| `hermes gateway` | Run gateway in foreground |
-| `hermes gateway setup` | Configure messaging platforms interactively |
-| `hermes gateway install` | Install as system service (Linux/macOS) |
-| `hermes gateway start` | Start the service |
-| `hermes gateway stop` | Stop the service |
-| `hermes gateway restart` | Restart the service |
-| `hermes gateway status` | Check service status |
-| `hermes gateway uninstall` | Uninstall the system service |
-| `hermes whatsapp` | Pair WhatsApp via QR code |
-
-### Skills
-
-| Command | Description |
-|---------|-------------|
-| `hermes skills browse` | Browse all available skills with pagination (official first) |
-| `hermes skills search <query>` | Search skill registries |
-| `hermes skills install <identifier>` | Install a skill (with security scan) |
-| `hermes skills inspect <identifier>` | Preview before installing |
-| `hermes skills list` | List installed skills |
-| `hermes skills list --source hub` | List hub-installed skills only |
-| `hermes skills audit` | Re-scan all hub skills |
-| `hermes skills uninstall <name>` | Remove a hub skill |
-| `hermes skills publish <path> --to github --repo owner/repo` | Publish a skill |
-| `hermes skills snapshot export <file>` | Export skill config |
-| `hermes skills snapshot import <file>` | Import from snapshot |
-| `hermes skills tap add <repo>` | Add a custom source |
-| `hermes skills tap remove <repo>` | Remove a source |
-| `hermes skills tap list` | List custom sources |
-
-### Cron & Pairing
-
-| Command | Description |
-|---------|-------------|
-| `hermes cron list` | View scheduled jobs |
-| `hermes cron status` | Check if cron scheduler is running |
-| `hermes cron tick` | Manually trigger a cron tick |
-| `hermes pairing list` | View pending + approved users |
-| `hermes pairing approve <platform> <code>` | Approve a pairing code |
-| `hermes pairing revoke <platform> <user_id>` | Remove user access |
-| `hermes pairing clear-pending` | Clear all pending pairing requests |
-
-### Sessions
-
-| Command | Description |
-|---------|-------------|
-| `hermes sessions list` | Browse past sessions (shows title, preview, last active) |
-| `hermes sessions rename <id> <title>` | Set or change a session's title |
-| `hermes sessions export <id>` | Export a session |
-| `hermes sessions delete <id>` | Delete a specific session |
-| `hermes sessions prune` | Remove old sessions |
-| `hermes sessions stats` | Show session statistics |
-
-### Insights
-
-| Command | Description |
-|---------|-------------|
-| `hermes insights` | Show usage analytics for the last 30 days |
-| `hermes insights --days 7` | Analyze a custom time window |
-| `hermes insights --source telegram` | Filter by platform |
-
----
-
-## Slash Commands (Inside Chat)
-
-Type `/` in the interactive CLI to see an autocomplete dropdown.
-
-### Navigation & Control
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/quit` | Exit the CLI (aliases: `/exit`, `/q`) |
-| `/clear` | Clear screen and reset conversation |
-| `/new` | Start a new conversation |
-| `/reset` | Reset conversation only (keep screen) |
-
-### Tools & Configuration
-
-| Command | Description |
-|---------|-------------|
-| `/tools` | List all available tools |
-| `/toolsets` | List available toolsets |
-| `/model [provider:model]` | Show or change the current model (supports `provider:model` syntax to switch providers) |
-| `/provider` | Show available providers with auth status |
-| `/config` | Show current configuration |
-| `/prompt [text]` | View/set custom system prompt |
-| `/personality [name]` | Set a predefined personality |
-| `/reasoning [arg]` | Manage reasoning effort and display. Args: effort level (`none`, `low`, `medium`, `high`, `xhigh`) or display toggle (`show`, `hide`). No args shows current state. |
-
-### Conversation
-
-| Command | Description |
-|---------|-------------|
-| `/history` | Show conversation history |
-| `/retry` | Retry the last message |
-| `/undo` | Remove the last user/assistant exchange |
-| `/save` | Save the current conversation |
-| `/compress` | Manually compress conversation context |
-| `/title [name]` | Set or show the current session's title |
-| `/usage` | Show token usage for this session |
-| `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
-
-#### /compress
-
-Manually triggers context compression on the current conversation. This summarizes middle turns of the conversation while preserving the first 3 and last 4 turns, significantly reducing token count. Useful when:
-
-- The conversation is getting long and you want to reduce costs
-- You're approaching the model's context limit
-- You want to continue the conversation without starting fresh
-
-Requirements: at least 4 messages in the conversation. The configured model (or `compression.summary_model` from config) is used to generate the summary. After compression, the session continues seamlessly with the compressed history.
-
-Reports the result as: `Compressed: X → Y messages, ~N → ~M tokens`.
-
-:::tip
-Compression also happens automatically when approaching context limits (configurable via `compression.threshold` in `config.yaml`). Use `/compress` when you want to trigger it early.
-:::
-
-### Media & Input
-
-| Command | Description |
-|---------|-------------|
-| `/paste` | Check clipboard for an image and attach it (see [Vision & Image Paste](/docs/user-guide/features/vision)) |
-
-### Skills & Scheduling
-
-| Command | Description |
-|---------|-------------|
-| `/cron` | Manage scheduled tasks |
-| `/skills` | Browse, search, install, inspect, or manage skills |
-| `/platforms` | Show gateway/messaging platform status |
-| `/verbose` | Cycle tool progress: off → new → all → verbose |
-| `/<skill-name>` | Invoke any installed skill |
-
-### Gateway-Only Commands
-
-These work in messaging platforms (Telegram, Discord, Slack, WhatsApp) but not the interactive CLI:
-
-| Command | Description |
-|---------|-------------|
-| `/stop` | Stop the running agent (no follow-up message) |
-| `/sethome` | Set this chat as the home channel |
-| `/status` | Show session info |
-| `/reload-mcp` | Reload MCP servers from config |
-| `/rollback` | List filesystem checkpoints for the current directory |
-| `/rollback <N>` | Restore files to checkpoint #N |
-| `/update` | Update Hermes Agent to the latest version |
-
----
-
-## Keybindings
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Alt+Enter` / `Ctrl+J` | New line (multi-line input) |
-| `Alt+V` | Paste image from clipboard (see [Vision & Image Paste](/docs/user-guide/features/vision)) |
-| `Ctrl+V` | Paste text + auto-check for clipboard image |
-| `Ctrl+C` | Clear input/images, interrupt agent, or exit (contextual) |
-| `Ctrl+D` | Exit |
-| `Tab` | Autocomplete slash commands |
-
-:::tip
-Commands are case-insensitive — `/HELP` works the same as `/help`.
-:::
-
-:::info Image paste keybindings
-`Alt+V` works in most terminals but **not** in VSCode's integrated terminal (VSCode intercepts Alt+key combos). `Ctrl+V` only triggers an image check when the clipboard also contains text (terminals don't send paste events for image-only clipboard). The `/paste` command is the universal fallback. See the [full compatibility table](/docs/user-guide/features/vision#platform-compatibility).
-:::
+- [Slash Commands Reference](./slash-commands.md)
+- [CLI Interface](../user-guide/cli.md)
+- [Sessions](../user-guide/sessions.md)
+- [Skills System](../user-guide/features/skills.md)
+- [Skins & Themes](../user-guide/features/skins.md)

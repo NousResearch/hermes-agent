@@ -484,3 +484,22 @@ class TestResizeToolPool:
         """resize_tool_pool should not raise."""
         resize_tool_pool(16)  # Small pool for testing
         resize_tool_pool(128)  # Restore default
+
+    def test_resize_shuts_down_previous_executor(self, monkeypatch):
+        """Replacing the global tool executor should shut down the old pool."""
+        import environments.agent_loop as agent_loop_module
+
+        old_executor = MagicMock()
+        new_executor = MagicMock()
+
+        monkeypatch.setattr(agent_loop_module, "_tool_executor", old_executor)
+        monkeypatch.setattr(
+            agent_loop_module.concurrent.futures,
+            "ThreadPoolExecutor",
+            MagicMock(return_value=new_executor),
+        )
+
+        resize_tool_pool(16)
+
+        old_executor.shutdown.assert_called_once_with(wait=False)
+        assert agent_loop_module._tool_executor is new_executor

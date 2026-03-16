@@ -162,6 +162,22 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    config_copy = dict(cli.CLI_CONFIG)
+    model_copy = dict(config_copy.get("model", {}))
+    model_copy["provider"] = "custom"
+    model_copy["base_url"] = "https://api.fireworks.ai/inference/v1"
+    config_copy["model"] = model_copy
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+
+    shell = cli.HermesCLI(model="fireworks/minimax-m2p5", compact=True, max_turns=1)
+
+    assert shell.requested_provider == "custom"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must
@@ -170,6 +186,11 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    # Ensure local user config does not leak a model into the test
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "",
+        "base_url": "https://openrouter.ai/api/v1",
+    })
 
     def _runtime_resolve(**kwargs):
         return {
@@ -224,6 +245,11 @@ def test_codex_provider_uses_config_model(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    # Prevent live API call from overriding the config model
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
 
     shell = cli.HermesCLI(compact=True, max_turns=1)
 
@@ -311,3 +337,41 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "Warning:" in output
     assert "falling back to auto provider detection" in output.lower()
     assert "No change." in output
+
+
+def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    saved_env = {}
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": "http://localhost:8000/v1",
+            "suggested_base_url": "http://localhost:8000/v1",
+            "used_fallback": True,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "custom", "base_url": ""}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    answers = iter(["http://localhost:8000", "local-key", "llm"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Saving the working base URL instead" in output
+    assert saved_env["OPENAI_BASE_URL"] == "http://localhost:8000/v1"
+    assert saved_env["OPENAI_API_KEY"] == "local-key"
+    assert saved_env["MODEL"] == "llm"

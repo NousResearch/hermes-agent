@@ -182,7 +182,7 @@ class TestBuildSessionContextPrompt:
             platforms={
                 Platform.DISCORD: PlatformConfig(
                     enabled=True,
-                    token="fake-discord-token",
+                    token="fake-d...oken",
                 ),
             },
         )
@@ -197,6 +197,27 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Discord" in prompt
+        assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
+
+    def test_slack_prompt_includes_platform_notes(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "cannot search" in prompt.lower()
+        assert "pin" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
@@ -317,7 +338,7 @@ class TestSessionStoreRewriteTranscript:
 
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
-    so WhatsApp DMs include chat_id while other DMs do not."""
+    so DMs are isolated by chat_id across platforms."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -348,15 +369,72 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         assert store._generate_session_key(source) == build_session_key(source)
 
-    def test_telegram_dm_omits_chat_id(self):
-        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+    def test_store_creates_distinct_group_sessions_per_user(self, store):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123:alice"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123:bob"
+        assert first_entry.session_id != second_entry.session_id
+
+    def test_store_shares_group_sessions_when_disabled_in_config(self, store):
+        store.config.group_sessions_per_user = False
+
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123"
+        assert first_entry.session_id == second_entry.session_id
+
+    def test_telegram_dm_includes_chat_id(self):
+        """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="99",
             chat_type="dm",
         )
         key = build_session_key(source)
-        assert key == "agent:main:telegram:dm"
+        assert key == "agent:main:telegram:dm:99"
+
+    def test_distinct_dm_chat_ids_get_distinct_session_keys(self):
+        """Different DM chats must not collapse into one shared session."""
+        first = SessionSource(platform=Platform.TELEGRAM, chat_id="99", chat_type="dm")
+        second = SessionSource(platform=Platform.TELEGRAM, chat_id="100", chat_type="dm")
+
+        assert build_session_key(first) == "agent:main:telegram:dm:99"
+        assert build_session_key(second) == "agent:main:telegram:dm:100"
+        assert build_session_key(first) != build_session_key(second)
 
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
@@ -368,6 +446,41 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:discord:group:guild-123"
 
+    def test_group_sessions_are_isolated_per_user_when_user_id_present(self):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert build_session_key(first) == "agent:main:discord:group:guild-123:alice"
+        assert build_session_key(second) == "agent:main:discord:group:guild-123:bob"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_group_sessions_can_be_shared_when_isolation_disabled(self):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert build_session_key(first, group_sessions_per_user=False) == "agent:main:discord:group:guild-123"
+        assert build_session_key(second, group_sessions_per_user=False) == "agent:main:discord:group:guild-123"
+
     def test_group_thread_includes_thread_id(self):
         """Forum-style threads need a distinct session key within one group."""
         source = SessionSource(
@@ -378,6 +491,17 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
+
+    def test_group_thread_sessions_are_isolated_per_user(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:group:-1002285219667:17585:42"
 
 
 class TestSessionStoreEntriesAttribute:
@@ -556,3 +680,28 @@ class TestLastPromptTokens:
 
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
+
+    def test_update_session_passes_model_to_db(self, tmp_path):
+        """Gateway session updates should forward the resolved model to SQLite."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._save = MagicMock()
+        store._db = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", model="openai/gpt-5.4")
+
+        store._db.update_token_counts.assert_called_once_with(
+            "s1", 0, 0, model="openai/gpt-5.4"
+        )

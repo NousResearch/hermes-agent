@@ -50,6 +50,8 @@ hermes config set OPENAI_API_KEY ollama                       # Any non-empty va
 hermes config set HERMES_MODEL llama3.1
 ```
 
+You can also save the endpoint interactively with `hermes model`. Hermes persists that custom endpoint in `config.yaml`, and auxiliary tasks configured with provider `main` follow the same saved endpoint.
+
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
 ### How much does it cost?
@@ -391,20 +393,27 @@ mcp_servers:
 
 #### Tools not showing up from MCP server
 
-**Cause:** Server started but tool discovery failed, or tools are filtered out.
+**Cause:** Server started but tool discovery failed, tools were filtered out by config, or the server does not support the MCP capability you expected.
 
 **Solution:**
 - Check gateway/agent logs for MCP connection errors
 - Ensure the server responds to the `tools/list` RPC method
-- Restart the agent — MCP tools are discovered at startup
+- Review any `tools.include`, `tools.exclude`, `tools.resources`, `tools.prompts`, or `enabled` settings under that server
+- Remember that resource/prompt utility tools are only registered when the session actually supports those capabilities
+- Use `/reload-mcp` after changing config
 
 ```bash
 # Verify MCP servers are configured
-hermes config show | grep -A 5 mcp_servers
+hermes config show | grep -A 12 mcp_servers
 
-# Restart hermes to re-discover tools
+# Restart Hermes or reload MCP after config changes
 hermes chat
 ```
+
+See also:
+- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
+- [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
+- [MCP Config Reference](/docs/reference/mcp-config-reference)
 
 #### MCP timeout errors
 

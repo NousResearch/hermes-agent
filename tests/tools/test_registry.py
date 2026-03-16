@@ -10,7 +10,11 @@ def _dummy_handler(args, **kwargs):
 
 
 def _make_schema(name="test_tool"):
-    return {"name": name, "description": f"A {name}", "parameters": {"type": "object", "properties": {}}}
+    return {
+        "name": name,
+        "description": f"A {name}",
+        "parameters": {"type": "object", "properties": {}},
+    }
 
 
 class TestRegisterAndDispatch:
@@ -31,7 +35,12 @@ class TestRegisterAndDispatch:
         def echo_handler(args, **kw):
             return json.dumps(args)
 
-        reg.register(name="echo", toolset="core", schema=_make_schema("echo"), handler=echo_handler)
+        reg.register(
+            name="echo",
+            toolset="core",
+            schema=_make_schema("echo"),
+            handler=echo_handler,
+        )
         result = json.loads(reg.dispatch("echo", {"msg": "hi"}))
         assert result == {"msg": "hi"}
 
@@ -39,8 +48,12 @@ class TestRegisterAndDispatch:
 class TestGetDefinitions:
     def test_returns_openai_format(self):
         reg = ToolRegistry()
-        reg.register(name="t1", toolset="s1", schema=_make_schema("t1"), handler=_dummy_handler)
-        reg.register(name="t2", toolset="s1", schema=_make_schema("t2"), handler=_dummy_handler)
+        reg.register(
+            name="t1", toolset="s1", schema=_make_schema("t1"), handler=_dummy_handler
+        )
+        reg.register(
+            name="t2", toolset="s1", schema=_make_schema("t2"), handler=_dummy_handler
+        )
 
         defs = reg.get_definitions({"t1", "t2"})
         assert len(defs) == 2
@@ -80,7 +93,9 @@ class TestUnknownToolDispatch:
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):
         reg = ToolRegistry()
-        reg.register(name="t", toolset="free", schema=_make_schema(), handler=_dummy_handler)
+        reg.register(
+            name="t", toolset="free", schema=_make_schema(), handler=_dummy_handler
+        )
         assert reg.is_toolset_available("free") is True
 
     def test_check_fn_controls_availability(self):
@@ -96,8 +111,20 @@ class TestToolsetAvailability:
 
     def test_check_toolset_requirements(self):
         reg = ToolRegistry()
-        reg.register(name="a", toolset="ok", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: True)
-        reg.register(name="b", toolset="nope", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: False)
+        reg.register(
+            name="a",
+            toolset="ok",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="b",
+            toolset="nope",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
 
         reqs = reg.check_toolset_requirements()
         assert reqs["ok"] is True
@@ -105,8 +132,12 @@ class TestToolsetAvailability:
 
     def test_get_all_tool_names(self):
         reg = ToolRegistry()
-        reg.register(name="z_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler)
-        reg.register(name="a_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        reg.register(
+            name="z_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler
+        )
+        reg.register(
+            name="a_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler
+        )
         assert reg.get_all_tool_names() == ["a_tool", "z_tool"]
 
     def test_handler_exception_returns_error(self):
@@ -115,7 +146,9 @@ class TestToolsetAvailability:
         def bad_handler(args, **kw):
             raise RuntimeError("boom")
 
-        reg.register(name="bad", toolset="s", schema=_make_schema(), handler=bad_handler)
+        reg.register(
+            name="bad", toolset="s", schema=_make_schema(), handler=bad_handler
+        )
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
@@ -138,8 +171,20 @@ class TestCheckFnExceptionHandling:
 
     def test_check_toolset_requirements_survives_raising_check(self):
         reg = ToolRegistry()
-        reg.register(name="a", toolset="good", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: True)
-        reg.register(name="b", toolset="bad", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: (_ for _ in ()).throw(ImportError("no module")))
+        reg.register(
+            name="a",
+            toolset="good",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="b",
+            toolset="bad",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: (_ for _ in ()).throw(ImportError("no module")),
+        )
 
         reqs = reg.check_toolset_requirements()
         assert reqs["good"] is True
@@ -167,9 +212,73 @@ class TestCheckFnExceptionHandling:
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()
-        reg.register(name="a", toolset="works", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: True)
-        reg.register(name="b", toolset="crashes", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: 1 / 0)
+        reg.register(
+            name="a",
+            toolset="works",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="b",
+            toolset="crashes",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: 1 / 0,
+        )
 
         available, unavailable = reg.check_tool_availability()
         assert "works" in available
         assert any(u["name"] == "crashes" for u in unavailable)
+
+
+class TestEmojiMetadata:
+    """Verify per-tool emoji registration and lookup."""
+
+    def test_emoji_stored_on_entry(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="🔥",
+        )
+        assert reg._tools["t"].emoji == "🔥"
+
+    def test_get_emoji_returns_registered(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="🎯",
+        )
+        assert reg.get_emoji("t") == "🎯"
+
+    def test_get_emoji_returns_default_when_unset(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler,
+        )
+        assert reg.get_emoji("t") == "⚡"
+        assert reg.get_emoji("t", default="🔧") == "🔧"
+
+    def test_get_emoji_returns_default_for_unknown_tool(self):
+        reg = ToolRegistry()
+        assert reg.get_emoji("nonexistent") == "⚡"
+        assert reg.get_emoji("nonexistent", default="❓") == "❓"
+
+    def test_emoji_empty_string_treated_as_unset(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="",
+        )
+        assert reg.get_emoji("t") == "⚡"
+
+
+class TestSecretCaptureResultContract:
+    def test_secret_request_result_does_not_include_secret_value(self):
+        result = {
+            "success": True,
+            "stored_as": "TENOR_API_KEY",
+            "validated": False,
+        }
+        assert "secret" not in json.dumps(result).lower()

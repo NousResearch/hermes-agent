@@ -5,9 +5,17 @@ from unittest.mock import patch
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
 )
+
+
+class TestSecretCaptureGuidance:
+    def test_gateway_secret_capture_message_points_to_local_setup(self):
+        message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
+        assert "local cli" in message.lower()
+        assert "~/.hermes/.env" in message
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +258,29 @@ class TestExtractMedia:
         _, cleaned = BasePlatformAdapter.extract_media(content)
         assert "\n\n\n" not in cleaned
 
+    def test_media_tag_allows_optional_whitespace_after_colon(self):
+        content = "MEDIA: /path/to/audio.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/path/to/audio.ogg", False)]
+        assert cleaned == ""
+
+    def test_media_tag_strips_wrapping_quotes_and_backticks(self):
+        content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/path/to/file.png", False),
+            ("/path/to/file2.png", False),
+            ("/path/to/file3.png", False),
+        ]
+        assert cleaned == ""
+
+    def test_media_tag_supports_quoted_paths_with_spaces(self):
+        content = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/my image.png", False)]
+        assert "Here" in cleaned
+        assert "After" in cleaned
+
 
 # ---------------------------------------------------------------------------
 # truncate_message
@@ -259,13 +290,22 @@ class TestExtractMedia:
 class TestTruncateMessage:
     def _adapter(self):
         """Create a minimal adapter instance for testing static/instance methods."""
+
         class StubAdapter(BasePlatformAdapter):
-            async def connect(self): return True
-            async def disconnect(self): pass
-            async def send(self, *a, **kw): pass
-            async def get_chat_info(self, *a): return {}
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
 
         from gateway.config import Platform, PlatformConfig
+
         config = PlatformConfig(enabled=True, token="test")
         return StubAdapter(config=config, platform=Platform.TELEGRAM)
 
@@ -313,10 +353,10 @@ class TestTruncateMessage:
         chunks = adapter.truncate_message(msg, max_length=300)
         if len(chunks) > 1:
             # At least one continuation chunk should reopen with ```javascript
-            reopened_with_lang = any(
-                "```javascript" in chunk for chunk in chunks[1:]
+            reopened_with_lang = any("```javascript" in chunk for chunk in chunks[1:])
+            assert reopened_with_lang, (
+                "No continuation chunk reopened with language tag"
             )
-            assert reopened_with_lang, "No continuation chunk reopened with language tag"
 
     def test_continuation_chunks_have_balanced_fences(self):
         """Regression: continuation chunks must close reopened code blocks."""
@@ -336,7 +376,9 @@ class TestTruncateMessage:
         max_len = 200
         chunks = adapter.truncate_message(msg, max_length=max_len)
         for i, chunk in enumerate(chunks):
-            assert len(chunk) <= max_len + 20, f"Chunk {i} too long: {len(chunk)} > {max_len}"
+            assert len(chunk) <= max_len + 20, (
+                f"Chunk {i} too long: {len(chunk)} > {max_len}"
+            )
 
 
 # ---------------------------------------------------------------------------

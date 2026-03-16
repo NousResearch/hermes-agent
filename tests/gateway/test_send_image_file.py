@@ -17,6 +17,11 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
+def _run(coro):
+    """Run a coroutine in a fresh event loop for sync-style tests."""
+    return asyncio.run(coro)
+
+
 # ---------------------------------------------------------------------------
 # MEDIA: extraction tests for image files
 # ---------------------------------------------------------------------------
@@ -97,7 +102,7 @@ class TestTelegramSendImageFile:
         mock_msg.message_id = 42
         adapter._bot.send_photo = AsyncMock(return_value=mock_msg)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="12345", image_path=str(img))
         )
         assert result.success
@@ -110,7 +115,7 @@ class TestTelegramSendImageFile:
 
     def test_returns_error_when_file_missing(self, adapter):
         """send_image_file should return error for nonexistent file."""
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="12345", image_path="/nonexistent/image.png")
         )
         assert not result.success
@@ -119,7 +124,7 @@ class TestTelegramSendImageFile:
     def test_returns_error_when_not_connected(self, adapter):
         """send_image_file should return error when bot is None."""
         adapter._bot = None
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="12345", image_path="/tmp/img.png")
         )
         assert not result.success
@@ -135,7 +140,7 @@ class TestTelegramSendImageFile:
         adapter._bot.send_photo = AsyncMock(return_value=mock_msg)
 
         long_caption = "A" * 2000
-        asyncio.get_event_loop().run_until_complete(
+        _run(
             adapter.send_image_file(chat_id="12345", image_path=str(img), caption=long_caption)
         )
 
@@ -187,15 +192,66 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="67890", image_path=str(img))
         )
         assert result.success
         assert result.message_id == "99"
         mock_channel.send.assert_awaited_once()
 
+    def test_send_document_uploads_file_attachment(self, adapter, tmp_path):
+        """send_document should upload a native Discord attachment."""
+        pdf = tmp_path / "sample.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 100
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+            result = _run(
+                adapter.send_document(
+                    chat_id="67890",
+                    file_path=str(pdf),
+                    file_name="renamed.pdf",
+                    metadata={"thread_id": "123"},
+                )
+            )
+
+        assert result.success
+        assert result.message_id == "100"
+        assert "file" in mock_channel.send.call_args.kwargs
+        assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
+
+    def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
+        """send_video should upload a native Discord attachment."""
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50)
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 101
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+            result = _run(
+                adapter.send_video(
+                    chat_id="67890",
+                    video_path=str(video),
+                    metadata={"thread_id": "123"},
+                )
+            )
+
+        assert result.success
+        assert result.message_id == "101"
+        assert "file" in mock_channel.send.call_args.kwargs
+        assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
+
     def test_returns_error_when_file_missing(self, adapter):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="67890", image_path="/nonexistent.png")
         )
         assert not result.success
@@ -203,7 +259,7 @@ class TestDiscordSendImageFile:
 
     def test_returns_error_when_not_connected(self, adapter):
         adapter._client = None
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="67890", image_path="/tmp/img.png")
         )
         assert not result.success
@@ -213,7 +269,7 @@ class TestDiscordSendImageFile:
         adapter._client.get_channel = MagicMock(return_value=None)
         adapter._client.fetch_channel = AsyncMock(return_value=None)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="99999", image_path="/tmp/img.png")
         )
         assert not result.success
@@ -256,7 +312,7 @@ class TestSlackSendImageFile:
         mock_result = MagicMock()
         adapter._app.client.files_upload_v2 = AsyncMock(return_value=mock_result)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="C12345", image_path=str(img))
         )
         assert result.success
@@ -268,7 +324,7 @@ class TestSlackSendImageFile:
         assert call_kwargs["channel"] == "C12345"
 
     def test_returns_error_when_file_missing(self, adapter):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="C12345", image_path="/nonexistent.png")
         )
         assert not result.success
@@ -276,7 +332,7 @@ class TestSlackSendImageFile:
 
     def test_returns_error_when_not_connected(self, adapter):
         adapter._app = None
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             adapter.send_image_file(chat_id="C12345", image_path="/tmp/img.png")
         )
         assert not result.success
@@ -292,7 +348,9 @@ class TestScreenshotCleanup:
     def test_cleanup_removes_old_screenshots(self, tmp_path):
         """_cleanup_old_screenshots should remove files older than max_age_hours."""
         import time
-        from tools.browser_tool import _cleanup_old_screenshots
+        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+
+        _last_screenshot_cleanup_by_dir.clear()
 
         # Create a "fresh" file
         fresh = tmp_path / "browser_screenshot_fresh.png"
@@ -309,10 +367,32 @@ class TestScreenshotCleanup:
         assert fresh.exists(), "Fresh screenshot should not be removed"
         assert not old.exists(), "Old screenshot should be removed"
 
+    def test_cleanup_is_throttled_per_directory(self, tmp_path):
+        import time
+        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+
+        _last_screenshot_cleanup_by_dir.clear()
+
+        old = tmp_path / "browser_screenshot_old.png"
+        old.write_bytes(b"old")
+        old_time = time.time() - (25 * 3600)
+        os.utime(str(old), (old_time, old_time))
+
+        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
+        assert not old.exists()
+
+        old.write_bytes(b"old-again")
+        os.utime(str(old), (old_time, old_time))
+        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
+
+        assert old.exists(), "Repeated cleanup should be skipped while throttled"
+
     def test_cleanup_ignores_non_screenshot_files(self, tmp_path):
         """Only files matching browser_screenshot_*.png should be cleaned."""
         import time
-        from tools.browser_tool import _cleanup_old_screenshots
+        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+
+        _last_screenshot_cleanup_by_dir.clear()
 
         other_file = tmp_path / "important_data.txt"
         other_file.write_bytes(b"keep me")
@@ -325,11 +405,13 @@ class TestScreenshotCleanup:
 
     def test_cleanup_handles_empty_dir(self, tmp_path):
         """Cleanup should not fail on empty directory."""
-        from tools.browser_tool import _cleanup_old_screenshots
+        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(tmp_path, max_age_hours=24)  # Should not raise
 
     def test_cleanup_handles_nonexistent_dir(self):
         """Cleanup should not fail if directory doesn't exist."""
         from pathlib import Path
-        from tools.browser_tool import _cleanup_old_screenshots
+        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(Path("/nonexistent/dir"), max_age_hours=24)  # Should not raise

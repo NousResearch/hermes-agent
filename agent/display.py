@@ -59,6 +59,32 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
+    """Get the display emoji for a tool.
+
+    Resolution order:
+    1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
+    2. Tool registry's per-tool ``emoji`` field
+    3. *default* fallback
+    """
+    # 1. Skin override
+    skin = _get_skin()
+    if skin and skin.tool_emojis:
+        override = skin.tool_emojis.get(tool_name)
+        if override:
+            return override
+    # 2. Registry default
+    try:
+        from tools.registry import registry
+        emoji = registry.get_emoji(tool_name, default="")
+        if emoji:
+            return emoji
+    except Exception:
+        pass
+    # 3. Hardcoded fallback
+    return default
+
+
 # =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
@@ -68,7 +94,7 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
+def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | None:
     """Build a short preview of a tool call's primary argument for display."""
     if not args:
         return None
@@ -80,7 +106,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
-        "schedule_cronjob": "name",
+        "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
@@ -513,12 +539,15 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
-    if tool_name == "schedule_cronjob":
-        return _wrap(f"┊ ⏰ schedule  {_trunc(args.get('name', args.get('prompt', 'task')), 30)}  {dur}")
-    if tool_name == "list_cronjobs":
-        return _wrap(f"┊ ⏰ jobs      listing  {dur}")
-    if tool_name == "remove_cronjob":
-        return _wrap(f"┊ ⏰ remove    job {args.get('job_id', '?')}  {dur}")
+    if tool_name == "cronjob":
+        action = args.get("action", "?")
+        if action == "create":
+            skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
+            label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
+            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
+        if action == "list":
+            return _wrap(f"┊ ⏰ cron      listing  {dur}")
+        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name.startswith("rl_"):
         rl = {
             "rl_list_environments": "list envs", "rl_select_environment": f"select {args.get('name', '')}",

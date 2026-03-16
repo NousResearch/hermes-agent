@@ -227,15 +227,17 @@ class SessionDB:
         self._conn.commit()
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0
+        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
+        model: str = None,
     ) -> None:
-        """Increment token counters on a session."""
+        """Increment token counters and backfill model if not already set."""
         self._conn.execute(
             """UPDATE sessions SET
                input_tokens = input_tokens + ?,
-               output_tokens = output_tokens + ?
+               output_tokens = output_tokens + ?,
+               model = COALESCE(model, ?)
                WHERE id = ?""",
-            (input_tokens, output_tokens, session_id),
+            (input_tokens, output_tokens, model, session_id),
         )
         self._conn.commit()
 
@@ -246,6 +248,32 @@ class SessionDB:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
+        """Resolve an exact or uniquely prefixed session ID to the full ID.
+
+        Returns the exact ID when it exists. Otherwise treats the input as a
+        prefix and returns the single matching session ID if the prefix is
+        unambiguous. Returns None for no matches or ambiguous prefixes.
+        """
+        exact = self.get_session(session_id_or_prefix)
+        if exact:
+            return exact["id"]
+
+        escaped = (
+            session_id_or_prefix
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        cursor = self._conn.execute(
+            "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
+            (f"{escaped}%",),
+        )
+        matches = [row["id"] for row in cursor.fetchall()]
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     # Maximum length for session titles
     MAX_TITLE_LENGTH = 100
@@ -266,8 +294,6 @@ class SessionDB:
         """
         if not title:
             return None
-
-        import re
 
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
@@ -373,7 +399,6 @@ class SessionDB:
         Strips any existing " #N" suffix to find the base name, then finds
         the highest existing number and increments.
         """
-        import re
         # Strip existing #N suffix to find the true base
         match = re.match(r'^(.*?) #(\d+)$', base_title)
         if match:

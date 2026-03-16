@@ -329,6 +329,14 @@ license: MIT
 platforms: [macos, linux]          # Optional — restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)
+required_environment_variables:    # Optional — secure setup-on-load metadata
+  - name: MY_API_KEY
+    prompt: API key
+    help: Where to get it
+    required_for: full functionality
+prerequisites:                     # Optional legacy runtime requirements
+  env_vars: [MY_API_KEY]           #   Backward-compatible alias for required env vars
+  commands: [curl, jq]             #   Advisory only; does not hide the skill
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -410,6 +418,40 @@ metadata:
 ```
 
 The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
+
+### Skill setup metadata
+
+Skills can declare secure setup-on-load metadata via the `required_environment_variables` frontmatter field. Missing values do not hide the skill from discovery; they trigger a CLI-only secure prompt when the skill is actually loaded.
+
+```yaml
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+    required_for: full functionality
+```
+
+The user may skip setup and keep loading the skill. Hermes only exposes metadata (`stored_as`, `skipped`, `validated`) to the model — never the secret value.
+
+Legacy `prerequisites.env_vars` remains supported and is normalized into the new representation.
+
+```yaml
+prerequisites:
+  env_vars: [TENOR_API_KEY]       # Legacy alias for required_environment_variables
+  commands: [curl, jq]            # Advisory CLI checks
+```
+
+Gateway and messaging sessions never collect secrets in-band; they instruct the user to run `hermes setup` or update `~/.hermes/.env` locally.
+
+**When to declare required environment variables:**
+- The skill uses an API key or token that should be collected securely at load time
+- The skill can still be useful if the user skips setup, but may degrade gracefully
+
+**When to declare command prerequisites:**
+- The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
+- Treat command checks as guidance, not discovery-time hiding
+
+See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
 
 ### Skill guidelines
 

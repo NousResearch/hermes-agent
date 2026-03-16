@@ -57,7 +57,7 @@ _HERMES_CORE_TOOLS = [
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
-    "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+    "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Honcho memory tools (gated on honcho being active via check_fn)
@@ -125,8 +125,8 @@ TOOLSETS = {
     },
     
     "cronjob": {
-        "description": "Cronjob management tools - schedule, list, and remove automated tasks",
-        "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+        "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
+        "tools": ["cronjob"],
         "includes": []
     },
     
@@ -224,6 +224,25 @@ TOOLSETS = {
     # All platforms share the same core tools (including send_message,
     # which is gated on gateway running via its check_fn).
     # ==========================================================================
+
+    "hermes-acp": {
+        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
+            "todo", "memory",
+            "session_search",
+            "execute_code", "delegate_task",
+        ],
+        "includes": []
+    },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",

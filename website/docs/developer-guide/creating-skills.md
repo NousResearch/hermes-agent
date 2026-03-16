@@ -26,7 +26,7 @@ Make it a **Tool** when:
 
 Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
 
-```
+```text
 skills/
 ├── research/
 │   └── arxiv/
@@ -93,6 +93,22 @@ When set, the skill is automatically hidden from the system prompt, `skills_list
 
 See `skills/apple/` for examples of macOS-only skills.
 
+## Secure Setup on Load
+
+Use `required_environment_variables` when a skill needs an API key or token. Missing values do **not** hide the skill from discovery. Instead, Hermes prompts for them securely when the skill is loaded in the local CLI.
+
+```yaml
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+    required_for: full functionality
+```
+
+The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
+
+Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
+
 ## Skill Guidelines
 
 ### No External Dependencies
@@ -157,4 +173,11 @@ Trust levels:
 - `builtin` — ships with Hermes (always trusted)
 - `official` — from `optional-skills/` in the repo (builtin trust, no third-party warning)
 - `trusted` — from openai/skills, anthropics/skills
-- `community` — any findings = blocked unless `--force`
+- `community` — non-dangerous findings can be overridden with `--force`; `dangerous` verdicts remain blocked
+
+Hermes can now consume third-party skills from multiple external discovery models:
+- direct GitHub identifiers (for example `openai/skills/k8s`)
+- `skills.sh` identifiers (for example `skills-sh/vercel-labs/json-render/json-render-react`)
+- well-known endpoints served from `/.well-known/skills/index.json`
+
+If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace.

@@ -25,6 +25,13 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
+from hermes_cli.config import get_hermes_home
+
+
+GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
+    "Secure secret entry is not supported over messaging. "
+    "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -36,8 +43,8 @@ from gateway.session import SessionSource, build_session_key
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: ~/.hermes/image_cache/
-IMAGE_CACHE_DIR = Path(os.path.expanduser("~/.hermes/image_cache"))
+# Default location: {HERMES_HOME}/image_cache/
+IMAGE_CACHE_DIR = get_hermes_home() / "image_cache"
 
 
 def get_image_cache_dir() -> Path:
@@ -119,7 +126,7 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 # here so the STT tool (OpenAI Whisper) can transcribe them from local files.
 # ---------------------------------------------------------------------------
 
-AUDIO_CACHE_DIR = Path(os.path.expanduser("~/.hermes/audio_cache"))
+AUDIO_CACHE_DIR = get_hermes_home() / "audio_cache"
 
 
 def get_audio_cache_dir() -> Path:
@@ -178,7 +185,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
 # here so the agent can reference them by local file path.
 # ---------------------------------------------------------------------------
 
-DOCUMENT_CACHE_DIR = Path(os.path.expanduser("~/.hermes/document_cache"))
+DOCUMENT_CACHE_DIR = get_hermes_home() / "document_cache"
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
@@ -281,6 +288,7 @@ class MessageEvent:
     message_id: Optional[str] = None
     
     # Media attachments
+    # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
     
@@ -339,11 +347,85 @@ class BasePlatformAdapter(ABC):
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
+        self._fatal_error_code: Optional[str] = None
+        self._fatal_error_message: Optional[str] = None
+        self._fatal_error_retryable = True
+        self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Background message-processing tasks spawned by handle_message().
+        # Gateway shutdown cancels these so an old gateway instance doesn't keep
+        # working on a task after --replace or manual restarts.
+        self._background_tasks: set[asyncio.Task] = set()
+        # Chats where auto-TTS on voice input is disabled (set by /voice off)
+        self._auto_tts_disabled_chats: set = set()
+
+    @property
+    def has_fatal_error(self) -> bool:
+        return self._fatal_error_message is not None
+
+    @property
+    def fatal_error_message(self) -> Optional[str]:
+        return self._fatal_error_message
+
+    @property
+    def fatal_error_code(self) -> Optional[str]:
+        return self._fatal_error_code
+
+    @property
+    def fatal_error_retryable(self) -> bool:
+        return self._fatal_error_retryable
+
+    def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
+        self._fatal_error_handler = handler
+
+    def _mark_connected(self) -> None:
+        self._running = True
+        self._fatal_error_code = None
+        self._fatal_error_message = None
+        self._fatal_error_retryable = True
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(platform=self.platform.value, platform_state="connected", error_code=None, error_message=None)
+        except Exception:
+            pass
+
+    def _mark_disconnected(self) -> None:
+        self._running = False
+        if self.has_fatal_error:
+            return
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(platform=self.platform.value, platform_state="disconnected", error_code=None, error_message=None)
+        except Exception:
+            pass
+
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+        self._running = False
+        self._fatal_error_code = code
+        self._fatal_error_message = message
+        self._fatal_error_retryable = retryable
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state="fatal",
+                error_code=code,
+                error_message=message,
+            )
+        except Exception:
+            pass
+
+    async def _notify_fatal_error(self) -> None:
+        handler = self._fatal_error_handler
+        if not handler:
+            return
+        result = handler(self)
+        if asyncio.iscoroutine(result):
+            await result
     
     @property
     def name(self) -> str:
@@ -530,6 +612,20 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """
+        Play auto-TTS audio for voice replies.
+
+        Override in subclasses for invisible playback (e.g. Web UI).
+        Default falls back to send_voice (shows audio player).
+        """
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
     async def send_video(
         self,
         chat_id: str,
@@ -611,16 +707,22 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags (path may contain spaces)
-        media_pattern = r'MEDIA:(\S+)'
-        for match in re.finditer(media_pattern, content):
-            path = match.group(1).strip()
+        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
+        # and quoted/backticked paths for LLM-formatted outputs.
+        media_pattern = re.compile(
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?'''
+        )
+        for match in media_pattern.finditer(content):
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
                 media.append((path, has_voice_tag))
-        
-        # Remove MEDIA tags from content
+
+        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
-            cleaned = re.sub(media_pattern, '', cleaned)
+            cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
@@ -650,11 +752,32 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = build_session_key(event.source)
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
-            # Store this as a pending message - it will interrupt the running agent
+            # Special case: photo bursts/albums frequently arrive as multiple near-
+            # simultaneous messages. Queue them without interrupting the active run,
+            # then process them immediately after the current task finishes.
+            if event.message_type == MessageType.PHOTO:
+                print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
+                existing = self._pending_messages.get(session_key)
+                if existing and existing.message_type == MessageType.PHOTO:
+                    existing.media_urls.extend(event.media_urls)
+                    existing.media_types.extend(event.media_types)
+                    if event.text:
+                        if not existing.text:
+                            existing.text = event.text
+                        elif event.text not in existing.text:
+                            existing.text = f"{existing.text}\n\n{event.text}".strip()
+                else:
+                    self._pending_messages[session_key] = event
+                return  # Don't interrupt now - will run after current task completes
+
+            # Default behavior for non-photo follow-ups: interrupt the running agent
             print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
@@ -662,7 +785,15 @@ class BasePlatformAdapter(ABC):
             return  # Don't process now - will be handled after current task finishes
         
         # Spawn background task to process this message
-        asyncio.create_task(self._process_message_background(event, session_key))
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            # Some tests stub create_task() with lightweight sentinels that are not
+            # hashable and do not support lifecycle callbacks.
+            return
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -711,7 +842,43 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
-                # Send the text portion first (if any remains after extractions)
+                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                # Skipped when the chat has voice mode disabled (/voice off)
+                _tts_path = None
+                if (event.message_type == MessageType.VOICE
+                        and text_content
+                        and not media_files
+                        and event.source.chat_id not in self._auto_tts_disabled_chats):
+                    try:
+                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        if check_tts_requirements():
+                            import json as _json
+                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            if not speech_text:
+                                raise ValueError("Empty text after markdown cleanup")
+                            tts_result_str = await asyncio.to_thread(
+                                text_to_speech_tool, text=speech_text
+                            )
+                            tts_data = _json.loads(tts_result_str)
+                            _tts_path = tts_data.get("file_path")
+                    except Exception as tts_err:
+                        logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+
+                # Play TTS audio before text (voice-first experience)
+                if _tts_path and Path(_tts_path).exists():
+                    try:
+                        await self.play_tts(
+                            chat_id=event.source.chat_id,
+                            audio_path=_tts_path,
+                            metadata=_thread_metadata,
+                        )
+                    finally:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
+
+                # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self.send(
@@ -720,7 +887,7 @@ class BasePlatformAdapter(ABC):
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
-                    
+
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
                         print(f"[{self.name}] Failed to send response: {result.error}")
@@ -733,10 +900,10 @@ class BasePlatformAdapter(ABC):
                         )
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
-                
+
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
-                
+
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
@@ -764,7 +931,7 @@ class BasePlatformAdapter(ABC):
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
-                
+
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
@@ -836,6 +1003,21 @@ class BasePlatformAdapter(ABC):
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]
     
+    async def cancel_background_tasks(self) -> None:
+        """Cancel any in-flight background message-processing tasks.
+
+        Used during gateway shutdown/replacement so active sessions from the old
+        process do not keep running after adapters are being torn down.
+        """
+        tasks = [task for task in self._background_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self._pending_messages.clear()
+        self._active_sessions.clear()
+
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""
         return session_key in self._active_sessions and self._active_sessions[session_key].is_set()

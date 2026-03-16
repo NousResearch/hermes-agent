@@ -60,6 +60,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
     # Tool prefix: character for tool output lines (default: ┊)
     tool_prefix: "┊"
 
+    # Tool emojis: override the default emoji for any tool (used in spinners & progress)
+    tool_emojis:
+      terminal: "⚔"           # Override terminal tool emoji
+      web_search: "🔮"        # Override web_search tool emoji
+      # Any tool not listed here uses its registry default
+
 USAGE
 =====
 
@@ -111,6 +117,7 @@ class SkinConfig:
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
+    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
@@ -541,6 +548,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
+        tool_emojis=data.get("tool_emojis", {}),
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )
@@ -628,3 +636,88 @@ def init_skin_from_config(config: dict) -> None:
         set_active_skin(skin_name.strip())
     else:
         set_active_skin("default")
+
+
+# =============================================================================
+# Convenience helpers for CLI modules
+# =============================================================================
+
+
+def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
+    """Get the interactive prompt symbol from the active skin."""
+    try:
+        return get_active_skin().get_branding("prompt_symbol", fallback)
+    except Exception:
+        return fallback
+
+
+
+def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
+    """Get the /help header from the active skin."""
+    try:
+        return get_active_skin().get_branding("help_header", fallback)
+    except Exception:
+        return fallback
+
+
+
+def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
+    """Get the goodbye line from the active skin."""
+    try:
+        return get_active_skin().get_branding("goodbye", fallback)
+    except Exception:
+        return fallback
+
+
+
+def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
+    """Return prompt_toolkit style overrides derived from the active skin.
+
+    These are layered on top of the CLI's base TUI style so /skin can refresh
+    the live prompt_toolkit UI immediately without rebuilding the app.
+    """
+    try:
+        skin = get_active_skin()
+    except Exception:
+        return {}
+
+    prompt = skin.get_color("prompt", "#FFF8DC")
+    input_rule = skin.get_color("input_rule", "#CD7F32")
+    title = skin.get_color("banner_title", "#FFD700")
+    text = skin.get_color("banner_text", prompt)
+    dim = skin.get_color("banner_dim", "#555555")
+    label = skin.get_color("ui_label", title)
+    warn = skin.get_color("ui_warn", "#FF8C00")
+    error = skin.get_color("ui_error", "#FF6B6B")
+
+    return {
+        "input-area": prompt,
+        "placeholder": f"{dim} italic",
+        "prompt": prompt,
+        "prompt-working": f"{dim} italic",
+        "hint": f"{dim} italic",
+        "input-rule": input_rule,
+        "image-badge": f"{label} bold",
+        "completion-menu": f"bg:#1a1a2e {text}",
+        "completion-menu.completion": f"bg:#1a1a2e {text}",
+        "completion-menu.completion.current": f"bg:#333355 {title}",
+        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
+        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "clarify-border": input_rule,
+        "clarify-title": f"{title} bold",
+        "clarify-question": f"{text} bold",
+        "clarify-choice": dim,
+        "clarify-selected": f"{title} bold",
+        "clarify-active-other": f"{title} italic",
+        "clarify-countdown": input_rule,
+        "sudo-prompt": f"{error} bold",
+        "sudo-border": input_rule,
+        "sudo-title": f"{error} bold",
+        "sudo-text": text,
+        "approval-border": input_rule,
+        "approval-title": f"{warn} bold",
+        "approval-desc": f"{text} bold",
+        "approval-cmd": f"{dim} italic",
+        "approval-choice": dim,
+        "approval-selected": f"{title} bold",
+    }

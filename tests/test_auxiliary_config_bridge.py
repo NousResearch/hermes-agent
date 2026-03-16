@@ -25,7 +25,9 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     # Clear env vars
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
+        "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -47,19 +49,35 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     auxiliary_cfg = config_dict.get("auxiliary", {})
     if auxiliary_cfg and isinstance(auxiliary_cfg, dict):
         aux_task_env = {
-            "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
-            "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+            "vision": {
+                "provider": "AUXILIARY_VISION_PROVIDER",
+                "model": "AUXILIARY_VISION_MODEL",
+                "base_url": "AUXILIARY_VISION_BASE_URL",
+                "api_key": "AUXILIARY_VISION_API_KEY",
+            },
+            "web_extract": {
+                "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+            },
         }
-        for task_key, (prov_env, model_env) in aux_task_env.items():
+        for task_key, env_map in aux_task_env.items():
             task_cfg = auxiliary_cfg.get(task_key, {})
             if not isinstance(task_cfg, dict):
                 continue
             prov = str(task_cfg.get("provider", "")).strip()
             model = str(task_cfg.get("model", "")).strip()
+            base_url = str(task_cfg.get("base_url", "")).strip()
+            api_key = str(task_cfg.get("api_key", "")).strip()
             if prov and prov != "auto":
-                os.environ[prov_env] = prov
+                os.environ[env_map["provider"]] = prov
             if model:
-                os.environ[model_env] = model
+                os.environ[env_map["model"]] = model
+            if base_url:
+                os.environ[env_map["base_url"]] = base_url
+            if api_key:
+                os.environ[env_map["api_key"]] = api_key
 
 
 # ── Config bridging tests ────────────────────────────────────────────────────
@@ -100,6 +118,21 @@ class TestAuxiliaryConfigBridge:
         _run_auxiliary_bridge(config, monkeypatch)
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "gemini-2.5-flash"
+
+    def test_direct_endpoint_bridged(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "local-key",
+                    "model": "qwen2.5-vl",
+                }
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_BASE_URL") == "http://localhost:1234/v1"
+        assert os.environ.get("AUXILIARY_VISION_API_KEY") == "local-key"
+        assert os.environ.get("AUXILIARY_VISION_MODEL") == "qwen2.5-vl"
 
     def test_compression_provider_bridged(self, monkeypatch):
         config = {
@@ -200,8 +233,12 @@ class TestGatewayBridgeCodeParity:
         # Check for key patterns that indicate the bridge is present
         assert "AUXILIARY_VISION_PROVIDER" in content
         assert "AUXILIARY_VISION_MODEL" in content
+        assert "AUXILIARY_VISION_BASE_URL" in content
+        assert "AUXILIARY_VISION_API_KEY" in content
         assert "AUXILIARY_WEB_EXTRACT_PROVIDER" in content
         assert "AUXILIARY_WEB_EXTRACT_MODEL" in content
+        assert "AUXILIARY_WEB_EXTRACT_BASE_URL" in content
+        assert "AUXILIARY_WEB_EXTRACT_API_KEY" in content
 
     def test_gateway_has_compression_provider(self):
         """Gateway must bridge compression.summary_provider."""

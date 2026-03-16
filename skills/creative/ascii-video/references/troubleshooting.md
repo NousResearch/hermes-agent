@@ -1,5 +1,15 @@
 # Troubleshooting Reference
 
+**Cross-references:**
+- Grid system, palettes, font selection: `architecture.md`
+- Effect building blocks (value fields, noise, SDFs): `effects.md`
+- `_render_vf()`, blend modes, tonemap: `composition.md`
+- Scene protocol, render_clip, SCENES table: `scenes.md`
+- Shader pipeline, feedback buffer, encoding: `shaders.md`
+- Input sources (audio, video, TTS): `inputs.md`
+- Performance tuning, hardware detection: `optimization.md`
+- Complete scene examples: `examples.md`
+
 Common bugs, gotchas, and platform-specific issues encountered during ASCII video development.
 
 ## NumPy Broadcasting

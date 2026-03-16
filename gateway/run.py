@@ -3857,45 +3857,8 @@ class GatewayRunner:
             last_tool[0] = tool_name
             
             # Build progress message with primary argument preview
-            tool_emojis = {
-                "terminal": "💻",
-                "process": "⚙️",
-                "web_search": "🔍",
-                "web_extract": "📄",
-                "read_file": "📖",
-                "write_file": "✍️",
-                "patch": "🔧",
-                "search": "🔎",
-                "search_files": "🔎",
-                "list_directory": "📂",
-                "image_generate": "🎨",
-                "text_to_speech": "🔊",
-                "browser_navigate": "🌐",
-                "browser_click": "👆",
-                "browser_type": "⌨️",
-                "browser_snapshot": "📸",
-                "browser_scroll": "📜",
-                "browser_back": "◀️",
-                "browser_press": "⌨️",
-                "browser_close": "🚪",
-                "browser_get_images": "🖼️",
-                "browser_vision": "👁️",
-                "moa_query": "🧠",
-                "mixture_of_agents": "🧠",
-                "vision_analyze": "👁️",
-                "skill_view": "📚",
-                "skills_list": "📋",
-                "todo": "📋",
-                "memory": "🧠",
-                "session_search": "🔍",
-                "send_message": "📨",
-                "cronjob": "⏰",
-                "execute_code": "🐍",
-                "delegate_task": "🔀",
-                "clarify": "❓",
-                "skill_manage": "📝",
-            }
-            emoji = tool_emojis.get(tool_name, "⚙️")
+            from agent.display import get_tool_emoji
+            emoji = get_tool_emoji(tool_name, default="⚙️")
             
             # Verbose mode: show detailed arguments
             if progress_mode == "verbose" and args:

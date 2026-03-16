@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools.environments.ssh import SSHEnvironment
+from tools.environments import ssh as ssh_env
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")
@@ -91,6 +92,41 @@ class TestTerminalToolConfig:
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
+
+
+class TestSSHPreflight:
+    def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
+
+        with pytest.raises(RuntimeError, match="SSH is not installed or not in PATH"):
+            ssh_env._ensure_ssh_available()
+
+    def test_ssh_environment_checks_availability_before_connect(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            ssh_env.SSHEnvironment,
+            "_establish_connection",
+            lambda self: pytest.fail("_establish_connection should not run when ssh is missing"),
+        )
+
+        with pytest.raises(RuntimeError, match="openssh-client"):
+            ssh_env.SSHEnvironment(host="example.com", user="alice")
+
+    def test_ssh_environment_connects_when_ssh_exists(self, monkeypatch):
+        called = {"count": 0}
+
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+
+        def _fake_establish(self):
+            called["count"] += 1
+
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", _fake_establish)
+
+        env = ssh_env.SSHEnvironment(host="example.com", user="alice")
+
+        assert called["count"] == 1
+        assert env.host == "example.com"
+        assert env.user == "alice"
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

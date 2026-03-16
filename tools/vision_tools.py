@@ -493,4 +493,5 @@ registry.register(
     handler=_handle_vision_analyze,
     check_fn=check_vision_requirements,
     is_async=True,
+    emoji="👁️",
 )

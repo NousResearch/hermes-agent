@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -12,6 +13,14 @@ from tools.environments.persistent_shell import PersistentShellMixin
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_ssh_available() -> None:
+    """Fail fast with a clear error when the SSH client is unavailable."""
+    if not shutil.which("ssh"):
+        raise RuntimeError(
+            "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
 
 
 class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
@@ -44,6 +53,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
+        _ensure_ssh_available()
         self._establish_connection()
 
         if self.persistent:

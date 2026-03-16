@@ -232,6 +232,48 @@ class TestCheckFnExceptionHandling:
         assert any(u["name"] == "crashes" for u in unavailable)
 
 
+class TestEmojiMetadata:
+    """Verify per-tool emoji registration and lookup."""
+
+    def test_emoji_stored_on_entry(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="🔥",
+        )
+        assert reg._tools["t"].emoji == "🔥"
+
+    def test_get_emoji_returns_registered(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="🎯",
+        )
+        assert reg.get_emoji("t") == "🎯"
+
+    def test_get_emoji_returns_default_when_unset(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler,
+        )
+        assert reg.get_emoji("t") == "⚡"
+        assert reg.get_emoji("t", default="🔧") == "🔧"
+
+    def test_get_emoji_returns_default_for_unknown_tool(self):
+        reg = ToolRegistry()
+        assert reg.get_emoji("nonexistent") == "⚡"
+        assert reg.get_emoji("nonexistent", default="❓") == "❓"
+
+    def test_emoji_empty_string_treated_as_unset(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, emoji="",
+        )
+        assert reg.get_emoji("t") == "⚡"
+
+
 class TestSecretCaptureResultContract:
     def test_secret_request_result_does_not_include_secret_value(self):
         result = {

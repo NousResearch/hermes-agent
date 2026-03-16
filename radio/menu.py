@@ -254,9 +254,30 @@ def build_menu_items(
     items.append(MenuItem(label="MOODS", is_header=True))
     for mood, desc in [("weird", "the good stuff"), ("slow", "deep, contemplative"), ("fast", "upbeat, energetic")]:
         items.append(MenuItem(label=mood, sublabel=desc, is_toggle=True, toggled=mood in active_moods, toggle_key=f"mood:{mood}"))
-    # SomaFM
-    items.append(MenuItem(label="SOMAFM", is_header=True))
-    if soma_channels:
+    # Curated world stations (from stations.yaml)
+    try:
+        from radio.stations import load_stations
+        curated = load_stations()
+        if curated:
+            # Group by region
+            regions_seen = []
+            for station in curated:
+                region = station.get("region", "").upper()
+                if region and region not in regions_seen:
+                    regions_seen.append(region)
+                    items.append(MenuItem(label=region, is_header=True))
+                items.append(MenuItem(
+                    label=station["name"],
+                    sublabel=station.get("genre", ""),
+                    action="stream",
+                    data={"url": station["url"], "name": station["name"]},
+                ))
+    except Exception:
+        pass
+
+    # SomaFM (if no curated stations loaded, or as additional)
+    if soma_channels and not curated:
+        items.append(MenuItem(label="SOMAFM", is_header=True))
         for ch in soma_channels:
             items.append(MenuItem(label=ch.get("title", ch.get("id", "?")), sublabel=ch.get("genre", ""), action="somafm", data={"channel_id": ch.get("id", "")}))
 

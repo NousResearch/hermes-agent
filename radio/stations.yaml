@@ -1,0 +1,147 @@
+# Curated world radio stations for Hermes Radio.
+# These appear in the /radio menu under STATIONS.
+# Add your own or override by editing ~/.hermes/radio/stations.yaml
+
+stations:
+  # New York
+  - name: WNYC FM 93.9
+    url: https://radio.garden/api/ara/content/listen/38SmGFvr/channel.mp3
+    region: nyc
+    genre: public radio
+
+  - name: Radio Free Brooklyn
+    url: https://radio.garden/api/ara/content/listen/H0JBE3pd/channel.mp3
+    region: nyc
+    genre: freeform
+
+  - name: Brooklyn Station
+    url: https://radio.garden/api/ara/content/listen/y7bb1OUH/channel.mp3
+    region: nyc
+    genre: community
+
+  # Paris
+  - name: France Inter
+    url: https://radio.garden/api/ara/content/listen/KbsffvuC/channel.mp3
+    region: paris
+    genre: culture
+
+  - name: Radio Orient 94.3
+    url: https://radio.garden/api/ara/content/listen/Am45pbFJ/channel.mp3
+    region: paris
+    genre: world
+
+  # Tokyo
+  - name: Ottava
+    url: https://radio.garden/api/ara/content/listen/rDch0y97/channel.mp3
+    region: tokyo
+    genre: classical
+
+  - name: Listen.moe
+    url: https://radio.garden/api/ara/content/listen/XehO7lZ3/channel.mp3
+    region: tokyo
+    genre: jpop/anime
+
+  # Seoul
+  - name: WBS FM 89.7
+    url: https://radio.garden/api/ara/content/listen/Fxz_MBpC/channel.mp3
+    region: seoul
+    genre: korean
+
+  - name: Big B Radio Kpop
+    url: https://radio.garden/api/ara/content/listen/sjd0AW7d/channel.mp3
+    region: seoul
+    genre: kpop
+
+  # China
+  - name: Hit FM Beijing 88.7
+    url: https://radio.garden/api/ara/content/listen/pUH5bBzk/channel.mp3
+    region: beijing
+    genre: pop
+
+  - name: Classical 94.7 Shanghai
+    url: https://radio.garden/api/ara/content/listen/RxoVPtQa/channel.mp3
+    region: shanghai
+    genre: classical
+
+  # India
+  - name: Kishore Kumar Radio
+    url: https://radio.garden/api/ara/content/listen/sG9ZZzTf/channel.mp3
+    region: mumbai
+    genre: bollywood
+
+  - name: Radio City Hindi
+    url: https://radio.garden/api/ara/content/listen/to5IKEqr/channel.mp3
+    region: mumbai
+    genre: hindi
+
+  # Indonesia
+  - name: Prambors FM 102.2
+    url: https://radio.garden/api/ara/content/listen/NZYf7QsQ/channel.mp3
+    region: jakarta
+    genre: pop
+
+  - name: Delta FM 99.1
+    url: https://radio.garden/api/ara/content/listen/lRazAxL1/channel.mp3
+    region: jakarta
+    genre: adult contemporary
+
+  # Egypt
+  - name: Nagham FM 105.3
+    url: https://radio.garden/api/ara/content/listen/sIA24Ez6/channel.mp3
+    region: cairo
+    genre: arabic music
+
+  - name: 9090 FM Cairo
+    url: https://radio.garden/api/ara/content/listen/k-_Hmk3Z/channel.mp3
+    region: cairo
+    genre: arabic
+
+  # Lebanon
+  - name: VDL 100.5 Beirut
+    url: https://radio.garden/api/ara/content/listen/5KYq0ltR/channel.mp3
+    region: beirut
+    genre: lebanese
+
+  # Nigeria
+  - name: Bond FM 92.9 Lagos
+    url: https://radio.garden/api/ara/content/listen/RpOv_frE/channel.mp3
+    region: lagos
+    genre: afrobeats
+
+  # Kenya
+  - name: Ghetto FM 89.5 Nairobi
+    url: https://radio.garden/api/ara/content/listen/QhG6jcSP/channel.mp3
+    region: nairobi
+    genre: urban
+
+  # Senegal
+  - name: Sud FM 98.5 Dakar
+    url: https://radio.garden/api/ara/content/listen/Z44UlSTf/channel.mp3
+    region: dakar
+    genre: mbalax
+
+  # SomaFM picks (curated underground)
+  - name: SomaFM DEF CON
+    url: https://somafm.com/defcon256.pls
+    region: sf
+    genre: electronic
+
+  - name: SomaFM Drone Zone
+    url: https://somafm.com/dronezone256.pls
+    region: sf
+    genre: ambient
+
+  - name: SomaFM Deep Space One
+    url: https://somafm.com/deepspaceone.pls
+    region: sf
+    genre: ambient
+
+  - name: SomaFM Vaporwaves
+    url: https://somafm.com/vaporwaves256.pls
+    region: sf
+    genre: electronic
+
+  - name: SomaFM The Dark Zone
+    url: https://somafm.com/darkzone256.pls
+    region: sf
+    genre: dark ambient

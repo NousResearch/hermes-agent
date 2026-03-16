@@ -705,6 +705,7 @@ def generate_launchd_plist() -> str:
         <string>hermes_cli.main</string>
         <string>gateway</string>
         <string>run</string>
+        <string>--replace</string>
     </array>
     
     <key>WorkingDirectory</key>

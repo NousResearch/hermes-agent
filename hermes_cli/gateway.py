@@ -705,6 +705,7 @@ def generate_launchd_plist() -> str:
         <string>hermes_cli.main</string>
         <string>gateway</string>
         <string>run</string>
+        <string>--replace</string>
     </array>
     
     <key>WorkingDirectory</key>
@@ -727,6 +728,36 @@ def generate_launchd_plist() -> str:
 </dict>
 </plist>
 """
+
+def launchd_plist_is_current() -> bool:
+    """Check if the installed launchd plist matches the currently generated one."""
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists():
+        return False
+
+    installed = plist_path.read_text(encoding="utf-8")
+    expected = generate_launchd_plist()
+    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+
+
+def refresh_launchd_plist_if_needed() -> bool:
+    """Rewrite the installed launchd plist when the generated definition has changed.
+
+    Unlike systemd, launchd picks up plist changes on the next ``launchctl stop``/
+    ``launchctl start`` cycle — no daemon-reload is needed.  We still unload/reload
+    to make launchd re-read the updated plist immediately.
+    """
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists() or launchd_plist_is_current():
+        return False
+
+    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+    # Unload/reload so launchd picks up the new definition
+    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+    print("↻ Updated gateway launchd service definition to match the current Hermes install")
+    return True
+
 
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
@@ -760,6 +791,7 @@ def launchd_uninstall():
     print("✓ Service uninstalled")
 
 def launchd_start():
+    refresh_launchd_plist_if_needed()
     subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
     print("✓ Service started")
 
@@ -768,6 +800,7 @@ def launchd_stop():
     print("✓ Service stopped")
 
 def launchd_restart():
+    refresh_launchd_plist_if_needed()
     launchd_stop()
     launchd_start()
 

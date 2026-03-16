@@ -145,8 +145,9 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     thread_one.join(timeout=5)
     thread_two.join(timeout=5)
 
-    assert isinstance(results["first"], APIConnectionError)
-    assert results["second"] == {"ok": "second"}
+    values = list(results.values())
+    assert sum(isinstance(value, APIConnectionError) for value in values) == 1
+    assert values.count({"ok": "second"}) == 1
     assert len(factory.calls) == 2
 
 

@@ -178,8 +178,12 @@ def extract_reply(config: Dict[str, Any], response) -> Optional[str]:
     if not content:
         logger.warning("[AutoReply] LLM returned empty content")
         return None
+    text = content.strip()
+    if not text:
+        logger.warning("[AutoReply] LLM returned whitespace-only content")
+        return None
     config["turn_count"] += 1
-    return content.strip()
+    return text
 
 
 def session_info(config: Optional[Dict[str, Any]]) -> dict:

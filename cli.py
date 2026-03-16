@@ -5958,13 +5958,13 @@ class HermesCLI:
                         if self._autoreply_config:
                             try:
                                 reply = self._generate_autoreply_text()
-                                if reply:
-                                    cfg = self._autoreply_config
-                                    turn = cfg["turn_count"] if cfg else "?"
-                                    max_t = cfg["max_turns"] if cfg else "?"
+                                cfg = self._autoreply_config
+                                if reply and cfg:
+                                    turn = cfg["turn_count"]
+                                    max_t = cfg["max_turns"]
                                     _cprint(f"\n{_DIM}[Auto-reply {turn}/{max_t}]{_RST}")
                                     self._pending_input.put(f"{CLI_INPUT_PREFIX}{reply}")
-                                elif self._autoreply_config:
+                                elif cfg:
                                     # LLM returned empty — loop pauses until next message
                                     _cprint(f"\n{_DIM}[Auto-reply: LLM returned empty response]{_RST}")
                             except Exception as e:

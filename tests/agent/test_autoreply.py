@@ -17,6 +17,7 @@ from agent.autoreply import (
     check_and_advance,
     extract_reply,
     format_status,
+    handle_command,
     parse_autoreply_args,
     prepare_llm_call,
     session_info,
@@ -341,10 +342,9 @@ class TestExtractReply:
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = "   \n  "
         result = extract_reply(config, resp)
-        # content is truthy ("   \n  ") so turn_count increments,
-        # but strip() returns empty string
-        assert result == ""
-        assert config["turn_count"] == 1
+        # Whitespace-only content is treated as empty — returns None
+        assert result is None
+        assert config["turn_count"] == 0
 
 
 # ── session_info ──────────────────────────────────────────────────────────
@@ -427,3 +427,64 @@ class TestFormatStatus:
         assert "..." in result
         assert "A" * 200 not in result
         assert "A" * 100 in result
+
+
+# ── handle_command ────────────────────────────────────────────────────────
+
+
+class TestHandleCommand:
+    """Unit tests for the handle_command orchestrator."""
+
+    def test_enable_returns_config(self):
+        text, cfg = handle_command("Ask questions", None)
+        assert cfg is not None
+        assert cfg["prompt"] == "Ask questions"
+        assert "enabled" in text.lower()
+
+    def test_disable_active(self):
+        active = {"prompt": "test", "model": None, "max_turns": 20, "turn_count": 0}
+        text, cfg = handle_command("off", active)
+        assert cfg is None
+        assert "disabled" in text.lower()
+
+    def test_disable_inactive(self):
+        text, cfg = handle_command("off", None)
+        assert cfg is None
+        assert "not active" in text.lower()
+
+    def test_status_active(self):
+        active = {"prompt": "test", "model": None, "max_turns": 20, "turn_count": 3}
+        text, cfg = handle_command("", active)
+        assert cfg is active  # Same object returned
+        assert "3/20" in text
+
+    def test_status_inactive(self):
+        text, cfg = handle_command("", None)
+        assert cfg is None
+        assert "not active" in text.lower()
+
+    def test_max_mutates_config(self):
+        active = {"prompt": "test", "model": None, "max_turns": 20, "turn_count": 0}
+        text, cfg = handle_command("max 50", active)
+        assert cfg is active  # Same object, mutated
+        assert cfg["max_turns"] == 50
+
+    def test_max_without_active_config(self):
+        text, cfg = handle_command("max 50", None)
+        assert cfg is None
+        assert "not active" in text.lower()
+
+    def test_error_propagated(self):
+        text, cfg = handle_command("--literal", None)
+        assert "Usage" in text
+
+    def test_error_preserves_existing_config(self):
+        active = {"prompt": "test", "model": None, "max_turns": 20, "turn_count": 0}
+        text, cfg = handle_command("--max abc prompt", active)
+        assert cfg is active  # Config unchanged on error
+
+    def test_literal_mode(self):
+        text, cfg = handle_command("--literal continue", None)
+        assert cfg is not None
+        assert cfg["literal"] is True
+        assert "literal" in text.lower()

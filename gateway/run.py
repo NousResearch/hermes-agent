@@ -2516,7 +2516,7 @@ class GatewayRunner:
 
         text, cap_reached = check_and_advance(config)
         if cap_reached:
-            del self._autoreply_configs[session_key]
+            self._autoreply_configs.pop(session_key, None)
             return None, True
         if text:
             return text, False

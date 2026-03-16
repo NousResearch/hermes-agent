@@ -205,6 +205,33 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# Patterns that indicate a terminal command may modify/delete files.
+_DESTRUCTIVE_PATTERNS = re.compile(
+    r"""(?:^|\s|&&|\|\||;|`)(?:
+        rm\s|rmdir\s|
+        mv\s|
+        sed\s+-i|
+        truncate\s|
+        dd\s|
+        shred\s|
+        git\s+(?:reset|clean|checkout)\s
+    )""",
+    re.VERBOSE,
+)
+# Output redirects that overwrite files (> but not >>)
+_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+
+
+def _is_destructive_command(cmd: str) -> bool:
+    """Heuristic: does this terminal command look like it modifies/deletes files?"""
+    if not cmd:
+        return False
+    if _DESTRUCTIVE_PATTERNS.search(cmd):
+        return True
+    if _REDIRECT_OVERWRITE.search(cmd):
+        return True
+    return False
+
 
 def _inject_honcho_turn_context(content, turn_context: str):
     """Append Honcho recall to the current-turn user message without mutating history.
@@ -3842,6 +3869,18 @@ class AIAgent:
                 except Exception:
                     pass
 
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
+                except Exception:
+                    pass
+
             parsed_calls.append((tool_call, function_name, function_args))
 
         # ── Logging / callbacks ──────────────────────────────────────────
@@ -4031,6 +4070,18 @@ class AIAgent:
                         work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
                         self._checkpoint_mgr.ensure_checkpoint(
                             work_dir, f"before {function_name}"
+                        )
+                except Exception:
+                    pass  # never block tool execution
+
+            # Checkpoint before destructive terminal commands
+            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
                     pass  # never block tool execution

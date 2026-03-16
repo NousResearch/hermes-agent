@@ -265,6 +265,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     release_scoped_lock("telegram-bot-token", self._token_lock_identity)
                 except Exception:
                     pass
+            message = f"Telegram startup failed: {e}"
+            self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     

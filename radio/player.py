@@ -794,15 +794,12 @@ Source: {now.source_mode}"""
                         if self._source_mode == SourceMode.STREAM:
                             try:
                                 title = await self._primary.get_media_title()
-                                if title and title != self._now.title and title not in ("channel.mp3",):
+                                last_raw = getattr(self, '_last_icy_raw', '')
+                                if title and title != last_raw and title not in ("channel.mp3",):
+                                    self._last_icy_raw = title
+                                    # For streams: store full ICY as title, no split
                                     self._now.title = title
-                                    # Try to split "Artist - Title"
-                                    if " - " in title:
-                                        parts = title.split(" - ", 1)
-                                        self._now.artist = parts[0].strip()
-                                        self._now.title = parts[1].strip()
-                                    else:
-                                        self._now.artist = ""
+                                    self._now.artist = ""
                             except Exception:
                                 pass
                 except Exception:

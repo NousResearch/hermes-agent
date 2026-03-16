@@ -550,7 +550,8 @@ export TERMINAL_DOCKER_NO_AUTO_MOUNT=true
 Auto-mount is skipped when:
 1. `TERMINAL_DOCKER_NO_AUTO_MOUNT=true` is set
 2. You've explicitly configured a volume mount to `/workspace` in `docker_volumes`
-3. `container_persistent: true` is set (persistent sandbox mode uses its own `/workspace`)
+
+If `container_persistent: true` is enabled, Hermes still auto-mounts your host cwd to `/workspace`; the persistent sandbox home continues to back `/root`.
 
 :::tip
 Auto-mount is ideal for project-based work where you want the agent to operate on your actual files. For isolated sandboxing where the agent shouldn't access your filesystem, set `TERMINAL_DOCKER_NO_AUTO_MOUNT=true`.

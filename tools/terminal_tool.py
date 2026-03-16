@@ -466,28 +466,34 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    # Default cwd: local uses the host's current directory, everything
-    # else starts in the user's home (~ resolves to whatever account
-    # is running inside the container/remote).
+    # Default cwd: local uses the host's current directory. Docker captures the
+    # host cwd and maps it into /workspace. Other backends keep their own
+    # internal defaults.
+    host_cwd = os.getcwd()
     if env_type == "local":
-        default_cwd = os.getcwd()
+        default_cwd = host_cwd
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "docker":
+        default_cwd = host_cwd
     else:
         default_cwd = "/root"
-    
+
     # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If the CWD looks like a host-local path that can't exist inside a
-    # container/sandbox, fall back to the backend's own default. This
-    # catches the case where cli.py (or .env) leaked the host's CWD.
-    # SSH is excluded since /home/ paths are valid on remote machines.
+    # Docker is special: if the cwd looks like a real host directory, we mount
+    # it into /workspace instead of discarding it.
     raw_cwd = os.getenv("TERMINAL_CWD", default_cwd)
     cwd = raw_cwd
-    # Capture original host CWD for auto-mounting into containers (fixes #1445).
-    # Even when the container's working directory falls back to /root, we still
-    # want to auto-mount the user's host project directory to /workspace.
-    host_cwd = raw_cwd if raw_cwd and os.path.isdir(raw_cwd) else os.getcwd()
-    if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
+    if env_type == "docker" and cwd:
+        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+        candidate = os.path.abspath(os.path.expanduser(cwd))
+        if (
+            any(candidate.startswith(p) for p in host_prefixes)
+            or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
+        ):
+            host_cwd = candidate
+            cwd = "/workspace"
+    elif env_type in ("modal", "singularity", "daytona") and cwd:
         # Host paths that won't exist inside containers
         host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:

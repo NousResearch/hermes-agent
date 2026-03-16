@@ -231,3 +231,44 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
     # But the auto-mount should NOT add a duplicate
     assert run_args_str.count(":/workspace") == 1, f"Should only have one /workspace mount: {run_args_str}"
 
+
+def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
+    """Persistent mode should still mount host cwd at /workspace when available."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    def _run_docker_version(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
+
+    captured_run_args = []
+
+    class MockInnerDocker:
+        container_id = "mock-container-persistent"
+        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
+
+        def __init__(self, **kwargs):
+            captured_run_args.extend(kwargs.get("run_args", []))
+
+    monkeypatch.setattr(
+        "minisweagent.environments.docker.DockerEnvironment",
+        MockInnerDocker,
+    )
+
+    docker_env.DockerEnvironment(
+        image="python:3.11",
+        cwd="/workspace",
+        timeout=60,
+        persistent_filesystem=True,
+        task_id="test-persistent-auto-mount",
+        volumes=[],
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+    )
+
+    run_args_str = " ".join(captured_run_args)
+    assert f"{project_dir}:/workspace" in run_args_str
+    assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
+

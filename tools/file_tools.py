@@ -140,6 +140,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 container_config=container_config,
                 local_config=local_config,
                 task_id=task_id,
+                host_cwd=config.get("host_cwd"),
             )
 
             with _env_lock:

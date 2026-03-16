@@ -3620,13 +3620,9 @@ class GatewayRunner:
           1. Immediately understand what the user sent (no extra tool call).
           2. Re-examine the image with vision_analyze if it needs more detail.
 
-        Athabasca persistence should happen through Athabasca's own POST
-        /api/uploads flow, using the returned asset.publicUrl rather than local
-        cache paths.
-
         Args:
-            user_text:      The user's original caption / message text.
-            image_paths:    List of local file paths to cached images.
+            user_text:   The user's original caption / message text.
+            image_paths: List of local file paths to cached images.
 
         Returns:
             The enriched message string with vision descriptions prepended.
@@ -3651,16 +3647,10 @@ class GatewayRunner:
                 result = _json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    athabasca_note = (
-                        "\n[If this image needs to persist in Athabasca state, upload the cached file "
-                        "through Athabasca POST /api/uploads and use the returned asset.publicUrl. "
-                        "Do not store the local cache path as the canonical imageUrl.]"
-                    )
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
-                        f"{athabasca_note}"
                     )
                 else:
                     enriched_parts.append(

@@ -1034,6 +1034,16 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        # Persist cost data to session DB
+        if self._session_db and self.session_api_calls > 0:
+            try:
+                self._session_db.update_cost_data(
+                    session_id=self.session_id,
+                    cached_tokens=self.session_cached_tokens,
+                    estimated_cost_usd=self.session_estimated_cost,
+                )
+            except Exception as e:
+                logging.debug(f"Failed to persist cost data: {e}")
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.

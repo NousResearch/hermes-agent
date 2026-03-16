@@ -25,7 +25,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    cached_tokens INTEGER DEFAULT 0,
+    estimated_cost_usd REAL DEFAULT 0,
+    task_market_task_id TEXT,
+    task_market_reward_usdc REAL,
+    task_market_margin_usd REAL,
     title TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -152,6 +157,20 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Index already exists
                 cursor.execute("UPDATE schema_version SET version = 4")
+            if current_version < 5:
+                # v5: add cost tracking columns
+                for col, coltype in [
+                    ("cached_tokens", "INTEGER DEFAULT 0"),
+                    ("estimated_cost_usd", "REAL DEFAULT 0"),
+                    ("task_market_task_id", "TEXT"),
+                    ("task_market_reward_usdc", "REAL"),
+                    ("task_market_margin_usd", "REAL"),
+                ]:
+                    try:
+                        cursor.execute(f"ALTER TABLE sessions ADD COLUMN {col} {coltype}")
+                    except sqlite3.OperationalError:
+                        pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 5")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -240,6 +259,58 @@ class SessionDB:
             (input_tokens, output_tokens, model, session_id),
         )
         self._conn.commit()
+
+    def update_cost_data(
+        self, session_id: str, cached_tokens: int = 0,
+        estimated_cost_usd: float = 0.0,
+        task_id: str = None, task_reward: float = None,
+    ) -> None:
+        """Update cost tracking data for a session."""
+        margin = (task_reward - estimated_cost_usd) if task_reward is not None else None
+        self._conn.execute(
+            """UPDATE sessions SET
+               cached_tokens = ?,
+               estimated_cost_usd = ?,
+               task_market_task_id = COALESCE(?, task_market_task_id),
+               task_market_reward_usdc = COALESCE(?, task_market_reward_usdc),
+               task_market_margin_usd = ?
+               WHERE id = ?""",
+            (cached_tokens, estimated_cost_usd, task_id, task_reward, margin, session_id),
+        )
+        self._conn.commit()
+
+    def get_cost_summary(self, limit: int = 50) -> list:
+        """Get recent sessions with cost data for dashboard display."""
+        cursor = self._conn.execute(
+            """SELECT id, source, model, started_at, ended_at,
+                      input_tokens, output_tokens, cached_tokens,
+                      estimated_cost_usd, task_market_task_id,
+                      task_market_reward_usdc, task_market_margin_usd
+               FROM sessions
+               WHERE estimated_cost_usd > 0
+               ORDER BY started_at DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_aggregate_costs(self) -> dict:
+        """Get aggregate cost statistics across all sessions."""
+        cursor = self._conn.execute(
+            """SELECT
+                   COUNT(*) as total_sessions,
+                   SUM(input_tokens) as total_input_tokens,
+                   SUM(output_tokens) as total_output_tokens,
+                   SUM(cached_tokens) as total_cached_tokens,
+                   SUM(estimated_cost_usd) as total_cost_usd,
+                   COUNT(task_market_task_id) as task_market_tasks,
+                   SUM(task_market_reward_usdc) as total_rewards_usdc,
+                   SUM(task_market_margin_usd) as total_margin_usd
+               FROM sessions
+               WHERE estimated_cost_usd > 0"""
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""

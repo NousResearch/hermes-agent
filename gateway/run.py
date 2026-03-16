@@ -1150,7 +1150,7 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
                           "personality", "plan", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "insights", "reload-mcp", "reload_mcp",
+                          "compress", "usage", "cost", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
                           "background", "reasoning", "voice"}
         if command and command in _known_commands:
@@ -1221,6 +1221,9 @@ class GatewayRunner:
 
         if command == "usage":
             return await self._handle_usage_command(event)
+
+        if command == "cost":
+            return await self._handle_cost_command(event)
 
         if command == "insights":
             return await self._handle_insights_command(event)
@@ -3185,6 +3188,38 @@ class GatewayRunner:
                 f"_(Detailed usage available during active conversations)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_cost_command(self, event: MessageEvent) -> str:
+        """Handle /cost command -- show aggregate cost statistics."""
+        from hermes_state import SessionDB
+        try:
+            db = SessionDB()
+            stats = db.get_aggregate_costs()
+            db.close()
+        except Exception as e:
+            return f"Error loading cost data: {e}"
+
+        if not stats or not stats.get("total_sessions"):
+            return "No cost data recorded yet. Cost tracking starts automatically on your next conversation."
+
+        lines = [
+            "💰 **Aggregate Cost Dashboard**",
+            f"Sessions tracked: {stats['total_sessions']:,}",
+            f"Total input tokens: {stats['total_input_tokens']:,}",
+            f"Total output tokens: {stats['total_output_tokens']:,}",
+            f"Total cached tokens: {stats['total_cached_tokens']:,}",
+            f"**Total estimated cost: ${stats['total_cost_usd']:.4f}**",
+        ]
+        if stats.get("task_market_tasks"):
+            lines.extend([
+                "",
+                "📋 **TaskMarket**",
+                f"Tasks completed: {stats['task_market_tasks']}",
+                f"Total rewards: ${stats['total_rewards_usdc']:.2f} USDC",
+                f"Total margin: ${stats['total_margin_usd']:.2f}",
+                f"Avg margin: {(stats['total_margin_usd'] / stats['total_rewards_usdc'] * 100):.1f}%" if stats['total_rewards_usdc'] else "",
+            ])
+        return "\n".join(lines)
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""

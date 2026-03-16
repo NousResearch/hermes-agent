@@ -1,4 +1,4 @@
-"""Tests for /tools slash command handler in the interactive CLI."""
+"""Tests for /tools slash command handler and show_tools() in the interactive CLI."""
 
 from unittest.mock import MagicMock, patch
 
@@ -169,3 +169,75 @@ class TestToolsSlashMixed:
             cli_obj._handle_tools_command("/tools disable web github:create_issue")
         mock_reload.assert_called_once()
         assert "web" not in cli_obj.enabled_toolsets
+
+
+# ── show_tools() footer ───────────────────────────────────────────────────
+
+class TestShowToolsFooter:
+    """show_tools() appends an enable/disable status footer."""
+
+    def _fake_tool(self, name, toolset="file"):
+        return {"function": {"name": name, "description": "A tool."}, "_toolset": toolset}
+
+    def test_footer_shows_disabled_toolsets(self, capsys):
+        cli_obj = _make_cli(["memory"])  # web is disabled
+        fake_tools = [self._fake_tool("read_file")]
+        with patch("cli.get_tool_definitions", return_value=fake_tools), \
+             patch("cli.get_toolset_for_tool", return_value="file"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            cli_obj.show_tools()
+        out = capsys.readouterr().out
+        assert "Disabled:" in out
+        assert "/tools enable" in out
+
+    def test_footer_all_enabled_no_disabled_line(self, capsys):
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+        all_ts = {ts for ts, _, _ in CONFIGURABLE_TOOLSETS}
+        cli_obj = _make_cli(list(all_ts))
+        fake_tools = [self._fake_tool("read_file")]
+        with patch("cli.get_tool_definitions", return_value=fake_tools), \
+             patch("cli.get_toolset_for_tool", return_value="file"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value=all_ts), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            cli_obj.show_tools()
+        out = capsys.readouterr().out
+        assert "all enabled" in out
+        assert "Disabled:" not in out
+
+    def test_footer_tip_always_present(self, capsys):
+        cli_obj = _make_cli(["memory"])
+        fake_tools = [self._fake_tool("memory")]
+        with patch("cli.get_tool_definitions", return_value=fake_tools), \
+             patch("cli.get_toolset_for_tool", return_value="memory"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            cli_obj.show_tools()
+        out = capsys.readouterr().out
+        assert "/tools list" in out
+        assert "/tools disable" in out
+        assert "/tools enable" in out
+
+    def test_no_tools_available_skips_footer(self, capsys):
+        cli_obj = _make_cli()
+        with patch("cli.get_tool_definitions", return_value=[]):
+            cli_obj.show_tools()
+        out = capsys.readouterr().out
+        assert "No tools available" in out
+        assert "Disabled:" not in out
+        assert "Tip:" not in out
+
+    def test_footer_uses_config_on_disk_not_session_state(self, capsys):
+        """Footer reads fresh config so it reflects saved state, not just session state."""
+        cli_obj = _make_cli(["web", "memory"])  # session thinks web is enabled
+        fake_tools = [self._fake_tool("read_file")]
+        # Config on disk says web is disabled
+        disk_enabled = {"memory"}
+        with patch("cli.get_tool_definitions", return_value=fake_tools), \
+             patch("cli.get_toolset_for_tool", return_value="file"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value=disk_enabled), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            cli_obj.show_tools()
+        out = capsys.readouterr().out
+        assert "web" in out  # web appears in Disabled line
+        assert "Disabled:" in out

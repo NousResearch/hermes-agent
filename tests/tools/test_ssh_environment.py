@@ -67,15 +67,30 @@ class TestBuildSSHCommand:
 
 
 class TestTerminalToolConfig:
-    def test_ssh_persistent_default_false(self, monkeypatch):
+    def test_ssh_persistent_default_true(self, monkeypatch):
+        """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
+        monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_persistent"] is True
+
+    def test_ssh_persistent_explicit_false(self, monkeypatch):
+        """Per-backend env var overrides the global default."""
+        monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "false")
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
-    def test_ssh_persistent_true(self, monkeypatch):
+    def test_ssh_persistent_explicit_true(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true")
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is True
+
+    def test_ssh_persistent_respects_config(self, monkeypatch):
+        """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
+        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
+        monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_persistent"] is False
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

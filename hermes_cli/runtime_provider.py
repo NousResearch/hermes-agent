@@ -119,11 +119,16 @@ def _resolve_named_custom_runtime(
         or os.getenv("OPENROUTER_API_KEY", "").strip()
     )
 
+    config = load_config()
+    raw_timeout = os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60)
+    timeout = float(raw_timeout)
+
     return {
         "provider": "openrouter",
         "api_mode": "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
+        "timeout": timeout,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
 
@@ -191,11 +196,16 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
+    config = load_config()
+    raw_timeout = os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60)
+    timeout = float(raw_timeout)
+
     return {
         "provider": "openrouter",
         "api_mode": "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
+        "timeout": timeout,
         "source": source,
     }
 

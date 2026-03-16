@@ -85,6 +85,7 @@ class TestProviderEnvBlocklist:
             "KIMI_API_KEY": "kimi-key",
             "MINIMAX_API_KEY": "mm-key",
             "MINIMAX_CN_API_KEY": "mmcn-key",
+            "DEEPSEEK_API_KEY": "deepseek-key",
         }
         result_env = _run_with_env(extra_os_env=registry_vars)
 
@@ -95,7 +96,6 @@ class TestProviderEnvBlocklist:
         """Extra provider vars not in PROVIDER_REGISTRY must also be blocked."""
         extra_provider_vars = {
             "GOOGLE_API_KEY": "google-key",
-            "DEEPSEEK_API_KEY": "deepseek-key",
             "MISTRAL_API_KEY": "mistral-key",
             "GROQ_API_KEY": "groq-key",
             "TOGETHER_API_KEY": "together-key",

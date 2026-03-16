@@ -78,6 +78,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    "deepseek": [
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -89,6 +93,7 @@ _PROVIDER_LABELS = {
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
     "custom": "Custom endpoint",
 }
 
@@ -103,6 +108,7 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "deep-seek": "deepseek",
 }
 
 
@@ -136,7 +142,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -210,6 +216,111 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
     # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
+
+
+def detect_provider_for_model(
+    model_name: str,
+    current_provider: str,
+) -> Optional[tuple[str, str]]:
+    """Auto-detect the best provider for a model name.
+
+    Returns ``(provider_id, model_name)`` — the model name may be remapped
+    (e.g. bare ``deepseek-chat`` → ``deepseek/deepseek-chat`` for OpenRouter).
+    Returns ``None`` when no confident match is found.
+
+    Priority:
+    1. Direct provider with credentials (highest)
+    2. Direct provider without credentials → remap to OpenRouter slug
+    3. OpenRouter catalog match
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return None
+
+    name_lower = name.lower()
+
+    # Aggregators list other providers' models — never auto-switch TO them
+    _AGGREGATORS = {"nous", "openrouter"}
+
+    # If the model belongs to the current provider's catalog, don't suggest switching
+    current_models = _PROVIDER_MODELS.get(current_provider, [])
+    if any(name_lower == m.lower() for m in current_models):
+        return None
+
+    # --- Step 1: check static provider catalogs for a direct match ---
+    direct_match: Optional[str] = None
+    for pid, models in _PROVIDER_MODELS.items():
+        if pid == current_provider or pid in _AGGREGATORS:
+            continue
+        if any(name_lower == m.lower() for m in models):
+            direct_match = pid
+            break
+
+    if direct_match:
+        # Check if we have credentials for this provider
+        has_creds = False
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            pconfig = PROVIDER_REGISTRY.get(direct_match)
+            if pconfig:
+                import os
+                for env_var in pconfig.api_key_env_vars:
+                    if os.getenv(env_var, "").strip():
+                        has_creds = True
+                        break
+        except Exception:
+            pass
+
+        if has_creds:
+            return (direct_match, name)
+
+        # No direct creds — try to find this model on OpenRouter instead
+        or_slug = _find_openrouter_slug(name)
+        if or_slug:
+            return ("openrouter", or_slug)
+        # Still return the direct provider — credential resolution will
+        # give a clear error rather than silently using the wrong provider
+        return (direct_match, name)
+
+    # --- Step 2: check OpenRouter catalog ---
+    # First try exact match (handles provider/model format)
+    or_slug = _find_openrouter_slug(name)
+    if or_slug:
+        if current_provider != "openrouter":
+            return ("openrouter", or_slug)
+        # Already on openrouter, just return the resolved slug
+        if or_slug != name:
+            return ("openrouter", or_slug)
+        return None  # already on openrouter with matching name
+
+    return None
+
+
+def _find_openrouter_slug(model_name: str) -> Optional[str]:
+    """Find the full OpenRouter model slug for a bare or partial model name.
+
+    Handles:
+    - Exact match: ``anthropic/claude-opus-4.6`` → as-is
+    - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
+    - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
+    """
+    name_lower = model_name.strip().lower()
+    if not name_lower:
+        return None
+
+    # Exact match (already has provider/ prefix)
+    for mid, _ in OPENROUTER_MODELS:
+        if name_lower == mid.lower():
+            return mid
+
+    # Try matching just the model part (after the /)
+    for mid, _ in OPENROUTER_MODELS:
+        if "/" in mid:
+            _, model_part = mid.split("/", 1)
+            if name_lower == model_part.lower():
+                return mid
+
+    return None
 
 
 def normalize_provider(provider: Optional[str]) -> str:

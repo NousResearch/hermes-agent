@@ -58,6 +58,9 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
+from agent.usage_pricing import estimate_cost_usd, format_duration_compact, format_token_count_compact, has_known_pricing
+from hermes_cli.banner import _format_context_length
+
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
@@ -1193,6 +1196,153 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
+        if percent_used is None:
+            return "class:status-bar-dim"
+        if percent_used >= 95:
+            return "class:status-bar-critical"
+        if percent_used > 80:
+            return "class:status-bar-bad"
+        if percent_used >= 50:
+            return "class:status-bar-warn"
+        return "class:status-bar-good"
+
+    def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
+        safe_percent = max(0, min(100, percent_used or 0))
+        filled = round((safe_percent / 100) * width)
+        return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+        model_name = self.model or "unknown"
+        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        if len(model_short) > 26:
+            model_short = f"{model_short[:23]}..."
+
+        elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        snapshot = {
+            "model_name": model_name,
+            "model_short": model_short,
+            "duration": format_duration_compact(elapsed_seconds),
+            "context_tokens": 0,
+            "context_length": None,
+            "context_percent": None,
+            "session_prompt_tokens": 0,
+            "session_completion_tokens": 0,
+            "session_total_tokens": 0,
+            "session_api_calls": 0,
+            "session_cost": 0.0,
+            "pricing_known": has_known_pricing(model_name),
+            "compressions": 0,
+        }
+
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return snapshot
+
+        snapshot["session_prompt_tokens"] = getattr(agent, "session_prompt_tokens", 0) or 0
+        snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
+        snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
+        snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["session_cost"] = estimate_cost_usd(
+            model_name,
+            snapshot["session_prompt_tokens"],
+            snapshot["session_completion_tokens"],
+        )
+
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor:
+            context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            context_length = getattr(compressor, "context_length", 0) or 0
+            snapshot["context_tokens"] = context_tokens
+            snapshot["context_length"] = context_length or None
+            snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
+            if context_length:
+                snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        return snapshot
+
+    def _build_status_bar_text(self, width: Optional[int] = None) -> str:
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            width = width or shutil.get_terminal_size((80, 24)).columns
+            percent = snapshot["context_percent"]
+            percent_label = f"{percent}%" if percent is not None else "--"
+            cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+            duration_label = snapshot["duration"]
+
+            if width < 52:
+                return f"⚕ {snapshot['model_short']} · {duration_label}"
+            if width < 76:
+                return f"⚕ {snapshot['model_short']} · {percent_label} · {cost_label} · {duration_label}"
+
+            if snapshot["context_length"]:
+                ctx_total = _format_context_length(snapshot["context_length"])
+                ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                context_label = f"{ctx_used}/{ctx_total}"
+            else:
+                context_label = "ctx --"
+
+            return f"⚕ {snapshot['model_short']} │ {context_label} │ {percent_label} │ {cost_label} │ {duration_label}"
+        except Exception:
+            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+
+    def _get_status_bar_fragments(self):
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            width = shutil.get_terminal_size((80, 24)).columns
+            cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+            duration_label = snapshot["duration"]
+
+            if width < 52:
+                return [
+                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-dim", " · "),
+                    ("class:status-bar-dim", duration_label),
+                    ("class:status-bar", " "),
+                ]
+
+            percent = snapshot["context_percent"]
+            percent_label = f"{percent}%" if percent is not None else "--"
+            if width < 76:
+                return [
+                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-dim", " · "),
+                    (self._status_bar_context_style(percent), percent_label),
+                    ("class:status-bar-dim", " · "),
+                    ("class:status-bar-dim", cost_label),
+                    ("class:status-bar-dim", " · "),
+                    ("class:status-bar-dim", duration_label),
+                    ("class:status-bar", " "),
+                ]
+
+            if snapshot["context_length"]:
+                ctx_total = _format_context_length(snapshot["context_length"])
+                ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                context_label = f"{ctx_used}/{ctx_total}"
+            else:
+                context_label = "ctx --"
+
+            bar_style = self._status_bar_context_style(percent)
+            return [
+                ("class:status-bar", " ⚕ "),
+                ("class:status-bar-strong", snapshot["model_short"]),
+                ("class:status-bar-dim", " │ "),
+                ("class:status-bar-dim", context_label),
+                ("class:status-bar-dim", " │ "),
+                (bar_style, self._build_context_bar(percent)),
+                ("class:status-bar-dim", " "),
+                (bar_style, percent_label),
+                ("class:status-bar-dim", " │ "),
+                ("class:status-bar-dim", cost_label),
+                ("class:status-bar-dim", " │ "),
+                ("class:status-bar-dim", duration_label),
+                ("class:status-bar", " "),
+            ]
+        except Exception:
+            return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Strip provider prefixes and swap the default model for Codex.
@@ -3447,17 +3597,34 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
+        cost = estimate_cost_usd(agent.model, prompt, completion)
+        prompt_cost = estimate_cost_usd(agent.model, prompt, 0)
+        completion_cost = estimate_cost_usd(agent.model, 0, completion)
+        pricing_known = has_known_pricing(agent.model)
+        elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print(f"  📊 Session Token Usage")
         print(f"  {'─' * 40}")
+        print(f"  Model:                     {agent.model}")
         print(f"  Prompt tokens (input):     {prompt:>10,}")
         print(f"  Completion tokens (output): {completion:>9,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
+        print(f"  Session duration:          {elapsed:>10}")
+        if pricing_known:
+            print(f"  Input cost:              ${prompt_cost:>10.4f}")
+            print(f"  Output cost:             ${completion_cost:>10.4f}")
+            print(f"  Total cost:              ${cost:>10.4f}")
+        else:
+            print(f"  Input cost:              {'n/a':>10}")
+            print(f"  Output cost:             {'n/a':>10}")
+            print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
+        if not pricing_known:
+            print(f"  Note:             Pricing unknown for {agent.model}")
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -5657,6 +5824,11 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
+        status_bar = Window(
+            content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
+            height=1,
+        )
+
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
         # the corresponding interactive prompt is active.
@@ -5669,6 +5841,7 @@ class HermesCLI:
                 clarify_widget,
                 spinner_widget,
                 spacer,
+                status_bar,
                 input_rule_top,
                 image_bar,
                 input_area,
@@ -5685,6 +5858,13 @@ class HermesCLI:
             'prompt': '#FFF8DC',
             'prompt-working': '#888888 italic',
             'hint': '#555555 italic',
+            'status-bar': 'bg:#1a1a2e #C0C0C0',
+            'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
+            'status-bar-dim': 'bg:#1a1a2e #8B8682',
+            'status-bar-good': 'bg:#1a1a2e #8FBC8F bold',
+            'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
+            'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
+            'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
@@ -5737,12 +5917,20 @@ class HermesCLI:
         def spinner_loop():
             import time as _time
 
+            last_idle_refresh = 0.0
             while not self._should_exit:
-                if self._command_running and self._app:
+                if not self._app:
+                    _time.sleep(0.1)
+                    continue
+                if self._command_running:
                     self._invalidate(min_interval=0.1)
                     _time.sleep(0.1)
                 else:
-                    _time.sleep(0.05)
+                    now = _time.monotonic()
+                    if now - last_idle_refresh >= 1.0:
+                        last_idle_refresh = now
+                        self._invalidate(min_interval=1.0)
+                    _time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()

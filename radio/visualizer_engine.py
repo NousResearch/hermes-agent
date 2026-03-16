@@ -75,12 +75,8 @@ def _synthetic_snapshot(width: int, position: float, title_seed: str) -> Visuali
 
 def _resolve_features(width: int, position: float, title_seed: str) -> VisualizerFeatures:
     snapshot = get_feature_snapshot(width)
-    if snapshot.active and (
-        any(snapshot.levels)
-        or snapshot.energy > 0.0
-        or snapshot.transient > 0.0
-        or snapshot.motion > 0.0
-    ):
+    # Require meaningful energy (not just silence/near-silence)
+    if snapshot.active and snapshot.energy > 0.05:
         return snapshot
     return _synthetic_snapshot(width, position, title_seed)
 

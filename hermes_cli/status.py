@@ -275,8 +275,13 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
     if sys.platform.startswith('linux'):
+        try:
+            from hermes_cli.gateway import get_service_name
+            _gw_svc = get_service_name()
+        except Exception:
+            _gw_svc = "hermes-gateway"
         result = subprocess.run(
-            ["systemctl", "--user", "is-active", "hermes-gateway"],
+            ["systemctl", "--user", "is-active", _gw_svc],
             capture_output=True,
             text=True
         )

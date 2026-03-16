@@ -52,6 +52,20 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# Smart Model Routing (optional)
+# =============================================================================
+# Use a cheaper model for short/simple turns while keeping your main model for
+# more complex requests. Disabled by default.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple
@@ -76,8 +90,9 @@ model:
 #   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
 terminal:
   backend: "local"
-  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends.
+  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
+  docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
 
@@ -107,6 +122,7 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -759,3 +775,14 @@ display:
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default
+
+# =============================================================================
+# Privacy
+# =============================================================================
+# privacy:
+#   # Redact PII from the LLM context prompt.
+#   # When true, phone numbers are stripped and user/chat IDs are replaced
+#   # with deterministic hashes before being sent to the model.
+#   # Names and usernames are NOT affected (user-chosen, publicly visible).
+#   # Routing/delivery still uses the original values internally.
+#   redact_pii: false

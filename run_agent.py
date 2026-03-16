@@ -3345,8 +3345,7 @@ class AIAgent:
                 reasoning_text = combined or None
 
         if reasoning_text and self.verbose_logging:
-            preview = reasoning_text[:100] + "..." if len(reasoning_text) > 100 else reasoning_text
-            logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {preview}")
+            logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
         if reasoning_text and self.reasoning_callback:
             try:
@@ -3823,8 +3822,12 @@ class AIAgent:
             print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
-                args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                if self.verbose_logging:
+                    print(f"  📞 Tool {i}: {name}({list(args.keys())})")
+                    print(f"     Args: {args_str}")
+                else:
+                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
+                    print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
         for _, name, args in parsed_calls:
             if self.tool_progress_callback:
@@ -3889,17 +3892,20 @@ class AIAgent:
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
                 if self.verbose_logging:
-                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                    logging.debug(f"Tool result preview: {result_preview}...")
+                    logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             # Print cute message per tool
             if self.quiet_mode:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 print(f"  {cute_msg}")
             elif not self.quiet_mode:
-                response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+                if self.verbose_logging:
+                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
+                    print(f"     Result: {function_result}")
+                else:
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -3975,8 +3981,12 @@ class AIAgent:
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
-                args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                if self.verbose_logging:
+                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
+                    print(f"     Args: {args_str}")
+                else:
+                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
+                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
             if self.tool_progress_callback:
                 try:
@@ -4132,7 +4142,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            result_preview = function_result[:200] if len(function_result) > 200 else function_result
+            result_preview = function_result if self.verbose_logging else (
+                function_result[:200] if len(function_result) > 200 else function_result
+            )
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
@@ -4142,7 +4154,7 @@ class AIAgent:
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                logging.debug(f"Tool result preview: {result_preview}...")
+                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             # Guard against tools returning absurdly large content that would
             # blow up the context window. 100K chars ≈ 25K tokens — generous
@@ -4165,8 +4177,12 @@ class AIAgent:
             messages.append(tool_msg)
 
             if not self.quiet_mode:
-                response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                if self.verbose_logging:
+                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
+                    print(f"     Result: {function_result}")
+                else:
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -5418,7 +5434,10 @@ class AIAgent:
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
-                    self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                    if self.verbose_logging:
+                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content}")
+                    else:
+                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).

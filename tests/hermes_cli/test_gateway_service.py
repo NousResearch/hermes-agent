@@ -61,6 +61,14 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "TimeoutStopSec=60" in unit
 
+    def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "ExecStart=" in unit
+        assert "ExecStop=" not in unit
+        assert "TimeoutStopSec=60" in unit
+        assert "WantedBy=multi-user.target" in unit
+
 
 class TestGatewayStopCleanup:
     def test_stop_sweeps_manual_gateway_processes_after_service_stop(self, tmp_path, monkeypatch):

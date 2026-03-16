@@ -131,6 +131,30 @@ body {
 .file-input { display: none; }
 
 @media (max-width: 600px) { .msg { max-width: 90%; } #input-bar { padding: 10px 12px; gap: 8px; } }
+
+/* Pixel Avatar */
+#pixel-avatar {
+    position: fixed; top: 80px; right: 16px;
+    z-index: 100; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s;
+    transform: scale(0); opacity: 0; pointer-events: none;
+    cursor: grab; user-select: none; touch-action: none;
+}
+#pixel-avatar.visible { transform: scale(1); opacity: 1; pointer-events: auto; }
+#pixel-avatar canvas { image-rendering: pixelated; width: 120px; height: 120px; filter: drop-shadow(0 0 16px var(--accent-glow)); }
+#avatar-status {
+    font-size: 11px; color: var(--accent); background: var(--bg-secondary);
+    border: 1px solid var(--glass-border); border-radius: 12px; padding: 4px 12px;
+    text-align: center; white-space: nowrap;
+}
+#avatar-close {
+    position: absolute; top: -8px; right: -8px;
+    width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--glass-border);
+    background: var(--bg-secondary); color: var(--text-muted); font-size: 14px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s; z-index: 101;
+}
+#avatar-close:hover { border-color: var(--error); color: var(--error); }
 </style>
 </head>
 <body>
@@ -142,6 +166,13 @@ body {
     <input type="password" id="token-input" placeholder="API Key" autocomplete="off">
     <button id="auth-btn" onclick="doAuth()">Connect</button>
     <div id="auth-error">Invalid API key</div>
+</div>
+
+<!-- Pixel Avatar -->
+<div id="pixel-avatar">
+    <button id="avatar-close" onclick="exitVoiceMode()">&times;</button>
+    <canvas id="avatar-canvas" width="16" height="16"></canvas>
+    <div id="avatar-status">Listening...</div>
 </div>
 
 <!-- Chat -->
@@ -291,6 +322,7 @@ function handleResponse(data) {
     }
     // In voice mode, if no TTS audio in response, restart listening
     if (voiceMode && !data.media?.some(m => m.type === 'audio')) {
+        setAvatarState('listening');
         setTimeout(() => { if (voiceMode && !currentTtsAudio) startRecording(); }, 500);
     }
 }
@@ -315,16 +347,17 @@ function playTtsAndMaybeRestart(url) {
     currentTtsAudio = _ttsAudio;
     // Pause mic during TTS
     if (isRecording) stopRecording();
+    if (voiceMode) setAvatarState('speaking');
 
     _ttsAudio.onended = () => {
         currentTtsAudio = null;
-        if (voiceMode) startRecording();
+        if (voiceMode) { setAvatarState('listening'); startRecording(); }
     };
     _ttsAudio.onerror = () => {
         currentTtsAudio = null;
-        if (voiceMode) startRecording();
+        if (voiceMode) { setAvatarState('listening'); startRecording(); }
     };
-    _ttsAudio.play().catch(() => { currentTtsAudio = null; if (voiceMode) startRecording(); });
+    _ttsAudio.play().catch(() => { currentTtsAudio = null; if (voiceMode) { setAvatarState('listening'); startRecording(); } });
 }
 
 // ── Voice mode & VAD ───────────────────────────────────────────────
@@ -402,13 +435,202 @@ async function startPushToTalk() {
     }
 }
 
+// ── Pixel Avatar ─────────────────────────────────────────────────
+
+const _avatarCanvas = document.getElementById('avatar-canvas');
+const _avatarCtx = _avatarCanvas.getContext('2d');
+let _avatarState = 'idle'; // idle, listening, speaking, thinking
+let _avatarFrame = 0;
+let _avatarBlink = 0;
+let _avatarMouth = 0; // 0-3 mouth openness from audio RMS
+let _avatarAnimId = null;
+
+// 16x16 pixel character palette
+const P = {
+    _: null,              // transparent
+    h: '#5b3a8c',         // hair (dark purple)
+    H: '#7b52b3',         // hair highlight
+    s: '#ffe0bd',         // skin
+    S: '#ffd1a3',         // skin shadow
+    e: '#2d1b69',         // eyes
+    E: '#6c5ce7',         // eye glow (accent)
+    m: '#e74c7a',         // mouth
+    M: '#ff6b9d',         // mouth open
+    b: '#1a1a2e',         // body/outfit dark
+    B: '#6c5ce7',         // body accent
+    c: '#fff',            // eye white/highlight
+};
+
+// Character sprite frames (16x16 grid)
+const _sprites = {
+    base: [
+        '____hhhhhh______',
+        '___hHhhhhhHh____',
+        '__hhhhhhhhhhh___',
+        '__hssssssssssh__',
+        '_hsscsseescssh__',
+        '_hssssssssssh___',
+        '__hsssSssSssh___',
+        '__hssssmmssh____',
+        '___hsssssssh____',
+        '____hhsshh______',
+        '____bBBBBb______',
+        '___bbBBBBbb_____',
+        '___bbbBBbbb_____',
+        '___bb____bb_____',
+        '___bs____sb_____',
+        '___ss____ss_____',
+    ],
+    eyesClosed: 'ss__ss',  // replaces eyes row
+    mouthOpen: ['mm', 'Mm', 'MM'], // small, medium, large
+};
+
+function drawPixelAvatar() {
+    const ctx = _avatarCtx;
+    ctx.clearRect(0, 0, 16, 16);
+
+    const sprite = _sprites.base;
+    for (let y = 0; y < 16; y++) {
+        const row = sprite[y];
+        for (let x = 0; x < row.length; x++) {
+            const ch = row[x];
+            if (ch === '_') continue;
+            let color = P[ch];
+            if (!color) continue;
+
+            // Blink: replace eye pixels
+            if (y === 4 && _avatarBlink > 0 && (ch === 'e' || ch === 'c')) {
+                color = P.s; // skin color = closed eyes
+            }
+
+            // Eye glow when listening
+            if ((ch === 'e' || ch === 'c') && _avatarState === 'listening') {
+                if (ch === 'e') color = P.E;
+            }
+
+            // Mouth animation when speaking
+            if (y === 7 && ch === 'm' && _avatarState === 'speaking' && _avatarMouth > 0) {
+                color = _avatarMouth >= 2 ? P.M : P.m;
+            }
+
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, 1, 1);
+        }
+    }
+
+    // Draw open mouth when speaking
+    if (_avatarState === 'speaking' && _avatarMouth >= 2) {
+        ctx.fillStyle = P.M;
+        ctx.fillRect(6, 7, 1, 1);
+        ctx.fillRect(7, 7, 1, 1);
+        if (_avatarMouth >= 3) {
+            ctx.fillRect(6, 8, 2, 1);
+        }
+    }
+
+    // Thinking dots above head
+    if (_avatarState === 'thinking') {
+        const dotPos = Math.floor(_avatarFrame / 12) % 4;
+        ctx.fillStyle = P.E;
+        if (dotPos >= 1) ctx.fillRect(11, 1, 1, 1);
+        if (dotPos >= 2) ctx.fillRect(13, 0, 1, 1);
+        if (dotPos >= 3) ctx.fillRect(15, 0, 1, 1);
+    }
+}
+
+function animateAvatar() {
+    _avatarFrame++;
+
+    // Blink every ~3 seconds
+    if (_avatarFrame % 90 === 0) _avatarBlink = 4;
+    if (_avatarBlink > 0) _avatarBlink--;
+
+    // Audio-reactive mouth
+    if (_avatarState === 'speaking' && currentTtsAudio && !currentTtsAudio.paused) {
+        // Simulate mouth movement from audio (randomized when no analyser)
+        _avatarMouth = Math.floor(Math.random() * 4);
+    } else if (_avatarState !== 'speaking') {
+        _avatarMouth = 0;
+    }
+
+    // Gentle bounce for listening state
+    const canvas = _avatarCanvas;
+    if (_avatarState === 'listening') {
+        const bounce = Math.sin(_avatarFrame * 0.05) * 2;
+        canvas.style.transform = `translateY(${bounce}px)`;
+    } else {
+        canvas.style.transform = '';
+    }
+
+    drawPixelAvatar();
+    _avatarAnimId = requestAnimationFrame(animateAvatar);
+}
+
+function showAvatar(state) {
+    _avatarState = state || 'idle';
+    _avatarFrame = 0;
+    document.getElementById('pixel-avatar').classList.add('visible');
+    updateAvatarStatus();
+    if (!_avatarAnimId) animateAvatar();
+}
+
+function hideAvatar() {
+    document.getElementById('pixel-avatar').classList.remove('visible');
+    if (_avatarAnimId) { cancelAnimationFrame(_avatarAnimId); _avatarAnimId = null; }
+}
+
+function setAvatarState(state) {
+    _avatarState = state;
+    updateAvatarStatus();
+}
+
+function updateAvatarStatus() {
+    const el = document.getElementById('avatar-status');
+    const labels = { idle: 'Ready', listening: 'Listening...', speaking: 'Speaking...', thinking: 'Thinking...' };
+    el.textContent = labels[_avatarState] || _avatarState;
+}
+
+// ── Drag avatar ──────────────────────────────────────────────────
+
+(function initAvatarDrag() {
+    const el = document.getElementById('pixel-avatar');
+    let dragging = false, startX, startY, origX, origY;
+
+    function onStart(e) {
+        if (e.target.id === 'avatar-close') return;
+        dragging = true;
+        const t = e.touches ? e.touches[0] : e;
+        startX = t.clientX; startY = t.clientY;
+        const rect = el.getBoundingClientRect();
+        origX = rect.left; origY = rect.top;
+        el.style.cursor = 'grabbing';
+        e.preventDefault();
+    }
+    function onMove(e) {
+        if (!dragging) return;
+        const t = e.touches ? e.touches[0] : e;
+        const dx = t.clientX - startX, dy = t.clientY - startY;
+        el.style.right = 'auto'; el.style.top = 'auto';
+        el.style.left = (origX + dx) + 'px';
+        el.style.top = (origY + dy) + 'px';
+    }
+    function onEnd() { dragging = false; el.style.cursor = 'grab'; }
+
+    el.addEventListener('mousedown', onStart);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+    el.addEventListener('touchstart', onStart, {passive: false});
+    document.addEventListener('touchmove', onMove, {passive: false});
+    document.addEventListener('touchend', onEnd);
+})();
+
 // ── Streaming voice mode (long press, always voice all) ──────────
 
 function enterVoiceMode() {
     voiceMode = true;
     document.getElementById('voice-btn').classList.add('voice-mode');
     document.getElementById('input-bar').classList.add('voice-mode-active');
-    addSystemMessage('Streaming mode - listening...');
+    showAvatar('listening');
     // Tell backend to enable TTS for all replies
     sendCommand('/voice tts');
     startRecording();
@@ -420,6 +642,7 @@ function exitVoiceMode() {
     document.getElementById('input-bar').classList.remove('voice-mode-active');
     if (currentTtsAudio) { currentTtsAudio.pause(); currentTtsAudio = null; }
     stopRecording();
+    hideAvatar();
     // Switch to voice_only so push-to-talk still gets TTS
     sendCommand('/voice on');
     addSystemMessage('Streaming mode off');
@@ -507,6 +730,7 @@ async function sendVoice(blob) {
     const blobUrl = URL.createObjectURL(blob);
     addUserVoiceMessage(blobUrl);
     showTyping();
+    if (voiceMode) setAvatarState('thinking');
     try {
         const ext = blob.type.includes('webm') ? '.webm' : '.ogg';
         const form = new FormData();
@@ -516,13 +740,13 @@ async function sendVoice(blob) {
             method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}` }, body: form,
         });
         hideTyping();
-        if (!resp.ok) { addSystemMessage('Voice processing failed'); if (voiceMode) startRecording(); return; }
+        if (!resp.ok) { addSystemMessage('Voice processing failed'); if (voiceMode) { setAvatarState('listening'); startRecording(); } return; }
         const data = await resp.json();
         handleResponse(data);
     } catch (e) {
         hideTyping();
         addSystemMessage('Voice request failed');
-        if (voiceMode) startRecording();
+        if (voiceMode) { setAvatarState('listening'); startRecording(); }
     }
 }
 

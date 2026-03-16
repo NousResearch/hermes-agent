@@ -930,8 +930,10 @@ class TestConcurrentToolExecution:
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 enabled_tools=list(agent.valid_tool_names),
+                honcho_manager=None,
+                honcho_session_key=None,
             )
-        assert result == "result"
+            assert result == "result"
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
@@ -1583,6 +1585,38 @@ class TestSystemPromptStability:
         conversation_history = []
         should_prefetch = not conversation_history
         assert should_prefetch is True
+
+    def test_run_conversation_can_skip_honcho_sync_for_synthetic_turns(self, agent):
+        captured = {}
+
+        def _fake_api_call(api_kwargs):
+            captured.update(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-1"
+        agent._honcho_config = SimpleNamespace(
+            ai_peer="hermes",
+            memory_mode="hybrid",
+            write_frequency="async",
+            recall_mode="hybrid",
+        )
+        agent._use_prompt_caching = False
+
+        with (
+            patch.object(agent, "_honcho_sync") as mock_sync,
+            patch.object(agent, "_queue_honcho_prefetch") as mock_prefetch,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        ):
+            result = agent.run_conversation("synthetic flush turn", sync_honcho=False)
+
+        assert result["completed"] is True
+        assert captured["messages"][-1]["content"] == "synthetic flush turn"
+        mock_sync.assert_not_called()
+        mock_prefetch.assert_not_called()
 
 
 class TestHonchoActivation:

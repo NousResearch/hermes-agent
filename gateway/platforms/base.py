@@ -752,10 +752,7 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-        )
+        session_key = build_session_key(event.source)
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
@@ -823,7 +820,9 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else {}
+        if event.raw_message:
+            _thread_metadata["raw_message"] = event.raw_message
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:

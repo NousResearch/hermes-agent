@@ -260,10 +260,13 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
+        # Support custom Anthropic-compatible endpoints (e.g., Alibaba Cloud GLM)
+        anthropic_base_url = os.getenv("ANTHROPIC_BASE_URL", "").strip()
+        base_url = anthropic_base_url if anthropic_base_url else "https://api.anthropic.com"
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
-            "base_url": "https://api.anthropic.com",
+            "base_url": base_url,
             "api_key": token,
             "source": "env",
             "requested_provider": requested_provider,

@@ -264,9 +264,9 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     fragments.append(("", "\n"))
     if control_mode:
         if is_stream:
-            fragments.append(("class:radio-control", "  Spc pause  m mute  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
         else:
-            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
     elif not is_stream and now.duration and now.duration > 0 and now.position is not None:
         bar_width = 52
         progress = max(0.0, min(1.0, now.position / now.duration))
@@ -279,14 +279,14 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         # Stream mode: show LIVE + Ctrl+O hint
         fragments.append(("class:radio-station", "  \u25cf LIVE"))
         if not control_mode:
-            fragments.append(("class:radio-vol", "  Ctrl+O controls"))
+            fragments.append(("class:radio-hint", "  Ctrl+O"))
     else:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress-bg", "\u2500" * 52))
 
     # Also show hint for crate dig when not in control mode
     if not is_stream and not control_mode:
-        fragments.append(("class:radio-vol", "  Ctrl+O controls"))
+        fragments.append(("class:radio-hint", "  Ctrl+O"))
 
     return fragments
 
@@ -298,7 +298,7 @@ _control_mode_active = False
 
 _expanded = False  # toggled by 'v' key binding in cli.py
 
-_BARS_EXPANDED = 52  # fill the 58-char box (minus 4 for borders + padding)
+_BARS_EXPANDED = 62  # fill the 68-char box (minus 4 for borders + padding)
 _bar_levels_exp = [0.0] * _BARS_EXPANDED
 
 
@@ -322,7 +322,7 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
         return []
 
     fragments: List[Tuple[str, str]] = []
-    W = 58  # display width
+    W = 68  # display width (wider for full track names)
 
     # Top border
     fragments.append(("class:radio-border", f"  \u256d{'\u2500' * (W - 2)}\u256e\n"))
@@ -500,7 +500,7 @@ def _generate_bars_expanded(position: float, title: str, paused: bool) -> List[s
     return render_rows(
         preset_name=None,
         width=_BARS_EXPANDED,
-        rows=max(1, min(6, int(preset.get("rows", 3)))),
+        rows=3,  # always 3 rows for consistent height
         paused=paused,
         position=position,
         title_seed=title,

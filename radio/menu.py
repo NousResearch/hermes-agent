@@ -313,7 +313,7 @@ def build_menu_items(
 
 # -- Render helpers ------------------------------------------------------------
 
-MENU_WIDTH = 58
+MENU_WIDTH = 68
 INNER_WIDTH = MENU_WIDTH - 4  # inside borders: "│  " ... " │"
 
 

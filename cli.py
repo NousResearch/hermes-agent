@@ -5190,6 +5190,7 @@ class HermesCLI:
             'radio-control': f'{_rskin.get_color("ui_ok", "#7ee6a8")}',
             'radio-rec': '#f47067 bold',
             'radio-rec-dim': '#484f58',
+            'radio-hint': '#383838 italic',
         })
         
         # Create the application

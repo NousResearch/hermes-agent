@@ -90,6 +90,14 @@ SKILLS_GUIDANCE = (
     "skill with skill_manage so you can reuse it next time."
 )
 
+_MESSAGING_CONFIRMATION_HINT = (
+    " When on this messaging platform, always describe what you plan to do "
+    "and ask for explicit user confirmation before executing any file-modifying "
+    "or destructive action (write_file, patch_file, terminal commands that "
+    "modify files, delete operations). Do not interpret conversational "
+    "discussion as an instruction to execute."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
@@ -100,6 +108,7 @@ PLATFORM_HINTS = {
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
+        + _MESSAGING_CONFIRMATION_HINT
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
@@ -109,6 +118,7 @@ PLATFORM_HINTS = {
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        + _MESSAGING_CONFIRMATION_HINT
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
@@ -116,6 +126,7 @@ PLATFORM_HINTS = {
         "in your response. Images (.png, .jpg, .webp) are sent as photo "
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be sent as attachments."
+        + _MESSAGING_CONFIRMATION_HINT
     ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "
@@ -123,6 +134,7 @@ PLATFORM_HINTS = {
         "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
+        + _MESSAGING_CONFIRMATION_HINT
     ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
@@ -132,6 +144,7 @@ PLATFORM_HINTS = {
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
+        + _MESSAGING_CONFIRMATION_HINT
     ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "

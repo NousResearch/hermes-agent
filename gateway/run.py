@@ -3587,6 +3587,7 @@ class GatewayRunner:
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
@@ -3596,7 +3597,7 @@ class GatewayRunner:
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in ["HERMES_GATEWAY_SESSION", "HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
             if var in os.environ:
                 del os.environ[var]
     

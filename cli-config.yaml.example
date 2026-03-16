@@ -333,6 +333,12 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
 
+# When true, group/channel chats use one session per participant when the platform
+# provides a user ID. This is the secure default and prevents users in the same
+# room from sharing context, interrupts, and token costs. Set false only if you
+# explicitly want one shared "room brain" per group/channel.
+group_sessions_per_user: true
+
 # =============================================================================
 # Skills Configuration
 # =============================================================================

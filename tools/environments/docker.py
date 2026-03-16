@@ -158,6 +158,10 @@ class DockerEnvironment(BaseEnvironment):
 
     Persistence: when enabled, bind mounts preserve /workspace and /root
     across container restarts.
+
+    Auto-mount: when host_cwd is provided (the user's original working directory),
+    it is automatically bind-mounted to /workspace unless auto_mount_cwd=False
+    or the path is already covered by an explicit volume mount.
     """
 
     def __init__(
@@ -172,6 +176,8 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         volumes: list = None,
         network: bool = True,
+        host_cwd: str = None,
+        auto_mount_cwd: bool = True,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -249,6 +255,29 @@ class DockerEnvironment(BaseEnvironment):
                 volume_args.extend(["-v", vol])
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+
+        # Auto-mount host CWD to /workspace when enabled (fixes #1445).
+        # This allows users to run `cd my-project && hermes` and have Docker
+        # automatically mount their project directory into the container.
+        # Disabled when: auto_mount_cwd=False, host_cwd is not a valid directory,
+        # or /workspace is already covered by writable_args or a user volume.
+        auto_mount_disabled = os.getenv("TERMINAL_DOCKER_NO_AUTO_MOUNT", "").lower() in ("1", "true", "yes")
+        if host_cwd and auto_mount_cwd and not auto_mount_disabled:
+            host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd))
+            if os.path.isdir(host_cwd_abs):
+                # Check if /workspace is already being mounted by persistence or user config
+                workspace_already_mounted = any(
+                    ":/workspace" in arg for arg in writable_args
+                ) or any(
+                    ":/workspace" in arg for arg in volume_args
+                )
+                if not workspace_already_mounted:
+                    logger.info(f"Auto-mounting host CWD to /workspace: {host_cwd_abs}")
+                    volume_args.extend(["-v", f"{host_cwd_abs}:/workspace"])
+                else:
+                    logger.debug(f"Skipping auto-mount: /workspace already mounted")
+            else:
+                logger.debug(f"Skipping auto-mount: host_cwd is not a valid directory: {host_cwd}")
 
         logger.info(f"Docker volume_args: {volume_args}")
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args

@@ -208,6 +208,11 @@ class HermesRadio:
         if not station_name:
             station_name = _station_name_from_url(url)
 
+        # Stop any active recording before switching (saves the file)
+        if self.is_recording:
+            result = await self.stop_recording()
+            print(f"  {result}")
+
         self._now.station_name = station_name
         self._now.active = True
         await self._primary.loadfile(url)

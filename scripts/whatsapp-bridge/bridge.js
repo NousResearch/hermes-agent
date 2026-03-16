@@ -53,6 +53,10 @@ const logger = pino({ level: 'warn' });
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
 
+// Track recently sent message IDs to prevent echo-back loops with media
+const recentlySentIds = new Set();
+const MAX_RECENT_IDS = 50;
+
 let sock = null;
 let connectionState = 'disconnected';
 
@@ -187,14 +191,23 @@ async function startSocket() {
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && body.startsWith('⚕ *Hermes Agent*')) {
-        try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId })); } catch {}
+      // Check both text prefix (for text messages) and message ID tracking (for media)
+      if (msg.key.fromMe && (body.startsWith('⚕ *Hermes Agent*') || recentlySentIds.has(msg.key.id))) {
+        try { 
+          console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); 
+        } catch (err) {
+          console.error('Failed to log agent echo event:', err);
+        }
         continue;
       }
 
       // Skip empty messages
       if (!body && !hasMedia) {
-        try { console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); } catch {}
+        try { 
+          console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
+        } catch (err) {
+          console.error('Failed to log empty message event:', err);
+        }
         continue;
       }
 
@@ -243,9 +256,19 @@ app.post('/send', async (req, res) => {
 
   try {
     // Prefix responses so the user can distinguish agent replies from their
-    // own messages (especially in self-chat / "Message Yourself").
-    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
+    // own messages (especially in self-chat / \"Message Yourself\").
+    const prefixed = `⚕ *Hermes Agent*\\n────────────\\n${message}`;
     const sent = await sock.sendMessage(chatId, { text: prefixed });
+    
+    // Track sent message ID to prevent echo-back loops
+    if (sent?.key?.id) {
+      recentlySentIds.add(sent.key.id);
+      if (recentlySentIds.size > MAX_RECENT_IDS) {
+        const firstId = recentlySentIds.values().next().value;
+        recentlySentIds.delete(firstId);
+      }
+    }
+    
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -337,6 +360,16 @@ app.post('/send-media', async (req, res) => {
     }
 
     const sent = await sock.sendMessage(chatId, msgPayload);
+    
+    // Track sent message ID to prevent echo-back loops
+    if (sent?.key?.id) {
+      recentlySentIds.add(sent.key.id);
+      if (recentlySentIds.size > MAX_RECENT_IDS) {
+        const firstId = recentlySentIds.values().next().value;
+        recentlySentIds.delete(firstId);
+      }
+    }
+    
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });

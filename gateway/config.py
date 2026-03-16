@@ -97,10 +97,11 @@ class SessionResetPolicy:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
         # Handle both missing keys and explicit null values (YAML null → None)
+        mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
         return cls(
-            mode=data.get("mode", "both"),
+            mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
         )

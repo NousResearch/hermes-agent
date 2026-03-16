@@ -466,6 +466,8 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
+    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
+
     # Default cwd: local uses the host's current directory, everything
     # else starts in the user's home (~ resolves to whatever account
     # is running inside the container/remote).
@@ -475,21 +477,25 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = "~"
     else:
         default_cwd = "/root"
-    
+
     # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If the CWD looks like a host-local path that can't exist inside a
-    # container/sandbox, fall back to the backend's own default. This
-    # catches the case where cli.py (or .env) leaked the host's CWD.
-    # SSH is excluded since /home/ paths are valid on remote machines.
-    raw_cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    cwd = raw_cwd
-    # Capture original host CWD for auto-mounting into containers (fixes #1445).
-    # Even when the container's working directory falls back to /root, we still
-    # want to auto-mount the user's host project directory to /workspace.
-    host_cwd = raw_cwd if raw_cwd and os.path.isdir(raw_cwd) else os.getcwd()
-    if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
+    # If Docker cwd passthrough is explicitly enabled, remap the host path to
+    # /workspace and track the original host path separately. Otherwise keep the
+    # normal sandbox behavior and discard host paths.
+    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    host_cwd = None
+    host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+    if env_type == "docker" and mount_docker_cwd:
+        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
+        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        if (
+            any(candidate.startswith(p) for p in host_prefixes)
+            or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
+        ):
+            host_cwd = candidate
+            cwd = "/workspace"
+    elif env_type in ("modal", "docker", "singularity", "daytona") and cwd:
         # Host paths that won't exist inside containers
-        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",
@@ -503,7 +509,8 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
-        "host_cwd": host_cwd,  # Original host directory for auto-mounting into containers
+        "host_cwd": host_cwd,
+        "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
@@ -544,7 +551,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         ssh_config: SSH connection config (for env_type="ssh")
         container_config: Resource config for container backends (cpu, memory, disk, persistent)
         task_id: Task identifier for environment reuse and snapshot keying
-        host_cwd: Original host working directory (for auto-mounting into containers)
+        host_cwd: Optional host working directory to bind into Docker when explicitly enabled
         
     Returns:
         Environment instance with execute() method
@@ -568,6 +575,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
             volumes=volumes,
             host_cwd=host_cwd,
+            auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
         )
     
     elif env_type == "singularity":
@@ -957,6 +965,7 @@ def terminal_tool(
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "docker_volumes": config.get("docker_volumes", []),
+                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                             }
 
                         local_config = None

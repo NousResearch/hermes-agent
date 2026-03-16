@@ -19,6 +19,8 @@ def _make_dummy_env(**kwargs):
         task_id=kwargs.get("task_id", "test-task"),
         volumes=kwargs.get("volumes", []),
         network=kwargs.get("network", True),
+        host_cwd=kwargs.get("host_cwd"),
+        auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
     )
 
 
@@ -88,24 +90,16 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
 
 
 def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
-    """When host_cwd is provided, it should be auto-mounted to /workspace."""
-    import os
-
-    # Create a temp directory to simulate user's project directory
+    """Opt-in docker cwd mounting should bind the host cwd to /workspace."""
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
 
-    # Mock Docker availability
     def _run_docker_version(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
-
-    def _run_docker_create(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="storage-opt not supported")
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
 
-    # Mock the inner _Docker class to capture run_args
     captured_run_args = []
 
     class MockInnerDocker:
@@ -120,32 +114,20 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
         MockInnerDocker,
     )
 
-    # Create environment with host_cwd
-    env = docker_env.DockerEnvironment(
-        image="python:3.11",
+    _make_dummy_env(
         cwd="/workspace",
-        timeout=60,
-        persistent_filesystem=False,  # Non-persistent mode uses tmpfs, should be overridden
-        task_id="test-auto-mount",
-        volumes=[],
         host_cwd=str(project_dir),
         auto_mount_cwd=True,
     )
 
-    # Check that the host_cwd was added as a volume mount
-    volume_mount = f"-v {project_dir}:/workspace"
     run_args_str = " ".join(captured_run_args)
-    assert f"{project_dir}:/workspace" in run_args_str, f"Expected auto-mount in run_args: {run_args_str}"
+    assert f"{project_dir}:/workspace" in run_args_str
 
 
-def test_auto_mount_disabled_via_env(monkeypatch, tmp_path):
-    """Auto-mount should be disabled when TERMINAL_DOCKER_NO_AUTO_MOUNT is set."""
-    import os
-
+def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
+    """Host cwd should not be mounted unless the caller explicitly opts in."""
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
-
-    monkeypatch.setenv("TERMINAL_DOCKER_NO_AUTO_MOUNT", "true")
 
     def _run_docker_version(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
@@ -167,26 +149,18 @@ def test_auto_mount_disabled_via_env(monkeypatch, tmp_path):
         MockInnerDocker,
     )
 
-    env = docker_env.DockerEnvironment(
-        image="python:3.11",
-        cwd="/workspace",
-        timeout=60,
-        persistent_filesystem=False,
-        task_id="test-no-auto-mount",
-        volumes=[],
+    _make_dummy_env(
+        cwd="/root",
         host_cwd=str(project_dir),
-        auto_mount_cwd=True,
+        auto_mount_cwd=False,
     )
 
-    # Check that the host_cwd was NOT added (because env var disabled it)
     run_args_str = " ".join(captured_run_args)
-    assert f"{project_dir}:/workspace" not in run_args_str, f"Auto-mount should be disabled: {run_args_str}"
+    assert f"{project_dir}:/workspace" not in run_args_str
 
 
 def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path):
-    """Auto-mount should be skipped if /workspace is already mounted via user volumes."""
-    import os
-
+    """Explicit user volumes for /workspace should take precedence over cwd mount."""
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
     other_dir = tmp_path / "other"
@@ -212,22 +186,52 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
         MockInnerDocker,
     )
 
-    # User already configured a volume mount for /workspace
-    env = docker_env.DockerEnvironment(
-        image="python:3.11",
+    _make_dummy_env(
         cwd="/workspace",
-        timeout=60,
-        persistent_filesystem=False,
-        task_id="test-workspace-exists",
-        volumes=[f"{other_dir}:/workspace"],  # User explicitly mounted something to /workspace
         host_cwd=str(project_dir),
         auto_mount_cwd=True,
+        volumes=[f"{other_dir}:/workspace"],
     )
 
-    # The user's explicit mount should be present
     run_args_str = " ".join(captured_run_args)
     assert f"{other_dir}:/workspace" in run_args_str
+    assert run_args_str.count(":/workspace") == 1
 
-    # But the auto-mount should NOT add a duplicate
-    assert run_args_str.count(":/workspace") == 1, f"Should only have one /workspace mount: {run_args_str}"
+
+def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
+    """Persistent mode should still prefer the configured host cwd at /workspace."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+
+    def _run_docker_version(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
+
+    captured_run_args = []
+
+    class MockInnerDocker:
+        container_id = "mock-container-persistent"
+        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
+
+        def __init__(self, **kwargs):
+            captured_run_args.extend(kwargs.get("run_args", []))
+
+    monkeypatch.setattr(
+        "minisweagent.environments.docker.DockerEnvironment",
+        MockInnerDocker,
+    )
+
+    _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=True,
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+        task_id="test-persistent-auto-mount",
+    )
+
+    run_args_str = " ".join(captured_run_args)
+    assert f"{project_dir}:/workspace" in run_args_str
+    assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 

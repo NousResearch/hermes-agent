@@ -158,10 +158,6 @@ class DockerEnvironment(BaseEnvironment):
 
     Persistence: when enabled, bind mounts preserve /workspace and /root
     across container restarts.
-
-    Auto-mount: when host_cwd is provided (the user's original working directory),
-    it is automatically bind-mounted to /workspace unless auto_mount_cwd=False
-    or the path is already covered by an explicit volume mount.
     """
 
     def __init__(
@@ -177,7 +173,7 @@ class DockerEnvironment(BaseEnvironment):
         volumes: list = None,
         network: bool = True,
         host_cwd: str = None,
-        auto_mount_cwd: bool = True,
+        auto_mount_cwd: bool = False,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -220,30 +216,9 @@ class DockerEnvironment(BaseEnvironment):
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
         from tools.environments.base import get_sandbox_dir
 
-        self._workspace_dir: Optional[str] = None
-        self._home_dir: Optional[str] = None
-        if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
-            self._workspace_dir = str(sandbox / "workspace")
-            self._home_dir = str(sandbox / "home")
-            os.makedirs(self._workspace_dir, exist_ok=True)
-            os.makedirs(self._home_dir, exist_ok=True)
-            writable_args = [
-                "-v", f"{self._workspace_dir}:/workspace",
-                "-v", f"{self._home_dir}:/root",
-            ]
-        else:
-            writable_args = [
-                "--tmpfs", "/workspace:rw,exec,size=10g",
-                "--tmpfs", "/home:rw,exec,size=1g",
-                "--tmpfs", "/root:rw,exec,size=1g",
-            ]
-
-        # All containers get security hardening (capabilities dropped, no privilege
-        # escalation, PID limits). The container filesystem is writable so agents
-        # can install packages as needed.
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
+        workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
                 logger.warning(f"Docker volume entry is not a string: {vol!r}")
@@ -253,31 +228,52 @@ class DockerEnvironment(BaseEnvironment):
                 continue
             if ":" in vol:
                 volume_args.extend(["-v", vol])
+                if ":/workspace" in vol:
+                    workspace_explicitly_mounted = True
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
-        # Auto-mount host CWD to /workspace when enabled (fixes #1445).
-        # This allows users to run `cd my-project && hermes` and have Docker
-        # automatically mount their project directory into the container.
-        # Disabled when: auto_mount_cwd=False, host_cwd is not a valid directory,
-        # or /workspace is already covered by writable_args or a user volume.
-        auto_mount_disabled = os.getenv("TERMINAL_DOCKER_NO_AUTO_MOUNT", "").lower() in ("1", "true", "yes")
-        if host_cwd and auto_mount_cwd and not auto_mount_disabled:
-            host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd))
-            if os.path.isdir(host_cwd_abs):
-                # Check if /workspace is already being mounted by persistence or user config
-                workspace_already_mounted = any(
-                    ":/workspace" in arg for arg in writable_args
-                ) or any(
-                    ":/workspace" in arg for arg in volume_args
-                )
-                if not workspace_already_mounted:
-                    logger.info(f"Auto-mounting host CWD to /workspace: {host_cwd_abs}")
-                    volume_args.extend(["-v", f"{host_cwd_abs}:/workspace"])
-                else:
-                    logger.debug(f"Skipping auto-mount: /workspace already mounted")
-            else:
-                logger.debug(f"Skipping auto-mount: host_cwd is not a valid directory: {host_cwd}")
+        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        bind_host_cwd = (
+            auto_mount_cwd
+            and bool(host_cwd_abs)
+            and os.path.isdir(host_cwd_abs)
+            and not workspace_explicitly_mounted
+        )
+        if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
+            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+
+        self._workspace_dir: Optional[str] = None
+        self._home_dir: Optional[str] = None
+        writable_args = []
+        if self._persistent:
+            sandbox = get_sandbox_dir() / "docker" / task_id
+            self._home_dir = str(sandbox / "home")
+            os.makedirs(self._home_dir, exist_ok=True)
+            writable_args.extend([
+                "-v", f"{self._home_dir}:/root",
+            ])
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                self._workspace_dir = str(sandbox / "workspace")
+                os.makedirs(self._workspace_dir, exist_ok=True)
+                writable_args.extend([
+                    "-v", f"{self._workspace_dir}:/workspace",
+                ])
+        else:
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                writable_args.extend([
+                    "--tmpfs", "/workspace:rw,exec,size=10g",
+                ])
+            writable_args.extend([
+                "--tmpfs", "/home:rw,exec,size=1g",
+                "--tmpfs", "/root:rw,exec,size=1g",
+            ])
+
+        if bind_host_cwd:
+            logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+        elif workspace_explicitly_mounted:
+            logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
         logger.info(f"Docker volume_args: {volume_args}")
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args

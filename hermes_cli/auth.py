@@ -147,6 +147,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "kilocode": ProviderConfig(
+        id="kilocode",
+        name="Kilo Code",
+        auth_type="api_key",
+        inference_base_url="https://api.kilo.ai/api/gateway",
+        api_key_env_vars=("KILOCODE_API_KEY",),
+        base_url_env_var="KILOCODE_BASE_URL",
+    ),
 }
 
 
@@ -524,6 +532,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

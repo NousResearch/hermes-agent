@@ -768,6 +768,7 @@ def cmd_model(args):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "kilocode": "Kilo Code",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -787,6 +788,7 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("kilocode", "Kilo Code (Kilo Gateway API)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -855,7 +857,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1390,6 +1392,13 @@ _PROVIDER_MODELS = {
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
+    ],
+    "kilocode": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
     ],
 }
 
@@ -2459,7 +2468,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

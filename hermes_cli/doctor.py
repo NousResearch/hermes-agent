@@ -46,6 +46,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
+    "KILOCODE_API_KEY",
 )
 
 
@@ -570,6 +571,7 @@ def run_doctor(args):
         # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+        ("Kilo Code",        ("KILOCODE_API_KEY",),                           "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""

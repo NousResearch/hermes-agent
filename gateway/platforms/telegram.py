@@ -322,6 +322,14 @@ class TelegramAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if len(chunks) > 1:
+                # truncate_message appends a raw " (1/2)" suffix. Escape the
+                # MarkdownV2-special parentheses so Telegram doesn't reject the
+                # chunk and fall back to plain text.
+                chunks = [
+                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    for chunk in chunks
+                ]
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None

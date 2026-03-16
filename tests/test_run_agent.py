@@ -612,6 +612,25 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
+    def test_reasoning_not_sent_for_unsupported_openrouter_model(self, agent):
+        agent.model = "minimax/minimax-m2.5"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_reasoning_sent_for_supported_openrouter_model(self, agent):
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+
+    def test_reasoning_sent_for_nous_route(self, agent):
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent.model = "minimax/minimax-m2.5"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
@@ -941,6 +960,19 @@ class TestHandleMaxIterations:
         assert isinstance(result, str)
         assert "error" in result.lower()
         assert "API down" in result
+
+    def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
+        agent.model = "minimax/minimax-m2.5"
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "reasoning" not in kwargs.get("extra_body", {})
 
 
 class TestRunConversation:

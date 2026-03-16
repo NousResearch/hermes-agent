@@ -202,8 +202,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_media_message
             ))
             
-            # Start polling in background
-            await self._app.initialize()
+            # Start polling — retry initialize() for transient TLS resets
+            from telegram.error import NetworkError
+            max_connect_attempts = 3
+            for _attempt in range(max_connect_attempts):
+                try:
+                    await self._app.initialize()
+                    break
+                except NetworkError as init_err:
+                    if _attempt < max_connect_attempts - 1:
+                        wait = 2 ** _attempt
+                        logger.warning(
+                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                            self.name, _attempt + 1, max_connect_attempts, init_err, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
             await self._app.start()
             loop = asyncio.get_running_loop()
 
@@ -335,31 +350,40 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             
             for i, chunk in enumerate(chunks):
-                # Try Markdown first, fall back to plain text if it fails
-                try:
-                    msg = await self._bot.send_message(
-                        chat_id=int(chat_id),
-                        text=chunk,
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                        message_thread_id=int(thread_id) if thread_id else None,
-                    )
-                except Exception as md_error:
-                    # Markdown parsing failed, try plain text
-                    if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                        logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                        # Strip MDV2 escape backslashes so the user doesn't
-                        # see raw backslashes littered through the message.
-                        plain_chunk = _strip_mdv2(chunk)
-                        msg = await self._bot.send_message(
-                            chat_id=int(chat_id),
-                            text=plain_chunk,
-                            parse_mode=None,  # Plain text
-                            reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                            message_thread_id=int(thread_id) if thread_id else None,
-                        )
-                    else:
-                        raise  # Re-raise if not a parse error
+                msg = None
+                for attempt in range(3):
+                    try:
+                        # Try Markdown first, fall back to plain text if it fails
+                        try:
+                            msg = await self._bot.send_message(
+                                chat_id=int(chat_id),
+                                text=chunk,
+                                parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                message_thread_id=int(thread_id) if thread_id else None,
+                            )
+                        except Exception as md_error:
+                            # Markdown parsing failed, try plain text
+                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                plain_chunk = _strip_mdv2(chunk)
+                                msg = await self._bot.send_message(
+                                    chat_id=int(chat_id),
+                                    text=plain_chunk,
+                                    parse_mode=None,  # Plain text
+                                    reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                    message_thread_id=int(thread_id) if thread_id else None,
+                                )
+                            else:
+                                raise  # Re-raise if not a parse error
+                        break  # Success, exit retry loop
+                    except Exception as send_error:
+                        from telegram.error import NetworkError
+                        if isinstance(send_error, NetworkError) and attempt < 2:
+                            logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s", self.name, attempt + 1, 2 ** attempt, send_error)
+                            await asyncio.sleep(2 ** attempt)
+                        else:
+                            raise
                 message_ids.append(str(msg.message_id))
             
             return SendResult(

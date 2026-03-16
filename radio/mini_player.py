@@ -436,18 +436,34 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
         if parts:
             _boxline(" \u00b7 ".join(parts), "class:radio-tags")
 
-    # Row 11: keyboard controls (context-aware)
+    # Row 11: keyboard controls (only when control mode is active)
     is_stream = now.source_mode == "stream"
-    if is_stream:
-        controls = "Spc pause  m mute  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"
+    control_mode_exp = False
+    try:
+        import radio.mini_player as _self
+        control_mode_exp = getattr(_self, '_control_mode_active', False)
+    except Exception:
+        pass
+
+    if control_mode_exp:
+        if is_stream:
+            controls = "Spc pause  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"
+        else:
+            controls = "Spc pause  n skip  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"
+        cline = controls[:W - 4]
+        pad = W - 4 - len(cline)
+        fragments.append(("class:radio-border", "  \u2502 "))
+        fragments.append(("class:radio-control", cline))
+        fragments.append(("", " " * max(0, pad + 1)))
+        fragments.append(("class:radio-border", "\u2502\n"))
     else:
-        controls = "Spc pause  n skip  m mute  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"
-    cline = controls[:W - 4]
-    pad = W - 4 - len(cline)
-    fragments.append(("class:radio-border", "  \u2502 "))
-    fragments.append(("class:radio-tags", cline))
-    fragments.append(("", " " * max(0, pad + 1)))
-    fragments.append(("class:radio-border", "\u2502\n"))
+        # Show subtle Ctrl+O hint instead
+        hint = "Ctrl+O controls"
+        pad = W - 4 - len(hint)
+        fragments.append(("class:radio-border", "  \u2502 "))
+        fragments.append(("class:radio-hint", hint))
+        fragments.append(("", " " * max(0, pad + 1)))
+        fragments.append(("class:radio-border", "\u2502\n"))
 
     # Row 12: Progress bar + time (crate dig only) or LIVE (streams)
     bar_w = W - 18

@@ -30,6 +30,7 @@ def _get_available_commands():
         from hermes_cli.commands import COMMANDS
         return [{"command": cmd, "description": desc} for cmd, desc in COMMANDS.items()]
     except Exception:
+        logger.debug("Failed to load commands list", exc_info=True)
         return []
 
 
@@ -87,9 +88,10 @@ class ControlAPI:
         """Look up a running agent by session key.  '_any' returns the first.
         Returns (resolved_key, agent) or (key, None) if not found."""
         if key == "_any":
-            if not self.runner._running_agents:
+            try:
+                key = next(iter(self.runner._running_agents))
+            except StopIteration:
                 return key, None
-            key = next(iter(self.runner._running_agents))
         return key, self.runner._running_agents.get(key)
 
     # ── Endpoints ────────────────────────────────────────────────────────

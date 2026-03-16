@@ -1413,6 +1413,15 @@ class HermesCLI:
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
+    #
+    # Future: When display.show_reasoning is also enabled, stream reasoning
+    # tokens into a dim box above the response (like the existing static
+    # reasoning display, but live). The infrastructure exists — reasoning
+    # deltas fire via _fire_reasoning_delta() during streaming. The display
+    # layer needs: a dim reasoning box that opens on first reasoning token,
+    # accumulates live, then transitions to the response box when content
+    # tokens start arriving. See PR #1214 (raulvidis) for gateway-side
+    # reasoning visibility modes as a reference implementation.
 
     def _stream_delta(self, text: str) -> None:
         """Line-buffered streaming callback for real-time token rendering.

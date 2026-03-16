@@ -263,18 +263,53 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
-    """Route a message to the appropriate platform sender."""
+    """Route a message to the appropriate platform sender.
+
+    Long messages are automatically chunked to fit within platform limits
+    using the same smart-splitting algorithm as the gateway adapters
+    (preserves code-block boundaries, adds part indicators).
+    """
     from gateway.config import Platform
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.telegram import TelegramAdapter
+    from gateway.platforms.discord import DiscordAdapter
+    from gateway.platforms.slack import SlackAdapter
 
     media_files = media_files or []
+
+    # Platform message length limits (from adapter class attributes)
+    _MAX_LENGTHS = {
+        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
+        Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
+        Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+    }
+
+    # Smart-chunk the message to fit within platform limits.
+    # For short messages or platforms without a known limit this is a no-op.
+    max_len = _MAX_LENGTHS.get(platform)
+    if max_len:
+        chunks = BasePlatformAdapter.truncate_message(message, max_len)
+    else:
+        chunks = [message]
+
+    # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
-        return await _send_telegram(
-            pconfig.token,
-            chat_id,
-            message,
-            media_files=media_files,
-            thread_id=thread_id,
-        )
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_telegram(
+                pconfig.token,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
             "error": (
@@ -289,22 +324,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             "native send_message media delivery is currently only supported for telegram"
         )
 
-    if platform == Platform.DISCORD:
-        result = await _send_discord(pconfig.token, chat_id, message)
-    elif platform == Platform.SLACK:
-        result = await _send_slack(pconfig.token, chat_id, message)
-    elif platform == Platform.SIGNAL:
-        result = await _send_signal(pconfig.extra, chat_id, message)
-    elif platform == Platform.EMAIL:
-        result = await _send_email(pconfig.extra, chat_id, message)
-    else:
-        result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+    last_result = None
+    for chunk in chunks:
+        if platform == Platform.DISCORD:
+            result = await _send_discord(pconfig.token, chat_id, chunk)
+        elif platform == Platform.SLACK:
+            result = await _send_slack(pconfig.token, chat_id, chunk)
+        elif platform == Platform.SIGNAL:
+            result = await _send_signal(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.EMAIL:
+            result = await _send_email(pconfig.extra, chat_id, chunk)
+        else:
+            result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
-    if warning and isinstance(result, dict) and result.get("success"):
-        warnings = list(result.get("warnings", []))
+        if isinstance(result, dict) and result.get("error"):
+            return result
+        last_result = result
+
+    if warning and isinstance(last_result, dict) and last_result.get("success"):
+        warnings = list(last_result.get("warnings", []))
         warnings.append(warning)
-        result["warnings"] = warnings
-    return result
+        last_result["warnings"] = warnings
+    return last_result
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
@@ -415,7 +456,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
 
 async def _send_discord(token, chat_id, message):
-    """Send via Discord REST API (no websocket client needed)."""
+    """Send a single message via Discord REST API (no websocket client needed).
+
+    Chunking is handled by _send_to_platform() before this is called.
+    """
     try:
         import aiohttp
     except ImportError:
@@ -423,17 +467,13 @@ async def _send_discord(token, chat_id, message):
     try:
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-        chunks = [message[i:i+2000] for i in range(0, len(message), 2000)]
-        message_ids = []
         async with aiohttp.ClientSession() as session:
-            for chunk in chunks:
-                async with session.post(url, headers=headers, json={"content": chunk}) as resp:
-                    if resp.status not in (200, 201):
-                        body = await resp.text()
-                        return {"error": f"Discord API error ({resp.status}): {body}"}
-                    data = await resp.json()
-                    message_ids.append(data.get("id"))
-        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_ids": message_ids}
+            async with session.post(url, headers=headers, json={"content": message}) as resp:
+                if resp.status not in (200, 201):
+                    body = await resp.text()
+                    return {"error": f"Discord API error ({resp.status}): {body}"}
+                data = await resp.json()
+        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
     except Exception as e:
         return {"error": f"Discord send failed: {e}"}
 

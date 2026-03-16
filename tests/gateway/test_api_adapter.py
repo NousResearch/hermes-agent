@@ -1745,3 +1745,264 @@ class TestToolsetWiring:
         from toolsets import TOOLSETS
         includes = TOOLSETS["hermes-gateway"]["includes"]
         assert "hermes-api" in includes
+
+
+# ── Voice MessageType tests ──────────────────────────────────────────────
+
+
+class TestVoiceMessageType:
+    def test_voice_endpoint_passes_message_type_voice(self):
+        """Voice endpoint must pass MessageType.VOICE so auto-TTS triggers."""
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_adapter()
+        captured_kwargs = {}
+
+        async def fake_handle(session_id, message, user_id=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "ok"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        fake_result = {
+            "success": True, "transcript": "hello",
+            "language": "en", "language_probability": 0.9,
+        }
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fake_result
+
+        with patch.dict(os.environ, {"API_KEY": "test-key"}), \
+             patch("gateway.api_server.asyncio.to_thread", fake_to_thread):
+            resp = client.post(
+                "/v1/chat/voice",
+                files={"file": ("voice.webm", b"fake", "audio/webm")},
+                headers={"Authorization": "Bearer test-key"},
+            )
+        assert resp.status_code == 200
+        assert captured_kwargs.get("message_type") == MessageType.VOICE
+
+    def test_chat_endpoint_does_not_pass_voice_type(self):
+        """Regular chat endpoint should NOT pass MessageType.VOICE."""
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_adapter()
+        captured_kwargs = {}
+
+        async def fake_handle(session_id, message, user_id=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            key = adapter._build_session_key(session_id)
+            q = adapter._response_queues.get(key)
+            if q:
+                await q.put({"type": "message", "content": "ok"})
+                await q.put({"type": "done"})
+
+        adapter.handle_request = fake_handle
+        app = create_app(adapter)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"API_KEY": "k"}):
+            client.post(
+                "/v1/chat",
+                json={"message": "hello"},
+                headers={"Authorization": "Bearer k"},
+            )
+        # Chat endpoint uses default TEXT, should never be VOICE
+        assert captured_kwargs.get("message_type") != MessageType.VOICE
+
+    def test_handle_request_sets_message_type_on_event(self):
+        """handle_request must set message_type on the MessageEvent."""
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_adapter()
+        captured_events = []
+        original_handle = adapter.handle_message
+
+        async def spy_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = spy_handle
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            adapter.handle_request("s1", "test", message_type=MessageType.VOICE)
+        )
+        assert len(captured_events) == 1
+        assert captured_events[0].message_type == MessageType.VOICE
+
+
+# ── Web UI new features tests ────────────────────────────────────────────
+
+
+class TestWebUINewFeatures:
+    def _get_html(self):
+        from fastapi.testclient import TestClient
+        from gateway.api_server import create_app
+        adapter = _make_adapter()
+        app = create_app(adapter)
+        return TestClient(app).get("/").text
+
+    def test_push_to_talk_function(self):
+        html = self._get_html()
+        assert "startPushToTalk" in html
+
+    def test_long_press_handler(self):
+        html = self._get_html()
+        assert "LONG_PRESS_MS" in html
+        assert "initVoiceBtn" in html
+
+    def test_ios_audio_unlock(self):
+        html = self._get_html()
+        assert "unlockAudio" in html
+        assert "_ttsAudio" in html
+
+    def test_camera_button(self):
+        html = self._get_html()
+        assert "camera-btn" in html
+        assert 'capture="environment"' in html
+
+    def test_pixel_avatar(self):
+        html = self._get_html()
+        assert "pixel-avatar" in html
+        assert "avatar-canvas" in html
+        assert "avatar-close" in html
+
+    def test_avatar_states(self):
+        html = self._get_html()
+        assert "setAvatarState" in html
+        assert "'listening'" in html
+        assert "'thinking'" in html
+        assert "'speaking'" in html
+
+    def test_send_command_function(self):
+        html = self._get_html()
+        assert "sendCommand" in html
+        assert "/voice tts" in html
+        assert "/voice on" in html
+
+    def test_voice_mode_streaming(self):
+        html = self._get_html()
+        assert "enterVoiceMode" in html
+        assert "exitVoiceMode" in html
+
+    def test_draggable_avatar(self):
+        html = self._get_html()
+        assert "initAvatarDrag" in html
+        assert "cursor: grab" in html
+
+    def test_get_supported_mime(self):
+        """UI must use getSupportedMime for Safari/iOS compatibility."""
+        html = self._get_html()
+        assert "getSupportedMime" in html
+        assert "isTypeSupported" in html
+
+    def test_vad_uses_settimeout(self):
+        """VAD must use setTimeout instead of requestAnimationFrame for background tabs."""
+        html = self._get_html()
+        assert "setTimeout(checkVAD" in html
+
+
+# ── HTTPS / TLS tests ────────────────────────────────────────────────────
+
+
+class TestHTTPS:
+    def test_ssl_cert_and_key_loaded(self):
+        with patch.dict(os.environ, {
+            "API_SSL_CERT": "/tmp/cert.pem",
+            "API_SSL_KEY": "/tmp/key.pem",
+        }):
+            adapter = _make_adapter()
+            assert adapter._ssl_cert == "/tmp/cert.pem"
+            assert adapter._ssl_key == "/tmp/key.pem"
+
+    def test_ssl_partial_config_ignored(self):
+        """If only cert or key is set, both should be None (no TLS)."""
+        with patch.dict(os.environ, {"API_SSL_CERT": "/tmp/cert.pem", "API_SSL_KEY": ""}):
+            adapter = _make_adapter()
+            # cert is set but key is empty -> key becomes None
+            assert adapter._ssl_key is None
+
+    def test_ssl_empty_strings_treated_as_none(self):
+        with patch.dict(os.environ, {"API_SSL_CERT": "  ", "API_SSL_KEY": "  "}):
+            adapter = _make_adapter()
+            assert adapter._ssl_cert is None
+            assert adapter._ssl_key is None
+
+    def test_connect_passes_ssl_kwargs(self):
+        """When SSL is configured, connect() should pass ssl_certfile/ssl_keyfile to uvicorn."""
+        import tempfile
+        # Create temp cert/key files
+        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as cf, \
+             tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as kf:
+            cert_path = cf.name
+            key_path = kf.name
+
+        try:
+            with patch.dict(os.environ, {
+                "API_SSL_CERT": cert_path,
+                "API_SSL_KEY": key_path,
+            }):
+                adapter = _make_adapter()
+                assert adapter._ssl_cert == cert_path
+                assert adapter._ssl_key == key_path
+
+                # Verify uvicorn.Config would receive ssl args
+                captured_config = {}
+                original_config = __import__("uvicorn").Config
+
+                class FakeConfig:
+                    def __init__(self, app, **kwargs):
+                        captured_config.update(kwargs)
+
+                class FakeServer:
+                    def __init__(self, config):
+                        pass
+                    async def serve(self):
+                        pass
+
+                with patch("uvicorn.Config", FakeConfig), \
+                     patch("uvicorn.Server", FakeServer), \
+                     patch("asyncio.create_task"):
+                    import asyncio
+                    asyncio.get_event_loop().run_until_complete(adapter.connect())
+
+                assert captured_config.get("ssl_certfile") == cert_path
+                assert captured_config.get("ssl_keyfile") == key_path
+        finally:
+            os.unlink(cert_path)
+            os.unlink(key_path)
+
+    def test_connect_no_ssl_without_config(self):
+        """Without SSL config, uvicorn should not receive ssl kwargs."""
+        adapter = _make_adapter()
+        captured_config = {}
+        original_config = __import__("uvicorn").Config
+
+        class FakeConfig:
+            def __init__(self, app, **kwargs):
+                captured_config.update(kwargs)
+
+        class FakeServer:
+            def __init__(self, config):
+                pass
+            async def serve(self):
+                pass
+
+        with patch("uvicorn.Config", FakeConfig), \
+             patch("uvicorn.Server", FakeServer), \
+             patch("asyncio.create_task"):
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(adapter.connect())
+
+        assert "ssl_certfile" not in captured_config
+        assert "ssl_keyfile" not in captured_config

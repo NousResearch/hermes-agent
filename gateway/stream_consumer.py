@@ -66,6 +66,7 @@ class GatewayStreamConsumer:
         self._accumulated = ""
         self._message_id: Optional[str] = None
         self._already_sent = False
+        self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
 
     @property
@@ -139,25 +140,26 @@ class GatewayStreamConsumer:
         """Send or edit the streaming message."""
         try:
             if self._message_id is not None:
-                # Edit existing message
-                result = await self.adapter.edit_message(
-                    chat_id=self.chat_id,
-                    message_id=self._message_id,
-                    content=text,
-                )
-                if result.success:
-                    self._already_sent = True
-                else:
-                    # Edit failed — try sending as new message
-                    logger.debug("Edit failed, sending new message")
-                    result = await self.adapter.send(
+                if self._edit_supported:
+                    # Edit existing message
+                    result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
+                        message_id=self._message_id,
                         content=text,
-                        metadata=self.metadata,
                     )
-                    if result.success and result.message_id:
-                        self._message_id = result.message_id
+                    if result.success:
                         self._already_sent = True
+                    else:
+                        # Edit not supported by this adapter — stop streaming,
+                        # let the normal send path handle the final response.
+                        # Without this guard, adapters like Signal/Email would
+                        # flood the chat with a new message every edit_interval.
+                        logger.debug("Edit failed, disabling streaming for this adapter")
+                        self._edit_supported = False
+                else:
+                    # Editing not supported — skip intermediate updates.
+                    # The final response will be sent by the normal path.
+                    pass
             else:
                 # First message — send new
                 result = await self.adapter.send(
@@ -168,5 +170,8 @@ class GatewayStreamConsumer:
                 if result.success and result.message_id:
                     self._message_id = result.message_id
                     self._already_sent = True
+                else:
+                    # Initial send failed — disable streaming for this session
+                    self._edit_supported = False
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)

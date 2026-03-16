@@ -90,6 +90,7 @@ class TestGatewayHonchoLifecycle:
         runner = _make_runner()
         event = _make_event()
         runner._shutdown_gateway_honcho = MagicMock()
+        runner._async_flush_memories = AsyncMock()
         runner.session_store = MagicMock()
         runner.session_store._generate_session_key.return_value = "gateway-key"
         runner.session_store._entries = {
@@ -100,4 +101,31 @@ class TestGatewayHonchoLifecycle:
         result = await runner._handle_reset_command(event)
 
         runner._shutdown_gateway_honcho.assert_called_once_with("gateway-key")
+        runner._async_flush_memories.assert_called_once_with("old-session", "gateway-key")
         assert "Session reset" in result
+
+    def test_flush_memories_reuses_gateway_session_key_and_skips_honcho_sync(self):
+        runner = _make_runner()
+        runner.session_store = MagicMock()
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+            {"role": "assistant", "content": "d"},
+        ]
+        tmp_agent = MagicMock()
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+            patch("gateway.run._resolve_gateway_model", return_value="model-name"),
+            patch("run_agent.AIAgent", return_value=tmp_agent) as mock_agent_cls,
+        ):
+            runner._flush_memories_for_session("old-session", "gateway-key")
+
+        mock_agent_cls.assert_called_once()
+        _, kwargs = mock_agent_cls.call_args
+        assert kwargs["session_id"] == "old-session"
+        assert kwargs["honcho_session_key"] == "gateway-key"
+        tmp_agent.run_conversation.assert_called_once()
+        _, run_kwargs = tmp_agent.run_conversation.call_args
+        assert run_kwargs["sync_honcho"] is False

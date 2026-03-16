@@ -752,7 +752,10 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = build_session_key(event.source)
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:

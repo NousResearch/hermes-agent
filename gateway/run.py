@@ -478,7 +478,11 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
-    def _flush_memories_for_session(self, old_session_id: str):
+    def _flush_memories_for_session(
+        self,
+        old_session_id: str,
+        honcho_session_key: Optional[str] = None,
+    ):
         """Prompt the agent to save memories/skills before context is lost.
 
         Synchronous worker — meant to be called via run_in_executor from
@@ -506,6 +510,7 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
+                honcho_session_key=honcho_session_key,
             )
 
             # Build conversation history from transcript
@@ -533,6 +538,7 @@ class GatewayRunner:
             tmp_agent.run_conversation(
                 user_message=flush_prompt,
                 conversation_history=msgs,
+                sync_honcho=False,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
             # Flush any queued Honcho writes before the session is dropped
@@ -544,10 +550,19 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
-    async def _async_flush_memories(self, old_session_id: str):
+    async def _async_flush_memories(
+        self,
+        old_session_id: str,
+        honcho_session_key: Optional[str] = None,
+    ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._flush_memories_for_session, old_session_id)
+        await loop.run_in_executor(
+            None,
+            self._flush_memories_for_session,
+            old_session_id,
+            honcho_session_key,
+        )
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -556,6 +571,21 @@ class GatewayRunner:
     @property
     def exit_reason(self) -> Optional[str]:
         return self._exit_reason
+
+    def _session_key_for_source(self, source: SessionSource) -> str:
+        """Resolve the current session key for a source, honoring gateway config when available."""
+        if hasattr(self, "session_store") and self.session_store is not None:
+            try:
+                session_key = self.session_store._generate_session_key(source)
+                if isinstance(session_key, str) and session_key:
+                    return session_key
+            except Exception:
+                pass
+        config = getattr(self, "config", None)
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+        )
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to a non-retryable adapter failure after startup."""
@@ -923,7 +953,7 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id)
+                        await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
@@ -985,6 +1015,12 @@ class GatewayRunner:
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform."""
+        if hasattr(config, "extra") and isinstance(config.extra, dict):
+            config.extra.setdefault(
+                "group_sessions_per_user",
+                self.config.group_sessions_per_user,
+            )
+
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
             if not check_telegram_requirements():
@@ -1156,7 +1192,7 @@ class GatewayRunner:
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
-        _quick_key = build_session_key(source)
+        _quick_key = self._session_key_for_source(source)
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
@@ -1345,7 +1381,7 @@ class GatewayRunner:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
         # Check for pending exec approval responses
-        session_key_preview = build_session_key(source)
+        session_key_preview = self._session_key_for_source(source)
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -1897,14 +1933,16 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = self.session_store._generate_session_key(source)
+        session_key = self._session_key_for_source(source)
         
         # Flush memories in the background (fire-and-forget) so the user
         # gets the "Session reset!" response immediately.
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
-                asyncio.create_task(self._async_flush_memories(old_entry.session_id))
+                asyncio.create_task(
+                    self._async_flush_memories(old_entry.session_id, session_key)
+                )
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
@@ -3127,7 +3165,7 @@ class GatewayRunner:
             return "Session database not available."
 
         source = event.source
-        session_key = build_session_key(source)
+        session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
         if not name:
@@ -3171,7 +3209,9 @@ class GatewayRunner:
 
         # Flush memories for current session before switching
         try:
-            asyncio.create_task(self._async_flush_memories(current_entry.session_id))
+            asyncio.create_task(
+                self._async_flush_memories(current_entry.session_id, session_key)
+            )
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
@@ -3199,7 +3239,7 @@ class GatewayRunner:
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
         source = event.source
-        session_key = build_session_key(source)
+        session_key = self._session_key_for_source(source)
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:

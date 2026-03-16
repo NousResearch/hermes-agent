@@ -1066,6 +1066,7 @@ def terminal_tool(
                         "session_key": session_key,
                         "platform": os.getenv("HERMES_SESSION_PLATFORM", ""),
                         "chat_id": os.getenv("HERMES_SESSION_CHAT_ID", ""),
+                        "thread_id": os.getenv("HERMES_SESSION_THREAD_ID", ""),
                     })
 
                 return json.dumps(result_data, ensure_ascii=False)

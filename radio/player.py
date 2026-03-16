@@ -24,17 +24,25 @@ def _station_name_from_url(url: str) -> str:
     """Extract a readable station name from a stream URL."""
     from urllib.parse import urlparse
     parsed = urlparse(url)
+    hostname = parsed.hostname or ""
 
-    # Radio Garden: /listen/station-name/ID -> extract station-name
-    if "radio.garden" in parsed.hostname or "":
-        parts = parsed.path.split("/")
+    # Radio Garden: /listen/station-name/ID/channel.mp3
+    # The station name slug is only present in long-form URLs.
+    # Short URLs like /listen/43U_hUSz/channel.mp3 only have the ID.
+    if "radio.garden" in hostname:
+        parts = [p for p in parsed.path.split("/") if p and p != "channel.mp3"]
+        # Find the slug after "listen" -- skip if it looks like an ID (short, alphanumeric)
         for i, p in enumerate(parts):
             if p == "listen" and i + 1 < len(parts):
-                name = parts[i + 1].replace("-", " ").title()
-                return name
+                slug = parts[i + 1]
+                # If slug has hyphens and is > 10 chars, it's a name not an ID
+                if len(slug) > 10 or "-" in slug:
+                    return slug.replace("-", " ").title()
+        # Couldn't extract name -- return generic
+        return "Radio Garden"
 
     # SomaFM: ice2.somafm.com/defcon-256-mp3 -> defcon
-    if "somafm.com" in (parsed.hostname or ""):
+    if "somafm.com" in hostname:
         path = parsed.path.strip("/").split("-")[0]
         return f"SomaFM {path}" if path else "SomaFM"
 
@@ -43,7 +51,7 @@ def _station_name_from_url(url: str) -> str:
     if path and path not in ("stream", "channel.mp3", ""):
         return path.replace("-", " ").replace("_", " ").title()
 
-    return parsed.hostname or "Radio"
+    return hostname or "Radio"
 
 
 class SourceMode(str, Enum):

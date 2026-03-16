@@ -327,18 +327,37 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
     # Top border
     fragments.append(("class:radio-border", f"  \u256d{'\u2500' * (W - 2)}\u256e\n"))
 
-    # Row 1: HERMES RADIO -- TRANSMISSIONS ONLY + volume dial
+    # Row 1: HERMES RADIO -- TRANSMISSIONS ONLY + REC + volume
     vol = int(now.volume)
     _DIAL = "\u25cb\u25d8\u25d3\u25d1\u25d2\u25cf"
     dial_idx = min(5, vol * 6 // 101)
     vol_str = f"{_DIAL[dial_idx]} {vol}"
+
+    # Check recording state
+    is_rec = False
+    try:
+        from radio.player import HermesRadio
+        is_rec = HermesRadio.active() and HermesRadio.get().is_recording
+    except Exception:
+        pass
+    rec_str = ""
+    if is_rec:
+        rec_str = " \u25cf REC" if int(time.time() * 2) % 2 == 0 else " \u25cb REC"
+
     title_full = "HERMES RADIO \u2014 TRANSMISSIONS ONLY"
-    pad = W - 4 - len(title_full) - len(vol_str)
+    right_str = f"{rec_str}  {vol_str}" if rec_str else vol_str
+    pad = W - 4 - len(title_full) - len(right_str)
     fragments.append(("class:radio-border", "  \u2502 "))
     fragments.append(("class:radio-label", "HERMES RADI"))
     fragments.append(("class:radio-control", "O"))
     fragments.append(("class:radio-tags", " \u2014 TRANSMISSIONS ONLY"))
     fragments.append(("", " " * max(1, pad)))
+    if is_rec:
+        if int(time.time() * 2) % 2 == 0:
+            fragments.append(("class:radio-rec", " \u25cf REC"))
+        else:
+            fragments.append(("class:radio-rec-dim", " \u25cb REC"))
+        fragments.append(("", "  "))
     fragments.append(("class:radio-vol", vol_str))
     fragments.append(("class:radio-border", " \u2502\n"))
 

@@ -446,8 +446,12 @@ let _streamingText = '';  // accumulated text for current stream
 let _streamingMedia = []; // accumulated media for current stream
 
 function connectWebSocket() {
-    if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) {
-        _ws.close();
+    clearTimeout(_wsReconnectTimer); // prevent old reconnect from firing
+    if (_ws) {
+        _ws.onclose = null; // prevent onclose from triggering another reconnect
+        if (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING) {
+            _ws.close();
+        }
     }
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     _ws = new WebSocket(`${wsProto}//${location.host}/v1/chat/stream`);

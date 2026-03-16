@@ -99,6 +99,7 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        "llm_timeout": 60,
     },
     
     "terminal": {
@@ -346,6 +347,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENAI_LLM_TIMEOUT": {
+        "description": "Timeout in seconds for OpenAI API requests",
+        "prompt": "OpenAI LLM Timeout (seconds)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -1340,6 +1349,7 @@ def set_config_value(key: str, value: str):
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
         'TINKER_API_KEY',
+        'OPENAI_LLM_TIMEOUT',
     ]
     
     if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):

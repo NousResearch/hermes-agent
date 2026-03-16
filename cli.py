@@ -1017,6 +1017,9 @@ class HermesCLI:
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
+        # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
+        self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
@@ -1719,7 +1722,7 @@ class HermesCLI:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
-                stream_delta_callback=self._stream_delta,
+                stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:

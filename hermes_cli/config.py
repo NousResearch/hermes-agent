@@ -202,6 +202,7 @@ DEFAULT_CONFIG = {
         "resume_display": "full",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "streaming": False,
         "skin": "default",
     },
     

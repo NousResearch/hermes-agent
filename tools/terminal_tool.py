@@ -469,13 +469,18 @@ def _get_env_config() -> Dict[str, Any]:
     # Default cwd: local uses the host's current directory, everything
     # else starts in the user's home (~ resolves to whatever account
     # is running inside the container/remote).
+    # For Docker, capture the host cwd so we can bind-mount it into
+    # /workspace, giving the container access to the user's project files.
+    host_cwd = os.getcwd()
     if env_type == "local":
-        default_cwd = os.getcwd()
+        default_cwd = host_cwd
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "docker":
+        default_cwd = "/workspace"
     else:
         default_cwd = "/root"
-    
+
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If the CWD looks like a host-local path that can't exist inside a
     # container/sandbox, fall back to the backend's own default. This
@@ -519,6 +524,8 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        # Host cwd for Docker bind-mount into /workspace (see below)
+        "_docker_host_cwd": host_cwd if env_type == "docker" else None,
     }
 
 
@@ -942,12 +949,27 @@ def terminal_tool(
 
                         container_config = None
                         if env_type in ("docker", "singularity", "modal", "daytona"):
+                            docker_vols = list(config.get("docker_volumes", []))
+
+                            # Auto-mount the host's working directory into
+                            # /workspace so the container can access project
+                            # files.  Skip if the user already configured a
+                            # volume targeting /workspace.
+                            docker_host_cwd = config.get("_docker_host_cwd")
+                            if docker_host_cwd and env_type == "docker":
+                                workspace_mapped = any(
+                                    isinstance(v, str) and ":/workspace" in v
+                                    for v in docker_vols
+                                )
+                                if not workspace_mapped:
+                                    docker_vols.insert(0, f"{docker_host_cwd}:/workspace")
+
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
-                                "docker_volumes": config.get("docker_volumes", []),
+                                "docker_volumes": docker_vols,
                             }
 
                         local_config = None

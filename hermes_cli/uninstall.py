@@ -133,7 +133,13 @@ def uninstall_gateway_service():
     if platform.system() != "Linux":
         return False
     
-    service_file = Path.home() / ".config" / "systemd" / "user" / "hermes-gateway.service"
+    try:
+        from hermes_cli.gateway import get_service_name
+        svc_name = get_service_name()
+    except Exception:
+        svc_name = "hermes-gateway"
+
+    service_file = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
     
     if not service_file.exists():
         return False
@@ -141,14 +147,14 @@ def uninstall_gateway_service():
     try:
         # Stop the service
         subprocess.run(
-            ["systemctl", "--user", "stop", "hermes-gateway"],
+            ["systemctl", "--user", "stop", svc_name],
             capture_output=True,
             check=False
         )
         
         # Disable the service
         subprocess.run(
-            ["systemctl", "--user", "disable", "hermes-gateway"],
+            ["systemctl", "--user", "disable", svc_name],
             capture_output=True,
             check=False
         )

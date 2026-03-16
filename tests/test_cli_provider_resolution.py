@@ -162,6 +162,57 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "sk-primary"
+    shell._smart_model_routing = {"enabled": False}
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "gpt-5"
+    assert result["runtime"]["provider"] == "openrouter"
+    assert result["label"] is None
+
+
+def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        assert kwargs["requested"] == "zai"
+        return {
+            "provider": "zai",
+            "api_mode": "chat_completions",
+            "base_url": "https://open.z.ai/api/v1",
+            "api_key": "cheap-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "primary-key"
+    shell._smart_model_routing = {
+        "enabled": True,
+        "cheap_model": {"provider": "zai", "model": "glm-5-air"},
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+    }
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "glm-5-air"
+    assert result["runtime"]["provider"] == "zai"
+    assert result["runtime"]["api_key"] == "cheap-key"
+    assert result["label"] is not None
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 

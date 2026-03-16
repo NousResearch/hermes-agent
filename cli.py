@@ -328,6 +328,8 @@ def load_cli_config() -> Dict[str, Any]:
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        # Persistent shell (non-local backends)
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }

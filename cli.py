@@ -109,6 +109,29 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _load_personality_file(file_path: str) -> str | None:
+    """Load personality content from a file path.
+
+    Supports:
+    - Absolute paths: /path/to/file.md
+    - User home: ~/path/to/file.md
+    - Relative: path/to/file.md (resolved from HERMES_HOME)
+    """
+    if not file_path:
+        return None
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        path = _hermes_home / path
+    if not path.exists():
+        logger.warning("Personality file not found: %s", path)
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to load personality file %s: %s", path, e)
+        return None
+
+
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
     
@@ -2603,13 +2626,23 @@ class HermesCLI:
 
     @staticmethod
     def _resolve_personality_prompt(value) -> str:
-        """Accept string or dict personality value; return system prompt string."""
+        """Accept string, dict, or file reference; return system prompt string."""
         if isinstance(value, dict):
+            if "file" in value:
+                loaded = _load_personality_file(value["file"])
+                if loaded is None:
+                    return ""
+                parts = [loaded]
+                if value.get("tone"):
+                    parts.append(f'Tone: {value["tone"]}')
+                if value.get("style"):
+                    parts.append(f'Style: {value["style"]}')
+                return "\n".join(p for p in parts if p)
             parts = [value.get("system_prompt", "")]
             if value.get("tone"):
-                parts.append(f'Tone: {value["tone"]}' )
+                parts.append(f'Tone: {value["tone"]}')
             if value.get("style"):
-                parts.append(f'Style: {value["style"]}' )
+                parts.append(f'Style: {value["style"]}')
             return "\n".join(p for p in parts if p)
         return str(value)
 
@@ -2630,13 +2663,22 @@ class HermesCLI:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                personality_config = self.personalities[personality_name]
+                is_file_reference = (
+                    isinstance(personality_config, dict) 
+                    and "file" in personality_config
+                )
+                self.system_prompt = self._resolve_personality_prompt(personality_config)
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
+                if is_file_reference:
+                    print(f"(^_^) Personality set to '{personality_name}' (session only)")
+                    print(f"  Using file reference, not saved to config")
+                    print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
+                elif save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
+                    print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")

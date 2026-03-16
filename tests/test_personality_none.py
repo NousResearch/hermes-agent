@@ -210,3 +210,120 @@ class TestPersonalityDictFormat:
         from cli import HermesCLI
         result = HermesCLI._resolve_personality_prompt("You are helpful.")
         assert result == "You are helpful."
+
+
+class TestPersonalityFileReference:
+    """Test file reference for custom personalities."""
+
+    def _make_cli(self, personalities):
+        from cli import HermesCLI
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.personalities = personalities
+        cli.system_prompt = ""
+        cli.agent = None
+        cli.console = MagicMock()
+        return cli
+
+    def test_file_reference_loads_content(self, tmp_path):
+        personality_file = tmp_path / "verbose.md"
+        personality_file.write_text("You are verbose and detailed.")
+
+        cli = self._make_cli({"verbose": {"file": str(personality_file)}})
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_personality_command("/personality verbose")
+        assert cli.system_prompt == "You are verbose and detailed."
+
+    def test_file_reference_with_relative_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        personality_file = tmp_path / "test.md"
+        personality_file.write_text("Content from relative path.")
+
+        cli = self._make_cli({"test": {"file": "test.md"}})
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_personality_command("/personality test")
+        assert cli.system_prompt == "Content from relative path."
+
+    def test_file_reference_missing_file_returns_empty(self, tmp_path):
+        cli = self._make_cli({"missing": {"file": str(tmp_path / "nonexistent.md")}})
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_personality_command("/personality missing")
+        assert cli.system_prompt == ""
+
+    def test_file_plus_supplemental_fields(self, tmp_path):
+        personality_file = tmp_path / "base.md"
+        personality_file.write_text("You are a base personality.")
+
+        cli = self._make_cli({
+            "hybrid": {
+                "file": str(personality_file),
+                "tone": "friendly",
+                "style": "conversational"
+            }
+        })
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_personality_command("/personality hybrid")
+        assert "You are a base personality." in cli.system_prompt
+        assert "Tone: friendly" in cli.system_prompt
+        assert "Style: conversational" in cli.system_prompt
+
+    def test_file_reference_with_home_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        personality_file = tmp_path / "test.md"
+        personality_file.write_text("Content from home-relative path.")
+
+        cli = self._make_cli({"test": {"file": "test.md"}})
+        with patch("cli.save_config_value", return_value=True):
+            cli._handle_personality_command("/personality test")
+        assert cli.system_prompt == "Content from home-relative path."
+
+    def test_resolve_prompt_file_reference_directly(self, tmp_path):
+        from cli import HermesCLI
+        personality_file = tmp_path / "direct.md"
+        personality_file.write_text("Direct file content.")
+
+        result = HermesCLI._resolve_personality_prompt({
+            "file": str(personality_file)
+        })
+        assert result == "Direct file content."
+
+    def test_file_reference_not_saved_to_config(self, tmp_path, capsys):
+        """File references should be session-only, not saved to config."""
+        personality_file = tmp_path / "verbose.md"
+        personality_file.write_text("You are verbose and detailed.")
+
+        cli = self._make_cli({"verbose": {"file": str(personality_file)}})
+        
+        with patch("cli.save_config_value", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality verbose")
+        
+        # Verify save was NOT called for file references
+        mock_save.assert_not_called()
+        # Verify content was loaded
+        assert cli.system_prompt == "You are verbose and detailed."
+
+    def test_inline_dict_still_saved_to_config(self, tmp_path, capsys):
+        """Inline dict personalities should still be saved to config."""
+        cli = self._make_cli({
+            "inline": {
+                "system_prompt": "You are inline.",
+                "tone": "friendly"
+            }
+        })
+        
+        with patch("cli.save_config_value", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality inline")
+        
+        # Verify save WAS called for inline personalities
+        mock_save.assert_called_once_with("agent.system_prompt", "You are inline.\nTone: friendly")
+        assert cli.system_prompt == "You are inline.\nTone: friendly"
+
+    def test_inline_string_still_saved_to_config(self, tmp_path, capsys):
+        """Inline string personalities should still be saved to config."""
+        cli = self._make_cli({"helpful": "You are helpful."})
+        
+        with patch("cli.save_config_value", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality helpful")
+        
+        # Verify save WAS called for inline string personalities
+        mock_save.assert_called_once_with("agent.system_prompt", "You are helpful.")
+        assert cli.system_prompt == "You are helpful."

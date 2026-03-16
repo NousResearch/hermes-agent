@@ -429,6 +429,20 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "DEEPSEEK_API_KEY": {
+        "description": "DeepSeek API key for direct DeepSeek access",
+        "prompt": "DeepSeek API Key",
+        "url": "https://platform.deepseek.com/api_keys",
+        "password": True,
+        "category": "provider",
+    },
+    "DEEPSEEK_BASE_URL": {
+        "description": "Custom DeepSeek API base URL (advanced)",
+        "prompt": "DeepSeek Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+    },
 
     # ── Tool API keys ──
     "FIRECRAWL_API_KEY": {

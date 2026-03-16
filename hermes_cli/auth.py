@@ -147,6 +147,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "deepseek": ProviderConfig(
+        id="deepseek",
+        name="DeepSeek",
+        auth_type="api_key",
+        inference_base_url="https://api.deepseek.com/v1",
+        api_key_env_vars=("DEEPSEEK_API_KEY",),
+        base_url_env_var="DEEPSEEK_BASE_URL",
+    ),
 }
 
 

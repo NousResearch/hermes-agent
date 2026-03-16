@@ -1985,7 +1985,24 @@ class HermesCLI:
         
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
         print()
-    
+
+        # Toolset enable/disable status footer
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools
+        from hermes_cli.config import load_config
+        try:
+            enabled = _get_platform_tools(load_config(), "cli")
+        except Exception:
+            enabled = self.enabled_toolsets or set()
+        enabled_names = [ts for ts, _, _ in CONFIGURABLE_TOOLSETS if ts in enabled]
+        disabled_names = [ts for ts, _, _ in CONFIGURABLE_TOOLSETS if ts not in enabled]
+        if disabled_names:
+            print(f"  Toolsets: {', '.join(enabled_names) or '(none)'}")
+            print(f"  Disabled: {', '.join(disabled_names)}  — use /tools enable <name>")
+        else:
+            print(f"  Toolsets: all enabled")
+        print(f"  Tip: /tools list · /tools disable <name> · /tools enable <name>")
+        print()
+
     def _handle_tools_command(self, cmd: str):
         """Handle /tools [list|disable|enable] slash commands.
 

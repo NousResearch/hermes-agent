@@ -352,6 +352,11 @@ class TrajectoryCompressor:
         """
         from agent.auxiliary_client import call_llm, async_call_llm
 
+        from hermes_cli.config import load_config
+        config_data = load_config()
+        timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config_data.get("agent", {}).get("llm_timeout", 60))
+        # --------------------------------
+
         provider = self._detect_provider()
         if provider:
             # Store provider for use in _generate_summary calls
@@ -375,14 +380,21 @@ class TrajectoryCompressor:
                 raise RuntimeError(
                     f"Missing API key. Set {self.config.api_key_env} "
                     f"environment variable.")
+            
             from openai import OpenAI, AsyncOpenAI
             self.client = OpenAI(
-                api_key=api_key, base_url=self.config.base_url)
+                api_key=api_key, 
+                base_url=self.config.base_url,
+                timeout=timeout
+            )
             self.async_client = AsyncOpenAI(
-                api_key=api_key, base_url=self.config.base_url)
+                api_key=api_key, 
+                base_url=self.config.base_url,
+                timeout=timeout
+            )
 
         print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
-        print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
+        print(f"    Max concurrent requests: {self.config.max_concurrent_requests}")
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""

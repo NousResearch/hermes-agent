@@ -45,6 +45,7 @@ COMMANDS_BY_CATEGORY = {
         "/skills": "Search, install, inspect, or manage skills from online registries",
         "/cron": "Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove)",
         "/reload-mcp": "Reload MCP servers from config.yaml",
+        "/browser": "Connect browser tools to your live Chrome (usage: /browser connect|disconnect|status)",
     },
     "Info": {
         "/help": "Show this help message",

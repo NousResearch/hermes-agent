@@ -1,0 +1,61 @@
+﻿bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 67%]
+.........................F.FF..FF..                                      [100%]
+================================== FAILURES ===================================
+__________________ TestTrendPredictor.test_insufficient_data __________________
+[gw14] win32 -- Python 3.12.10 C:\Windows\System32\hermes-agent\.venv\Scripts\python.exe
+tests\tools\test_price_tracker.py:322: in test_insufficient_data
+    assert "veri noktas²" in report.analysis_text.lower()
+E   AssertionError: assert 'veri noktas²' in 'need at least 3 data points for trend prediction. currently have 2 data point(s).'
+E    +  where 'need at least 3 data points for trend prediction. currently have 2 data point(s).' = <built-in method lower of str object at 0x00000202CA5644B0>()
+E    +    where <built-in method lower of str object at 0x00000202CA5644B0> = 'Need at least 3 data points for trend prediction. Currently have 2 data point(s).'.lower
+E    +      where 'Need at least 3 data points for trend prediction. Currently have 2 data point(s).' = TrendReport(direction='STABLE', direction_emoji='\u27a1\ufe0f', predicted_change_pct=0.0, predicted_price=None, confidence='low'...nd prediction. Currently have 2 data point(s).', moving_avg_7=None, moving_avg_30=None, data_points=2, vs_avg_pct=None).analysis_text
+____________________ TestTrendPredictor.test_stable_prices ____________________
+[gw16] win32 -- Python 3.12.10 C:\Windows\System32\hermes-agent\.venv\Scripts\python.exe
+tests\tools\test_price_tracker.py:341: in test_stable_prices
+    assert report.direction == "STABIL"
+E   AssertionError: assert 'STABLE' == 'STABIL'
+E     
+E     [0m[91m- STABIL[39;49;00m[90m[39;49;00m
+E     ?     -[90m[39;49;00m
+E     [92m+ STABLE[39;49;00m[90m[39;49;00m
+E     ?      +[90m[39;49;00m
+___________________ TestTrendPredictor.test_falling_prices ____________________
+[gw15] win32 -- Python 3.12.10 C:\Windows\System32\hermes-agent\.venv\Scripts\python.exe
+tests\tools\test_price_tracker.py:328: in test_falling_prices
+    assert report.direction == "D▄Ì▄Ì"
+E   AssertionError: assert 'DOWN' == 'D▄Ì▄Ì'
+E     
+E     [0m[91m- D▄Ì▄Ì[39;49;00m[90m[39;49;00m
+E     [92m+ DOWN[39;49;00m[90m[39;49;00m
+____________________ TestTrendPredictor.test_rising_prices ____________________
+[gw17] win32 -- Python 3.12.10 C:\Windows\System32\hermes-agent\.venv\Scripts\python.exe
+tests\tools\test_price_tracker.py:335: in test_rising_prices
+    assert report.direction == "YUKSELIÌ"
+E   AssertionError: assert 'UP' == 'YUKSELIÌ'
+E     
+E     [0m[91m- YUKSELIÌ[39;49;00m[90m[39;49;00m
+E     [92m+ UP[39;49;00m[90m[39;49;00m
+_____________ TestTrendPredictor.test_confidence_with_few_points ______________
+[gw12] win32 -- Python 3.12.10 C:\Windows\System32\hermes-agent\.venv\Scripts\python.exe
+tests\tools\test_price_tracker.py:363: in test_confidence_with_few_points
+    assert report.confidence == "d³■³k"
+E   AssertionError: assert 'low' == 'd³■³k'
+E     
+E     [0m[91m- d³■³k[39;49;00m[90m[39;49;00m
+E     [92m+ low[39;49;00m[90m[39;49;00m
+============================== warnings summary ===============================
+tests/tools/test_price_tracker.py: 20 warnings
+  C:\Windows\System32\hermes-agent\tests\conftest.py:83: DeprecationWarning: There is no current event loop
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/tools/test_price_tracker.py::TestTrendPredictor::test_insufficient_data
+FAILED tests/tools/test_price_tracker.py::TestTrendPredictor::test_stable_prices
+FAILED tests/tools/test_price_tracker.py::TestTrendPredictor::test_falling_prices
+FAILED tests/tools/test_price_tracker.py::TestTrendPredictor::test_rising_prices
+FAILED tests/tools/test_price_tracker.py::TestTrendPredictor::test_confidence_with_few_points
+5 failed, 102 passed, 20 warnings in 4.02s

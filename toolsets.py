@@ -64,6 +64,9 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Price tracker — Hermes Ultra: İndirim Avcısı & Karaborsa Engelleyici
+    "price_track", "price_check", "price_history",
+    "price_alert_config", "price_watcher_start", "price_watcher_stop",
 ]
 
 
@@ -199,6 +202,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "price_tracker": {
+        "description": "Hermes Ultra — İndirim Avcısı & Karaborsa Engelleyici: fiyat takibi, deal scoring, scalper tespiti, trend tahmini",
+        "tools": ["price_track", "price_check", "price_history", "price_alert_config", "price_watcher_start", "price_watcher_stop"],
         "includes": []
     },
 

@@ -532,6 +532,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

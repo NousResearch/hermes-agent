@@ -83,6 +83,14 @@ class TestSessionResetPolicy:
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
 
+    def test_from_dict_treats_null_values_as_defaults(self):
+        restored = SessionResetPolicy.from_dict(
+            {"mode": None, "at_hour": None, "idle_minutes": None}
+        )
+        assert restored.mode == "both"
+        assert restored.at_hour == 4
+        assert restored.idle_minutes == 1440
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):

@@ -2301,26 +2301,58 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         
-        # Auto-restart gateway if it's running as a systemd service
+        # Auto-restart gateway if it's running.
+        # Uses the PID file (scoped to HERMES_HOME) to find this
+        # installation's gateway — safe with multiple installations.
         try:
-            check = subprocess.run(
-                ["systemctl", "--user", "is-active", "hermes-gateway"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if check.stdout.strip() == "active":
-                print()
-                print("→ Gateway service is running — restarting to pick up changes...")
-                restart = subprocess.run(
-                    ["systemctl", "--user", "restart", "hermes-gateway"],
-                    capture_output=True, text=True, timeout=15,
+            from gateway.status import get_running_pid, remove_pid_file
+            import signal as _signal
+
+            existing_pid = get_running_pid()
+            has_systemd_service = False
+
+            try:
+                check = subprocess.run(
+                    ["systemctl", "--user", "is-active", "hermes-gateway"],
+                    capture_output=True, text=True, timeout=5,
                 )
-                if restart.returncode == 0:
-                    print("✓ Gateway restarted.")
-                else:
-                    print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
-                    print("  Try manually: hermes gateway restart")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # No systemd (macOS, WSL1, etc.) — skip silently
+                has_systemd_service = check.stdout.strip() == "active"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+
+            if existing_pid or has_systemd_service:
+                print()
+
+                # Kill the PID-file-tracked process (may be manual or systemd)
+                if existing_pid:
+                    try:
+                        os.kill(existing_pid, _signal.SIGTERM)
+                        print(f"→ Stopped gateway process (PID {existing_pid})")
+                    except ProcessLookupError:
+                        pass  # Already gone
+                    except PermissionError:
+                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                    remove_pid_file()
+
+                # Restart the systemd service (starts a fresh process)
+                if has_systemd_service:
+                    import time as _time
+                    _time.sleep(1)  # Brief pause for port/socket release
+                    print("→ Restarting gateway service...")
+                    restart = subprocess.run(
+                        ["systemctl", "--user", "restart", "hermes-gateway"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if restart.returncode == 0:
+                        print("✓ Gateway restarted.")
+                    else:
+                        print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        print("  Try manually: hermes gateway restart")
+                elif existing_pid:
+                    print("  ℹ️  Gateway was running manually (not as a service).")
+                    print("  Restart it with: hermes gateway run")
+        except Exception as e:
+            logger.debug("Gateway restart during update failed: %s", e)
         
         print()
         print("Tip: You can now select a provider and model:")

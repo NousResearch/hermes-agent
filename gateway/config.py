@@ -42,6 +42,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    SMS = "sms"
 
 
 @dataclass
@@ -224,6 +225,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # SMS uses api_key from env (checked via extra or env var)
+            elif platform == Platform.SMS and os.getenv("TELNYX_API_KEY"):
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
@@ -561,6 +565,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.EMAIL,
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
+    # SMS (Telnyx)
+    telnyx_key = os.getenv("TELNYX_API_KEY")
+    if telnyx_key:
+        if Platform.SMS not in config.platforms:
+            config.platforms[Platform.SMS] = PlatformConfig()
+        config.platforms[Platform.SMS].enabled = True
+        config.platforms[Platform.SMS].api_key = telnyx_key
+        sms_home = os.getenv("SMS_HOME_CHANNEL")
+        if sms_home:
+            config.platforms[Platform.SMS].home_channel = HomeChannel(
+                platform=Platform.SMS,
+                chat_id=sms_home,
+                name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

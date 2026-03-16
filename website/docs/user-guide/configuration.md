@@ -453,7 +453,8 @@ terminal:
 
   # Docker-specific settings
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
-  docker_volumes:                    # Share host directories with the container
+  docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into /workspace.
+  docker_volumes:                    # Additional explicit host mounts
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"     # :ro for read-only
 
@@ -520,41 +521,30 @@ This is useful for:
 
 Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
 
-### Docker Auto-Mount Current Directory
+### Optional: Mount the Launch Directory into `/workspace`
 
-When using the Docker backend, Hermes **automatically mounts your current working directory** to `/workspace` inside the container. This means you can:
+Docker sandboxes stay isolated by default. Hermes does **not** pass your current host working directory into the container unless you explicitly opt in.
 
-```bash
-cd ~/projects/my-app
-hermes
-# The agent can now see and edit files in ~/projects/my-app via /workspace
+Enable it in `config.yaml`:
+
+```yaml
+terminal:
+  backend: docker
+  docker_mount_cwd_to_workspace: true
 ```
 
-No manual volume configuration needed — just `cd` to your project and run `hermes`.
+When enabled:
+- if you launch Hermes from `~/projects/my-app`, that host directory is bind-mounted to `/workspace`
+- the Docker backend starts in `/workspace`
+- file tools and terminal commands both see the same mounted project
 
-**How it works:**
-- If you're in `/home/user/projects/my-app`, that directory is mounted to `/workspace`
-- The container's working directory is set to `/workspace`
-- Files you edit on the host are immediately visible to the agent, and vice versa
+When disabled, `/workspace` stays sandbox-owned unless you explicitly mount something via `docker_volumes`.
 
-**Disabling auto-mount:**
+Security tradeoff:
+- `false` preserves the sandbox boundary
+- `true` gives the sandbox direct access to the directory you launched Hermes from
 
-If you prefer the old behavior (empty `/workspace` with tmpfs or persistent sandbox), disable auto-mount:
-
-```bash
-export TERMINAL_DOCKER_NO_AUTO_MOUNT=true
-```
-
-**Precedence:**
-
-Auto-mount is skipped when:
-1. `TERMINAL_DOCKER_NO_AUTO_MOUNT=true` is set
-2. You've explicitly configured a volume mount to `/workspace` in `docker_volumes`
-3. `container_persistent: true` is set (persistent sandbox mode uses its own `/workspace`)
-
-:::tip
-Auto-mount is ideal for project-based work where you want the agent to operate on your actual files. For isolated sandboxing where the agent shouldn't access your filesystem, set `TERMINAL_DOCKER_NO_AUTO_MOUNT=true`.
-:::
+Use the opt-in only when you intentionally want the container to work on live host files.
 
 ### Persistent Shell
 

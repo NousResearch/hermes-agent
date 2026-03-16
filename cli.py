@@ -1017,6 +1017,11 @@ class HermesCLI:
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
+        # Streaming display state
+        self._stream_buf = ""        # Partial line buffer for line-buffered rendering
+        self._stream_started = False  # True once first delta arrives
+        self._stream_box_opened = False  # True once the response box header is printed
+        
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
         # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
@@ -1403,6 +1408,56 @@ class HermesCLI:
         self._spinner_text = text or ""
         self._invalidate()
 
+    # ── Streaming display ────────────────────────────────────────────────
+
+    def _stream_delta(self, text: str) -> None:
+        """Line-buffered streaming callback for real-time token rendering.
+
+        Receives text deltas from the agent as tokens arrive. Buffers
+        partial lines and emits complete lines via _cprint to work
+        reliably with prompt_toolkit's patch_stdout.
+        """
+        if not text:
+            return
+
+        # Open the response box header on the very first delta
+        if not self._stream_box_opened:
+            self._stream_box_opened = True
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _skin = get_active_skin()
+                label = _skin.get_branding("response_label", "⚕ Hermes")
+            except Exception:
+                label = "⚕ Hermes"
+            w = shutil.get_terminal_size().columns
+            fill = w - 2 - len(label)
+            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+
+        self._stream_started = True
+        self._stream_buf += text
+
+        # Emit complete lines, keep partial remainder in buffer
+        while "\n" in self._stream_buf:
+            line, self._stream_buf = self._stream_buf.split("\n", 1)
+            _cprint(line)
+
+    def _flush_stream(self) -> None:
+        """Emit any remaining partial line from the stream buffer and close the box."""
+        if self._stream_buf:
+            _cprint(self._stream_buf)
+            self._stream_buf = ""
+
+        # Close the response box
+        if self._stream_box_opened:
+            w = shutil.get_terminal_size().columns
+            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+
+    def _reset_stream_state(self) -> None:
+        """Reset streaming state before each agent invocation."""
+        self._stream_buf = ""
+        self._stream_started = False
+        self._stream_box_opened = False
+
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
@@ -1588,6 +1643,7 @@ class HermesCLI:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
+                stream_delta_callback=self._stream_delta,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -4616,6 +4672,9 @@ class HermesCLI:
             # Run the conversation with interrupt monitoring
             result = None
 
+            # Reset streaming display state for this turn
+            self._reset_stream_state()
+
             # --- Streaming TTS setup ---
             # When ElevenLabs is the TTS provider and sounddevice is available,
             # we stream audio sentence-by-sentence as the agent generates tokens
@@ -4742,6 +4801,9 @@ class HermesCLI:
 
             agent_thread.join()  # Ensure agent thread completes
 
+            # Flush any remaining streamed text and close the box
+            self._flush_stream()
+
             # Signal end-of-text to TTS consumer and wait for it to finish
             if use_streaming_tts and text_queue is not None:
                 text_queue.put(None)  # sentinel
@@ -4816,10 +4878,15 @@ class HermesCLI:
                     _resp_text = "#FFF8DC"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
+                already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
                     _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                elif already_streamed:
+                    # Response was already streamed token-by-token with box framing;
+                    # _flush_stream() already closed the box. Skip Rich Panel.
+                    pass
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(

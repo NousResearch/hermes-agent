@@ -353,11 +353,25 @@ def get_expanded_player_text() -> List[Tuple[str, str]]:
 
     # Row 8: Artist
     def _boxline(text: str, style: str):
-        line = text[:W - 4]
-        pad = W - 4 - len(line)
+        # Truncate by display width (CJK chars = 2 columns each)
+        max_w = W - 4
+        display_w = 0
+        cut = len(text)
+        for i, ch in enumerate(text):
+            cw = 2 if ord(ch) > 0x2E80 else 1  # CJK/fullwidth = 2 cols
+            if display_w + cw > max_w - 1:  # -1 for potential ellipsis
+                cut = i
+                break
+            display_w += cw
+        else:
+            cut = len(text)
+        line = text[:cut] + ("\u2026" if cut < len(text) else "")
+        # Recompute display width of truncated line
+        line_w = sum(2 if ord(c) > 0x2E80 else 1 for c in line)
+        pad = max(0, max_w - line_w)
         fragments.append(("class:radio-border", "  \u2502 "))
         fragments.append((style, line))
-        fragments.append(("", " " * max(0, pad + 1)))
+        fragments.append(("", " " * (pad + 1)))
         fragments.append(("class:radio-border", "\u2502\n"))
 
     if now.source_mode == "stream":

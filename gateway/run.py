@@ -1452,8 +1452,17 @@ class GatewayRunner:
         # Set environment variables for tools
         self._set_session_env(context)
         
+        # Read privacy.redact_pii from config (re-read per message)
+        _redact_pii = False
+        try:
+            with open(_config_path, encoding="utf-8") as _pf:
+                _pcfg = yaml.safe_load(_pf) or {}
+            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+        except Exception:
+            pass
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context)
+        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

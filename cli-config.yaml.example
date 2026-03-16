@@ -742,3 +742,14 @@ display:
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default
+
+# =============================================================================
+# Privacy
+# =============================================================================
+# privacy:
+#   # Redact PII from the LLM context prompt.
+#   # When true, phone numbers are stripped and user/chat IDs are replaced
+#   # with deterministic hashes before being sent to the model.
+#   # Names and usernames are NOT affected (user-chosen, publicly visible).
+#   # Routing/delivery still uses the original values internally.
+#   redact_pii: false

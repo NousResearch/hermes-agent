@@ -118,6 +118,18 @@ Replies are sent via SMTP with proper email threading:
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
 
+### Skipping Attachments
+
+To ignore all incoming attachments (for malware protection or bandwidth savings), add to your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    skip_attachments: true
+```
+
+When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
+
 ---
 
 ## Access Control

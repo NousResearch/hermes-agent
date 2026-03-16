@@ -1114,6 +1114,9 @@ class GatewayRunner:
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = build_session_key(source)
         if _quick_key in self._running_agents:
+            if event.get_command() == "status":
+                return await self._handle_status_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
@@ -1822,6 +1825,8 @@ class GatewayRunner:
             # Update session with actual prompt token count and model from the agent
             self.session_store.update_session(
                 session_entry.session_key,
+                input_tokens=agent_result.get("input_tokens", 0),
+                output_tokens=agent_result.get("output_tokens", 0),
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
                 model=agent_result.get("model"),
             )
@@ -4171,11 +4176,15 @@ class GatewayRunner:
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
-            # Extract last actual prompt token count from the agent's compressor
+            # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
+            _input_toks = 0
+            _output_toks = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
+                _input_toks = getattr(_agent, "session_prompt_tokens", 0)
+                _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -4187,6 +4196,8 @@ class GatewayRunner:
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
+                    "input_tokens": _input_toks,
+                    "output_tokens": _output_toks,
                     "model": _resolved_model,
                 }
             
@@ -4250,6 +4261,8 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": len(agent_history),
                 "last_prompt_tokens": _last_prompt_toks,
+                "input_tokens": _input_toks,
+                "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
             }

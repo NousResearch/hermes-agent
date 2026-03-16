@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hermes Agent</title>
 <link rel="icon" type="image/png" href="/icons/favicon.png">
 <link rel="manifest" href="/manifest.json">
@@ -117,6 +117,7 @@ body {
 #send-btn { background: var(--accent); color: #fff; box-shadow: 0 2px 12px var(--accent-glow); }
 #send-btn:hover { background: var(--accent-hover); box-shadow: 0 4px 20px var(--accent-glow); transform: translateY(-1px); }
 #send-btn:disabled { opacity: 0.3; cursor: default; box-shadow: none; transform: none; }
+#send-btn.stop-mode { background: var(--error); box-shadow: 0 2px 12px rgba(255,107,107,0.3); }
 #attach-btn { background: var(--bg-input); border: 1px solid var(--glass-border); color: var(--text-muted); }
 #attach-btn:hover { border-color: var(--accent); color: var(--accent); }
 #voice-btn { background: var(--bg-input); border: 1px solid var(--glass-border); color: var(--text-muted); }
@@ -130,6 +131,13 @@ body {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 .file-input { display: none; }
 
+.msg.bot { position: relative; }
+.copy-btn { position: absolute; top: 6px; right: 6px; background: var(--bg-secondary); border: 1px solid var(--glass-border); color: var(--text-muted); border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
+.msg.bot:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.copy-btn.copied { color: var(--success, #4ade80); border-color: var(--success, #4ade80); }
+#remember-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); margin-top: 8px; cursor: pointer; }
+#remember-label input { accent-color: var(--accent); }
 @media (max-width: 600px) { .msg { max-width: 90%; } #input-bar { padding: 10px 12px; gap: 8px; } }
 
 /* Pixel Avatar */
@@ -148,9 +156,9 @@ body {
     text-align: center; white-space: nowrap;
 }
 #avatar-close {
-    position: absolute; top: -8px; right: -8px;
-    width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--glass-border);
-    background: var(--bg-secondary); color: var(--text-muted); font-size: 14px;
+    position: absolute; top: -12px; right: -12px;
+    width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--glass-border);
+    background: var(--bg-secondary); color: var(--text-muted); font-size: 18px;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: all 0.2s; z-index: 101;
 }
@@ -164,6 +172,7 @@ body {
     <h1>Hermes Agent</h1>
     <p>Enter API key to connect</p>
     <input type="password" id="token-input" placeholder="API Key" autocomplete="off">
+    <label id="remember-label"><input type="checkbox" id="remember-key"> Remember on this device</label>
     <button id="auth-btn" onclick="doAuth()">Connect</button>
     <div id="auth-error">Invalid API key</div>
 </div>
@@ -184,24 +193,25 @@ body {
             <button class="reset-btn" onclick="resetSession()" title="New session">&#8634;</button>
         </div>
     </header>
-    <div id="messages">
+    <div id="messages" aria-live="polite">
         <div class="typing-indicator" id="typing"><span></span><span></span><span></span></div>
     </div>
     <div id="input-bar">
-        <button class="input-btn" id="voice-btn" title="Tap: push-to-talk | Hold: streaming mode">
+        <button class="input-btn" id="voice-btn" title="Tap: push-to-talk | Hold: streaming mode" aria-label="Voice: tap to record, hold for streaming">
             <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
         </button>
-        <textarea id="input" rows="1" placeholder="Type a message..." onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+        <textarea id="input" rows="1" placeholder="Type a message... (Enter to send)" onkeydown="handleKey(event)" oninput="autoGrow(this)" aria-label="Message input"></textarea>
         <input type="file" id="file-input" class="file-input" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.json,.md,.html,.zip" onchange="uploadFile(this)">
         <input type="file" id="camera-input" class="file-input" accept="image/*" capture="environment" onchange="uploadFile(this)">
-        <button class="input-btn" id="camera-btn" onclick="document.getElementById('camera-input').click()" title="Take photo">
+        <button class="input-btn" id="camera-btn" onclick="document.getElementById('camera-input').click()" title="Take photo" aria-label="Take photo">
             <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
         </button>
-        <button class="input-btn" id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach file">
+        <button class="input-btn" id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach file" aria-label="Attach file">
             <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
         </button>
-        <button class="input-btn" id="send-btn" onclick="sendMessage()">
-            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        <button class="input-btn" id="send-btn" onclick="sendMessage()" aria-label="Send message">
+            <svg id="send-icon" viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            <svg id="stop-icon" viewBox="0 0 24 24" style="display:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
         </button>
     </div>
 </div>
@@ -246,18 +256,23 @@ marked.setOptions({
 
 document.getElementById('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
 
-// Restore session ID only (not API key — always show auth screen)
+// Restore session ID and optionally API key
 const savedSess = localStorage.getItem('hermes_session_id');
 if (savedSess) sessionId = savedSess;
+const savedKey = localStorage.getItem('hermes_api_key');
+if (savedKey) { apiKey = savedKey; document.getElementById('token-input').value = '********'; document.getElementById('remember-key').checked = true; doAuth(); }
 
 function doAuth() {
-    apiKey = document.getElementById('token-input').value.trim();
+    const inputKey = document.getElementById('token-input').value.trim();
+    if (inputKey && inputKey !== '********') apiKey = inputKey;
     if (!apiKey) return;
     document.getElementById('auth-error').style.display = 'none';
 
     fetch(`${API_BASE}/v1/sessions`, { headers: { 'Authorization': `Bearer ${apiKey}` } })
     .then(r => {
         if (r.ok) {
+            if (document.getElementById('remember-key').checked) localStorage.setItem('hermes_api_key', apiKey);
+            else localStorage.removeItem('hermes_api_key');
             if (!sessionId) { sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join(''); localStorage.setItem('hermes_session_id', sessionId); }
             document.getElementById('auth-screen').style.display = 'none';
             document.getElementById('chat-screen').style.display = 'flex';
@@ -864,6 +879,9 @@ function addBotMessage(content) {
     const div = document.createElement('div'); div.className = 'msg bot';
     div.innerHTML = renderMarkdown(content);
     highlightCode(div);
+    const copyBtn = document.createElement('button'); copyBtn.className = 'copy-btn'; copyBtn.textContent = 'Copy'; copyBtn.setAttribute('aria-label', 'Copy message');
+    copyBtn.onclick = () => { navigator.clipboard.writeText(content).then(() => { copyBtn.textContent = 'Copied'; copyBtn.classList.add('copied'); setTimeout(() => { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 1500); }); };
+    div.appendChild(copyBtn);
     messagesEl.insertBefore(div, typingEl); scrollToBottom();
 }
 
@@ -962,8 +980,19 @@ function highlightCode(el) { el.querySelectorAll('pre code').forEach(b => hljs.h
 // ── Typing ─────────────────────────────────────────────────────────
 
 var typingTimeout = null;
-function showTyping() { typingEl.style.display = 'block'; scrollToBottom(); clearTimeout(typingTimeout); typingTimeout = setTimeout(hideTyping, 30000); }
-function hideTyping() { typingEl.style.display = 'none'; clearTimeout(typingTimeout); }
+function showTyping() { typingEl.style.display = 'block'; scrollToBottom(); clearTimeout(typingTimeout); typingTimeout = setTimeout(hideTyping, 300000); setSendStop(true); }
+function setSendStop(stop) {
+    const btn = document.getElementById('send-btn');
+    const sendIcon = document.getElementById('send-icon');
+    const stopIcon = document.getElementById('stop-icon');
+    if (stop) { btn.classList.add('stop-mode'); btn.onclick = interruptChat; sendIcon.style.display = 'none'; stopIcon.style.display = 'block'; btn.setAttribute('aria-label', 'Stop generating'); }
+    else { btn.classList.remove('stop-mode'); btn.onclick = sendMessage; sendIcon.style.display = 'block'; stopIcon.style.display = 'none'; btn.setAttribute('aria-label', 'Send message'); }
+}
+function interruptChat() {
+    fetch(`${API_BASE}/v1/chat/interrupt?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}` } }).catch(() => {});
+    hideTyping();
+}
+function hideTyping() { typingEl.style.display = 'none'; clearTimeout(typingTimeout); setSendStop(false); }
 
 // ── Scroll ─────────────────────────────────────────────────────────
 

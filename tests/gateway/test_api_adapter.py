@@ -1211,10 +1211,11 @@ class TestWebUIContent:
         assert "loadHistory" in html
         assert "localStorage" in html
 
-    def test_no_api_key_in_localstorage(self):
-        """API key should NOT be saved to localStorage."""
+    def test_api_key_opt_in_storage(self):
+        """API key storage requires explicit opt-in via remember checkbox."""
         html = self._get_html()
-        assert "hermes_api_key" not in html
+        assert "remember-key" in html
+        assert "hermes_api_key" in html  # key used only when checkbox is checked
 
     def test_camera_hidden_in_voice_mode(self):
         html = self._get_html()
@@ -1351,14 +1352,16 @@ class TestSecurityFixes:
             )
         assert resp.status_code == 413
 
-    def test_no_api_key_in_html_localstorage(self):
+    def test_api_key_requires_checkbox(self):
         from fastapi.testclient import TestClient
         from gateway.api_server import create_app
         adapter = _make_adapter()
         app = create_app(adapter)
         client = TestClient(app)
         html = client.get("/").text
-        assert "hermes_api_key" not in html
+        # API key storage is opt-in via checkbox, not automatic
+        assert "remember-key" in html
+        assert "removeItem" in html  # removes key when unchecked
 
     def test_history_no_duplicate_on_load(self):
         """loadHistory should not re-save messages."""

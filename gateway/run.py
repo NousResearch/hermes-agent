@@ -831,12 +831,15 @@ class GatewayRunner:
             logger.warning("Process checkpoint recovery: %s", e)
         
         connected_count = 0
+        enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
+        startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
+            enabled_platform_count += 1
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
@@ -858,12 +861,22 @@ class GatewayRunner:
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
-                    if adapter.has_fatal_error and not adapter.fatal_error_retryable:
-                        startup_nonretryable_errors.append(
+                    if adapter.has_fatal_error:
+                        target = (
+                            startup_retryable_errors
+                            if adapter.fatal_error_retryable
+                            else startup_nonretryable_errors
+                        )
+                        target.append(
                             f"{platform.value}: {adapter.fatal_error_message}"
+                        )
+                    else:
+                        startup_retryable_errors.append(
+                            f"{platform.value}: failed to connect"
                         )
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
+                startup_retryable_errors.append(f"{platform.value}: {e}")
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -876,7 +889,16 @@ class GatewayRunner:
                     pass
                 self._request_clean_exit(reason)
                 return True
-            logger.warning("No messaging platforms connected.")
+            if enabled_platform_count > 0:
+                reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
+                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                except Exception:
+                    pass
+                return False
+            logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters

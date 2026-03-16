@@ -26,7 +26,7 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "start", gateway_cli.SERVICE_NAME],
+            ["systemctl", "--user", "start", gateway_cli.get_service_name()],
         ]
 
     def test_systemd_restart_refreshes_outdated_unit(self, tmp_path, monkeypatch):
@@ -49,7 +49,7 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "restart", gateway_cli.SERVICE_NAME],
+            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
         ]
 
 
@@ -92,9 +92,9 @@ class TestGatewayServiceDetection:
         )
 
         def fake_run(cmd, capture_output=True, text=True, **kwargs):
-            if cmd == ["systemctl", "--user", "is-active", gateway_cli.SERVICE_NAME]:
+            if cmd == ["systemctl", "--user", "is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
-            if cmd == ["systemctl", "is-active", gateway_cli.SERVICE_NAME]:
+            if cmd == ["systemctl", "is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
             raise AssertionError(f"Unexpected command: {cmd}")
 

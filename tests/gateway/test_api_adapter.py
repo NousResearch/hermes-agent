@@ -1216,9 +1216,10 @@ class TestWebUIContent:
         html = self._get_html()
         assert "hermes_api_key" not in html
 
-    def test_clean_response_exists(self):
+    def test_camera_hidden_in_voice_mode(self):
         html = self._get_html()
-        assert "cleanResponse" in html
+        assert "camera-btn" in html
+        assert "#camera-btn { display: none" in html or "camera-btn" in html
 
 
 # ── Adapter host config tests ────────────────────────────────────────────

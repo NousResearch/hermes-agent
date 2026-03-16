@@ -124,7 +124,7 @@ body {
 #voice-btn.recording { background: var(--error); border-color: var(--error); color: #fff; animation: pulse 1.5s infinite; box-shadow: 0 0 16px rgba(255,107,107,0.4); }
 #voice-btn.voice-mode { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 0 16px var(--accent-glow); }
 #input-bar.voice-mode-active { justify-content: center; }
-#input-bar.voice-mode-active #input, #input-bar.voice-mode-active #send-btn, #input-bar.voice-mode-active #attach-btn { display: none; }
+#input-bar.voice-mode-active #input, #input-bar.voice-mode-active #send-btn, #input-bar.voice-mode-active #attach-btn, #input-bar.voice-mode-active #camera-btn { display: none; }
 #input-bar.voice-mode-active #voice-btn { width: 56px; height: 56px; }
 #input-bar.voice-mode-active #voice-btn svg { width: 26px; height: 26px; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
@@ -271,6 +271,8 @@ function doAuth() {
 
 function resetSession() {
     if (!confirm('Start a new session?')) return;
+    const oldKey = `hermes_history_${sessionId}`;
+    localStorage.removeItem(oldKey);
     sessionId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2,'0')).join('');
     localStorage.setItem('hermes_session_id', sessionId);
     document.getElementById('session-label').textContent = sessionId;
@@ -304,7 +306,7 @@ function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.
 // ── Handle response ────────────────────────────────────────────────
 
 function handleResponse(data) {
-    let text = cleanResponse(data.response || '');
+    let text = data.response || '';
     if (text) {
         addBotMessage(text);
         detectVoiceMode(text);
@@ -327,9 +329,6 @@ function handleResponse(data) {
     }
 }
 
-function cleanResponse(text) {
-    return text;
-}
 
 function detectVoiceMode(text) {
     const l = text.toLowerCase();

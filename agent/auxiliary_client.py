@@ -555,23 +555,40 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
+    
+    from hermes_cli.config import load_config
+    config = load_config()
+    timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
+
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+    return OpenAI(
+        api_key=or_key, 
+        base_url=OPENROUTER_BASE_URL,
+        timeout=timeout,
+        default_headers=_OR_HEADERS
+    ), _OPENROUTER_MODEL
 
 
 def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     if not nous:
         return None, None
+    
+    from hermes_cli.config import load_config
+    config = load_config()
+    timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
+
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
     return (
-        OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
+        OpenAI(
+            api_key=_nous_api_key(nous), 
+            base_url=_nous_base_url(),
+            timeout=timeout
+        ),
         _NOUS_MODEL,
     )
-
 
 def _read_main_model() -> str:
     """Read the user's configured main model from config/env.
@@ -639,18 +656,27 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     if not custom_base or not custom_key:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
+
+    from hermes_cli.config import load_config
+    config = load_config()
+    timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
+
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return OpenAI(api_key=custom_key, base_url=custom_base, timeout=timeout), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     codex_token = _read_codex_access_token()
     if not codex_token:
         return None, None
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
-    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
+    from hermes_cli.config import load_config
+    config = load_config()
+    timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
+
+    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
+    real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL, timeout=timeout)
+    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     try:

@@ -1,6 +1,8 @@
 """ACP agent server — exposes Hermes Agent via the Agent Client Protocol."""
 
 from __future__ import annotations
+import io
+from contextlib import redirect_stdout
 
 import asyncio
 import logging
@@ -333,17 +335,40 @@ class HermesACPAgent(acp.Agent):
 
     async def _handle_slash_command(self, command_text: str, state: Any) -> str:
         """
-        Executes a slash command using the CLI command handlers.
+        Executes a slash command by capturing the TUI output from ChatConsole.
+        This allows ACP clients to use /help, /tools, /model, etc.
         """
-        try:
-            # You will need to import the command dispatcher from hermes_cli
-            # For example: from hermes_cli.main import dispatch_command
-            # return dispatch_command(command_text, state)
-            return f"Executed command: {command_text}\n(Note: Connect this to hermes_cli handlers)"
-        except Exception as e:
-            logger.error(f"Failed to execute slash command {command_text}: {e}")
-            return f"Error executing command: {e}"
-
+        from cli import ChatConsole
+        
+        # Create a string buffer to capture stdout
+        output_buffer = io.StringIO()
+        
+        # Redirect stdout to our buffer
+        with redirect_stdout(output_buffer):
+            try:
+                # Initialize the console. 
+                # We pass the existing agent instance so that commands (e.g., /model) 
+                # correctly affect the current session state.
+                console = ChatConsole(agent=state.agent)
+                
+                # Suppress interactive elements (progress bars, etc.) where possible
+                console.compact = True 
+                
+                # Process the command
+                console.process_command(command_text)
+                
+            except Exception as e:
+                logger.error(f"Error executing slash command {command_text}: {e}")
+                return f"Error executing command: {e}"
+        
+        # Retrieve the accumulated text from the buffer
+        result_text = output_buffer.getvalue()
+        
+        # If the command produced no output (e.g., /clear just resets the state silently)
+        if not result_text.strip():
+            return f"Command '{command_text}' executed successfully."
+            
+        return result_text.strip()
     # ---- Model switching ----------------------------------------------------
 
     async def set_session_model(

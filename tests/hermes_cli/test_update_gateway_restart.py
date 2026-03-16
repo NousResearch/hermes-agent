@@ -106,6 +106,78 @@ class TestLaunchdPlistReplace:
 # ---------------------------------------------------------------------------
 
 
+class TestLaunchdPlistRefresh:
+    """refresh_launchd_plist_if_needed rewrites stale plists (like systemd's
+    refresh_systemd_unit_if_needed)."""
+
+    def test_refresh_rewrites_stale_plist(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # Plist should now contain the generated content (which includes --replace)
+        assert "--replace" in plist_path.read_text()
+        # Should have unloaded then reloaded
+        assert any("unload" in str(c) for c in calls)
+        assert any("load" in str(c) for c in calls)
+
+    def test_refresh_skips_when_current(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        # Write the current expected content
+        plist_path.write_text(gateway_cli.generate_launchd_plist())
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0),
+        )
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is False
+        assert len(calls) == 0  # No launchctl calls needed
+
+    def test_refresh_skips_when_no_plist(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "nonexistent.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+        assert result is False
+
+    def test_launchd_start_calls_refresh(self, tmp_path, monkeypatch):
+        """launchd_start refreshes the plist before starting."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old</plist>")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        # First calls should be refresh (unload/load), then start
+        cmd_strs = [" ".join(c) for c in calls]
+        assert any("unload" in s for s in cmd_strs)
+        assert any("start" in s for s in cmd_strs)
+
+
 class TestCmdUpdateLaunchdRestart:
     """cmd_update correctly detects and handles launchd on macOS."""
 
@@ -134,13 +206,21 @@ class TestCmdUpdateLaunchdRestart:
 
         # Mock get_running_pid to return a PID
         with patch("gateway.status.get_running_pid", return_value=12345), \
-             patch("gateway.status.remove_pid_file"), \
-             patch("os.kill"):
+             patch("gateway.status.remove_pid_file"):
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
-        assert "auto-restart via launchd" in captured
+        assert "Gateway restarted via launchd" in captured
         assert "Restart it with: hermes gateway run" not in captured
+        # Verify launchctl stop + start were called (not manual SIGTERM)
+        launchctl_calls = [
+            c for c in mock_run.call_args_list
+            if len(c.args[0]) > 0 and c.args[0][0] == "launchctl"
+        ]
+        stop_calls = [c for c in launchctl_calls if "stop" in c.args[0]]
+        start_calls = [c for c in launchctl_calls if "start" in c.args[0]]
+        assert len(stop_calls) >= 1
+        assert len(start_calls) >= 1
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -169,7 +249,7 @@ class TestCmdUpdateLaunchdRestart:
 
         captured = capsys.readouterr().out
         assert "Restart it with: hermes gateway run" in captured
-        assert "auto-restart via launchd" not in captured
+        assert "Gateway restarted via launchd" not in captured
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -222,4 +302,4 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         assert "Stopped gateway" not in captured
         assert "Gateway restarted" not in captured
-        assert "auto-restart via launchd" not in captured
+        assert "Gateway restarted via launchd" not in captured

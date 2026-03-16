@@ -2308,6 +2308,7 @@ def cmd_update(args):
             from gateway.status import get_running_pid, remove_pid_file
             from hermes_cli.gateway import (
                 get_service_name, get_launchd_plist_path, is_macos,
+                refresh_launchd_plist_if_needed,
             )
             import signal as _signal
 
@@ -2341,20 +2342,20 @@ def cmd_update(args):
             if existing_pid or has_systemd_service or has_launchd_service:
                 print()
 
-                # Kill the PID-file-tracked process (may be manual or systemd/launchd)
-                if existing_pid:
-                    try:
-                        os.kill(existing_pid, _signal.SIGTERM)
-                        print(f"→ Stopped gateway process (PID {existing_pid})")
-                    except ProcessLookupError:
-                        pass  # Already gone
-                    except PermissionError:
-                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
-                    remove_pid_file()
-
-                # Restart the appropriate service (starts a fresh process)
+                # When a service manager is handling the gateway, let it
+                # manage the lifecycle — don't manually SIGTERM the PID
+                # (launchd KeepAlive would respawn immediately, causing races).
                 if has_systemd_service:
                     import time as _time
+                    if existing_pid:
+                        try:
+                            os.kill(existing_pid, _signal.SIGTERM)
+                            print(f"→ Stopped gateway process (PID {existing_pid})")
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                        remove_pid_file()
                     _time.sleep(1)  # Brief pause for port/socket release
                     print("→ Restarting gateway service...")
                     restart = subprocess.run(
@@ -2367,10 +2368,35 @@ def cmd_update(args):
                         print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
                         print("  Try manually: hermes gateway restart")
                 elif has_launchd_service:
-                    # launchd KeepAlive will auto-respawn after the SIGTERM,
-                    # so the gateway is already restarting — just tell the user.
-                    print("✓ Gateway will auto-restart via launchd.")
+                    # Refresh the plist first (picks up --replace and other
+                    # changes from the update we just pulled).
+                    refresh_launchd_plist_if_needed()
+                    # Explicit stop+start — don't rely on KeepAlive respawn
+                    # after a manual SIGTERM, which would race with the
+                    # PID file cleanup.
+                    print("→ Restarting gateway service...")
+                    stop = subprocess.run(
+                        ["launchctl", "stop", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    start = subprocess.run(
+                        ["launchctl", "start", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if start.returncode == 0:
+                        print("✓ Gateway restarted via launchd.")
+                    else:
+                        print(f"⚠ Gateway restart failed: {start.stderr.strip()}")
+                        print("  Try manually: hermes gateway restart")
                 elif existing_pid:
+                    try:
+                        os.kill(existing_pid, _signal.SIGTERM)
+                        print(f"→ Stopped gateway process (PID {existing_pid})")
+                    except ProcessLookupError:
+                        pass  # Already gone
+                    except PermissionError:
+                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                    remove_pid_file()
                     print("  ℹ️  Gateway was running manually (not as a service).")
                     print("  Restart it with: hermes gateway run")
         except Exception as e:

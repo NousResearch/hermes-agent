@@ -4371,10 +4371,19 @@ class GatewayRunner:
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
 
-        # Start stream consumer task if configured
+        # Start stream consumer task — polls for consumer creation since it
+        # happens inside run_sync (thread pool) after the agent is constructed.
         stream_task = None
-        if stream_consumer_holder[0] is not None:
-            stream_task = asyncio.create_task(stream_consumer_holder[0].run())
+
+        async def _start_stream_consumer():
+            """Wait for the stream consumer to be created, then run it."""
+            for _ in range(200):  # Up to 10s wait
+                if stream_consumer_holder[0] is not None:
+                    await stream_consumer_holder[0].run()
+                    return
+                await asyncio.sleep(0.05)
+
+        stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created

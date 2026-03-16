@@ -1474,9 +1474,10 @@ class HermesCLI:
                     self._in_reasoning_block = False
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
-                    # Process remaining text after close tag
+                    # Process remaining text after close tag through full
+                    # filtering (it could contain another open tag)
                     if after:
-                        self._emit_stream_text(after)
+                        self._stream_delta(after)
                     return
             # Still inside reasoning block — keep only the tail that could
             # be a partial close tag prefix (save memory on long blocks).

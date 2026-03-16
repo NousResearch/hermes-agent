@@ -2604,7 +2604,7 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None):
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
@@ -2623,6 +2623,11 @@ class AIAgent:
                             if delta_text and not has_tool_calls:
                                 if not first_delta_fired:
                                     first_delta_fired = True
+                                    if on_first_delta:
+                                        try:
+                                            on_first_delta()
+                                        except Exception:
+                                            pass
                                 self._fire_stream_delta(delta_text)
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
@@ -2812,6 +2817,7 @@ class AIAgent:
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
                         client=request_client_holder["client"],
+                        on_first_delta=getattr(self, "_codex_on_first_delta", None),
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
@@ -2846,146 +2852,6 @@ class AIAgent:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
                             self._close_request_openai_client(request_client, reason="interrupt_abort")
-                except Exception:
-                    pass
-                raise InterruptedError("Agent interrupted during API call")
-        if result["error"] is not None:
-            raise result["error"]
-        return result["response"]
-
-    def _streaming_api_call(self, api_kwargs: dict, stream_callback):
-        """Streaming variant of _interruptible_api_call for voice TTS pipeline.
-
-        Uses ``stream=True`` and forwards content deltas to *stream_callback*
-        in real-time.  Returns a ``SimpleNamespace`` that mimics a normal
-        ``ChatCompletion`` so the rest of the agent loop works unchanged.
-
-        This method is separate from ``_interruptible_api_call`` to keep the
-        core agent loop untouched for non-voice users.
-        """
-        result = {"response": None, "error": None}
-        request_client_holder = {"client": None}
-
-        def _call():
-            try:
-                stream_kwargs = {**api_kwargs, "stream": True}
-                request_client_holder["client"] = self._create_request_openai_client(
-                    reason="chat_completion_stream_request"
-                )
-                stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
-
-                content_parts: list[str] = []
-                tool_calls_acc: dict[int, dict] = {}
-                finish_reason = None
-                model_name = None
-                role = "assistant"
-
-                for chunk in stream:
-                    if not chunk.choices:
-                        if hasattr(chunk, "model") and chunk.model:
-                            model_name = chunk.model
-                        continue
-
-                    delta = chunk.choices[0].delta
-                    if hasattr(chunk, "model") and chunk.model:
-                        model_name = chunk.model
-
-                    if delta and delta.content:
-                        content_parts.append(delta.content)
-                        try:
-                            stream_callback(delta.content)
-                        except Exception:
-                            pass
-
-                    if delta and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index if tc_delta.index is not None else 0
-                            if idx in tool_calls_acc and tc_delta.id and tc_delta.id != tool_calls_acc[idx]["id"]:
-                                matched = False
-                                for eidx, eentry in tool_calls_acc.items():
-                                    if eentry["id"] == tc_delta.id:
-                                        idx = eidx
-                                        matched = True
-                                        break
-                                if not matched:
-                                    idx = (max(k for k in tool_calls_acc if isinstance(k, int)) + 1) if tool_calls_acc else 0
-                            if idx not in tool_calls_acc:
-                                tool_calls_acc[idx] = {
-                                    "id": tc_delta.id or "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            entry = tool_calls_acc[idx]
-                            if tc_delta.id:
-                                entry["id"] = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    entry["function"]["name"] += tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    entry["function"]["arguments"] += tc_delta.function.arguments
-
-                    if chunk.choices[0].finish_reason:
-                        finish_reason = chunk.choices[0].finish_reason
-
-                full_content = "".join(content_parts) or None
-                mock_tool_calls = None
-                if tool_calls_acc:
-                    mock_tool_calls = []
-                    for idx in sorted(tool_calls_acc):
-                        tc = tool_calls_acc[idx]
-                        mock_tool_calls.append(SimpleNamespace(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=SimpleNamespace(
-                                name=tc["function"]["name"],
-                                arguments=tc["function"]["arguments"],
-                            ),
-                        ))
-
-                mock_message = SimpleNamespace(
-                    role=role,
-                    content=full_content,
-                    tool_calls=mock_tool_calls,
-                    reasoning_content=None,
-                )
-                mock_choice = SimpleNamespace(
-                    index=0,
-                    message=mock_message,
-                    finish_reason=finish_reason or "stop",
-                )
-                mock_response = SimpleNamespace(
-                    id="stream-" + str(uuid.uuid4()),
-                    model=model_name,
-                    choices=[mock_choice],
-                    usage=None,
-                )
-                result["response"] = mock_response
-
-            except Exception as e:
-                result["error"] = e
-            finally:
-                request_client = request_client_holder.get("client")
-                if request_client is not None:
-                    self._close_request_openai_client(request_client, reason="stream_request_complete")
-
-        t = threading.Thread(target=_call, daemon=True)
-        t.start()
-        while t.is_alive():
-            t.join(timeout=0.3)
-            if self._interrupt_requested:
-                try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
@@ -3039,12 +2905,20 @@ class AIAgent:
         streaming is not supported.
         """
         if self.api_mode == "codex_responses":
-            # Codex already streams internally; we just need to pass callbacks
-            return self._interruptible_api_call(api_kwargs)
+            # Codex streams internally via _run_codex_stream. The main dispatch
+            # in _interruptible_api_call already calls it; we just need to
+            # ensure on_first_delta reaches it. Store it on the instance
+            # temporarily so _run_codex_stream can pick it up.
+            self._codex_on_first_delta = on_first_delta
+            try:
+                return self._interruptible_api_call(api_kwargs)
+            finally:
+                self._codex_on_first_delta = None
 
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
+        deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
 
         def _fire_first_delta():
             if not first_delta_fired["done"] and on_first_delta:
@@ -3098,6 +2972,7 @@ class AIAgent:
                     if not tool_calls_acc:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
+                        deltas_were_sent["yes"] = True
 
                 # Accumulate tool call deltas (silently, no callback)
                 if delta and delta.tool_calls:
@@ -3208,17 +3083,22 @@ class AIAgent:
                 else:
                     result["response"] = _call_chat_completions()
             except Exception as e:
-                # Always fall back to non-streaming on ANY streaming error.
-                # Many third-party/extrinsic providers have partial or broken
-                # streaming support — rejecting stream=True, crashing on
-                # stream_options, dropping connections mid-stream, etc.
-                # A clean fallback to the standard request path ensures the
-                # agent still works even if streaming doesn't.
-                logger.info("Streaming failed, falling back to non-streaming: %s", e)
-                try:
-                    result["response"] = self._interruptible_api_call(api_kwargs)
-                except Exception as fallback_err:
-                    result["error"] = fallback_err
+                if deltas_were_sent["yes"]:
+                    # Streaming failed AFTER some tokens were already delivered
+                    # to consumers. Don't fall back — that would cause
+                    # double-delivery (partial streamed + full non-streamed).
+                    # Let the error propagate; the partial content already
+                    # reached the user via the stream.
+                    logger.warning("Streaming failed after partial delivery, not falling back: %s", e)
+                    result["error"] = e
+                else:
+                    # Streaming failed before any tokens reached consumers.
+                    # Safe to fall back to the standard non-streaming path.
+                    logger.info("Streaming failed before delivery, falling back to non-streaming: %s", e)
+                    try:
+                        result["response"] = self._interruptible_api_call(api_kwargs)
+                    except Exception as fallback_err:
+                        result["error"] = fallback_err
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:

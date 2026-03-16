@@ -481,7 +481,12 @@ def _get_env_config() -> Dict[str, Any]:
     # container/sandbox, fall back to the backend's own default. This
     # catches the case where cli.py (or .env) leaked the host's CWD.
     # SSH is excluded since /home/ paths are valid on remote machines.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    raw_cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = raw_cwd
+    # Capture original host CWD for auto-mounting into containers (fixes #1445).
+    # Even when the container's working directory falls back to /root, we still
+    # want to auto-mount the user's host project directory to /workspace.
+    host_cwd = raw_cwd if raw_cwd and os.path.isdir(raw_cwd) else os.getcwd()
     if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
         # Host paths that won't exist inside containers
         host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
@@ -498,6 +503,7 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
+        "host_cwd": host_cwd,  # Original host directory for auto-mounting into containers
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
@@ -525,7 +531,8 @@ def _get_env_config() -> Dict[str, Any]:
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
-                        task_id: str = "default"):
+                        task_id: str = "default",
+                        host_cwd: str = None):
     """
     Create an execution environment from mini-swe-agent.
     
@@ -537,6 +544,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         ssh_config: SSH connection config (for env_type="ssh")
         container_config: Resource config for container backends (cpu, memory, disk, persistent)
         task_id: Task identifier for environment reuse and snapshot keying
+        host_cwd: Original host working directory (for auto-mounting into containers)
         
     Returns:
         Environment instance with execute() method
@@ -559,6 +567,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
             volumes=volumes,
+            host_cwd=host_cwd,
         )
     
     elif env_type == "singularity":
@@ -965,6 +974,7 @@ def terminal_tool(
                             container_config=container_config,
                             local_config=local_config,
                             task_id=effective_task_id,
+                            host_cwd=config.get("host_cwd"),
                         )
                     except ImportError as e:
                         return json.dumps({

@@ -116,15 +116,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         # Regular tool call event
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
-            tool_emojis = {
-                "terminal": "💻", "web_search": "🔍", "web_extract": "📄",
-                "read_file": "📖", "write_file": "✍️", "patch": "🔧",
-                "search_files": "🔎", "list_directory": "📂",
-                "browser_navigate": "🌐", "browser_click": "👆",
-                "text_to_speech": "🔊", "image_generate": "🎨",
-                "vision_analyze": "👁️", "process": "⚙️",
-            }
-            emoji = tool_emojis.get(tool_name, "⚡")
+            from agent.display import get_tool_emoji
+            emoji = get_tool_emoji(tool_name)
             line = f" {prefix}├─ {emoji} {tool_name}"
             if short:
                 line += f"  \"{short}\""
@@ -758,4 +751,5 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
+    emoji="🔀",
 )

@@ -1258,6 +1258,7 @@ registry.register(
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_firecrawl_api_key,
     requires_env=["FIRECRAWL_API_KEY"],
+    emoji="🔍",
 )
 registry.register(
     name="web_extract",
@@ -1268,4 +1269,5 @@ registry.register(
     check_fn=check_firecrawl_api_key,
     requires_env=["FIRECRAWL_API_KEY"],
     is_async=True,
+    emoji="📄",
 )

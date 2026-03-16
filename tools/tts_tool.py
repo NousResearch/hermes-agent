@@ -743,4 +743,5 @@ registry.register(
         text=args.get("text", ""),
         output_path=args.get("output_path")),
     check_fn=check_tts_requirements,
+    emoji="🔊",
 )

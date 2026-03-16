@@ -776,4 +776,5 @@ registry.register(
         task_id=kw.get("task_id"),
         enabled_tools=kw.get("enabled_tools")),
     check_fn=check_sandbox_requirements,
+    emoji="🐍",
 )

@@ -147,6 +147,37 @@ class PlatformConfig:
 
 
 @dataclass
+class StreamingConfig:
+    """Configuration for real-time token streaming to messaging platforms."""
+    enabled: bool = True
+    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
+    edit_interval: float = 0.3    # Seconds between message edits
+    buffer_threshold: int = 40    # Chars before forcing an edit
+    cursor: str = " ▉"           # Cursor shown during streaming
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "transport": self.transport,
+            "edit_interval": self.edit_interval,
+            "buffer_threshold": self.buffer_threshold,
+            "cursor": self.cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=data.get("enabled", True),
+            transport=data.get("transport", "edit"),
+            edit_interval=float(data.get("edit_interval", 0.3)),
+            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            cursor=data.get("cursor", " ▉"),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -178,6 +209,9 @@ class GatewayConfig:
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
+
+    # Streaming configuration
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -244,6 +278,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
+            "streaming": self.streaming.to_dict(),
         }
     
     @classmethod
@@ -297,6 +332,7 @@ class GatewayConfig:
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
 

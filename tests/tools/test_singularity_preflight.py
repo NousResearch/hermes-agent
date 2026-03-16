@@ -39,7 +39,7 @@ class TestFindSingularityExecutable:
     def test_raises_when_neither_found(self):
         """Must raise RuntimeError with install instructions."""
         with patch("shutil.which", return_value=None):
-            with pytest.raises(RuntimeError, match="neither.*apptainer.*nor.*singularity"):
+            with pytest.raises(RuntimeError, match="Neither.*apptainer.*nor.*singularity"):
                 _find_singularity_executable()
 
 
@@ -73,5 +73,5 @@ class TestEnsureSingularityAvailable:
     def test_raises_when_not_installed(self):
         """Raises RuntimeError when neither executable exists."""
         with patch("shutil.which", return_value=None):
-            with pytest.raises(RuntimeError, match="neither.*apptainer.*nor.*singularity"):
+            with pytest.raises(RuntimeError, match="Neither.*apptainer.*nor.*singularity"):
                 _ensure_singularity_available()

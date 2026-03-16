@@ -3209,10 +3209,13 @@ class AIAgent:
                     result["response"] = _call_chat_completions()
             except Exception as e:
                 err_text = str(e).lower()
-                # Fall back to non-streaming if provider doesn't support it
+                # Fall back to non-streaming if provider doesn't support it.
+                # Be specific in matching — "stream" alone is too broad and
+                # catches unrelated errors like "stream_options" rejections.
                 stream_unsupported = any(
                     kw in err_text
-                    for kw in ("stream", "not support", "unsupported", "not available")
+                    for kw in ("streaming is not", "streaming not support",
+                               "does not support stream", "not available")
                 )
                 if stream_unsupported:
                     logger.info("Streaming not supported by provider, falling back to non-streaming: %s", e)

@@ -743,6 +743,7 @@ def setup_model_provider(config: dict):
     selected_provider = (
         None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
     )
+    selected_base_url = None  # deferred until after model selection
     nous_models = []  # populated if Nous login succeeds
 
     if provider_idx == 0:  # Nous Portal (OAuth)
@@ -1025,8 +1026,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", zai_base_url, default_model="glm-5")
         _set_model_provider(config, "zai", zai_base_url)
+        selected_base_url = zai_base_url
 
     elif provider_idx == 5:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
@@ -1058,8 +1059,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("kimi-coding", pconfig.inference_base_url, default_model="kimi-k2.5")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 6:  # MiniMax
         selected_provider = "minimax"
@@ -1091,8 +1092,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 7:  # MiniMax China
         selected_provider = "minimax-cn"
@@ -1124,8 +1125,8 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("minimax-cn", pconfig.inference_base_url, default_model="MiniMax-M2.5")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
 
     elif provider_idx == 8:  # Anthropic
         selected_provider = "anthropic"
@@ -1228,8 +1229,8 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         # Don't save base_url for Anthropic — resolve_runtime_provider()
         # always hardcodes it. Stale base_urls contaminate other providers.
-        _update_config_for_provider("anthropic", "", default_model="claude-opus-4-6")
         _set_model_provider(config, "anthropic")
+        selected_base_url = ""
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
@@ -1458,6 +1459,12 @@ def setup_model_provider(config: dict):
                 else _final_model
             )
             print_success(f"Model set to: {_display}")
+
+    # Write provider+base_url to config.yaml only after model selection is complete.
+    # This prevents a race condition where the gateway picks up a new provider
+    # before the model name has been updated to match.
+    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "anthropic") and selected_base_url is not None:
+        _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)
 

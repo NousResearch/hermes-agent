@@ -244,10 +244,10 @@ Background tasks on messaging platforms are fire-and-forget — you don't need t
 
 ```bash
 hermes gateway install               # Install as user service
-systemctl --user start hermes-gateway
-systemctl --user stop hermes-gateway
-systemctl --user status hermes-gateway
-journalctl --user -u hermes-gateway -f
+hermes gateway start                 # Start the service
+hermes gateway stop                  # Stop the service
+hermes gateway status                # Check status
+journalctl --user -u hermes-gateway -f  # View logs
 
 # Enable lingering (keeps running after logout)
 sudo loginctl enable-linger $USER
@@ -262,6 +262,10 @@ journalctl -u hermes-gateway -f
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
+
+:::info Multiple installations
+If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
+:::
 
 ### macOS (launchd)
 

@@ -76,8 +76,9 @@ model:
 #   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
 terminal:
   backend: "local"
-  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends.
+  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
+  docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
 
@@ -107,6 +108,7 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container

@@ -3589,12 +3589,13 @@ class HermesCLI:
             # Inject context message so the model knows
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
-                    "[System note: The user has connected the browser tools to their live Chrome browser "
-                    "session via Chrome DevTools Protocol. You now have access to their real browser — "
-                    "any pages they have open, their logged-in sessions, bookmarks, etc. "
-                    "Use the browser tools (browser_navigate, browser_snapshot, browser_click, etc.) "
-                    "to interact with their live browser. Be mindful that actions affect their real browser. "
-                    "Ask before closing tabs or navigating away from pages they might be using.]"
+                    "[System note: The user has connected your browser tools to their live Chrome browser "
+                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
+                    "and other browser tools now control their real browser — including any pages they have "
+                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
+                    "services before connecting. Please await their instruction before attempting to operate "
+                    "the browser. When you do act, be mindful that your actions affect their real browser — "
+                    "don't close tabs or navigate away from pages without asking.]"
                 )
 
         elif sub == "disconnect":

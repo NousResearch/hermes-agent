@@ -35,7 +35,8 @@ def _pp(label: str, result_json: str):
 
 def main():
     print("Execution Integrity Layer — Demo")
-    print("Demonstrates post-tool-call verification for terminal, write_file, and patch.\n")
+    print("Demonstrates post-tool-call verification for terminal, write_file,")
+    print("patch, read_file, browser_navigate, and web_extract.\n")
 
     with tempfile.TemporaryDirectory(prefix="hermes-demo-") as tmpdir:
 
@@ -70,7 +71,7 @@ def main():
         )
         _pp("3. write_file — file EXISTS and non-empty (pass)", result)
 
-        # ── 4. write_file — EMPTY FILE ─────────────────────────────────
+        # ── 4. write_file — EMPTY FILE (intentional) ──────────────────
         empty_file = os.path.join(tmpdir, "empty.txt")
         Path(empty_file).write_text("")
 
@@ -79,7 +80,7 @@ def main():
             {"path": empty_file, "content": ""},
             json.dumps({"bytes_written": 0}),
         )
-        _pp("4. write_file — file EXISTS but EMPTY (warning)", result)
+        _pp("4. write_file — file EXISTS, intentionally empty (pass)", result)
 
         # ── 5. write_file — MISSING FILE ───────────────────────────────
         result = verify_tool_result(
@@ -116,8 +117,102 @@ def main():
         )
         _pp("8. web_search — no verifier, unchanged passthrough", result)
 
+        # ── 9. terminal cp — destination EXISTS ─────────────────────────
+        cp_src = os.path.join(tmpdir, "src.txt")
+        cp_dest = os.path.join(tmpdir, "dest.txt")
+        Path(cp_src).write_text("data")
+        Path(cp_dest).write_text("data")
+
+        result = verify_tool_result(
+            "terminal",
+            {"command": f"cp {cp_src} {cp_dest}"},
+            json.dumps({"output": "", "exit_code": 0, "error": None}),
+        )
+        _pp("9. terminal cp — destination EXISTS (pass)", result)
+
+        # ── 10. terminal rm — target REMOVED ────────────────────────────
+        rm_target = os.path.join(tmpdir, "to_delete.txt")
+        # target does NOT exist — rm succeeded
+        result = verify_tool_result(
+            "terminal",
+            {"command": f"rm {rm_target}"},
+            json.dumps({"output": "", "exit_code": 0, "error": None}),
+        )
+        _pp("10. terminal rm — target REMOVED (pass)", result)
+
+        # ── 11. terminal touch — file EXISTS ────────────────────────────
+        touch_file = os.path.join(tmpdir, "touched.txt")
+        Path(touch_file).write_text("")
+
+        result = verify_tool_result(
+            "terminal",
+            {"command": f"touch {touch_file}"},
+            json.dumps({"output": "", "exit_code": 0, "error": None}),
+        )
+        _pp("11. terminal touch — file EXISTS (pass)", result)
+
+        # ── 12. terminal git init — .git EXISTS ─────────────────────────
+        init_dir = os.path.join(tmpdir, "new-repo")
+        os.makedirs(os.path.join(init_dir, ".git"))
+
+        result = verify_tool_result(
+            "terminal",
+            {"command": f"git init {init_dir}"},
+            json.dumps({"output": "Initialized empty Git repository", "exit_code": 0, "error": None}),
+        )
+        _pp("12. terminal git init — .git EXISTS (pass)", result)
+
+        # ── 13. read_file — content returned ────────────────────────────
+        result = verify_tool_result(
+            "read_file",
+            {"path": "/some/file.py"},
+            json.dumps({"content": "1|print('hello')\n2|print('world')", "total_lines": 2, "file_size": 28, "error": None}),
+        )
+        _pp("13. read_file — content returned (pass)", result)
+
+        # ── 14. read_file — error with similar_files ────────────────────
+        result = verify_tool_result(
+            "read_file",
+            {"path": "/tmp/foo.py"},
+            json.dumps({"error": "File not found: /tmp/foo.py", "similar_files": ["/tmp/foo2.py", "/tmp/foobar.py"]}),
+        )
+        _pp("14. read_file — error with similar_files (warning)", result)
+
+        # ── 15. browser_navigate — success ──────────────────────────────
+        result = verify_tool_result(
+            "browser_navigate",
+            {"url": "https://example.com"},
+            json.dumps({"success": True, "url": "https://example.com", "title": "Example Domain"}),
+        )
+        _pp("15. browser_navigate — success (pass)", result)
+
+        # ── 16. browser_navigate — bot detection ────────────────────────
+        result = verify_tool_result(
+            "browser_navigate",
+            {"url": "https://protected-site.com"},
+            json.dumps({
+                "success": True,
+                "url": "https://protected-site.com",
+                "title": "Verify you are human",
+                "bot_detection_warning": "Page title suggests bot detection",
+            }),
+        )
+        _pp("16. browser_navigate — bot detection triggered (warning)", result)
+
+        # ── 17. web_extract — partial failure ───────────────────────────
+        result = verify_tool_result(
+            "web_extract",
+            {"urls": ["https://a.com", "https://b.com"]},
+            json.dumps({"results": [
+                {"url": "https://a.com", "title": "A", "content": "Page A content extracted successfully."},
+                {"url": "https://b.com", "error": "Connection timeout", "content": ""},
+            ]}),
+        )
+        _pp("17. web_extract — partial failure (warning)", result)
+
     print(f"\n{'='*60}")
-    print("  Demo complete. Verification checks executed across pass, warning, and mismatch scenarios.")
+    print("  Demo complete. Verification checks executed across pass,")
+    print("  warning, and mismatch scenarios for 6 tool types.")
     print(f"{'='*60}\n")
 
 

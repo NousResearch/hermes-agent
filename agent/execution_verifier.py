@@ -6,17 +6,26 @@ After critical tool calls complete, this module independently verifies
 that the expected world-state change actually occurred before the agent
 continues reasoning.
 
-Supported verifications (MVP):
-  - terminal / git clone  → target directory exists
-  - write_file            → file exists; empty files are flagged as warnings
-  - patch                 → modified/created files still exist after the tool claims success
+Supported verifications:
+  - terminal / git clone   -> target directory exists
+  - terminal / git init    -> .git directory exists
+  - terminal / mkdir       -> directory exists
+  - terminal / cp          -> destination exists
+  - terminal / mv          -> destination exists
+  - terminal / rm          -> targets no longer exist
+  - terminal / touch       -> file exists
+  - write_file             -> file exists; empty files flagged only when content was non-empty
+  - patch                  -> modified/created files still exist
+  - read_file              -> content returned; error with similar_files -> warning
+  - browser_navigate       -> success field; bot detection -> warning
+  - web_extract            -> results non-empty; per-URL errors -> warning/mismatch
 
 The verifier is deliberately conservative: it only fires for operations it
 understands and attaches a structured ``_verification`` block to the tool
 result JSON.  Status is one of:
 
   - ``"verified"``  — world state matches expectations
-  - ``"warning"``   — result may be incomplete (e.g. empty file)
+  - ``"warning"``   — result may be incomplete (e.g. partial extraction)
   - ``"mismatch"``  — environment state contradicts tool output
 
 On warning or mismatch a top-level ``_warning`` string is injected so the
@@ -32,6 +41,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -72,17 +82,91 @@ class VerificationResult:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_path(raw: str) -> str:
+    """Expand ~ and resolve to absolute."""
+    return str(Path(os.path.expanduser(raw)).resolve())
+
+
+def _extract_simple_command(command: str, cmd_name: str) -> Optional[str]:
+    """Extract the segment of a compound command that contains *cmd_name*.
+
+    Splits on ``&&``, ``||``, ``;``, and ``|`` and returns the first segment
+    that contains the given command name as a whole word.  Returns ``None`` if
+    no segment matches.
+    """
+    segments = re.split(r'\s*(?:&&|\|\||[;|])\s*', command)
+    for seg in segments:
+        if re.search(rf'\b{re.escape(cmd_name)}\b', seg):
+            return seg.strip()
+    return None
+
+
+def _parse_positionals(
+    segment: str,
+    cmd_name: str,
+    value_flags: Optional[set] = None,
+) -> Optional[List[str]]:
+    """Extract positional arguments from a simple command.
+
+    Tokenises *segment* with ``shlex.split``, locates *cmd_name*, then walks
+    the remaining tokens skipping flags (``-…``) and their values.
+
+    Parameters
+    ----------
+    segment : str
+        A single shell command (no ``&&`` / ``||`` / ``;`` / ``|``).
+    cmd_name : str
+        The command to locate (e.g. ``"cp"``, ``"mv"``).
+    value_flags : set, optional
+        Flags that consume the next token as their value (e.g. ``{"-t"}``).
+
+    Returns
+    -------
+    list[str] | None
+        The positional arguments, or ``None`` if *cmd_name* was not found.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+
+    try:
+        cmd_idx = next(i for i, t in enumerate(tokens) if t == cmd_name)
+    except StopIteration:
+        return None
+
+    remaining = tokens[cmd_idx + 1:]
+    value_flags = value_flags or set()
+    positionals: List[str] = []
+    i = 0
+    while i < len(remaining):
+        tok = remaining[i]
+        if tok.startswith("-"):
+            if tok in value_flags:
+                i += 2  # skip flag + its value
+            elif "=" in tok:
+                i += 1  # --flag=value
+            else:
+                i += 1  # boolean flag
+        else:
+            positionals.append(tok)
+            i += 1
+
+    return positionals if positionals else None
+
+
+# ---------------------------------------------------------------------------
 # Per-tool verification strategies
 # ---------------------------------------------------------------------------
 
 # Regex for mkdir
 _MKDIR_RE = re.compile(r"\bmkdir\s+(?:-p\s+)?(\S+)", re.IGNORECASE)
 
-
-def _resolve_path(raw: str) -> str:
-    """Expand ~ and resolve to absolute."""
-    return str(Path(os.path.expanduser(raw)).resolve())
-
+# Regex for git init (optional target dir)
+_GIT_INIT_RE = re.compile(r"\bgit\s+init\b(?:\s+(\S+))?", re.IGNORECASE)
 
 # git clone flags that consume the next token as their value
 _GIT_CLONE_VALUE_FLAGS = {
@@ -91,6 +175,9 @@ _GIT_CLONE_VALUE_FLAGS = {
     "--template", "--config", "-c", "--separate-git-dir", "--filter",
     "--server-option", "--bundle-uri",
 }
+
+# touch flags that consume the next token as their value
+_TOUCH_VALUE_FLAGS = {"-t", "-r", "-d", "--date", "--reference"}
 
 
 def _parse_git_clone_positionals(command: str) -> Optional[List[str]]:
@@ -103,7 +190,6 @@ def _parse_git_clone_positionals(command: str) -> Optional[List[str]]:
     if "git" not in command.lower() or "clone" not in command.lower():
         return None
 
-    import shlex
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -140,9 +226,14 @@ def _parse_git_clone_positionals(command: str) -> Optional[List[str]]:
 def _verify_terminal(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
     """Verify terminal tool outcomes.
 
-    Currently checks:
-    - git clone  → target directory exists
-    - mkdir      → directory exists
+    Checks:
+    - git clone  -> target directory exists
+    - git init   -> .git directory exists
+    - mkdir      -> directory exists
+    - cp         -> destination exists
+    - mv         -> destination exists
+    - rm         -> targets no longer exist
+    - touch      -> file exists
     """
     command = args.get("command", "")
     exit_code = result_data.get("exit_code", -1)
@@ -174,6 +265,24 @@ def _verify_terminal(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optio
             details={"expected_dir": target, "exists": exists},
         )
 
+    # --- git init ---
+    m_init = _GIT_INIT_RE.search(command)
+    if m_init:
+        # Skip bare repos — they don't have a .git subdirectory
+        if "--bare" in command:
+            return None
+        target_dir = m_init.group(1) if m_init.group(1) else (args.get("workdir") or ".")
+        resolved = _resolve_path(target_dir)
+        git_dir = os.path.join(resolved, ".git")
+        exists = os.path.isdir(git_dir)
+        return VerificationResult(
+            status=VERIFIED if exists else MISMATCH,
+            tool_name="terminal",
+            check="git_init_dir_exists",
+            message="" if exists else f"git init: .git directory does not exist in {resolved}",
+            details={"expected_dir": resolved, "git_dir_exists": exists},
+        )
+
     # --- mkdir ---
     m2 = _MKDIR_RE.search(command)
     if m2:
@@ -187,11 +296,92 @@ def _verify_terminal(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optio
             details={"expected_dir": target, "exists": exists},
         )
 
+    # --- cp ---
+    seg = _extract_simple_command(command, "cp")
+    if seg is not None:
+        positionals = _parse_positionals(seg, "cp")
+        if positionals and len(positionals) >= 2:
+            dest = _resolve_path(positionals[-1])
+            exists = os.path.exists(dest)
+            return VerificationResult(
+                status=VERIFIED if exists else MISMATCH,
+                tool_name="terminal",
+                check="cp_dest_exists",
+                message="" if exists else f"cp destination does not exist: {dest}",
+                details={"expected_path": dest, "exists": exists},
+            )
+
+    # --- mv ---
+    seg = _extract_simple_command(command, "mv")
+    if seg is not None:
+        positionals = _parse_positionals(seg, "mv")
+        if positionals and len(positionals) >= 2:
+            dest = _resolve_path(positionals[-1])
+            exists = os.path.exists(dest)
+            return VerificationResult(
+                status=VERIFIED if exists else MISMATCH,
+                tool_name="terminal",
+                check="mv_dest_exists",
+                message="" if exists else f"mv destination does not exist: {dest}",
+                details={"expected_path": dest, "exists": exists},
+            )
+
+    # --- rm ---
+    seg = _extract_simple_command(command, "rm")
+    if seg is not None:
+        positionals = _parse_positionals(seg, "rm")
+        if positionals:
+            # Skip if any target uses glob patterns — too unreliable
+            if any(c in t for t in positionals for c in ("*", "?", "[")):
+                return None
+            still_exist: List[str] = []
+            resolved_targets: List[str] = []
+            for t in positionals:
+                resolved = _resolve_path(t)
+                resolved_targets.append(resolved)
+                if os.path.exists(resolved):
+                    still_exist.append(resolved)
+            ok = len(still_exist) == 0
+            details: Dict[str, Any] = {"targets": resolved_targets}
+            if still_exist:
+                details["still_exist"] = still_exist
+            return VerificationResult(
+                status=VERIFIED if ok else MISMATCH,
+                tool_name="terminal",
+                check="rm_targets_removed",
+                message="" if ok else f"rm target(s) still exist: {', '.join(still_exist)}",
+                details=details,
+            )
+
+    # --- touch ---
+    seg = _extract_simple_command(command, "touch")
+    if seg is not None:
+        positionals = _parse_positionals(seg, "touch", value_flags=_TOUCH_VALUE_FLAGS)
+        if positionals:
+            missing: List[str] = []
+            resolved_targets = []
+            for t in positionals:
+                resolved = _resolve_path(t)
+                resolved_targets.append(resolved)
+                if not os.path.exists(resolved):
+                    missing.append(resolved)
+            ok = len(missing) == 0
+            details = {"expected_paths": resolved_targets}
+            if missing:
+                details["missing"] = missing
+            return VerificationResult(
+                status=VERIFIED if ok else MISMATCH,
+                tool_name="terminal",
+                check="touch_file_exists",
+                message="" if ok else f"touch target(s) do not exist: {', '.join(missing)}",
+                details=details,
+            )
+
     return None
 
 
 def _verify_write_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
-    """Verify write_file: target file exists; empty files are flagged as warnings."""
+    """Verify write_file: target file exists; empty files flagged only when content was non-empty."""
     if result_data.get("error"):
         return None
 
@@ -208,13 +398,17 @@ def _verify_write_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Opt
             size = os.path.getsize(resolved)
             details["size_bytes"] = size
             if size == 0:
-                return VerificationResult(
-                    status=WARNING,
-                    tool_name="write_file",
-                    check="file_written",
-                    message=f"file exists but is empty; result may be incomplete or intentional: {resolved}",
-                    details=details,
-                )
+                intended_content = args.get("content", "")
+                if intended_content:
+                    # Non-empty content was expected but file is empty
+                    return VerificationResult(
+                        status=WARNING,
+                        tool_name="write_file",
+                        check="file_written",
+                        message=f"file exists but is empty despite non-empty content arg: {resolved}",
+                        details=details,
+                    )
+                # Content was intentionally empty — fall through to VERIFIED
         except OSError:
             pass
 
@@ -262,6 +456,147 @@ def _verify_patch(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional
     )
 
 
+def _verify_read_file(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
+    """Verify read_file: check that content was returned without error."""
+    error = result_data.get("error")
+    if error:
+        similar = result_data.get("similar_files", [])
+        details: Dict[str, Any] = {"error": error}
+        if similar:
+            details["similar_files"] = similar
+            return VerificationResult(
+                status=WARNING,
+                tool_name="read_file",
+                check="file_read",
+                message=f"read_file error: {error}; similar files available",
+                details=details,
+            )
+        return VerificationResult(
+            status=MISMATCH,
+            tool_name="read_file",
+            check="file_read",
+            message=f"read_file error with no alternatives: {error}",
+            details=details,
+        )
+
+    # Success case: content present
+    content = result_data.get("content", "")
+    if content:
+        return VerificationResult(
+            status=VERIFIED,
+            tool_name="read_file",
+            check="file_read",
+            message="",
+            details={
+                "file_size": result_data.get("file_size", 0),
+                "truncated": result_data.get("truncated", False),
+            },
+        )
+
+    # No error but also no content — genuinely empty file is valid, no opinion
+    return None
+
+
+def _verify_browser_navigate(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
+    """Verify browser_navigate: check success and bot detection."""
+    success = result_data.get("success")
+
+    if success is None:
+        return None  # no success field — can't verify
+
+    if not success:
+        return VerificationResult(
+            status=MISMATCH,
+            tool_name="browser_navigate",
+            check="navigation_success",
+            message=f"Navigation failed: {result_data.get('error', 'unknown error')}",
+            details={"url": args.get("url", ""), "error": result_data.get("error")},
+        )
+
+    # Success but check for bot detection
+    if result_data.get("bot_detection_warning"):
+        return VerificationResult(
+            status=WARNING,
+            tool_name="browser_navigate",
+            check="navigation_success",
+            message="Navigation succeeded but bot detection was triggered",
+            details={
+                "url": result_data.get("url", args.get("url", "")),
+                "title": result_data.get("title", ""),
+                "bot_detection": True,
+            },
+        )
+
+    return VerificationResult(
+        status=VERIFIED,
+        tool_name="browser_navigate",
+        check="navigation_success",
+        message="",
+        details={
+            "url": result_data.get("url", args.get("url", "")),
+            "title": result_data.get("title", ""),
+        },
+    )
+
+
+def _verify_web_extract(args: Dict[str, Any], result_data: Dict[str, Any]) -> Optional[VerificationResult]:
+    """Verify web_extract: check that results contain content."""
+    # Handle top-level error
+    if result_data.get("error"):
+        return VerificationResult(
+            status=MISMATCH,
+            tool_name="web_extract",
+            check="extraction_results",
+            message=f"web_extract failed: {result_data.get('error')}",
+            details={"error": result_data.get("error")},
+        )
+
+    results = result_data.get("results", [])
+    if not results:
+        return VerificationResult(
+            status=MISMATCH,
+            tool_name="web_extract",
+            check="extraction_results",
+            message="web_extract returned no results",
+            details={"result_count": 0},
+        )
+
+    # Count successes and failures per URL
+    succeeded: List[str] = []
+    failed: List[str] = []
+    for r in results:
+        if r.get("error") or not r.get("content"):
+            failed.append(r.get("url", "unknown"))
+        else:
+            succeeded.append(r.get("url", "unknown"))
+
+    if not succeeded:
+        return VerificationResult(
+            status=MISMATCH,
+            tool_name="web_extract",
+            check="extraction_results",
+            message=f"All {len(failed)} URL(s) failed to extract content",
+            details={"failed_urls": failed, "succeeded": 0, "failed": len(failed)},
+        )
+
+    if failed:
+        return VerificationResult(
+            status=WARNING,
+            tool_name="web_extract",
+            check="extraction_results",
+            message=f"{len(failed)} of {len(results)} URL(s) failed to extract",
+            details={"failed_urls": failed, "succeeded": len(succeeded), "failed": len(failed)},
+        )
+
+    return VerificationResult(
+        status=VERIFIED,
+        tool_name="web_extract",
+        check="extraction_results",
+        message="",
+        details={"succeeded": len(succeeded), "urls": succeeded},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -270,6 +605,9 @@ _VERIFIERS = {
     "terminal": _verify_terminal,
     "write_file": _verify_write_file,
     "patch": _verify_patch,
+    "read_file": _verify_read_file,
+    "browser_navigate": _verify_browser_navigate,
+    "web_extract": _verify_web_extract,
 }
 
 

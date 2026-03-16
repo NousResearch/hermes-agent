@@ -2,7 +2,7 @@
 """
 Demo: Raw tool output WITHOUT Execution Integrity Layer.
 
-Shows the same 8 scenarios as demo_execution_verifier.py but returns
+Shows the same 17 scenarios as demo_execution_verifier.py but returns
 raw tool output with NO _verification or _warning fields — this is
 what the model sees when the verifier is disabled.
 
@@ -31,7 +31,7 @@ def _pp(label: str, result_json: str):
 
 def main():
     print("Raw Tool Output — No Verification (Before)")
-    print("Same 8 scenarios, but the model gets ONLY the tool's own JSON.\n")
+    print("Same 17 scenarios, but the model gets ONLY the tool's own JSON.\n")
 
     with tempfile.TemporaryDirectory(prefix="hermes-demo-") as tmpdir:
 
@@ -53,12 +53,12 @@ def main():
         result = json.dumps({"bytes_written": 21})
         _pp("3. write_file — file EXISTS and non-empty (no verification)", result)
 
-        # ── 4. write_file — EMPTY FILE ─────────────────────────────────
+        # ── 4. write_file — EMPTY FILE (intentional) ──────────────────
         empty_file = os.path.join(tmpdir, "empty.txt")
         Path(empty_file).write_text("")
 
         result = json.dumps({"bytes_written": 0})
-        _pp("4. write_file — file EXISTS but EMPTY (no verification)", result)
+        _pp("4. write_file — file EXISTS, intentionally empty (no verification)", result)
 
         # ── 5. write_file — MISSING FILE ───────────────────────────────
         result = json.dumps({"bytes_written": 3})
@@ -80,9 +80,54 @@ def main():
         result = json.dumps({"results": [{"title": "asyncio docs", "url": "https://..."}]})
         _pp("8. web_search — passthrough (no verification)", result)
 
+        # ── 9. terminal cp — destination EXISTS ─────────────────────────
+        result = json.dumps({"output": "", "exit_code": 0, "error": None})
+        _pp("9. terminal cp — destination EXISTS (no verification)", result)
+
+        # ── 10. terminal rm — target REMOVED ────────────────────────────
+        result = json.dumps({"output": "", "exit_code": 0, "error": None})
+        _pp("10. terminal rm — target REMOVED (no verification)", result)
+
+        # ── 11. terminal touch — file EXISTS ────────────────────────────
+        result = json.dumps({"output": "", "exit_code": 0, "error": None})
+        _pp("11. terminal touch — file EXISTS (no verification)", result)
+
+        # ── 12. terminal git init — .git EXISTS ─────────────────────────
+        result = json.dumps({"output": "Initialized empty Git repository", "exit_code": 0, "error": None})
+        _pp("12. terminal git init — .git EXISTS (no verification)", result)
+
+        # ── 13. read_file — content returned ────────────────────────────
+        result = json.dumps({"content": "1|print('hello')\n2|print('world')", "total_lines": 2, "file_size": 28, "error": None})
+        _pp("13. read_file — content returned (no verification)", result)
+
+        # ── 14. read_file — error with similar_files ────────────────────
+        result = json.dumps({"error": "File not found: /tmp/foo.py", "similar_files": ["/tmp/foo2.py", "/tmp/foobar.py"]})
+        _pp("14. read_file — error with similar_files (no verification)", result)
+
+        # ── 15. browser_navigate — success ──────────────────────────────
+        result = json.dumps({"success": True, "url": "https://example.com", "title": "Example Domain"})
+        _pp("15. browser_navigate — success (no verification)", result)
+
+        # ── 16. browser_navigate — bot detection ────────────────────────
+        result = json.dumps({
+            "success": True,
+            "url": "https://protected-site.com",
+            "title": "Verify you are human",
+            "bot_detection_warning": "Page title suggests bot detection",
+        })
+        _pp("16. browser_navigate — bot detection triggered (no verification)", result)
+
+        # ── 17. web_extract — partial failure ───────────────────────────
+        result = json.dumps({"results": [
+            {"url": "https://a.com", "title": "A", "content": "Page A content extracted successfully."},
+            {"url": "https://b.com", "error": "Connection timeout", "content": ""},
+        ]})
+        _pp("17. web_extract — partial failure (no verification)", result)
+
     print(f"\n{'='*60}")
     print("  Demo complete. Notice: NO _verification or _warning fields.")
-    print("  The model has no signal that scenarios 2, 4, 5, 7 failed.")
+    print("  The model has no signal that scenarios 2, 5, 7, 14, 16, 17")
+    print("  had issues requiring attention.")
     print(f"{'='*60}\n")
 
 

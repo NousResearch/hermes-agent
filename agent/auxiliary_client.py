@@ -515,7 +515,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         extra = {}
         if "api.kimi.com" in base_url.lower():
             extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
-        return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+        from hermes_cli.config import load_config
+        config = load_config()
+        timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
+        return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, **extra), model
 
     return None, None
 
@@ -733,6 +736,7 @@ def _to_async_client(sync_client, model: str):
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
+        "timeout": getattr(sync_client, "timeout", 60.0),
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
@@ -1275,11 +1279,16 @@ def _build_call_kwargs(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     tools: Optional[list] = None,
-    timeout: float = 30.0,
+    timeout: float = None,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+  if timeout is None:
+    from hermes_cli.config import load_config
+    config = load_config()
+    # Priority: Env Var -> config.yaml -> Default (60s)
+    timeout = float(os.getenv("OPENAI_LLM_TIMEOUT") or config.get("agent", {}).get("llm_timeout", 60))
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,

@@ -50,6 +50,35 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
+### Status Bar
+
+A persistent status bar sits above the input area, updating in real time:
+
+```
+ ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+```
+
+| Element | Description |
+|---------|-------------|
+| Model name | Current model (truncated if longer than 26 chars) |
+| Token count | Context tokens used / max context window |
+| Context bar | Visual fill indicator with color-coded thresholds |
+| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| Duration | Elapsed session time |
+
+The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration only) below 52.
+
+**Context color coding:**
+
+| Color | Threshold | Meaning |
+|-------|-----------|---------|
+| Green | < 50% | Plenty of room |
+| Yellow | 50–80% | Getting full |
+| Orange | 80–95% | Approaching limit |
+| Red | ≥ 95% | Near overflow — consider `/compress` |
+
+Use `/usage` for a detailed breakdown including per-category costs (input vs output tokens).
+
 ### Session Resume Display
 
 When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Previous Conversation" panel appears between the banner and the input prompt, showing a compact recap of the conversation history. See [Sessions — Conversation Recap on Resume](sessions.md#conversation-recap-on-resume) for details and configuration.

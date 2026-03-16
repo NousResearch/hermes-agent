@@ -13,6 +13,7 @@ EXPECTED_COMMANDS = {
     "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
     "/verbose", "/reasoning", "/compress", "/title", "/usage", "/insights", "/paste",
     "/reload-mcp", "/rollback", "/stop", "/background", "/skin", "/voice", "/quit",
+    "/plugins",
 }
 
 

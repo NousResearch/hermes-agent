@@ -113,6 +113,13 @@ try:
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
 
+# Plugin tool discovery (user/project/pip plugins)
+try:
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+except Exception as e:
+    logger.debug("Plugin discovery failed: %s", e)
+
 
 # =============================================================================
 # Backward-compat constants  (built once after discovery)
@@ -222,6 +229,16 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always include plugin-registered tools — they bypass the toolset filter
+    # because their toolsets are dynamic (created at plugin load time).
+    try:
+        from hermes_cli.plugins import get_plugin_tool_names
+        plugin_tools = get_plugin_tool_names()
+        if plugin_tools:
+            tools_to_include.update(plugin_tools)
+    except Exception:
+        pass
+
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
@@ -300,25 +317,39 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+        except Exception:
+            pass
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            return registry.dispatch(
+            result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
             )
+        else:
+            result = registry.dispatch(
+                function_name, function_args,
+                task_id=task_id,
+                user_task=user_task,
+                honcho_manager=honcho_manager,
+                honcho_session_key=honcho_session_key,
+            )
 
-        return registry.dispatch(
-            function_name, function_args,
-            task_id=task_id,
-            user_task=user_task,
-            honcho_manager=honcho_manager,
-            honcho_session_key=honcho_session_key,
-        )
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+        except Exception:
+            pass
+
+        return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

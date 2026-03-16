@@ -478,7 +478,11 @@ class GatewayRunner:
 
     # -----------------------------------------------------------------
 
-    def _flush_memories_for_session(self, old_session_id: str):
+    def _flush_memories_for_session(
+        self,
+        old_session_id: str,
+        honcho_session_key: Optional[str] = None,
+    ):
         """Prompt the agent to save memories/skills before context is lost.
 
         Synchronous worker — meant to be called via run_in_executor from
@@ -506,6 +510,7 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
+                honcho_session_key=honcho_session_key,
             )
 
             # Build conversation history from transcript
@@ -533,6 +538,7 @@ class GatewayRunner:
             tmp_agent.run_conversation(
                 user_message=flush_prompt,
                 conversation_history=msgs,
+                sync_honcho=False,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
             # Flush any queued Honcho writes before the session is dropped
@@ -544,10 +550,19 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
-    async def _async_flush_memories(self, old_session_id: str):
+    async def _async_flush_memories(
+        self,
+        old_session_id: str,
+        honcho_session_key: Optional[str] = None,
+    ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._flush_memories_for_session, old_session_id)
+        await loop.run_in_executor(
+            None,
+            self._flush_memories_for_session,
+            old_session_id,
+            honcho_session_key,
+        )
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -923,7 +938,7 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id)
+                        await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
@@ -1904,7 +1919,9 @@ class GatewayRunner:
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
-                asyncio.create_task(self._async_flush_memories(old_entry.session_id))
+                asyncio.create_task(
+                    self._async_flush_memories(old_entry.session_id, session_key)
+                )
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
@@ -3171,7 +3188,9 @@ class GatewayRunner:
 
         # Flush memories for current session before switching
         try:
-            asyncio.create_task(self._async_flush_memories(current_entry.session_id))
+            asyncio.create_task(
+                self._async_flush_memories(current_entry.session_id, session_key)
+            )
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 

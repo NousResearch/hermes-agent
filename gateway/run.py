@@ -3683,6 +3683,7 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        thread_id = watcher.get("thread_id", "")
         notify_mode = self._load_background_notifications_mode()
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s)",
@@ -3730,7 +3731,8 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
-                            await adapter.send(chat_id, message_text)
+                            send_meta = {"thread_id": thread_id} if thread_id else None
+                            await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
@@ -3749,7 +3751,8 @@ class GatewayRunner:
                         break
                 if adapter and chat_id:
                     try:
-                        await adapter.send(chat_id, message_text)
+                        send_meta = {"thread_id": thread_id} if thread_id else None
+                        await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
 

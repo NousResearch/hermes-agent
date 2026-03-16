@@ -63,6 +63,7 @@ class ContextCompressor:
         )
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
+        self.last_summary = None  # last compaction summary text
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
@@ -328,6 +329,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             )
 
         summary = self._generate_summary(turns_to_summarize)
+        self.last_summary = summary  # expose for post-compression notifications
 
         compressed = []
         for i in range(compress_start):

@@ -561,6 +561,11 @@ class AIAgent:
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
 
+        # Context pressure warnings: alert the LLM as context fills up,
+        # giving it time to save state before compaction triggers.
+        self._context_50_warned = False
+        self._context_70_warned = False
+
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         # In gateway mode, each incoming message creates a new AIAgent instance,
@@ -966,7 +971,7 @@ class AIAgent:
         _compression_cfg = _agent_cfg.get("compression", {})
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
-        compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_threshold = float(_compression_cfg.get("threshold", 0.80))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
 
@@ -4307,6 +4312,20 @@ class AIAgent:
         except Exception:
             pass  # Don't break compression if file tracking fails
 
+        # Inject compaction summary notification so the model informs the user
+        _compaction_num = self.context_compressor.compression_count
+        _summary_text = getattr(self.context_compressor, 'last_summary', None)
+        if _summary_text:
+            compressed.append({"role": "user", "content": (
+                f"[COMPACTION COMPLETE] Context was just compacted. Share the following summary with the user "
+                f"so they know what was preserved. Also tell them this is compaction #{_compaction_num}.\n\n"
+                f"{_summary_text}"
+            )})
+
+        # Reset context pressure warnings (usage drops after compaction)
+        self._context_50_warned = False
+        self._context_70_warned = False
+
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
@@ -6484,6 +6503,44 @@ class AIAgent:
                         + _compressor.last_completion_tokens
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
+
+                    # ── Context pressure warnings ─────────────────────────────
+                    # Warn the LLM as context fills up so it can save state
+                    # before compaction triggers (same injection pattern as budget warnings).
+                    if self.compression_enabled and _compressor.context_length > 0:
+                        _ctx_usage = _estimated_next_prompt / _compressor.context_length
+                        _ctx_warning = None
+                        if _ctx_usage >= 0.70 and not self._context_70_warned:
+                            self._context_70_warned = True
+                            self._context_50_warned = True  # skip 50% if we jumped past it
+                            _ctx_warning = (
+                                "[CONTEXT WARNING: Context usage is at ~70% of the model's limit. "
+                                "Compaction will trigger at 80%. Please proactively save any critical "
+                                "context (decisions, file paths, key findings) to memory or files NOW, "
+                                "and inform the user that context compaction is approaching.]"
+                            )
+                        elif _ctx_usage >= 0.50 and not self._context_50_warned:
+                            self._context_50_warned = True
+                            _ctx_warning = (
+                                "[CONTEXT NOTICE: Context usage is at ~50% of the model's limit. "
+                                "This is informational — no action needed yet. If this is a complex "
+                                "task, consider saving important state to memory or files.]"
+                            )
+                        if _ctx_warning and messages and messages[-1].get("role") == "tool":
+                            _last_content = messages[-1]["content"]
+                            try:
+                                _parsed = json.loads(_last_content)
+                                if isinstance(_parsed, dict):
+                                    _parsed["_context_warning"] = _ctx_warning
+                                    messages[-1]["content"] = json.dumps(_parsed, ensure_ascii=False)
+                                else:
+                                    messages[-1]["content"] = _last_content + f"\n\n{_ctx_warning}"
+                            except (json.JSONDecodeError, TypeError):
+                                messages[-1]["content"] = _last_content + f"\n\n{_ctx_warning}"
+                        elif _ctx_warning and messages:
+                            # Fallback: append as user message if last msg isn't a tool result
+                            messages.append({"role": "user", "content": _ctx_warning})
+
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,

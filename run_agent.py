@@ -812,7 +812,7 @@ class AIAgent:
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
 
         # Skills config: nudge interval for skill creation reminders
-        self._skill_nudge_interval = 15
+        self._skill_nudge_interval = 10
         try:
             from hermes_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
@@ -3542,7 +3542,8 @@ class AIAgent:
 
         flush_content = (
             "[System: The session is being compressed. "
-            "Please save anything worth remembering to your memories.]"
+            "Save anything worth remembering — prioritize user preferences, "
+            "corrections, and recurring patterns over task-specific details.]"
         )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
         flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
@@ -4541,8 +4542,9 @@ class AIAgent:
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 user_message += (
-                    "\n\n[System: You've had several exchanges in this session. "
-                    "Consider whether there's anything worth saving to your memories.]"
+                    "\n\n[System: You've had several exchanges. Consider: "
+                    "has the user shared preferences, corrected you, or revealed "
+                    "something about their workflow worth remembering for future sessions?]"
                 )
                 self._turns_since_memory = 0
 
@@ -4552,8 +4554,9 @@ class AIAgent:
                 and self._iters_since_skill >= self._skill_nudge_interval
                 and "skill_manage" in self.valid_tool_names):
             user_message += (
-                "\n\n[System: The previous task involved many steps. "
-                "If you discovered a reusable workflow, consider saving it as a skill.]"
+                "\n\n[System: The previous task involved many tool calls. "
+                "Save the approach as a skill if it's reusable, or update "
+                "any existing skill you used if it was wrong or incomplete.]"
             )
             self._iters_since_skill = 0
 

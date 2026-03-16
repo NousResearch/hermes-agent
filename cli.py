@@ -1879,7 +1879,14 @@ class HermesCLI:
         return False
 
     def _handle_rollback_command(self, command: str):
-        """Handle /rollback — list or restore filesystem checkpoints."""
+        """Handle /rollback — list, diff, or restore filesystem checkpoints.
+
+        Syntax:
+            /rollback                 — list checkpoints
+            /rollback <N>             — restore checkpoint N (also undoes last chat turn)
+            /rollback diff <N>        — preview changes since checkpoint N
+            /rollback <N> <file>      — restore a single file from checkpoint N
+        """
         from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
         if not hasattr(self, 'agent') or not self.agent:
@@ -1894,38 +1901,89 @@ class HermesCLI:
             return
 
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        parts = command.split(maxsplit=1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
+        parts = command.split()
+        args = parts[1:] if len(parts) > 1 else []
 
-        if not arg:
+        if not args:
             # List checkpoints
             checkpoints = mgr.list_checkpoints(cwd)
             print(format_checkpoint_list(checkpoints, cwd))
-        else:
-            # Restore by number or hash
+            return
+
+        # Handle /rollback diff <N>
+        if args[0].lower() == "diff":
+            if len(args) < 2:
+                print("  Usage: /rollback diff <N>")
+                return
             checkpoints = mgr.list_checkpoints(cwd)
             if not checkpoints:
                 print(f"  No checkpoints found for {cwd}")
                 return
-
-            target_hash = None
-            try:
-                idx = int(arg) - 1  # 1-indexed for user
-                if 0 <= idx < len(checkpoints):
-                    target_hash = checkpoints[idx]["hash"]
-                else:
-                    print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
-                    return
-            except ValueError:
-                # Try as a git hash
-                target_hash = arg
-
-            result = mgr.restore(cwd, target_hash)
+            target_hash = self._resolve_checkpoint_ref(args[1], checkpoints)
+            if not target_hash:
+                return
+            result = mgr.diff(cwd, target_hash)
             if result["success"]:
-                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
-                print(f"  A pre-rollback snapshot was saved automatically.")
+                stat = result.get("stat", "")
+                diff = result.get("diff", "")
+                if not stat and not diff:
+                    print("  No changes since this checkpoint.")
+                else:
+                    if stat:
+                        print(f"\n{stat}")
+                    if diff:
+                        # Limit diff output to avoid terminal flood
+                        diff_lines = diff.splitlines()
+                        if len(diff_lines) > 80:
+                            print("\n".join(diff_lines[:80]))
+                            print(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
+                        else:
+                            print(f"\n{diff}")
             else:
                 print(f"  ❌ {result['error']}")
+            return
+
+        # Resolve checkpoint reference (number or hash)
+        checkpoints = mgr.list_checkpoints(cwd)
+        if not checkpoints:
+            print(f"  No checkpoints found for {cwd}")
+            return
+
+        target_hash = self._resolve_checkpoint_ref(args[0], checkpoints)
+        if not target_hash:
+            return
+
+        # Check for file-level restore: /rollback <N> <file>
+        file_path = args[1] if len(args) > 1 else None
+
+        result = mgr.restore(cwd, target_hash, file_path=file_path)
+        if result["success"]:
+            if file_path:
+                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+            else:
+                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            print(f"  A pre-rollback snapshot was saved automatically.")
+
+            # Also undo the last conversation turn so the agent's context
+            # matches the restored filesystem state
+            if self.conversation_history:
+                self.undo_last()
+                print(f"  Chat turn undone to match restored file state.")
+        else:
+            print(f"  ❌ {result['error']}")
+
+    def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
+        """Resolve a checkpoint number or hash to a full commit hash."""
+        try:
+            idx = int(ref) - 1  # 1-indexed for user
+            if 0 <= idx < len(checkpoints):
+                return checkpoints[idx]["hash"]
+            else:
+                print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+                return None
+        except ValueError:
+            # Treat as a git hash
+            return ref
 
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.

@@ -294,9 +294,9 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     fragments.append(("", "\n"))
     if control_mode:
         if is_stream:
-            fragments.append(("class:radio-control", "  Spc pause  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"))
         else:
-            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
+            fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  r rec  -/+ vol  Tab size  Ctrl+O/q exit"))
     elif not is_stream and now.duration and now.duration > 0 and now.position is not None:
         pos_fmt = _format_time(now.position)
         dur_fmt = _format_time(now.duration)

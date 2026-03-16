@@ -345,7 +345,8 @@ class AIAgent:
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
-        
+        self._active_children_lock = threading.Lock()
+
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
         self.providers_ignored = providers_ignored
@@ -1388,7 +1389,9 @@ class AIAgent:
         # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
         # Propagate interrupt to any running child agents (subagent delegation)
-        for child in self._active_children:
+        with self._active_children_lock:
+            children_snapshot = list(self._active_children)
+        for child in children_snapshot:
             try:
                 child.interrupt(message)
             except Exception as e:
@@ -2570,6 +2573,44 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Provider credential swap ─────────────────────────────────────────
+
+    def _apply_provider_credentials(self, creds: dict) -> None:
+        """Apply a resolved credentials bundle to this agent in-place.
+
+        *creds* is a dict from :func:`resolve_provider_credentials` with
+        keys: provider, model, base_url, api_key, api_mode, client.
+
+        Handles the OpenAI-vs-Anthropic client split and re-evaluates
+        prompt-caching eligibility.
+        """
+        self.model = creds["model"]
+        self.provider = creds["provider"]
+        self.base_url = creds["base_url"]
+        self.api_mode = creds["api_mode"]
+
+        if creds["api_mode"] == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+            effective_key = creds["api_key"] or resolve_anthropic_token() or ""
+            self._anthropic_api_key = effective_key
+            self._anthropic_client = build_anthropic_client(effective_key)
+            self.client = None
+            self._client_kwargs = {}
+        else:
+            self.client = creds["client"]
+            self._client_kwargs = {
+                "api_key": creds["api_key"],
+                "base_url": creds["base_url"],
+            }
+
+        # Re-evaluate prompt caching for the new provider/model
+        is_native_anthropic = creds["api_mode"] == "anthropic_messages"
+        self._use_prompt_caching = (
+            ("openrouter" in creds["base_url"].lower()
+             and "claude" in creds["model"].lower())
+            or is_native_anthropic
+        )
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
@@ -2579,10 +2620,6 @@ class AIAgent:
         OpenAI client, model slug, and provider in-place so the retry loop
         can continue with the new backend.  One-shot: returns False if
         already activated or not configured.
-
-        Uses the centralized provider router (resolve_provider_client) for
-        auth resolution and client construction — no duplicated provider→key
-        mappings.
         """
         if self._fallback_activated or not self._fallback_model:
             return False
@@ -2593,56 +2630,18 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return False
 
-        # Use centralized router for client construction.
-        # raw_codex=True because the main agent needs direct responses.stream()
-        # access for Codex providers.
         try:
-            from agent.auxiliary_client import resolve_provider_client
-            fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
-            if fb_client is None:
+            from agent.auxiliary_client import resolve_provider_credentials
+            creds = resolve_provider_credentials(fb_provider, fb_model)
+            if creds is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
                 return False
 
-            # Determine api_mode from provider
-            fb_api_mode = "chat_completions"
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic":
-                fb_api_mode = "anthropic_messages"
-            fb_base_url = str(fb_client.base_url)
-
             old_model = self.model
-            self.model = fb_model
-            self.provider = fb_provider
-            self.base_url = fb_base_url
-            self.api_mode = fb_api_mode
+            self._apply_provider_credentials(creds)
             self._fallback_activated = True
-
-            if fb_api_mode == "anthropic_messages":
-                # Build native Anthropic client instead of using OpenAI client
-                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-                effective_key = fb_client.api_key or resolve_anthropic_token() or ""
-                self._anthropic_api_key = effective_key
-                self._anthropic_client = build_anthropic_client(effective_key)
-                self.client = None
-                self._client_kwargs = {}
-            else:
-                # Swap OpenAI client and config in-place
-                self.client = fb_client
-                self._client_kwargs = {
-                    "api_key": fb_client.api_key,
-                    "base_url": fb_base_url,
-                }
-
-            # Re-evaluate prompt caching for the new provider/model
-            is_native_anthropic = fb_api_mode == "anthropic_messages"
-            self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
-                or is_native_anthropic
-            )
 
             print(
                 f"{self.log_prefix}🔄 Primary model failed — switching to fallback: "
@@ -3205,6 +3204,8 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
+                model=function_args.get("model"),
+                provider=function_args.get("provider"),
                 parent_agent=self,
             )
         else:

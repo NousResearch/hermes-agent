@@ -146,7 +146,7 @@ class _CodexCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
-        temperature = kwargs.get("temperature")
+        kwargs.get("temperature")
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -702,6 +702,50 @@ def resolve_provider_client(
     return None, None
 
 
+def resolve_provider_credentials(
+    provider: str,
+    model: str,
+) -> Optional[dict]:
+    """Resolve a provider+model into a complete credentials bundle.
+
+    Thin wrapper around :func:`resolve_provider_client` that also derives
+    ``api_mode`` from the provider name.  Used by every code path that
+    needs to construct or switch to a new provider: fallback activation,
+    the ``switch_model`` tool, and per-task delegation overrides.
+
+    Returns a dict on success::
+
+        {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4-6",
+            "base_url": "https://...",
+            "api_key": "sk-...",
+            "api_mode": "chat_completions",
+            "client": <OpenAI>,       # ready-to-use client object
+        }
+
+    Returns ``None`` if the provider is not configured (no API key).
+    """
+    client, _ = resolve_provider_client(provider, model=model, raw_codex=True)
+    if client is None:
+        return None
+
+    api_mode = "chat_completions"
+    if provider == "openai-codex":
+        api_mode = "codex_responses"
+    elif provider == "anthropic":
+        api_mode = "anthropic_messages"
+
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": str(client.base_url),
+        "api_key": client.api_key,
+        "api_mode": api_mode,
+        "client": client,
+    }
+
+
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def get_text_auxiliary_client(task: str = "") -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -817,20 +861,35 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # constructing clients and calling .chat.completions.create().
 
 # Client cache: (provider, async_mode) -> (client, default_model)
+# Protected by _client_cache_lock for thread safety — subagent threads
+# call call_llm() concurrently for compression, session search, etc.
+import threading
 _client_cache: Dict[tuple, tuple] = {}
+_client_cache_lock = threading.Lock()
 
 
 def _get_cached_client(
     provider: str, model: str = None, async_mode: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Get or create a cached client for the given provider."""
+    """Get or create a cached client for the given provider.
+
+    Thread-safe: multiple subagent threads may resolve clients concurrently.
+    """
     cache_key = (provider, async_mode)
-    if cache_key in _client_cache:
-        cached_client, cached_default = _client_cache[cache_key]
-        return cached_client, model or cached_default
+    with _client_cache_lock:
+        if cache_key in _client_cache:
+            cached_client, cached_default = _client_cache[cache_key]
+            return cached_client, model or cached_default
+    # Build outside the lock — resolve_provider_client can be slow (network)
     client, default_model = resolve_provider_client(provider, model, async_mode)
     if client is not None:
-        _client_cache[cache_key] = (client, default_model)
+        with _client_cache_lock:
+            # Double-check: another thread may have populated it
+            if cache_key not in _client_cache:
+                _client_cache[cache_key] = (client, default_model)
+            else:
+                # Use the already-cached client to avoid duplicates
+                client, default_model = _client_cache[cache_key]
     return client, model or default_model
 
 

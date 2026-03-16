@@ -16,13 +16,9 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
-import contextlib
-import io
 import json
 import logging
 logger = logging.getLogger(__name__)
-import os
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -157,7 +153,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     return _callback
 
 
-def _run_single_child(
+def _build_child_agent(
     task_index: int,
     goal: str,
     context: Optional[str],
@@ -166,27 +162,21 @@ def _run_single_child(
     max_iterations: int,
     parent_agent,
     task_count: int = 1,
-    # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Spawn and run a single child agent. Called from within a thread.
-    Returns a structured result dict.
+) -> "AIAgent":
+    """Build a child AIAgent in the calling thread.
 
-    When override_* params are set (from delegation config), the child uses
-    those credentials instead of inheriting from the parent.  This enables
-    routing subagents to a different provider:model pair (e.g. cheap/fast
-    model on OpenRouter while the parent runs on Nous Portal).
+    Constructing OpenAI/httpx clients is NOT thread-safe (SSL init,
+    connection pool setup, etc.), so this MUST run in the main thread.
+    The returned agent can then be handed to a worker thread for
+    ``run_conversation()``.
     """
     from run_agent import AIAgent
 
-    child_start = time.monotonic()
-
     # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
         child_toolsets = _strip_blocked_tools(toolsets)
     elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
@@ -196,64 +186,75 @@ def _run_single_child(
 
     child_prompt = _build_child_system_prompt(goal, context)
 
-    try:
-        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
-        parent_api_key = getattr(parent_agent, "api_key", None)
-        if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
-            parent_api_key = parent_agent._client_kwargs.get("api_key")
+    parent_api_key = getattr(parent_agent, "api_key", None)
+    if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+        parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-        # Build progress callback to relay tool calls to parent display
-        child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
+    child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
+    shared_budget = getattr(parent_agent, "iteration_budget", None)
 
-        # Share the parent's iteration budget so subagent tool calls
-        # count toward the session-wide limit.
-        shared_budget = getattr(parent_agent, "iteration_budget", None)
+    effective_model = model or parent_agent.model
+    effective_provider = override_provider or getattr(parent_agent, "provider", None)
+    effective_base_url = override_base_url or parent_agent.base_url
+    effective_api_key = override_api_key or parent_api_key
+    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
 
-        # Resolve effective credentials: config override > parent inherit
-        effective_model = model or parent_agent.model
-        effective_provider = override_provider or getattr(parent_agent, "provider", None)
-        effective_base_url = override_base_url or parent_agent.base_url
-        effective_api_key = override_api_key or parent_api_key
-        effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    child = AIAgent(
+        base_url=effective_base_url,
+        api_key=effective_api_key,
+        model=effective_model,
+        provider=effective_provider,
+        api_mode=effective_api_mode,
+        max_iterations=max_iterations,
+        max_tokens=getattr(parent_agent, "max_tokens", None),
+        reasoning_config=getattr(parent_agent, "reasoning_config", None),
+        prefill_messages=getattr(parent_agent, "prefill_messages", None),
+        enabled_toolsets=child_toolsets,
+        quiet_mode=True,
+        ephemeral_system_prompt=child_prompt,
+        log_prefix=f"[subagent-{task_index}]",
+        platform=parent_agent.platform,
+        skip_context_files=True,
+        skip_memory=True,
+        clarify_callback=None,
+        session_db=getattr(parent_agent, '_session_db', None),
+        providers_allowed=parent_agent.providers_allowed,
+        providers_ignored=parent_agent.providers_ignored,
+        providers_order=parent_agent.providers_order,
+        provider_sort=parent_agent.provider_sort,
+        tool_progress_callback=child_progress_cb,
+        iteration_budget=shared_budget,
+    )
 
-        child = AIAgent(
-            base_url=effective_base_url,
-            api_key=effective_api_key,
-            model=effective_model,
-            provider=effective_provider,
-            api_mode=effective_api_mode,
-            max_iterations=max_iterations,
-            max_tokens=getattr(parent_agent, "max_tokens", None),
-            reasoning_config=getattr(parent_agent, "reasoning_config", None),
-            prefill_messages=getattr(parent_agent, "prefill_messages", None),
-            enabled_toolsets=child_toolsets,
-            quiet_mode=True,
-            ephemeral_system_prompt=child_prompt,
-            log_prefix=f"[subagent-{task_index}]",
-            platform=parent_agent.platform,
-            skip_context_files=True,
-            skip_memory=True,
-            clarify_callback=None,
-            session_db=getattr(parent_agent, '_session_db', None),
-            providers_allowed=parent_agent.providers_allowed,
-            providers_ignored=parent_agent.providers_ignored,
-            providers_order=parent_agent.providers_order,
-            provider_sort=parent_agent.provider_sort,
-            tool_progress_callback=child_progress_cb,
-            iteration_budget=shared_budget,
-        )
+    child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
-        # Set delegation depth so children can't spawn grandchildren
-        child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
-
-        # Register child for interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
+    if hasattr(parent_agent, '_active_children'):
+        with parent_agent._active_children_lock:
             parent_agent._active_children.append(child)
 
-        # Run with stdout/stderr suppressed to prevent interleaved output
-        devnull = io.StringIO()
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            result = child.run_conversation(user_message=goal)
+    return child
+
+
+def _run_single_child(
+    task_index: int,
+    goal: str,
+    child: "AIAgent",
+    parent_agent,
+) -> Dict[str, Any]:
+    """Run a pre-built child agent's conversation. Safe to call from a thread.
+
+    The child agent (and its httpx client) was already constructed in the
+    main thread by ``_build_child_agent()``.
+    """
+    child_start = time.monotonic()
+    child_progress_cb = getattr(child, "tool_progress_callback", None)
+
+    try:
+        # Child runs with quiet_mode=True so it suppresses its own output.
+        # Do NOT use contextlib.redirect_stdout here — it mutates the global
+        # sys.stdout and races with the spinner thread when multiple children
+        # start concurrently, causing segfaults.
+        result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
@@ -362,8 +363,9 @@ def _run_single_child(
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
             try:
-                parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
+                with parent_agent._active_children_lock:
+                    parent_agent._active_children.remove(child)
+            except (ValueError, AttributeError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
 
@@ -373,14 +375,18 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+      - Single: provide goal (+ optional context, toolsets, model, provider)
+      - Batch:  provide tasks array [{goal, context, toolsets, model, provider}, ...]
+
+    Per-task model/provider override the delegation config defaults.
 
     Returns JSON with results array, one entry per task.
     """
@@ -416,7 +422,8 @@ def delegate_task(
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets,
+                      "model": model, "provider": provider}]
     else:
         return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
 
@@ -435,22 +442,37 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        t = task_list[0]
-        result = _run_single_child(
-            task_index=0,
+    # ── Build all child agents in the main thread ─────────────────────
+    # AIAgent construction creates httpx/SSL clients which are NOT
+    # thread-safe to initialize concurrently.  Build them serially here,
+    # then hand the pre-built agents to worker threads for run_conversation().
+    children = []
+    for i, t in enumerate(task_list):
+        task_creds = _resolve_task_credentials(t, creds, parent_agent)
+        child = _build_child_agent(
+            task_index=i,
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=creds["model"],
+            model=task_creds["model"],
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
-            task_count=1,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
+            task_count=n_tasks,
+            override_provider=task_creds["provider"],
+            override_base_url=task_creds["base_url"],
+            override_api_key=task_creds["api_key"],
+            override_api_mode=task_creds["api_mode"],
+        )
+        children.append((i, t, child))
+
+    if n_tasks == 1:
+        # Single task -- run directly (no thread pool overhead)
+        i, t, child = children[0]
+        result = _run_single_child(
+            task_index=0,
+            goal=t["goal"],
+            child=child,
+            parent_agent=parent_agent,
         )
         results.append(result)
     else:
@@ -458,28 +480,15 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        # Save stdout/stderr before the executor — redirect_stdout in child
-        # threads races on sys.stdout and can leave it as devnull permanently.
-        _saved_stdout = sys.stdout
-        _saved_stderr = sys.stderr
-
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
-            for i, t in enumerate(task_list):
+            for i, t, child in children:
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
                     goal=t["goal"],
-                    context=t.get("context"),
-                    toolsets=t.get("toolsets") or toolsets,
-                    model=creds["model"],
-                    max_iterations=effective_max_iter,
+                    child=child,
                     parent_agent=parent_agent,
-                    task_count=n_tasks,
-                    override_provider=creds["provider"],
-                    override_base_url=creds["base_url"],
-                    override_api_key=creds["api_key"],
-                    override_api_mode=creds["api_mode"],
                 )
                 futures[future] = i
 
@@ -522,10 +531,6 @@ def delegate_task(
                     except Exception as e:
                         logger.debug("Spinner update_text failed: %s", e)
 
-        # Restore stdout/stderr in case redirect_stdout race left them as devnull
-        sys.stdout = _saved_stdout
-        sys.stderr = _saved_stderr
-
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
 
@@ -535,6 +540,46 @@ def delegate_task(
         "results": results,
         "total_duration_seconds": total_duration,
     }, ensure_ascii=False)
+
+
+def _resolve_task_credentials(task: dict, default_creds: dict, parent_agent) -> dict:
+    """Resolve per-task credentials, falling back to config-level defaults.
+
+    If the task specifies a provider (and optionally model), resolve fresh
+    credentials via the shared :func:`resolve_provider_credentials` helper.
+    Otherwise use the default_creds from the delegation config.
+    """
+    task_provider = (task.get("provider") or "").strip().lower()
+    task_model = (task.get("model") or "").strip()
+
+    if not task_provider:
+        # No per-task provider — use config defaults, but allow model override
+        result = dict(default_creds)
+        if task_model:
+            result["model"] = task_model
+        return result
+
+    # Per-task provider specified — resolve credentials
+    try:
+        from agent.auxiliary_client import resolve_provider_credentials
+        creds = resolve_provider_credentials(task_provider, task_model or "")
+        if creds is None:
+            logger.warning(
+                "Per-task provider '%s' not configured, falling back to defaults",
+                task_provider,
+            )
+            return default_creds
+
+        return {
+            "model": creds["model"] or default_creds.get("model"),
+            "provider": creds["provider"],
+            "base_url": creds["base_url"],
+            "api_key": creds["api_key"],
+            "api_mode": creds["api_mode"],
+        }
+    except Exception as exc:
+        logger.error("Failed to resolve per-task provider '%s': %s", task_provider, exc)
+        return default_creds
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -686,6 +731,8 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": "Toolsets for this specific task",
                         },
+                        "model": {"type": "string", "description": "Model ID override for this task"},
+                        "provider": {"type": "string", "description": "Provider override for this task"},
                     },
                     "required": ["goal"],
                 },
@@ -694,6 +741,21 @@ DELEGATE_TASK_SCHEMA = {
                     "Batch mode: up to 3 tasks to run in parallel. Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model ID for this subagent. Overrides the delegation config default. "
+                    "E.g. 'anthropic/claude-sonnet-4-6'. Requires 'provider' to be set."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider for this subagent. Overrides the delegation config default. "
+                    "E.g. 'openrouter', 'nous', 'anthropic'. Use switch_model(action='list') "
+                    "to see available providers."
                 ),
             },
             "max_iterations": {
@@ -722,6 +784,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
 )

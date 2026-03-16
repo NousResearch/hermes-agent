@@ -133,8 +133,7 @@ async def test_list_commands_returns_commands():
     assert "commands" in body
     commands = [c["command"] for c in body["commands"]]
     assert "/reset" in commands
-    assert "/compact" in commands
-    assert "/stop" in commands
+    assert "/model" in commands
 
 
 # ── CSRF protection tests ─────────────────────────────────────────────

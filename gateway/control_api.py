@@ -24,31 +24,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 47823
 
-# Commands available via /message injection.  This list is informational —
-# the message endpoint accepts any text, but GET /commands exposes these
-# so external tools know what's available.
-AVAILABLE_COMMANDS = [
-    {"command": "/reset", "description": "Reset conversation history"},
-    {"command": "/new", "description": "Start a new conversation"},
-    {"command": "/stop", "description": "Stop the running agent"},
-    {"command": "/compact", "description": "Compress conversation context"},
-    {"command": "/compress", "description": "Compress conversation context"},
-    {"command": "/status", "description": "Show session info"},
-    {"command": "/model <provider:model>", "description": "Switch model"},
-    {"command": "/personality <name>", "description": "Switch personality"},
-    {"command": "/autoreply <prompt>", "description": "Enable auto-reply loop (LLM generates replies from your prompt)"},
-    {"command": "/autoreply --literal <message>", "description": "Enable auto-reply loop (sends exact message each turn)"},
-    {"command": "/autoreply --forever <prompt>", "description": "Auto-reply with no turn limit (default: 20)"},
-    {"command": "/autoreply --max N <prompt>", "description": "Auto-reply with custom turn limit"},
-    {"command": "/autoreply off", "description": "Disable auto-reply loop"},
-    {"command": "/reasoning <level>", "description": "Set reasoning effort"},
-    {"command": "/rollback [number]", "description": "List or restore checkpoints"},
-    {"command": "/background <prompt>", "description": "Run prompt in background session"},
-    {"command": "/undo", "description": "Undo last assistant response"},
-    {"command": "/retry", "description": "Retry last message"},
-    {"command": "/usage", "description": "Show token usage"},
-    {"command": "/help", "description": "List commands"},
-]
+def _get_available_commands():
+    """Pull command list from hermes_cli.commands (single source of truth)."""
+    try:
+        from hermes_cli.commands import COMMANDS
+        return [{"command": cmd, "description": desc} for cmd, desc in COMMANDS.items()]
+    except Exception:
+        return []
 
 
 def _get_port() -> int:
@@ -147,7 +129,7 @@ class ControlAPI:
 
     async def list_commands(self, request: web.Request) -> web.Response:
         """List available slash commands that can be sent via /message."""
-        return _json_response({"commands": AVAILABLE_COMMANDS})
+        return _json_response({"commands": _get_available_commands()})
 
     async def send_message(self, request: web.Request) -> web.Response:
         """Inject a message (or /command) into a session.

@@ -1,9 +1,29 @@
 import logging
 import subprocess
+import sys
+import types
 
 import pytest
 
 from tools.environments import docker as docker_env
+
+
+def _install_fake_minisweagent(monkeypatch, captured_run_args):
+    class MockInnerDocker:
+        container_id = "fake-container"
+        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
+
+        def __init__(self, **kwargs):
+            captured_run_args.extend(kwargs.get("run_args", []))
+
+    minisweagent_mod = types.ModuleType("minisweagent")
+    environments_mod = types.ModuleType("minisweagent.environments")
+    docker_mod = types.ModuleType("minisweagent.environments.docker")
+    docker_mod.DockerEnvironment = MockInnerDocker
+
+    monkeypatch.setitem(sys.modules, "minisweagent", minisweagent_mod)
+    monkeypatch.setitem(sys.modules, "minisweagent.environments", environments_mod)
+    monkeypatch.setitem(sys.modules, "minisweagent.environments.docker", docker_mod)
 
 
 def _make_dummy_env(**kwargs):
@@ -101,18 +121,7 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
 
     captured_run_args = []
-
-    class MockInnerDocker:
-        container_id = "mock-container-123"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
-
-        def __init__(self, **kwargs):
-            captured_run_args.extend(kwargs.get("run_args", []))
-
-    monkeypatch.setattr(
-        "minisweagent.environments.docker.DockerEnvironment",
-        MockInnerDocker,
-    )
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
 
     _make_dummy_env(
         cwd="/workspace",
@@ -136,18 +145,7 @@ def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
 
     captured_run_args = []
-
-    class MockInnerDocker:
-        container_id = "mock-container-456"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
-
-        def __init__(self, **kwargs):
-            captured_run_args.extend(kwargs.get("run_args", []))
-
-    monkeypatch.setattr(
-        "minisweagent.environments.docker.DockerEnvironment",
-        MockInnerDocker,
-    )
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
 
     _make_dummy_env(
         cwd="/root",
@@ -173,18 +171,7 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
     monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
 
     captured_run_args = []
-
-    class MockInnerDocker:
-        container_id = "mock-container-789"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
-
-        def __init__(self, **kwargs):
-            captured_run_args.extend(kwargs.get("run_args", []))
-
-    monkeypatch.setattr(
-        "minisweagent.environments.docker.DockerEnvironment",
-        MockInnerDocker,
-    )
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
 
     _make_dummy_env(
         cwd="/workspace",
@@ -210,18 +197,7 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
 
     captured_run_args = []
-
-    class MockInnerDocker:
-        container_id = "mock-container-persistent"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
-
-        def __init__(self, **kwargs):
-            captured_run_args.extend(kwargs.get("run_args", []))
-
-    monkeypatch.setattr(
-        "minisweagent.environments.docker.DockerEnvironment",
-        MockInnerDocker,
-    )
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
 
     _make_dummy_env(
         cwd="/workspace",

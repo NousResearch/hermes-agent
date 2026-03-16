@@ -3294,6 +3294,27 @@ class HermesCLI:
         elif cmd_lower == "/reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
+        elif cmd_lower == "/plugins":
+            try:
+                from hermes_cli.plugins import get_plugin_manager
+                mgr = get_plugin_manager()
+                plugins = mgr.list_plugins()
+                if not plugins:
+                    print("No plugins installed.")
+                    print(f"Drop plugin directories into ~/.hermes/plugins/ to get started.")
+                else:
+                    print(f"Plugins ({len(plugins)}):")
+                    for p in plugins:
+                        status = "✓" if p["enabled"] else "✗"
+                        version = f" v{p['version']}" if p["version"] else ""
+                        tools = f"{p['tools']} tools" if p["tools"] else ""
+                        hooks = f"{p['hooks']} hooks" if p["hooks"] else ""
+                        parts = [x for x in [tools, hooks] if x]
+                        detail = f" ({', '.join(parts)})" if parts else ""
+                        error = f" — {p['error']}" if p["error"] else ""
+                        print(f"  {status} {p['name']}{version}{detail}{error}")
+            except Exception as e:
+                print(f"Plugin system error: {e}")
         elif cmd_lower.startswith("/rollback"):
             self._handle_rollback_command(cmd_original)
         elif cmd_lower == "/stop":

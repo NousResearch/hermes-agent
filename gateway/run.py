@@ -3160,6 +3160,8 @@ class GatewayRunner:
                 f"Completion (output): {agent.session_completion_tokens:,}",
                 f"Total: {agent.session_total_tokens:,}",
                 f"API calls: {agent.session_api_calls}",
+                f"Estimated cost: ${agent.session_estimated_cost:.4f}",
+                f"Cached tokens: {agent.session_cached_tokens:,}",
             ]
             ctx = agent.context_compressor
             if ctx.last_prompt_tokens:

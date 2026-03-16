@@ -3437,6 +3437,8 @@ class HermesCLI:
         print(f"  Completion tokens (output): {completion:>9,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
+        print(f"  Estimated cost:            ${agent.session_estimated_cost:.4f}")
+        print(f"  Cached tokens:             {agent.session_cached_tokens:>10,}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")

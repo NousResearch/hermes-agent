@@ -817,6 +817,8 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
         self.session_api_calls = 0
+        self.session_estimated_cost = 0.0
+        self.session_cached_tokens = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -5044,11 +5046,8 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
-                        
-                        if self.verbose_logging:
-                            logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
-                        
-                        # Log cache hit stats when prompt caching is active
+                        cached = 0
+                        written = 0
                         if self._use_prompt_caching:
                             if self.api_mode == "anthropic_messages":
                                 # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
@@ -5059,6 +5058,21 @@ class AIAgent:
                                 details = getattr(response.usage, 'prompt_tokens_details', None)
                                 cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
                                 written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
+                        self.session_cached_tokens += cached
+                        from agent.pricing import estimate_cost
+                        call_cost = estimate_cost(
+                            self.model,
+                            prompt_tokens,
+                            completion_tokens,
+                            cached_tokens=cached,
+                        )
+                        self.session_estimated_cost += call_cost
+                        
+                        if self.verbose_logging:
+                            logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
+                        
+                        # Log cache hit stats when prompt caching is active
+                        if self._use_prompt_caching:
                             prompt = usage_dict["prompt_tokens"]
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:

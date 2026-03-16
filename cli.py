@@ -204,6 +204,7 @@ def load_cli_config() -> Dict[str, Any]:
             "compact": False,
             "resume_display": "full",
             "show_reasoning": False,
+            "show_cost": False,
             "skin": "default",
         },
         "clarify": {
@@ -1023,6 +1024,8 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # show_cost: display $ cost in the status bar (off by default)
+        self.show_cost = CLI_CONFIG["display"].get("show_cost", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1276,13 +1279,22 @@ class HermesCLI:
             width = width or shutil.get_terminal_size((80, 24)).columns
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
-            cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
             duration_label = snapshot["duration"]
+            show_cost = getattr(self, "show_cost", False)
+
+            if show_cost:
+                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+            else:
+                cost_label = None
 
             if width < 52:
                 return f"⚕ {snapshot['model_short']} · {duration_label}"
             if width < 76:
-                return f"⚕ {snapshot['model_short']} · {percent_label} · {cost_label} · {duration_label}"
+                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if cost_label:
+                    parts.append(cost_label)
+                parts.append(duration_label)
+                return " · ".join(parts)
 
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
@@ -1291,7 +1303,11 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            return f"⚕ {snapshot['model_short']} │ {context_label} │ {percent_label} │ {cost_label} │ {duration_label}"
+            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if cost_label:
+                parts.append(cost_label)
+            parts.append(duration_label)
+            return " │ ".join(parts)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
@@ -1299,8 +1315,13 @@ class HermesCLI:
         try:
             snapshot = self._get_status_bar_snapshot()
             width = shutil.get_terminal_size((80, 24)).columns
-            cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
             duration_label = snapshot["duration"]
+            show_cost = getattr(self, "show_cost", False)
+
+            if show_cost:
+                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+            else:
+                cost_label = None
 
             if width < 52:
                 return [
@@ -1314,17 +1335,23 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             if width < 76:
-                return [
+                frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     (self._status_bar_context_style(percent), percent_label),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", cost_label),
+                ]
+                if cost_label:
+                    frags.extend([
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", cost_label),
+                    ])
+                frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
-                ]
+                ])
+                return frags
 
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
@@ -1334,7 +1361,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             bar_style = self._status_bar_context_style(percent)
-            return [
+            frags = [
                 ("class:status-bar", " ⚕ "),
                 ("class:status-bar-strong", snapshot["model_short"]),
                 ("class:status-bar-dim", " │ "),
@@ -1343,12 +1370,18 @@ class HermesCLI:
                 (bar_style, self._build_context_bar(percent)),
                 ("class:status-bar-dim", " "),
                 (bar_style, percent_label),
-                ("class:status-bar-dim", " │ "),
-                ("class:status-bar-dim", cost_label),
+            ]
+            if cost_label:
+                frags.extend([
+                    ("class:status-bar-dim", " │ "),
+                    ("class:status-bar-dim", cost_label),
+                ])
+            frags.extend([
                 ("class:status-bar-dim", " │ "),
                 ("class:status-bar-dim", duration_label),
                 ("class:status-bar", " "),
-            ]
+            ])
+            return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 

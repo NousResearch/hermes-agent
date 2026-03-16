@@ -295,6 +295,7 @@ class AIAgent:
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
+        orchestrator_callback: callable = None,
         step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
@@ -394,6 +395,7 @@ class AIAgent:
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
+        self.orchestrator_callback = orchestrator_callback
         self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
@@ -3803,6 +3805,13 @@ class AIAgent:
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+        elif function_name == "ask_orchestrator":
+            from tools.ask_orchestrator_tool import ask_orchestrator as _ask_orchestrator
+            return _ask_orchestrator(
+                question=function_args.get("question", ""),
+                context=function_args.get("context"),
+                parent_agent=self,
+            )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
             return _delegate_task(
@@ -4139,6 +4148,16 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+            elif function_name == "ask_orchestrator":
+                from tools.ask_orchestrator_tool import ask_orchestrator as _ask_orchestrator
+                function_result = _ask_orchestrator(
+                    question=function_args.get("question", ""),
+                    context=function_args.get("context"),
+                    parent_agent=self,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('ask_orchestrator', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")

@@ -41,6 +41,7 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+MAX_ORCHESTRATOR_QUERIES = 3
 
 
 def check_delegate_requirements() -> bool:
@@ -150,6 +151,112 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     return _callback
 
 
+def _build_orchestrator_callback(parent_agent) -> Optional[callable]:
+    """Build a callback that lets subagents ask the orchestrator questions.
+
+    The callback makes an API call to the parent's model with the parent's
+    conversation context, so the orchestrator can answer from full knowledge
+    without involving the human.
+
+    Rate-limited to MAX_ORCHESTRATOR_QUERIES per subagent session.
+    """
+    call_count = 0
+
+    parent_messages = getattr(parent_agent, "messages", None)
+    parent_base_url = getattr(parent_agent, "base_url", None)
+    parent_model = getattr(parent_agent, "model", None)
+    parent_api_mode = getattr(parent_agent, "api_mode", None)
+
+    parent_api_key = getattr(parent_agent, "api_key", None)
+    if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+        parent_api_key = parent_agent._client_kwargs.get("api_key")
+
+    if not parent_api_key or not parent_base_url or not parent_model:
+        logger.debug("Cannot build orchestrator callback: missing parent credentials")
+        return None
+
+    def callback(question: str, subagent_context: str = None) -> str:
+        nonlocal call_count
+        call_count += 1
+
+        if call_count > MAX_ORCHESTRATOR_QUERIES:
+            return (
+                f"Query limit reached ({MAX_ORCHESTRATOR_QUERIES} max). "
+                "Continue with your best judgment."
+            )
+
+        context_summary = ""
+        if parent_messages and isinstance(parent_messages, list):
+            recent = parent_messages[-10:]
+            context_parts = []
+            for msg in recent:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip() and role in ("user", "assistant", "system"):
+                    truncated = content[:500] + "..." if len(content) > 500 else content
+                    context_parts.append(f"[{role}]: {truncated}")
+            if context_parts:
+                context_summary = "\n".join(context_parts)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the orchestrator agent. A subagent working on a delegated "
+                    "task needs your help. Answer concisely and precisely based on your "
+                    "knowledge of the project and conversation. Do not ask follow-up "
+                    "questions — give a direct, actionable answer."
+                ),
+            },
+        ]
+
+        if context_summary:
+            messages.append({
+                "role": "user",
+                "content": f"CONVERSATION CONTEXT:\n{context_summary}",
+            })
+
+        query = f"SUBAGENT QUESTION:\n{question}"
+        if subagent_context:
+            query += f"\n\nSUBAGENT'S FINDINGS SO FAR:\n{subagent_context}"
+        messages.append({"role": "user", "content": query})
+
+        try:
+            if parent_api_mode == "anthropic_messages":
+                import anthropic
+                client = anthropic.Anthropic(api_key=parent_api_key)
+                system_msg = messages[0]["content"]
+                merged_content = "\n\n".join(m["content"] for m in messages[1:])
+                response = client.messages.create(
+                    model=parent_model,
+                    system=system_msg,
+                    messages=[{"role": "user", "content": merged_content}],
+                    max_tokens=1024,
+                )
+                return response.content[0].text
+            else:
+                from openai import OpenAI
+                client = OpenAI(
+                    base_url=parent_base_url,
+                    api_key=parent_api_key,
+                )
+                response = client.chat.completions.create(
+                    model=parent_model,
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=0.7,
+                )
+                return response.choices[0].message.content
+
+        except Exception as exc:
+            logger.exception("Orchestrator callback API call failed: %s", exc)
+            return f"Could not reach orchestrator: {exc}. Continue with best judgment."
+
+    return callback
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -198,6 +305,13 @@ def _run_single_child(
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
+        # Build orchestrator callback so subagents can ask the parent questions
+        orchestrator_cb = _build_orchestrator_callback(parent_agent)
+
+        # Add orchestrator_comms toolset so subagent has the ask_orchestrator tool
+        if orchestrator_cb and "orchestrator_comms" not in child_toolsets:
+            child_toolsets = child_toolsets + ["orchestrator_comms"]
+
         # Share the parent's iteration budget so subagent tool calls
         # count toward the session-wide limit.
         shared_budget = getattr(parent_agent, "iteration_budget", None)
@@ -227,6 +341,7 @@ def _run_single_child(
             skip_context_files=True,
             skip_memory=True,
             clarify_callback=None,
+            orchestrator_callback=orchestrator_cb,
             session_db=getattr(parent_agent, '_session_db', None),
             providers_allowed=parent_agent.providers_allowed,
             providers_ignored=parent_agent.providers_ignored,

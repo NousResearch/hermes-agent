@@ -190,6 +190,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "orchestrator_comms": {
+        "description": "Subagent-to-orchestrator communication (ask parent agent questions mid-task)",
+        "tools": ["ask_orchestrator"],
+        "includes": []
+    },
+
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
         "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],

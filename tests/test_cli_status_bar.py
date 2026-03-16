@@ -65,24 +65,39 @@ class TestCLIStatusBar:
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
         assert "6%" in text
-        assert "$0.06" in text
+        assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_shows_cost_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj.show_cost = True
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "$" in text  # cost is shown when enabled
 
     def test_build_status_bar_text_collapses_for_narrow_terminal(self):
         cli_obj = _attach_agent(
             _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
             api_calls=7,
-            context_tokens=12_450,
+            context_tokens=12400,
             context_length=200_000,
         )
 
         text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
-        assert "$0.06" in text
+        assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
 

@@ -211,6 +211,7 @@ DEFAULT_CONFIG = {
         "resume_display": "full",
         "bell_on_complete": False,
         "show_reasoning": False,
+        "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
     },
 

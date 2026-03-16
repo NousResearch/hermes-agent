@@ -227,12 +227,8 @@ def _get_mini_text() -> List[Tuple[str, str]]:
     elif now.source_mode == "stream" and now.station_name:
         fragments.append(("class:radio-station", f"  [{now.station_name}]"))
 
-    # Position / Duration (only for finite tracks, not streams)
+    # Stream detection for display logic
     is_stream = now.source_mode == "stream"
-    if not is_stream and now.duration and now.duration > 0 and now.position is not None:
-        pos_fmt = _format_time(now.position)
-        dur_fmt = _format_time(now.duration)
-        fragments.append(("class:radio-time", f"  {pos_fmt}/{dur_fmt}"))
 
     # Volume dial -- starts from bottom-left, fills clockwise
     vol = int(now.volume)
@@ -268,25 +264,28 @@ def _get_mini_text() -> List[Tuple[str, str]]:
         else:
             fragments.append(("class:radio-control", "  Spc pause  n skip  m mute  r rec  -/+ vol  </> viz  Tab size  Ctrl+O/q exit"))
     elif not is_stream and now.duration and now.duration > 0 and now.position is not None:
-        bar_width = 52
+        pos_fmt = _format_time(now.position)
+        dur_fmt = _format_time(now.duration)
+        time_str = f" {pos_fmt}/{dur_fmt}"
+        bar_width = 52 - len(time_str)
         progress = max(0.0, min(1.0, now.position / now.duration))
         filled = int(progress * bar_width)
         remaining = bar_width - filled
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress", "\u2501" * filled + "\u2578"))
         fragments.append(("class:radio-progress-bg", "\u2500" * max(0, remaining - 1)))
+        fragments.append(("class:radio-time", time_str))
+        if not control_mode:
+            fragments.append(("class:radio-hint", "  Ctrl+O"))
     elif is_stream:
-        # Stream mode: show LIVE + Ctrl+O hint
         fragments.append(("class:radio-station", "  \u25cf LIVE"))
         if not control_mode:
             fragments.append(("class:radio-hint", "  Ctrl+O"))
     else:
         fragments.append(("", "  "))
         fragments.append(("class:radio-progress-bg", "\u2500" * 52))
-
-    # Also show hint for crate dig when not in control mode
-    if not is_stream and not control_mode:
-        fragments.append(("class:radio-hint", "  Ctrl+O"))
+        if not control_mode:
+            fragments.append(("class:radio-hint", "  Ctrl+O"))
 
     return fragments
 

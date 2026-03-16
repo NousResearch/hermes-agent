@@ -323,8 +323,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         warnings = []
 
         if message.strip():
+            # Auto-detect HTML tags and set parse_mode accordingly
+            import re
+            parse_mode = "HTML" if re.search(r'<[a-zA-Z/][^>]*>', message) else None
             last_msg = await bot.send_message(
-                chat_id=int_chat_id, text=message, **thread_kwargs
+                chat_id=int_chat_id, text=message, parse_mode=parse_mode, **thread_kwargs
             )
 
         for media_path, is_voice in media_files:

@@ -215,6 +215,7 @@ def generate_citation_key(bibtex: str) -> str:
 
 ### Complete Citation Manager Class
 
+{% raw %}
 ```python
 """
 Citation Manager - Verified citation workflow for ML papers.
@@ -377,6 +378,7 @@ if __name__ == "__main__":
     if bibtex:
         print(bibtex)
 ```
+{% endraw %}
 
 ### Quick Functions
 

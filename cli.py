@@ -176,6 +176,12 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
+        "smart_model_routing": {
+            "enabled": False,
+            "max_simple_chars": 160,
+            "max_simple_words": 28,
+            "cheap_model": {},
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -1126,6 +1132,10 @@ class HermesCLI:
         fb = CLI_CONFIG.get("fallback_model") or {}
         self._fallback_model = fb if fb.get("provider") and fb.get("model") else None
 
+        # Optional cheap-vs-strong routing for simple turns
+        self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+        self._active_agent_route_signature = None
+
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -1537,10 +1547,27 @@ class HermesCLI:
         # routing, or the effective model changed.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
+            self._active_agent_route_signature = None
 
         return True
 
-    def _init_agent(self) -> bool:
+    def _resolve_turn_agent_config(self, user_message: str) -> dict:
+        """Resolve model/runtime overrides for a single user turn."""
+        from agent.smart_model_routing import resolve_turn_route
+
+        return resolve_turn_route(
+            user_message,
+            self._smart_model_routing,
+            {
+                "model": self.model,
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+            },
+        )
+
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -1600,12 +1627,19 @@ class HermesCLI:
                 pass
         
         try:
+            runtime = runtime_override or {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+            }
+            effective_model = model_override or self.model
             self.agent = AIAgent(
-                model=self.model,
-                api_key=self.api_key,
-                base_url=self.base_url,
-                provider=self.provider,
-                api_mode=self.api_mode,
+                model=effective_model,
+                api_key=runtime.get("api_key"),
+                base_url=runtime.get("base_url"),
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -1632,7 +1666,13 @@ class HermesCLI:
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
             )
-            # Apply any pending title now that the session exists in the DB
+            self._active_agent_route_signature = (
+                effective_model,
+                runtime.get("provider"),
+                runtime.get("base_url"),
+                runtime.get("api_mode"),
+            )
+
             if self._pending_title and self._session_db:
                 try:
                     self._session_db.set_session_title(self.session_id, self._pending_title)
@@ -3455,14 +3495,16 @@ class HermesCLI:
         _cprint(f"  Task ID: {task_id}")
         _cprint(f"  You can continue chatting — results will appear when done.\n")
 
+        turn_route = self._resolve_turn_agent_config(prompt)
+
         def run_background():
             try:
                 bg_agent = AIAgent(
-                    model=self.model,
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    provider=self.provider,
-                    api_mode=self.api_mode,
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -4886,8 +4928,16 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return None
 
+        turn_route = self._resolve_turn_agent_config(message)
+        if turn_route["signature"] != self._active_agent_route_signature:
+            self.agent = None
+
         # Initialize agent if needed
-        if not self._init_agent():
+        if not self._init_agent(
+            model_override=turn_route["model"],
+            runtime_override=turn_route["runtime"],
+            route_label=turn_route["label"],
+        ):
             return None
         
         # Pre-process images through the vision tool (Gemini Flash) so the
@@ -6616,13 +6666,21 @@ def main(
             # Quiet mode: suppress banner, spinner, tool previews.
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
-            if cli._init_agent():
-                cli.agent.quiet_mode = True
-                result = cli.agent.run_conversation(query)
-                response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                if response:
-                    print(response)
-                print(f"\nsession_id: {cli.session_id}")
+            if cli._ensure_runtime_credentials():
+                turn_route = cli._resolve_turn_agent_config(query)
+                if turn_route["signature"] != cli._active_agent_route_signature:
+                    cli.agent = None
+                if cli._init_agent(
+                    model_override=turn_route["model"],
+                    runtime_override=turn_route["runtime"],
+                    route_label=turn_route["label"],
+                ):
+                    cli.agent.quiet_mode = True
+                    result = cli.agent.run_conversation(query)
+                    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                    if response:
+                        print(response)
+                    print(f"\nsession_id: {cli.session_id}")
         else:
             cli.show_banner()
             cli.console.print(f"[bold blue]Query:[/] {query}")

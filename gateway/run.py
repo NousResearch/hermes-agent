@@ -324,6 +324,7 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._smart_model_routing = self._load_smart_model_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -593,6 +594,18 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+        from agent.smart_model_routing import resolve_turn_route
+
+        primary = {
+            "model": model,
+            "api_key": runtime_kwargs.get("api_key"),
+            "base_url": runtime_kwargs.get("base_url"),
+            "provider": runtime_kwargs.get("provider"),
+            "api_mode": runtime_kwargs.get("api_mode"),
+        }
+        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to a non-retryable adapter failure after startup."""
         logger.error(
@@ -794,6 +807,20 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _load_smart_model_routing() -> dict:
+        """Load optional smart cheap-vs-strong model routing config."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("smart_model_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
 
     async def start(self) -> bool:
         """
@@ -2931,11 +2958,12 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             def run_sync():
                 agent = AIAgent(
-                    model=model,
-                    **runtime_kwargs,
+                    model=turn_route["model"],
+                    **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4169,9 +4197,10 @@ class GatewayRunner:
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
             agent = AIAgent(
-                model=model,
-                **runtime_kwargs,
+                model=turn_route["model"],
+                **turn_route["runtime"],
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,

@@ -363,10 +363,17 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
+    # Allow an explicit local/self-hosted Honcho URL to override the SDK's
+    # environment mapping (e.g. production/local). This makes it possible to
+    # point Hermes at a remote self-hosted Honcho instance without requiring
+    # the server to live on localhost.
+    resolved_base_url = os.environ.get("HONCHO_URL") or None
+
     _honcho_client = Honcho(
         workspace_id=config.workspace_id,
         api_key=config.api_key,
         environment=config.environment,
+        base_url=resolved_base_url,
     )
 
     return _honcho_client

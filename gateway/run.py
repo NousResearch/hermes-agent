@@ -1290,7 +1290,7 @@ class GatewayRunner:
                           "personality", "plan", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
-                          "background", "reasoning", "voice"}
+                          "background", "bg", "reasoning", "voice"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",

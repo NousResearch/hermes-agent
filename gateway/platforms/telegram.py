@@ -69,6 +69,7 @@ def check_telegram_requirements() -> bool:
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+_CHUNK_INDICATOR_RE = re.compile(r" \((\d+)/(\d+)\)$")
 
 
 def _escape_mdv2(text: str) -> str:
@@ -90,6 +91,11 @@ def _strip_mdv2(text: str) -> str:
     # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
     return cleaned
+
+
+def _escape_chunk_indicator_mdv2(text: str) -> str:
+    """Escape the trailing ``(N/M)`` chunk indicator for MarkdownV2 sends."""
+    return _CHUNK_INDICATOR_RE.sub(r" \\(\1/\2\\)", text)
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -322,6 +328,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if len(chunks) > 1:
+                chunks = [_escape_chunk_indicator_mdv2(chunk) for chunk in chunks]
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None

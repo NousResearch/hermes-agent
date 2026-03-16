@@ -7,7 +7,7 @@ or corrupt user-visible content.
 
 import re
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -34,7 +34,12 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2  # noqa: E402
+from gateway.platforms.telegram import (  # noqa: E402
+    TelegramAdapter,
+    _escape_chunk_indicator_mdv2,
+    _escape_mdv2,
+    _strip_mdv2,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -392,3 +397,40 @@ class TestStripMdv2:
 
     def test_empty_string(self):
         assert _strip_mdv2("") == ""
+
+
+# =========================================================================
+# send() - chunk indicator escaping
+# =========================================================================
+
+
+class TestTelegramSendChunkIndicators:
+    def test_escapes_trailing_chunk_indicator(self):
+        assert _escape_chunk_indicator_mdv2("hello (1/2)") == r"hello \(1/2\)"
+
+    @pytest.mark.asyncio
+    async def test_send_keeps_chunked_markdown_in_markdownv2_mode(self, adapter):
+        adapter.MAX_MESSAGE_LENGTH = 80
+        adapter._bot = AsyncMock()
+        sent_calls = []
+
+        async def _send_message(**kwargs):
+            if kwargs["parse_mode"] == "MarkdownV2" and re.search(r" \(\d+/\d+\)$", kwargs["text"]):
+                raise RuntimeError(
+                    "Can't parse entities: character '(' is reserved and must be escaped with the preceding '\\'"
+                )
+            sent_calls.append(kwargs)
+            msg = MagicMock()
+            msg.message_id = len(sent_calls)
+            return msg
+
+        adapter._bot.send_message.side_effect = _send_message
+
+        content = "Intro " + ("**bold** detail " * 20)
+        result = await adapter.send(chat_id="12345", content=content)
+
+        assert result.success is True
+        assert len(sent_calls) > 1
+        assert all(call["parse_mode"] is not None for call in sent_calls)
+        assert any(r"\(" in call["text"] and r"\)" in call["text"] for call in sent_calls)
+        assert not any(re.search(r" \(\d+/\d+\)$", call["text"]) for call in sent_calls)

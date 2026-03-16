@@ -1136,6 +1136,33 @@ def setup_model_provider(config: dict):
         from hermes_cli.config import save_anthropic_api_key, save_anthropic_oauth_token
         pconfig = PROVIDER_REGISTRY["anthropic"]
 
+        # Check if anthropic SDK is installed
+        try:
+            __import__("anthropic")
+        except ImportError:
+            print_info("Installing anthropic SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "anthropic>=0.39.0"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "anthropic>=0.39.0"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("anthropic SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'anthropic>=0.39.0'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
         # Check ALL credential sources
         import os as _os
         from agent.anthropic_adapter import (

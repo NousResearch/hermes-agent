@@ -227,54 +227,86 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 
+def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
+    """Single-select menu using curses to avoid simple_term_menu rendering bugs."""
+    try:
+        import curses
+        result_holder = [default]
+
+        def _curses_menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            cursor = default
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(
+                        0,
+                        0,
+                        question,
+                        max_x - 1,
+                        curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0),
+                    )
+                except curses.error:
+                    pass
+
+                for i, choice in enumerate(choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "→" if i == cursor else " "
+                    line = f" {arrow}  {choice}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(choices)
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(choices)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = cursor
+                    return
+                elif key in (27, ord("q")):
+                    return
+
+        curses.wrapper(_curses_menu)
+        return result_holder[0]
+    except Exception:
+        return -1
+
+
+
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
     Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
-    print(color(question, Colors.YELLOW))
-
-    # Try to use interactive menu if available
-    try:
-        from simple_term_menu import TerminalMenu
-        import re
-
-        # Strip emoji characters — simple_term_menu miscalculates visual
-        # width of emojis, causing duplicated/garbled lines on redraw.
-        _emoji_re = re.compile(
-            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
-            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+",
-            flags=re.UNICODE,
-        )
-        menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
-
-        print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
-
-        terminal_menu = TerminalMenu(
-            menu_choices,
-            cursor_index=default,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        idx = terminal_menu.show()
-        if idx is None:  # User pressed Escape — keep current value
-            print_info(f"  Skipped (keeping current)")
+    idx = _curses_prompt_choice(question, choices, default)
+    if idx >= 0:
+        if idx == default:
+            print_info("  Skipped (keeping current)")
             print()
             return default
-        print()  # Add newline after selection
+        print()
         return idx
 
-    except (ImportError, NotImplementedError):
-        pass
-    except Exception as e:
-        print(f"  (Interactive menu unavailable: {e})")
-
-    # Fallback to number-based selection (simple_term_menu doesn't support Windows)
+    print(color(question, Colors.YELLOW))
     for i, choice in enumerate(choices):
         marker = "●" if i == default else "○"
         if i == default:
@@ -344,84 +376,15 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
     if pre_selected is None:
         pre_selected = []
 
-    print(color(title, Colors.YELLOW))
-    print_info("  SPACE Toggle  ENTER Confirm  ESC Skip  Ctrl+C Exit")
-    print()
+    from hermes_cli.curses_ui import curses_checklist
 
-    try:
-        from simple_term_menu import TerminalMenu
-        import re
-
-        # Strip emoji characters from menu labels — simple_term_menu miscalculates
-        # visual width of emojis on macOS, causing duplicated/garbled lines.
-        _emoji_re = re.compile(
-            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
-            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+",
-            flags=re.UNICODE,
-        )
-        menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
-
-        # Map pre-selected indices to the actual menu entry strings
-        preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
-
-        terminal_menu = TerminalMenu(
-            menu_items,
-            multi_select=True,
-            show_multi_select_hint=False,
-            multi_select_cursor="[✓] ",
-            multi_select_select_on_accept=False,
-            multi_select_empty_ok=True,
-            preselected_entries=preselected if preselected else None,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        terminal_menu.show()
-
-        if terminal_menu.chosen_menu_entries is None:
-            print_info("  Skipped (keeping current)")
-            return list(pre_selected)
-
-        selected = list(terminal_menu.chosen_menu_indices or [])
-        return selected
-
-    except (ImportError, NotImplementedError):
-        # Fallback: numbered toggle interface (simple_term_menu doesn't support Windows)
-        selected = set(pre_selected)
-
-        while True:
-            for i, item in enumerate(items):
-                marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
-                print(f"  {marker} {i + 1}. {item}")
-            print()
-
-            try:
-                value = input(
-                    color("  Toggle # (or Enter to confirm): ", Colors.DIM)
-                ).strip()
-                if not value:
-                    break
-                idx = int(value) - 1
-                if 0 <= idx < len(items):
-                    if idx in selected:
-                        selected.discard(idx)
-                    else:
-                        selected.add(idx)
-                else:
-                    print_error(f"Enter a number between 1 and {len(items)}")
-            except ValueError:
-                print_error("Enter a number")
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return []
-
-            # Clear and redraw (simple approach)
-            print()
-
-        return sorted(selected)
+    chosen = curses_checklist(
+        title,
+        items,
+        set(pre_selected),
+        cancel_returns=set(pre_selected),
+    )
+    return sorted(chosen)
 
 
 def _prompt_api_key(var: dict):

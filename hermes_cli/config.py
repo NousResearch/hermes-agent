@@ -134,7 +134,7 @@ DEFAULT_CONFIG = {
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
     "checkpoints": {
-        "enabled": False,
+        "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
     

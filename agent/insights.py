@@ -20,65 +20,16 @@ import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-# =========================================================================
-# Model pricing (USD per million tokens) — approximate as of early 2026
-# =========================================================================
-MODEL_PRICING = {
-    # OpenAI
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4.1": {"input": 2.00, "output": 8.00},
-    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
-    "gpt-4.5-preview": {"input": 75.00, "output": 150.00},
-    "gpt-5": {"input": 10.00, "output": 30.00},
-    "gpt-5.4": {"input": 10.00, "output": 30.00},
-    "o3": {"input": 10.00, "output": 40.00},
-    "o3-mini": {"input": 1.10, "output": 4.40},
-    "o4-mini": {"input": 1.10, "output": 4.40},
-    # Anthropic
-    "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
-    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00},
-    "claude-3-opus-20240229": {"input": 15.00, "output": 75.00},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-    # DeepSeek
-    "deepseek-chat": {"input": 0.14, "output": 0.28},
-    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
-    # Google
-    "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
-    # Meta (via providers)
-    "llama-4-maverick": {"input": 0.50, "output": 0.70},
-    "llama-4-scout": {"input": 0.20, "output": 0.30},
-    # Z.AI / GLM (direct provider — pricing not published externally, treat as local)
-    "glm-5": {"input": 0.0, "output": 0.0},
-    "glm-4.7": {"input": 0.0, "output": 0.0},
-    "glm-4.5": {"input": 0.0, "output": 0.0},
-    "glm-4.5-flash": {"input": 0.0, "output": 0.0},
-    # Kimi / Moonshot (direct provider — pricing not published externally, treat as local)
-    "kimi-k2.5": {"input": 0.0, "output": 0.0},
-    "kimi-k2-thinking": {"input": 0.0, "output": 0.0},
-    "kimi-k2-turbo-preview": {"input": 0.0, "output": 0.0},
-    "kimi-k2-0905-preview": {"input": 0.0, "output": 0.0},
-    # MiniMax (direct provider — pricing not published externally, treat as local)
-    "MiniMax-M2.5": {"input": 0.0, "output": 0.0},
-    "MiniMax-M2.5-highspeed": {"input": 0.0, "output": 0.0},
-    "MiniMax-M2.1": {"input": 0.0, "output": 0.0},
-}
+from agent.usage_pricing import DEFAULT_PRICING, estimate_cost_usd, format_duration_compact, get_pricing, has_known_pricing
 
-# Fallback: unknown/custom models get zero cost (we can't assume pricing
-# for self-hosted models, custom OAI endpoints, local inference, etc.)
-_DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
+_DEFAULT_PRICING = DEFAULT_PRICING
 
 
 def _has_known_pricing(model_name: str) -> bool:
     """Check if a model has known pricing (vs unknown/custom endpoint)."""
-    return _get_pricing(model_name) is not _DEFAULT_PRICING
+    return has_known_pricing(model_name)
 
 
 def _get_pricing(model_name: str) -> Dict[str, float]:
@@ -87,67 +38,17 @@ def _get_pricing(model_name: str) -> Dict[str, float]:
     Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
     we can't assume costs for self-hosted endpoints, local inference, etc.
     """
-    if not model_name:
-        return _DEFAULT_PRICING
-
-    # Strip provider prefix (e.g., "anthropic/claude-..." -> "claude-...")
-    bare = model_name.split("/")[-1].lower()
-
-    # Exact match first
-    if bare in MODEL_PRICING:
-        return MODEL_PRICING[bare]
-
-    # Fuzzy prefix match — prefer the LONGEST matching key to avoid
-    # e.g. "gpt-4o" matching before "gpt-4o-mini" for "gpt-4o-mini-2024-07-18"
-    best_match = None
-    best_len = 0
-    for key, price in MODEL_PRICING.items():
-        if bare.startswith(key) and len(key) > best_len:
-            best_match = price
-            best_len = len(key)
-    if best_match:
-        return best_match
-
-    # Keyword heuristics (checked in most-specific-first order)
-    if "opus" in bare:
-        return {"input": 15.00, "output": 75.00}
-    if "sonnet" in bare:
-        return {"input": 3.00, "output": 15.00}
-    if "haiku" in bare:
-        return {"input": 0.80, "output": 4.00}
-    if "gpt-4o-mini" in bare:
-        return {"input": 0.15, "output": 0.60}
-    if "gpt-4o" in bare:
-        return {"input": 2.50, "output": 10.00}
-    if "gpt-5" in bare:
-        return {"input": 10.00, "output": 30.00}
-    if "deepseek" in bare:
-        return {"input": 0.14, "output": 0.28}
-    if "gemini" in bare:
-        return {"input": 0.15, "output": 0.60}
-
-    return _DEFAULT_PRICING
+    return get_pricing(model_name)
 
 
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     """Estimate the USD cost for a given model and token counts."""
-    pricing = _get_pricing(model)
-    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+    return estimate_cost_usd(model, input_tokens, output_tokens)
 
 
 def _format_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration string."""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes = seconds / 60
-    if minutes < 60:
-        return f"{minutes:.0f}m"
-    hours = minutes / 60
-    if hours < 24:
-        remaining_min = int(minutes % 60)
-        return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
-    days = hours / 24
-    return f"{days:.1f}d"
+    return format_duration_compact(seconds)
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:

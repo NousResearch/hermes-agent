@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -37,6 +38,23 @@ logger = logging.getLogger(__name__)
 MEMORY_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+META_PREFIX_RE = re.compile(r"^\[saved:([^|]+)\|session:([^\]]+)\]\n", re.MULTILINE)
+
+
+def _make_meta(session_id: Optional[str] = None) -> str:
+    """Create a metadata prefix for a memory entry."""
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    sid = session_id or "cli"
+    return f"[saved:{ts}|session:{sid}]\n"
+
+
+def _strip_meta(entry: str):
+    """Strip metadata prefix from entry. Returns (content, timestamp, session_id)."""
+    m = META_PREFIX_RE.match(entry)
+    if m:
+        content = entry[m.end():]
+        return content, m.group(1), m.group(2)
+    return entry, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +113,15 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, ttl_days: Optional[int] = None, approval_mode: bool = False):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self.ttl_days = ttl_days
+        self.approval_mode = approval_mode
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
@@ -113,6 +133,21 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+
+        # TTL: remove expired entries
+        if self.ttl_days is not None:
+            cutoff = datetime.datetime.now() - datetime.timedelta(days=self.ttl_days)
+            def _not_expired(entry):
+                _, ts, _ = _strip_meta(entry)
+                if ts is None:
+                    return True  # legacy entries without timestamp: keep
+                try:
+                    saved = datetime.datetime.fromisoformat(ts)
+                    return saved >= cutoff
+                except ValueError:
+                    return True
+            self.memory_entries = [e for e in self.memory_entries if _not_expired(e)]
+            self.user_entries = [e for e in self.user_entries if _not_expired(e)]
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -151,11 +186,23 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, session_id: Optional[str] = None, approved: bool = False) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
+        # Approval mode: require explicit user confirmation before saving
+        if self.approval_mode and not approved:
+            return {
+                "success": False,
+                "pending_approval": True,
+                "content": content,
+                "target": target,
+                "message": (
+                    f"Approval required to save this memory entry to {target}. "
+                    "Please confirm with the user before calling add() again with approved=True."
+                ),
+            }
 
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
@@ -166,7 +213,7 @@ class MemoryStore:
         limit = self._char_limit(target)
 
         # Reject exact duplicates
-        if content in entries:
+        if any(_strip_meta(e)[0] == content for e in entries):
             return self._success_response(target, "Entry already exists (no duplicate added).")
 
         # Calculate what the new total would be
@@ -186,7 +233,7 @@ class MemoryStore:
                 "usage": f"{current:,}/{limit:,}",
             }
 
-        entries.append(content)
+        entries.append(_make_meta(session_id) + content)
         self._set_entries(target, entries)
         self.save_to_disk(target)
 
@@ -207,7 +254,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         entries = self._entries_for(target)
-        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in _strip_meta(e)[0]]
 
         if len(matches) == 0:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -254,7 +301,7 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         entries = self._entries_for(target)
-        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in _strip_meta(e)[0]]
 
         if len(matches) == 0:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -277,6 +324,43 @@ class MemoryStore:
         self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
+
+
+    def list_entries(self, target: str) -> List[Dict[str, Any]]:
+        """Return all entries with provenance metadata for CLI display."""
+        entries = self._entries_for(target)
+        result = []
+        for i, e in enumerate(entries):
+            content, ts, session_id = _strip_meta(e)
+            result.append({
+                'index': i,
+                'content': content,
+                'saved_at': ts,
+                'session_id': session_id,
+            })
+        return result
+
+    def clear_all(self, target: str) -> Dict[str, Any]:
+        """Remove all entries for the given target."""
+        self._set_entries(target, [])
+        self.save_to_disk(target)
+        return self._success_response(target, 'All entries cleared.')
+
+    def forget_session(self, session_id: str) -> Dict[str, Any]:
+        """Remove all entries saved during the given session_id."""
+        removed = 0
+        for target in ('memory', 'user'):
+            entries = self._entries_for(target)
+            new_entries = []
+            for e in entries:
+                _, _, sid = _strip_meta(e)
+                if sid == session_id:
+                    removed += 1
+                else:
+                    new_entries.append(e)
+            self._set_entries(target, new_entries)
+            self.save_to_disk(target)
+        return {'success': True, 'removed': removed}
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -302,7 +386,7 @@ class MemoryStore:
         resp = {
             "success": True,
             "target": target,
-            "entries": entries,
+            "entries": [_strip_meta(e)[0] for e in entries],
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }

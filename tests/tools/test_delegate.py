@@ -24,6 +24,7 @@ from tools.delegate_tool import (
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
+    _resolve_task_credentials,
 )
 
 
@@ -650,21 +651,25 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
             }
+            MockAgent.return_value = mock_child
 
             tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
             delegate_task(tasks=tasks, parent_agent=parent)
 
-            for call in mock_run.call_args_list:
-                self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
-                self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
-                self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
-                self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
-                self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+            # Both children should have been constructed with the resolved credentials
+            self.assertEqual(MockAgent.call_count, 2)
+            for call in MockAgent.call_args_list:
+                _, kwargs = call
+                self.assertEqual(kwargs["model"], "meta-llama/llama-4-scout")
+                self.assertEqual(kwargs["provider"], "openrouter")
+                self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+                self.assertEqual(kwargs["api_key"], "sk-or-batch")
+                self.assertEqual(kwargs["api_mode"], "chat_completions")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -699,6 +704,107 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+
+class TestResolveTaskCredentials(unittest.TestCase):
+    """Tests for per-task provider:model credential resolution."""
+
+    def _default_creds(self):
+        return {
+            "model": "anthropic/claude-sonnet-4-6",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-default",
+            "api_mode": "chat_completions",
+        }
+
+    def test_no_provider_returns_defaults(self):
+        """Task with no provider uses config-level defaults."""
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials({}, defaults, parent)
+        self.assertEqual(result, defaults)
+
+    def test_no_provider_with_model_override(self):
+        """Task with model but no provider overrides model only."""
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials(
+            {"model": "google/gemini-3-flash-preview"}, defaults, parent,
+        )
+        self.assertEqual(result["model"], "google/gemini-3-flash-preview")
+        # Everything else unchanged
+        self.assertEqual(result["provider"], defaults["provider"])
+        self.assertEqual(result["api_key"], defaults["api_key"])
+
+    def test_empty_provider_treated_as_no_provider(self):
+        """Whitespace-only provider falls through to defaults."""
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials({"provider": "  "}, defaults, parent)
+        self.assertEqual(result, defaults)
+
+    @patch("agent.auxiliary_client.resolve_provider_credentials")
+    def test_per_task_provider_resolves_credentials(self, mock_resolve):
+        """Task with provider resolves fresh credentials."""
+        mock_resolve.return_value = {
+            "provider": "nous",
+            "model": "hermes-3-llama-3.1-8b",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials(
+            {"provider": "nous", "model": "hermes-3-llama-3.1-8b"},
+            defaults, parent,
+        )
+        self.assertEqual(result["provider"], "nous")
+        self.assertEqual(result["model"], "hermes-3-llama-3.1-8b")
+        self.assertEqual(result["api_key"], "nous-key")
+        mock_resolve.assert_called_once_with("nous", "hermes-3-llama-3.1-8b")
+
+    @patch("agent.auxiliary_client.resolve_provider_credentials")
+    def test_per_task_provider_not_configured_falls_back(self, mock_resolve):
+        """When provider resolves to None, falls back to defaults."""
+        mock_resolve.return_value = None
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials(
+            {"provider": "nonexistent"}, defaults, parent,
+        )
+        self.assertEqual(result, defaults)
+
+    @patch("agent.auxiliary_client.resolve_provider_credentials")
+    def test_per_task_provider_resolution_error_falls_back(self, mock_resolve):
+        """When credential resolution raises, falls back to defaults."""
+        mock_resolve.side_effect = RuntimeError("API key missing")
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials(
+            {"provider": "broken"}, defaults, parent,
+        )
+        self.assertEqual(result, defaults)
+
+    @patch("agent.auxiliary_client.resolve_provider_credentials")
+    def test_per_task_model_none_falls_back_to_default_model(self, mock_resolve):
+        """When per-task provider resolves but model is empty, uses default model."""
+        mock_resolve.return_value = {
+            "provider": "nous",
+            "model": "",  # empty from resolution
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        defaults = self._default_creds()
+        result = _resolve_task_credentials(
+            {"provider": "nous"}, defaults, parent,
+        )
+        # model falls back to default_creds model since resolved model is empty
+        self.assertEqual(result["model"], defaults["model"])
+        self.assertEqual(result["provider"], "nous")
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ than the provider's default.
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -146,7 +147,6 @@ class _CodexCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
-        kwargs.get("temperature")
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -863,7 +863,6 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Client cache: (provider, async_mode) -> (client, default_model)
 # Protected by _client_cache_lock for thread safety — subagent threads
 # call call_llm() concurrently for compression, session search, etc.
-import threading
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 

@@ -14,6 +14,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_auxiliary_provider,
     _resolve_forced_provider,
+    resolve_provider_credentials,
     _resolve_auto,
 )
 
@@ -405,3 +406,50 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestResolveProviderCredentials:
+    """Tests for resolve_provider_credentials() — thin wrapper over resolve_provider_client."""
+
+    @patch("agent.auxiliary_client.resolve_provider_client")
+    def test_returns_credential_bundle(self, mock_rpc):
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-or-key"
+        mock_rpc.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+        result = resolve_provider_credentials("openrouter", "google/gemini-3-flash-preview")
+        assert result is not None
+        assert result["provider"] == "openrouter"
+        assert result["model"] == "google/gemini-3-flash-preview"
+        assert result["base_url"] == "https://openrouter.ai/api/v1"
+        assert result["api_key"] == "sk-or-key"
+        assert result["api_mode"] == "chat_completions"
+        assert result["client"] is mock_client
+        mock_rpc.assert_called_once_with("openrouter", model="google/gemini-3-flash-preview", raw_codex=True)
+
+    @patch("agent.auxiliary_client.resolve_provider_client")
+    def test_returns_none_when_no_client(self, mock_rpc):
+        mock_rpc.return_value = (None, None)
+        result = resolve_provider_credentials("openrouter", "some-model")
+        assert result is None
+
+    @patch("agent.auxiliary_client.resolve_provider_client")
+    def test_codex_api_mode(self, mock_rpc):
+        mock_client = MagicMock()
+        mock_client.base_url = "https://chatgpt.com/backend-api/codex"
+        mock_client.api_key = "codex-token"
+        mock_rpc.return_value = (mock_client, "gpt-5.3-codex")
+
+        result = resolve_provider_credentials("openai-codex", "gpt-5.3-codex")
+        assert result["api_mode"] == "codex_responses"
+
+    @patch("agent.auxiliary_client.resolve_provider_client")
+    def test_anthropic_api_mode(self, mock_rpc):
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com"
+        mock_client.api_key = "sk-ant-key"
+        mock_rpc.return_value = (mock_client, "claude-sonnet-4-6")
+
+        result = resolve_provider_credentials("anthropic", "claude-sonnet-4-6")
+        assert result["api_mode"] == "anthropic_messages"

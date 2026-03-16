@@ -1459,6 +1459,8 @@ class HermesCLI:
             return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
+        if cmd_lower.startswith("/browser"):
+            return "Configuring browser..."
         return "Processing command..."
 
     def _command_spinner_frame(self) -> str:
@@ -3294,6 +3296,8 @@ class HermesCLI:
         elif cmd_lower == "/reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
+        elif cmd_lower.startswith("/browser"):
+            self._handle_browser_command(cmd_original)
         elif cmd_lower == "/plugins":
             try:
                 from hermes_cli.plugins import get_plugin_manager
@@ -3532,6 +3536,210 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    @staticmethod
+    def _try_launch_chrome_debug(port: int, system: str) -> bool:
+        """Try to launch Chrome/Chromium with remote debugging enabled.
+
+        Returns True if a launch command was executed (doesn't guarantee success).
+        """
+        import shutil
+        import subprocess as _sp
+
+        candidates = []
+        if system == "Darwin":
+            # macOS: try common app bundle locations
+            for app in (
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ):
+                if os.path.isfile(app):
+                    candidates.append(app)
+        else:
+            # Linux: try common binary names
+            for name in ("google-chrome", "google-chrome-stable", "chromium-browser",
+                         "chromium", "brave-browser", "microsoft-edge"):
+                path = shutil.which(name)
+                if path:
+                    candidates.append(path)
+
+        if not candidates:
+            return False
+
+        chrome = candidates[0]
+        try:
+            _sp.Popen(
+                [chrome, f"--remote-debugging-port={port}"],
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+                start_new_session=True,  # detach from terminal
+            )
+            return True
+        except Exception:
+            return False
+
+    def _handle_browser_command(self, cmd: str):
+        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        import platform as _plat
+        import subprocess as _sp
+
+        parts = cmd.strip().split(None, 1)
+        sub = parts[1].lower().strip() if len(parts) > 1 else "status"
+
+        _DEFAULT_CDP = "ws://localhost:9222"
+        current = os.environ.get("BROWSER_CDP_URL", "").strip()
+
+        if sub.startswith("connect"):
+            # Optionally accept a custom CDP URL: /browser connect ws://host:port
+            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
+            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+
+            # Clear any existing browser sessions so the next tool call uses the new backend
+            try:
+                from tools.browser_tool import cleanup_all_browsers
+                cleanup_all_browsers()
+            except Exception:
+                pass
+
+            print()
+
+            # Extract port for connectivity checks
+            _port = 9222
+            try:
+                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
+            except (ValueError, IndexError):
+                pass
+
+            # Check if Chrome is already listening on the debug port
+            import socket
+            _already_open = False
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                s.connect(("127.0.0.1", _port))
+                s.close()
+                _already_open = True
+            except (OSError, socket.timeout):
+                pass
+
+            if _already_open:
+                print(f"   ✓ Chrome is already listening on port {_port}")
+            elif cdp_url == _DEFAULT_CDP:
+                # Try to auto-launch Chrome with remote debugging
+                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                _launched = self._try_launch_chrome_debug(_port, _plat.system())
+                if _launched:
+                    # Wait for the port to come up
+                    import time as _time
+                    for _wait in range(10):
+                        try:
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            s.settimeout(1)
+                            s.connect(("127.0.0.1", _port))
+                            s.close()
+                            _already_open = True
+                            break
+                        except (OSError, socket.timeout):
+                            _time.sleep(0.5)
+                    if _already_open:
+                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                    else:
+                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        print("     You may need to close existing Chrome windows first and retry")
+                else:
+                    print(f"   ⚠ Could not auto-launch Chrome")
+                    # Show manual instructions as fallback
+                    sys_name = _plat.system()
+                    if sys_name == "Darwin":
+                        chrome_cmd = 'open -a "Google Chrome" --args --remote-debugging-port=9222'
+                    elif sys_name == "Windows":
+                        chrome_cmd = 'chrome.exe --remote-debugging-port=9222'
+                    else:
+                        chrome_cmd = "google-chrome --remote-debugging-port=9222"
+                    print(f"     Launch Chrome manually: {chrome_cmd}")
+            else:
+                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+
+            os.environ["BROWSER_CDP_URL"] = cdp_url
+            print()
+            print("🌐 Browser connected to live Chrome via CDP")
+            print(f"   Endpoint: {cdp_url}")
+            print()
+
+            # Inject context message so the model knows
+            if hasattr(self, '_pending_input'):
+                self._pending_input.put(
+                    "[System note: The user has connected your browser tools to their live Chrome browser "
+                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
+                    "and other browser tools now control their real browser — including any pages they have "
+                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
+                    "services before connecting. Please await their instruction before attempting to operate "
+                    "the browser. When you do act, be mindful that your actions affect their real browser — "
+                    "don't close tabs or navigate away from pages without asking.]"
+                )
+
+        elif sub == "disconnect":
+            if current:
+                os.environ.pop("BROWSER_CDP_URL", None)
+                try:
+                    from tools.browser_tool import cleanup_all_browsers
+                    cleanup_all_browsers()
+                except Exception:
+                    pass
+                print()
+                print("🌐 Browser disconnected from live Chrome")
+                print("   Browser tools reverted to default mode (local headless or Browserbase)")
+                print()
+
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(
+                        "[System note: The user has disconnected the browser tools from their live Chrome. "
+                        "Browser tools are back to default mode (headless local browser or Browserbase cloud).]"
+                    )
+            else:
+                print()
+                print("Browser is not connected to live Chrome (already using default mode)")
+                print()
+
+        elif sub == "status":
+            print()
+            if current:
+                print(f"🌐 Browser: connected to live Chrome via CDP")
+                print(f"   Endpoint: {current}")
+
+                _port = 9222
+                try:
+                    _port = int(current.rsplit(":", 1)[-1].split("/")[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    s.connect(("127.0.0.1", _port))
+                    s.close()
+                    print(f"   Status: ✓ reachable")
+                except (OSError, Exception):
+                    print(f"   Status: ⚠ not reachable (Chrome may not be running)")
+            elif os.environ.get("BROWSERBASE_API_KEY"):
+                print("🌐 Browser: Browserbase (cloud)")
+            else:
+                print("🌐 Browser: local headless Chromium (agent-browser)")
+            print()
+            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser disconnect   — revert to default")
+            print()
+
+        else:
+            print()
+            print("Usage: /browser connect|disconnect|status")
+            print()
+            print("   connect      Connect browser tools to your live Chrome session")
+            print("   disconnect   Revert to default browser backend")
+            print("   status       Show current browser mode")
+            print()
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""

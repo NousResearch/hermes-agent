@@ -98,6 +98,16 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _get_cdp_override() -> str:
+    """Return a user-supplied CDP URL override, or empty string.
+
+    When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
+    both Browserbase and the local headless launcher and connect directly to
+    the supplied Chrome DevTools Protocol endpoint.
+    """
+    return os.environ.get("BROWSER_CDP_URL", "").strip()
+
+
 def _is_local_mode() -> bool:
     """Return True when no Browserbase credentials are configured.
 
@@ -105,6 +115,8 @@ def _is_local_mode() -> bool:
     ``agent-browser --session`` instead of connecting to a remote Browserbase
     session via ``--cdp``.
     """
+    if _get_cdp_override():
+        return False  # CDP override takes priority
     return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
 
 
@@ -608,6 +620,20 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
     }
 
 
+def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
+    """Create a session that connects to a user-supplied CDP endpoint."""
+    import uuid
+    session_name = f"cdp_{uuid.uuid4().hex[:10]}"
+    logger.info("Created CDP browser session %s → %s for task %s",
+                session_name, cdp_url, task_id)
+    return {
+        "session_name": session_name,
+        "bb_session_id": None,
+        "cdp_url": cdp_url,
+        "features": {"cdp_override": True},
+    }
+
+
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
@@ -638,7 +664,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    if _is_local_mode():
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        session_info = _create_cdp_session(task_id, cdp_override)
+    elif _is_local_mode():
         session_info = _create_local_session(task_id)
     else:
         session_info = _create_browserbase_session(task_id)

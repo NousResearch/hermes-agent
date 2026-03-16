@@ -32,6 +32,19 @@ import re
 from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
 
+UNICODE_MAP = {
+    "\u201c": '"', "\u201d": '"',  # smart double quotes
+    "\u2018": "'", "\u2019": "'",  # smart single quotes
+    "\u2014": "--", "\u2013": "-", # em/en dashes
+    "\u2026": "...", "\u00a0": " ", # ellipsis and non-breaking space
+}
+
+def _unicode_normalize(text: str) -> str:
+    """Normalizes Unicode characters to their standard ASCII equivalents."""
+    for char, repl in UNICODE_MAP.items():
+        text = text.replace(char, repl)
+    return text
+
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                             replace_all: bool = False) -> Tuple[str, int, Optional[str]]:
@@ -253,42 +266,52 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
 def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
     Strategy 7: Match by anchoring on first and last lines.
-    
-    If first and last lines match exactly, accept middle with 70% similarity.
+    Adjusted with permissive thresholds and unicode normalization.
     """
-    pattern_lines = pattern.split('\n')
+    # Normalize both strings for comparison while keeping original content for offset calculation
+    norm_pattern = _unicode_normalize(pattern)
+    norm_content = _unicode_normalize(content)
+    
+    pattern_lines = norm_pattern.split('\n')
     if len(pattern_lines) < 2:
-        return []  # Need at least 2 lines for anchoring
+        return []
     
     first_line = pattern_lines[0].strip()
     last_line = pattern_lines[-1].strip()
     
-    content_lines = content.split('\n')
-    matches = []
+    # Use normalized lines for matching logic
+    norm_content_lines = norm_content.split('\n')
+    # BUT use original lines for calculating start/end positions to prevent index shift
+    orig_content_lines = content.split('\n')
     
     pattern_line_count = len(pattern_lines)
     
-    for i in range(len(content_lines) - pattern_line_count + 1):
-        # Check if first and last lines match
-        if (content_lines[i].strip() == first_line and 
-            content_lines[i + pattern_line_count - 1].strip() == last_line):
+    potential_matches = []
+    for i in range(len(norm_content_lines) - pattern_line_count + 1):
+        if (norm_content_lines[i].strip() == first_line and 
+            norm_content_lines[i + pattern_line_count - 1].strip() == last_line):
+            potential_matches.append(i)
             
-            # Check middle similarity
-            if pattern_line_count <= 2:
-                # Only first and last, they match
-                similarity = 1.0
-            else:
-                content_middle = '\n'.join(content_lines[i+1:i+pattern_line_count-1])
-                pattern_middle = '\n'.join(pattern_lines[1:-1])
-                similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
-            
-            if similarity >= 0.70:
-                # Calculate positions
-                start_pos = sum(len(line) + 1 for line in content_lines[:i])
-                end_pos = sum(len(line) + 1 for line in content_lines[:i + pattern_line_count]) - 1
-                if end_pos >= len(content):
-                    end_pos = len(content)
-                matches.append((start_pos, end_pos))
+    matches = []
+    candidate_count = len(potential_matches)
+    
+    # Thresholding logic: 0.10 for unique matches (max flexibility), 0.30 for multiple candidates
+    threshold = 0.10 if candidate_count == 1 else 0.30
+
+    for i in potential_matches:
+        if pattern_line_count <= 2:
+            similarity = 1.0
+        else:
+            # Compare normalized middle sections
+            content_middle = '\n'.join(norm_content_lines[i+1:i+pattern_line_count-1])
+            pattern_middle = '\n'.join(pattern_lines[1:-1])
+            similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
+        
+        if similarity >= threshold:
+            # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
+            start_pos = sum(len(line) + 1 for line in orig_content_lines[:i])
+            end_pos = sum(len(line) + 1 for line in orig_content_lines[:i + pattern_line_count]) - 1
+            matches.append((start_pos, min(end_pos, len(content))))
     
     return matches
 

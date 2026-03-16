@@ -33,6 +33,12 @@ function getArg(name, defaultVal) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : defaultVal;
 }
 
+const WHATSAPP_DEBUG =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_DEBUG === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const PAIR_ONLY = args.includes('--pair-only');
@@ -112,16 +118,18 @@ async function startSocket() {
       if (!msg.message) continue;
 
       const chatId = msg.key.remoteJid;
-      try {
-        console.log(JSON.stringify({
-          event: 'upsert',
-          type,
-          fromMe: !!msg.key.fromMe,
-          chatId,
-          senderId: msg.key.participant || chatId,
-          messageKeys: Object.keys(msg.message || {}),
-        }));
-      } catch {}
+      if (WHATSAPP_DEBUG) {
+        try {
+          console.log(JSON.stringify({
+            event: 'upsert',
+            type,
+            fromMe: !!msg.key.fromMe,
+            chatId,
+            senderId: msg.key.participant || chatId,
+            messageKeys: Object.keys(msg.message || {}),
+          }));
+        } catch {}
+      }
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');

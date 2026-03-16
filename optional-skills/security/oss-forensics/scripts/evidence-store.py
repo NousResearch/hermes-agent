@@ -12,13 +12,13 @@ Commands:
   summary  - Print investigation statistics
 
 Usage example:
-  python evidence-store.py --store evidence.json add \
+  python3 evidence-store.py --store evidence.json add \
     --source "git fsck output" --content "dangling commit abc123" \
     --type git --actor "malicious-user" --url "https://github.com/owner/repo/commit/abc123"
 
-  python evidence-store.py --store evidence.json list --type git
-  python evidence-store.py --store evidence.json verify
-  python evidence-store.py --store evidence.json export > evidence-table.md
+  python3 evidence-store.py --store evidence.json list --type git
+  python3 evidence-store.py --store evidence.json verify
+  python3 evidence-store.py --store evidence.json export > evidence-table.md
 """
 
 import json

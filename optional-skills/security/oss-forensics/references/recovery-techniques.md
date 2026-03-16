@@ -141,7 +141,7 @@ print(base64.b64decode(d['content']).decode())
 After recovering any deleted content, immediately record it:
 
 ```bash
-python scripts/evidence-store.py --store evidence.json add \
+python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json add \
   --source "git fetch origin FORCE_PUSHED_SHA" \
   --content "Recovered commit: FORCE_PUSHED_SHA | Author: attacker@example.com | Date: 2024-01-15 | Added file: malicious.sh" \
   --type git \

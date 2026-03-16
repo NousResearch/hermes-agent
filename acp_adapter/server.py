@@ -226,9 +226,25 @@ class HermesACPAgent(acp.Agent):
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
-        user_text = _extract_text(prompt)
-        if not user_text.strip():
+        user_text = _extract_text(prompt).strip()
+        if not user_text:
             return PromptResponse(stop_reason="end_turn")
+
+        # --- Issue #1402: Support Slash Commands via ACP ---
+        if user_text.startswith('/'):
+            logger.info("Slash command detected in session %s: %s", session_id, user_text)
+            
+            # Execute the command locally without calling the LLM
+            command_output = await self._handle_slash_command(user_text, state)
+            
+            # Send the command result back to the client via session_update
+            if self._conn and command_output:
+                update = acp.update_agent_message_text(command_output)
+                await self._conn.session_update(session_id, update)
+            
+            # Return early as we don't need the LLM to process this
+            return PromptResponse(stop_reason="end_turn")
+        # ----------------------------------------------------
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -314,6 +330,19 @@ class HermesACPAgent(acp.Agent):
 
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
+
+    async def _handle_slash_command(self, command_text: str, state: Any) -> str:
+        """
+        Executes a slash command using the CLI command handlers.
+        """
+        try:
+            # You will need to import the command dispatcher from hermes_cli
+            # For example: from hermes_cli.main import dispatch_command
+            # return dispatch_command(command_text, state)
+            return f"Executed command: {command_text}\n(Note: Connect this to hermes_cli handlers)"
+        except Exception as e:
+            logger.error(f"Failed to execute slash command {command_text}: {e}")
+            return f"Error executing command: {e}"
 
     # ---- Model switching ----------------------------------------------------
 

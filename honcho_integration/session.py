@@ -927,6 +927,11 @@ class HonchoSessionManager:
             return False
 
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
+        if not honcho_session:
+            logger.warning("No Honcho session cached for '%s', skipping AI seed", session_key)
+            return False
+
         try:
             wrapped = (
                 f"<ai_identity_seed>\n"
@@ -935,7 +940,7 @@ class HonchoSessionManager:
                 f"{content.strip()}\n"
                 f"</ai_identity_seed>"
             )
-            assistant_peer.add_message("assistant", wrapped)
+            honcho_session.add_messages([assistant_peer.message(wrapped)])
             logger.info("Seeded AI identity from '%s' into %s", source, session_key)
             return True
         except Exception as e:

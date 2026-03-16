@@ -635,6 +635,7 @@ function playTtsAndMaybeRestart(url) {
 
 const SILENCE_THRESHOLD = 0.015;
 const SILENCE_DURATION = 1500;
+const MIN_SPEECH_DURATION = 500; // minimum 0.5s of speech before accepting
 
 // ── Mic button: tap = push-to-talk, long press = streaming mode ──
 
@@ -958,6 +959,7 @@ async function startRecording() {
         const dataArray = new Float32Array(analyser.fftSize);
         let silenceStart = null;
         let hasSpoken = false;
+        let speechStart = null;
         let vadActive = true;
 
         const mimeType = getSupportedMime();
@@ -988,7 +990,8 @@ async function startRecording() {
             const rms = Math.sqrt(sum / dataArray.length);
 
             if (rms > SILENCE_THRESHOLD) {
-                hasSpoken = true;
+                if (!speechStart) speechStart = Date.now();
+                if (Date.now() - speechStart >= MIN_SPEECH_DURATION) hasSpoken = true;
                 silenceStart = null;
             } else if (hasSpoken) {
                 if (!silenceStart) silenceStart = Date.now();

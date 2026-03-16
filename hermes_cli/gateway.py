@@ -371,8 +371,6 @@ def get_hermes_cli_path() -> str:
 # =============================================================================
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    import shutil
-
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     venv_dir = str(PROJECT_ROOT / "venv")
@@ -381,7 +379,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     # Build a PATH that includes the venv, node_modules, and standard system dirs
     sane_path = f"{venv_bin}:{node_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    hermes_cli = shutil.which("hermes") or f"{python_path} -m hermes_cli.main"
 
     hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
 
@@ -408,7 +405,7 @@ Restart=on-failure
 RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=15
+TimeoutStopSec=60
 StandardOutput=journal
 StandardError=journal
 
@@ -423,7 +420,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
-ExecStop={hermes_cli} gateway stop
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -432,7 +428,7 @@ Restart=on-failure
 RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=15
+TimeoutStopSec=60
 StandardOutput=journal
 StandardError=journal
 

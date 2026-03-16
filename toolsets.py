@@ -202,6 +202,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "task_market": {
+        "description": "TaskMarket — browse, claim, and complete tasks for USDC on Base Network",
+        "tools": ["task_search", "task_get", "task_claim", "task_pitch", "task_submit", "task_stats", "task_inbox"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

@@ -22,6 +22,20 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_singularity_available() -> None:
+    """Check that Singularity or Apptainer is available before use."""
+    has_apptainer = shutil.which("apptainer")
+    has_singularity = shutil.which("singularity")
+    
+    if not has_apptainer and not has_singularity:
+        raise RuntimeError(
+            "Singularity/Apptainer is not installed. "
+            "Install Apptainer: https://apptainer.org/docs/admin/main/installation.html "
+            "or Singularity: https://sylabs.io/guides/latest/admin-guide/"
+        )
+
+
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 
 
@@ -169,6 +183,7 @@ class SingularityEnvironment(BaseEnvironment):
         task_id: str = "default",
     ):
         super().__init__(cwd=cwd, timeout=timeout)
+        _ensure_singularity_available()
         self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
         self.image = _get_or_build_sif(image, self.executable)
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"

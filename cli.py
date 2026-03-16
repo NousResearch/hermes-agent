@@ -1416,12 +1416,86 @@ class HermesCLI:
         Receives text deltas from the agent as tokens arrive. Buffers
         partial lines and emits complete lines via _cprint to work
         reliably with prompt_toolkit's patch_stdout.
+
+        Reasoning/thinking blocks (<REASONING_SCRATCHPAD>, <think>, etc.)
+        are suppressed during streaming since they'd display raw XML tags.
+        The agent strips them from the final response anyway.
         """
         if not text:
             return
 
-        # Open the response box header on the very first delta
+        self._stream_started = True
+
+        # ── Tag-based reasoning suppression ──
+        # Track whether we're inside a reasoning/thinking block.
+        # These tags are model-generated (system prompt tells the model
+        # to use them) and get stripped from final_response. We must
+        # suppress them during streaming too.
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>")
+
+        # Append to a pre-filter buffer first
+        self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
+
+        # Check if we're entering a reasoning block
+        if not getattr(self, "_in_reasoning_block", False):
+            for tag in _OPEN_TAGS:
+                idx = self._stream_prefilt.find(tag)
+                if idx != -1:
+                    # Emit everything before the tag
+                    before = self._stream_prefilt[:idx]
+                    if before:
+                        self._emit_stream_text(before)
+                    self._in_reasoning_block = True
+                    self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                    break
+
+            # Could also be a partial open tag at the end — hold it back
+            if not getattr(self, "_in_reasoning_block", False):
+                # Check for partial tag match at the end
+                safe = self._stream_prefilt
+                for tag in _OPEN_TAGS:
+                    for i in range(1, len(tag)):
+                        if self._stream_prefilt.endswith(tag[:i]):
+                            safe = self._stream_prefilt[:-i]
+                            break
+                if safe:
+                    self._emit_stream_text(safe)
+                    self._stream_prefilt = self._stream_prefilt[len(safe):]
+                return
+
+        # Inside a reasoning block — look for close tag.
+        # Keep accumulating _stream_prefilt because close tags can arrive
+        # split across multiple tokens (e.g. "</REASONING_SCRATCH" + "PAD>...").
+        if getattr(self, "_in_reasoning_block", False):
+            for tag in _CLOSE_TAGS:
+                idx = self._stream_prefilt.find(tag)
+                if idx != -1:
+                    self._in_reasoning_block = False
+                    after = self._stream_prefilt[idx + len(tag):]
+                    self._stream_prefilt = ""
+                    # Process remaining text after close tag
+                    if after:
+                        self._emit_stream_text(after)
+                    return
+            # Still inside reasoning block — keep only the tail that could
+            # be a partial close tag prefix (save memory on long blocks).
+            max_tag_len = max(len(t) for t in _CLOSE_TAGS)
+            if len(self._stream_prefilt) > max_tag_len:
+                self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
+            return
+
+    def _emit_stream_text(self, text: str) -> None:
+        """Emit filtered text to the streaming display."""
+        if not text:
+            return
+
+        # Open the response box header on the very first visible text
         if not self._stream_box_opened:
+            # Strip leading whitespace/newlines before first visible content
+            text = text.lstrip("\n")
+            if not text:
+                return
             self._stream_box_opened = True
             try:
                 from hermes_cli.skin_engine import get_active_skin
@@ -1433,7 +1507,6 @@ class HermesCLI:
             fill = w - 2 - len(label)
             _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
-        self._stream_started = True
         self._stream_buf += text
 
         # Emit complete lines, keep partial remainder in buffer
@@ -1457,6 +1530,8 @@ class HermesCLI:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._stream_prefilt = ""
+        self._in_reasoning_block = False
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

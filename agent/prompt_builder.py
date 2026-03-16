@@ -157,6 +157,12 @@ PLATFORM_HINTS = {
         "the scheduled destination, put it directly in your final response. Use "
         "send_message only for additional or different targets."
     ),
+    "sms": (
+        "You are communicating via SMS text messaging. Keep responses concise "
+        "and plain text only -- no markdown, no formatting. SMS has a 1600 "
+        "character limit per message (10 segments). Longer replies are split "
+        "across multiple messages. Be brief and direct."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."

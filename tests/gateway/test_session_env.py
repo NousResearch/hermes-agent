@@ -43,3 +43,24 @@ def test_clear_session_env_removes_thread_id(monkeypatch):
     assert os.getenv("HERMES_SESSION_CHAT_ID") is None
     assert os.getenv("HERMES_SESSION_CHAT_NAME") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
+
+
+def test_set_session_env_sets_gateway_session(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_name="Group",
+        chat_type="group",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    runner._set_session_env(context)
+    assert os.getenv("HERMES_GATEWAY_SESSION") == "1"
+
+
+def test_clear_session_env_removes_gateway_session(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    runner = object.__new__(GatewayRunner)
+    runner._clear_session_env()
+    assert os.getenv("HERMES_GATEWAY_SESSION") is None

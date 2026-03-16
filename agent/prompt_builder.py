@@ -91,7 +91,7 @@ SKILLS_GUIDANCE = (
 )
 
 _MESSAGING_CONFIRMATION_HINT = (
-    " When on this messaging platform, always describe what you plan to do "
+    "When on this messaging platform, always describe what you plan to do "
     "and ask for explicit user confirmation before executing any file-modifying "
     "or destructive action (write_file, patch_file, terminal commands that "
     "modify files, delete operations). Do not interpret conversational "
@@ -107,7 +107,7 @@ PLATFORM_HINTS = {
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
+        "URLs in markdown format ![alt](url) and they will be sent as photos. "
         + _MESSAGING_CONFIRMATION_HINT
     ),
     "telegram": (
@@ -117,7 +117,7 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "URLs in markdown format ![alt](url) and they will be sent as native photos. "
         + _MESSAGING_CONFIRMATION_HINT
     ),
     "discord": (
@@ -125,7 +125,7 @@ PLATFORM_HINTS = {
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.png, .jpg, .webp) are sent as photo "
         "attachments, audio as file attachments. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as attachments."
+        "in markdown format ![alt](url) and they will be sent as attachments. "
         + _MESSAGING_CONFIRMATION_HINT
     ),
     "slack": (
@@ -133,7 +133,7 @@ PLATFORM_HINTS = {
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
         "attachments, audio as file attachments. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be uploaded as attachments."
+        "in markdown format ![alt](url) and they will be uploaded as attachments. "
         + _MESSAGING_CONFIRMATION_HINT
     ),
     "signal": (
@@ -143,7 +143,7 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
         "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
+        "URLs in markdown format ![alt](url) and they will be sent as photos. "
         + _MESSAGING_CONFIRMATION_HINT
     ),
     "email": (

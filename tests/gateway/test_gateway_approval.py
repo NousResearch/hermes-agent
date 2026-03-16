@@ -1,13 +1,10 @@
-"""Tests for gateway session approval: env var setup and dangerous command guard."""
+"""Tests for gateway approval: dangerous command guard and platform hints."""
 
 import os
 
 import pytest
 
 from agent.prompt_builder import PLATFORM_HINTS
-from gateway.config import Platform
-from gateway.run import GatewayRunner
-from gateway.session import SessionContext, SessionSource
 from tools.approval import check_dangerous_command, clear_session
 
 
@@ -23,57 +20,26 @@ def _clean_env(monkeypatch):
     clear_session(key)
 
 
-def _make_runner_and_context():
-    runner = object.__new__(GatewayRunner)
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_name="TestGroup",
-        chat_type="group",
-    )
-    context = SessionContext(source=source, connected_platforms=[], home_channels={})
-    return runner, context
-
-
-# ---------------------------------------------------------------------------
-# _set_session_env / _clear_session_env
-# ---------------------------------------------------------------------------
-
-class TestSessionEnvGatewayFlag:
-    def test_set_session_env_sets_gateway_session(self):
-        runner, context = _make_runner_and_context()
-        runner._set_session_env(context)
-        assert os.getenv("HERMES_GATEWAY_SESSION") == "1"
-
-    def test_clear_session_env_removes_gateway_session(self):
-        runner, context = _make_runner_and_context()
-        runner._set_session_env(context)
-        assert os.getenv("HERMES_GATEWAY_SESSION") == "1"
-
-        runner._clear_session_env()
-        assert os.getenv("HERMES_GATEWAY_SESSION") is None
-
-
 # ---------------------------------------------------------------------------
 # check_dangerous_command with HERMES_GATEWAY_SESSION
 # ---------------------------------------------------------------------------
 
 class TestDangerousCommandGateway:
     def test_auto_approves_without_gateway_session(self):
-        """Without HERMES_GATEWAY_SESSION, dangerous commands are auto-approved."""
+        """Without HERMES_GATEWAY_SESSION, dangerous commands are auto-approved
+        via the early return at lines 319-320 of approval.py."""
         result = check_dangerous_command("rm -rf /tmp/test", "local")
         assert result["approved"] is True
+        # Confirm this is the early-return auto-approve path (no status key),
+        # not the non-dangerous path.
+        assert "status" not in result
 
     def test_requires_approval_with_gateway_session(self, monkeypatch):
         """With HERMES_GATEWAY_SESSION=1, dangerous commands require approval."""
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         result = check_dangerous_command("rm -rf /tmp/test", "local")
-        # The command should match a dangerous pattern and require approval
-        if result.get("status") == "approval_required":
-            assert result["approved"] is False
-        else:
-            # If the command doesn't match any dangerous pattern, it's still approved
-            assert result["approved"] is True
+        assert result["approved"] is False
+        assert result["status"] == "approval_required"
 
 
 # ---------------------------------------------------------------------------

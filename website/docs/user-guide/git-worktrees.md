@@ -136,23 +136,28 @@ Notes:
 - **Avoid running Hermes from the bare repo root when using worktrees**
   - Prefer the worktree directories instead, so each agent has a clear scope.
 
-## Using `hermes -w` (Worktree‑Aware Workflows)
+## Using `hermes -w` (Automatic Worktree Mode)
 
-Some Hermes workflows expose a `-w` or similar option to point the agent at a **specific working directory** (for example, when launching from an external tool or wrapper script).
-
-Typical pattern:
+Hermes has a built‑in `-w` flag that **automatically creates a disposable git worktree** with its own branch. You don't need to set up worktrees manually — just `cd` into your repo and run:
 
 ```bash
-# From anywhere
-hermes -w /path/to/repo-experiment-a
+cd /path/to/your/repo
+hermes -w
 ```
 
-This is equivalent to `cd /path/to/repo-experiment-a && hermes`, but can be easier to integrate into scripts or editor commands.
+Hermes will:
 
-When combined with git worktrees:
+- Create a temporary worktree under `.worktrees/` inside your repo.
+- Check out an isolated branch (e.g. `hermes/hermes-<hash>`).
+- Run the full CLI session inside that worktree.
 
-- Each `-w` target can be a different worktree path.
-- You can script or configure your editor so that each project maps to a dedicated worktree directory.
+This is the easiest way to get worktree isolation. You can also combine it with a single query:
+
+```bash
+hermes -w -q "Fix issue #123"
+```
+
+For parallel agents, open multiple terminals and run `hermes -w` in each — every invocation gets its own worktree and branch automatically.
 
 ## Putting It All Together
 

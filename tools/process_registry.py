@@ -47,13 +47,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import HERMES_HOME
 
 logger = logging.getLogger(__name__)
 
 
 # Checkpoint file for crash recovery (gateway only)
-CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+CHECKPOINT_PATH = HERMES_HOME / "processes.json"
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer

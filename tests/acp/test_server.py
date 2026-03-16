@@ -295,3 +295,97 @@ class TestOnConnect:
         mock_conn = MagicMock(spec=acp.Client)
         agent.on_connect(mock_conn)
         assert agent._conn is mock_conn
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommands:
+    """Test slash command dispatch in the ACP adapter."""
+
+    def _make_state(self, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.model = "test-model"
+        return state
+
+    def test_help_lists_commands(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/help", state)
+        assert result is not None
+        assert "/help" in result
+        assert "/model" in result
+        assert "/tools" in result
+        assert "/reset" in result
+
+    def test_model_shows_current(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/model", state)
+        assert "test-model" in result
+
+    def test_context_empty(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = []
+        result = agent._handle_slash_command("/context", state)
+        assert "empty" in result.lower()
+
+    def test_context_with_messages(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = agent._handle_slash_command("/context", state)
+        assert "2 messages" in result
+        assert "user: 1" in result
+
+    def test_reset_clears_history(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        result = agent._handle_slash_command("/reset", state)
+        assert "cleared" in result.lower()
+        assert len(state.history) == 0
+
+    def test_version(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/version", state)
+        assert HERMES_VERSION in result
+
+    def test_unknown_command_returns_none(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        result = agent._handle_slash_command("/nonexistent", state)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):
+        """Slash commands should be handled without calling the LLM."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = AsyncMock(spec=acp.Client)
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="/help")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"
+        mock_conn.session_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unknown_slash_falls_through_to_llm(self, agent, mock_manager):
+        """Unknown /commands should be sent to the LLM, not intercepted."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = AsyncMock(spec=acp.Client)
+        agent._conn = mock_conn
+
+        # Mock run_in_executor to avoid actually running the agent
+        with patch("asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value={
+                "final_response": "I processed /foo",
+                "messages": [],
+            })
+            prompt = [TextContentBlock(type="text", text="/foo bar")]
+            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "end_turn"

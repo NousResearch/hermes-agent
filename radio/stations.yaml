@@ -172,6 +172,12 @@ stations:
     genre: arabic / electronic
     location: Cairo
 
+  - name: Bush Radio 89.5
+    url: https://radio.garden/api/ara/content/listen/bush-radio/channel.mp3
+    region: africa
+    genre: community / zef
+    location: Cape Town
+
   # Australia
   - name: FBi Radio 94.5
     url: https://streamer.fbiradio.com/stream

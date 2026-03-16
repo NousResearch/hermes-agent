@@ -103,18 +103,52 @@ def _noise(seed: int, idx: int) -> float:
 
 
 def _generate_bars(position: float, title: str, paused: bool) -> str:
-    """Generate compact visualizer bars via the shared visualizer engine."""
-    from radio.visualizer_engine import render_rows
+    """Generate compact braille visualizer bars (direct, no engine)."""
+    global _bar_levels, _peak_levels, _peak_decay, _last_title, _last_render
 
-    rows = render_rows(
-        preset_name=None,
-        width=_NUM_BARS,
-        rows=1,
-        paused=paused,
-        position=position,
-        title_seed=title,
-    )
-    return rows[0] if rows else ""
+    if paused:
+        for i in range(_NUM_BARS):
+            _bar_levels[i] *= 0.85
+        return "".join(_braille_bar(_bar_levels[i]) for i in range(_NUM_BARS))
+
+    # Try real audio levels
+    try:
+        from radio.level_meter import get_levels, is_active
+        if is_active():
+            raw = get_levels(_NUM_BARS)
+            if len(raw) >= 3 and any(v > 0.05 for v in raw):
+                return _render_real_levels(raw)
+    except ImportError:
+        pass
+
+    # Synthetic fallback
+    if title != _last_title:
+        _last_title = title
+        _bar_levels = [0.0] * _NUM_BARS
+
+    now = time.time()
+    dt = min(now - _last_render, 0.5) if _last_render > 0 else 0.3
+    _last_render = now
+
+    title_seed = int(hashlib.md5((title or "x").encode()).hexdigest()[:8], 16)
+    pos = position if position and position > 0 else now
+
+    for i in range(_NUM_BARS):
+        freq = 1.5 + i * 0.8
+        phase = title_seed + i * 137
+        val = _noise(int(pos * freq) + phase, i) * 0.5
+        val += _noise(int(pos * freq * 2.7) + phase + 1000, i) * 0.3
+        val += _noise(int(pos * freq * 6.1) + phase + 2000, i) * 0.2
+        center = 0.6 + 0.4 * (1.0 - abs(i - _NUM_BARS / 2) / (_NUM_BARS / 2))
+        energy = 0.6 + 0.4 * math.sin(pos * 0.4 + title_seed * 0.001)
+        val = val * center * energy * 1.6 + 0.15
+
+        if val > _bar_levels[i]:
+            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, 12.0 * dt)
+        else:
+            _bar_levels[i] += (val - _bar_levels[i]) * min(1.0, 4.0 * dt)
+
+    return "".join(_braille_bar(_bar_levels[i]) for i in range(_NUM_BARS))
 
 
 def _render_real_levels(levels: List[float]) -> str:

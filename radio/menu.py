@@ -497,17 +497,23 @@ def render_menu(state: RadioMenuState) -> List[Tuple[str, str]]:
     # ├─ separator ─┤
     fragments.append(("class:radio-menu-border", f"  \u251c{BOX_H * (MENU_WIDTH - 2)}\u2524\n"))
 
-    # Viewport calculation -- keep cursor centered in view
+    # Viewport calculation -- keep cursor visible with generous margin
+    # Headers take 2 lines each, so we need extra margin
     visible = _get_visible_rows()
     vp = state.viewport_start
 
-    margin = 2
+    margin = 4  # generous margin for headers
     if cursor_abs < vp + margin:
         vp = max(0, cursor_abs - margin)
     elif cursor_abs >= vp + visible - margin:
         vp = cursor_abs - visible + margin + 1
 
-    vp = max(0, min(len(items) - visible, vp))
+    # Extra: count headers between vp and cursor_abs to adjust
+    headers_in_view = sum(1 for i in range(vp, cursor_abs + 1) if i < len(items) and items[i].is_header)
+    if cursor_abs + headers_in_view >= vp + visible - 2:
+        vp = cursor_abs - visible + headers_in_view + 3
+
+    vp = max(0, min(max(0, len(items) - visible), vp))
     state.viewport_start = vp
 
     # Scroll indicator top

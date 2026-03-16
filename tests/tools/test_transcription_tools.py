@@ -7,6 +7,7 @@ end-to-end dispatch.  All external dependencies are mocked.
 
 import os
 import struct
+import subprocess
 import wave
 from unittest.mock import MagicMock, patch
 
@@ -45,7 +46,10 @@ def sample_ogg(tmp_path):
 def clean_env(monkeypatch):
     """Ensure no real API keys leak into tests."""
     monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
 
 # ============================================================================
@@ -131,6 +135,19 @@ class TestGetProviderFallbackPriority:
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "local"
+
+    def test_openai_fallback_to_local_command(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --output_dir {output_dir} --language {language}",
+        )
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "openai"}) == "local_command"
 
 
 # ============================================================================
@@ -277,6 +294,63 @@ class TestTranscribeOpenAIExtended:
 
         assert result["success"] is False
         assert "Permission denied" in result["error"]
+
+
+class TestTranscribeLocalCommand:
+    def test_auto_detects_local_whisper_binary(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")
+
+        from tools.transcription_tools import _get_local_command_template
+
+        template = _get_local_command_template()
+
+        assert template is not None
+        assert template.startswith("/opt/homebrew/bin/whisper ")
+        assert "{model}" in template
+        assert "{output_dir}" in template
+
+    def test_command_fallback_with_template(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "en")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                output_path = cmd[-1]
+                with open(output_path, "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello from local command"
+        assert result["provider"] == "local_command"
 
 
 # ============================================================================
@@ -611,6 +685,29 @@ class TestTranscribeAudioDispatch:
         assert "No STT provider" in result["error"]
         assert "faster-whisper" in result["error"]
         assert "GROQ_API_KEY" in result["error"]
+
+    def test_openai_provider_falls_back_to_local_command(self, monkeypatch, sample_ogg):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._transcribe_local_command", return_value={
+                 "success": True,
+                 "transcript": "hello from fallback",
+                 "provider": "local_command",
+             }) as mock_local_command:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello from fallback"
+        mock_local_command.assert_called_once_with(sample_ogg, "base")
 
     def test_invalid_file_short_circuits(self):
         from tools.transcription_tools import transcribe_audio

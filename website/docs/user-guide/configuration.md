@@ -462,6 +462,9 @@ terminal:
   container_memory: 5120             # MB (default 5GB)
   container_disk: 51200              # MB (default 50GB)
   container_persistent: true         # Persist filesystem across sessions
+
+  # Persistent shell — keep a long-lived bash process across commands
+  persistent_shell: true             # Enabled by default for SSH backend
 ```
 
 ### Common Terminal Backend Issues
@@ -516,6 +519,46 @@ This is useful for:
 - **Shared workspaces** where both you and the agent access the same files
 
 Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
+
+### Persistent Shell
+
+By default, each terminal command runs in its own subprocess — working directory, environment variables, and shell variables reset between commands. When **persistent shell** is enabled, a single long-lived bash process is kept alive across `execute()` calls so that state survives between commands.
+
+This is most useful for the **SSH backend**, where it also eliminates per-command connection overhead. Persistent shell is **enabled by default for SSH** and disabled for the local backend.
+
+```yaml
+terminal:
+  persistent_shell: true   # default — enables persistent shell for SSH
+```
+
+To disable:
+
+```bash
+hermes config set terminal.persistent_shell false
+```
+
+**What persists across commands:**
+- Working directory (`cd /tmp` sticks for the next command)
+- Exported environment variables (`export FOO=bar`)
+- Shell variables (`MY_VAR=hello`)
+
+**Precedence:**
+
+| Level | Variable | Default |
+|-------|----------|---------|
+| Config | `terminal.persistent_shell` | `true` |
+| SSH override | `TERMINAL_SSH_PERSISTENT` | follows config |
+| Local override | `TERMINAL_LOCAL_PERSISTENT` | `false` |
+
+Per-backend environment variables take highest precedence. If you want persistent shell on the local backend too:
+
+```bash
+export TERMINAL_LOCAL_PERSISTENT=true
+```
+
+:::note
+Commands that require `stdin_data` or sudo automatically fall back to one-shot mode, since the persistent shell's stdin is already occupied by the IPC protocol.
+:::
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 

@@ -593,7 +593,14 @@ def execute_code(
 
     except Exception as exc:
         duration = round(time.monotonic() - exec_start, 2)
-        logging.exception("execute_code failed")
+        logger.error(
+            "execute_code failed after %ss with %d tool calls: %s: %s",
+            duration,
+            tool_call_counter[0],
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
         return json.dumps({
             "status": "error",
             "error": str(exc),
@@ -606,7 +613,7 @@ def execute_code(
         try:
             server_sock.close()
         except Exception as e:
-            logger.debug("Server socket close error: %s", e)
+            logger.debug("Server socket close error: %s", e, exc_info=True)
         try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)

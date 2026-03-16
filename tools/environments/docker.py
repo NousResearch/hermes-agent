@@ -171,6 +171,7 @@ class DockerEnvironment(BaseEnvironment):
         persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
+        host_cwd: str = "",
         network: bool = True,
     ):
         if cwd == "~":
@@ -216,7 +217,31 @@ class DockerEnvironment(BaseEnvironment):
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
-        if self._persistent:
+        host_cwd = os.path.expanduser((host_cwd or "").strip())
+        bind_host_cwd = bool(host_cwd)
+        if bind_host_cwd and not os.path.isdir(host_cwd):
+            logger.warning(
+                "Docker host cwd %r does not exist or is not a directory; falling back to the sandbox workspace.",
+                host_cwd,
+            )
+            bind_host_cwd = False
+
+        if bind_host_cwd:
+            if self._persistent:
+                sandbox = get_sandbox_dir() / "docker" / task_id
+                self._home_dir = str(sandbox / "home")
+                os.makedirs(self._home_dir, exist_ok=True)
+                writable_args = [
+                    "-v", f"{host_cwd}:/workspace",
+                    "-v", f"{self._home_dir}:/root",
+                ]
+            else:
+                writable_args = [
+                    "-v", f"{host_cwd}:/workspace",
+                    "--tmpfs", "/home:rw,exec,size=1g",
+                    "--tmpfs", "/root:rw,exec,size=1g",
+                ]
+        elif self._persistent:
             sandbox = get_sandbox_dir() / "docker" / task_id
             self._workspace_dir = str(sandbox / "workspace")
             self._home_dir = str(sandbox / "home")

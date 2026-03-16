@@ -1,5 +1,7 @@
 import logging
 import subprocess
+import sys
+import types
 
 import pytest
 
@@ -18,8 +20,30 @@ def _make_dummy_env(**kwargs):
         persistent_filesystem=kwargs.get("persistent_filesystem", False),
         task_id=kwargs.get("task_id", "test-task"),
         volumes=kwargs.get("volumes", []),
+        host_cwd=kwargs.get("host_cwd", ""),
         network=kwargs.get("network", True),
     )
+
+
+def _install_fake_minisweagent(monkeypatch, captured):
+    """Install a fake mini-swe-agent docker module to capture constructor args."""
+
+    class _FakeDocker:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.container_id = "fake-container"
+
+        def cleanup(self):
+            return None
+
+    minisweagent_mod = types.ModuleType("minisweagent")
+    environments_mod = types.ModuleType("minisweagent.environments")
+    docker_mod = types.ModuleType("minisweagent.environments.docker")
+    docker_mod.DockerEnvironment = _FakeDocker
+
+    monkeypatch.setitem(sys.modules, "minisweagent", minisweagent_mod)
+    monkeypatch.setitem(sys.modules, "minisweagent.environments", environments_mod)
+    monkeypatch.setitem(sys.modules, "minisweagent.environments.docker", docker_mod)
 
 
 def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, caplog):
@@ -86,3 +110,36 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
         })
     ]
 
+
+def test_host_cwd_is_bind_mounted_to_workspace(monkeypatch, tmp_path):
+    """A host cwd should be mounted at /workspace for Docker CLI sessions."""
+
+    captured = {}
+    _install_fake_minisweagent(monkeypatch, captured)
+    monkeypatch.setattr(docker_env, "_ensure_docker_available", lambda: None)
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    env = _make_dummy_env(cwd="/workspace", host_cwd=str(tmp_path))
+
+    assert env.cwd == "/workspace"
+    assert captured["cwd"] == "/workspace"
+    assert f"{tmp_path}:/workspace" in captured["run_args"]
+
+
+def test_missing_host_cwd_falls_back_to_sandbox_workspace(monkeypatch, tmp_path):
+    """Invalid host cwd should not produce a broken bind mount."""
+
+    captured = {}
+    _install_fake_minisweagent(monkeypatch, captured)
+    monkeypatch.setattr(docker_env, "_ensure_docker_available", lambda: None)
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "tools.environments.base.get_sandbox_dir",
+        lambda: tmp_path / "sandboxes",
+    )
+
+    missing = tmp_path / "does-not-exist"
+    _make_dummy_env(cwd="/workspace", host_cwd=str(missing), persistent_filesystem=True)
+
+    assert f"{missing}:/workspace" not in captured["run_args"]
+    assert any(str(tmp_path / "sandboxes" / "docker" / "test-task" / "workspace") in arg for arg in captured["run_args"])

@@ -91,17 +91,18 @@ class TestCwdHandling:
                 "/home/ paths should be replaced for modal backend."
             )
 
-    def test_users_path_replaced_for_docker(self):
-        """TERMINAL_CWD=/Users/... should be replaced with /root for docker."""
+    def test_users_path_maps_to_workspace_for_docker(self):
+        """Docker should bind-mount a host cwd into /workspace."""
         with patch.dict(os.environ, {
             "TERMINAL_ENV": "docker",
             "TERMINAL_CWD": "/Users/someone/projects",
         }):
             config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/root", (
-                f"Expected /root, got {config['cwd']}. "
-                "/Users/ paths should be replaced for docker backend."
+            assert config["cwd"] == "/workspace", (
+                f"Expected /workspace, got {config['cwd']}. "
+                "Docker host paths should map into /workspace."
             )
+            assert config["docker_host_cwd"] == "/Users/someone/projects"
 
     def test_windows_path_replaced_for_modal(self):
         """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
@@ -114,7 +115,7 @@ class TestCwdHandling:
 
     def test_default_cwd_is_root_for_container_backends(self):
         """Container backends should default to /root, not ~."""
-        for backend in ("modal", "docker", "singularity", "daytona"):
+        for backend in ("modal", "singularity", "daytona"):
             with patch.dict(os.environ, {"TERMINAL_ENV": backend}, clear=False):
                 # Remove TERMINAL_CWD so it uses default
                 env = os.environ.copy()
@@ -134,6 +135,19 @@ class TestCwdHandling:
                 config = _tt_mod._get_env_config()
                 assert config["cwd"] == os.getcwd()
 
+    def test_docker_default_cwd_maps_current_directory(self):
+        """Docker should auto-map the host current directory into /workspace."""
+        with (
+            patch("tools.terminal_tool.os.getcwd", return_value="/Users/someone/project"),
+            patch.dict(os.environ, {"TERMINAL_ENV": "docker"}, clear=False),
+        ):
+            env = os.environ.copy()
+            env.pop("TERMINAL_CWD", None)
+            with patch.dict(os.environ, env, clear=True):
+                config = _tt_mod._get_env_config()
+                assert config["cwd"] == "/workspace"
+                assert config["docker_host_cwd"] == "/Users/someone/project"
+
     def test_ssh_preserves_home_paths(self):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""
         with patch.dict(os.environ, {
@@ -146,6 +160,29 @@ class TestCwdHandling:
             assert config["cwd"] == "/home/remote-user/work", (
                 "SSH backend should preserve /home/ paths"
             )
+
+    def test_create_environment_passes_docker_host_cwd(self, monkeypatch):
+        """Docker host cwd from config should reach DockerEnvironment."""
+        captured = {}
+        sentinel = object()
+
+        def _fake_docker_environment(**kwargs):
+            captured.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+
+        env = _tt_mod._create_environment(
+            env_type="docker",
+            image="python:3.11",
+            cwd="/workspace",
+            timeout=60,
+            container_config={"docker_host_cwd": "/Users/someone/project"},
+        )
+
+        assert env is sentinel
+        assert captured["cwd"] == "/workspace"
+        assert captured["host_cwd"] == "/Users/someone/project"
 
 
 # =========================================================================

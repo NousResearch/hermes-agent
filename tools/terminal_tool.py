@@ -466,23 +466,25 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    # Default cwd: local uses the host's current directory, everything
-    # else starts in the user's home (~ resolves to whatever account
-    # is running inside the container/remote).
-    if env_type == "local":
+    # Default cwd: local uses the host's current directory. Docker also starts
+    # from the host cwd so the backend can auto-bind it into /workspace.
+    # Other backends still default to their own internal home directory.
+    if env_type in ("local", "docker"):
         default_cwd = os.getcwd()
     else:
         default_cwd = "/root"
     
-    # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If the CWD looks like a host-local path that can't exist inside a
-    # container/sandbox, fall back to the backend's own default. This
-    # catches the case where cli.py (or .env) leaked the host's CWD.
-    # SSH is excluded since /home/ paths are valid on remote machines.
+    # Read TERMINAL_CWD but sanity-check it for non-Docker container backends.
+    # Docker is special: when given a host cwd, we bind-mount it into
+    # /workspace instead of discarding it.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
-        # Host paths that won't exist inside containers
-        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+    host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+    docker_host_cwd = ""
+    if env_type == "docker" and cwd:
+        if any(cwd.startswith(p) for p in host_prefixes):
+            docker_host_cwd = cwd
+            cwd = "/workspace"
+    elif env_type in ("modal", "singularity", "daytona") and cwd:
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",
@@ -509,6 +511,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        "docker_host_cwd": docker_host_cwd,
     }
 
 
@@ -536,6 +539,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
+    host_cwd = cc.get("docker_host_cwd", "")
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -545,7 +549,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-            volumes=volumes,
+            volumes=volumes, host_cwd=host_cwd,
         )
     
     elif env_type == "singularity":
@@ -933,6 +937,7 @@ def terminal_tool(
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "docker_volumes": config.get("docker_volumes", []),
+                                "docker_host_cwd": config.get("docker_host_cwd", ""),
                             }
 
                         new_env = _create_environment(

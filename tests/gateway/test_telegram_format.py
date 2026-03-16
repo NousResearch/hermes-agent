@@ -7,7 +7,7 @@ or corrupt user-visible content.
 
 import re
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -392,3 +392,27 @@ class TestStripMdv2:
 
     def test_empty_string(self):
         assert _strip_mdv2("") == ""
+
+
+@pytest.mark.asyncio
+async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
+    adapter.MAX_MESSAGE_LENGTH = 80
+    adapter._bot = MagicMock()
+
+    sent_texts = []
+
+    async def _fake_send_message(**kwargs):
+        sent_texts.append(kwargs["text"])
+        msg = MagicMock()
+        msg.message_id = len(sent_texts)
+        return msg
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+
+    content = ("**bold** chunk content " * 12).strip()
+    result = await adapter.send("123", content)
+
+    assert result.success is True
+    assert len(sent_texts) > 1
+    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
+    assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])

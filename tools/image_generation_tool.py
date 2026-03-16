@@ -558,4 +558,5 @@ registry.register(
     check_fn=check_image_generation_requirements,
     requires_env=["FAL_KEY"],
     is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
+    emoji="🎨",
 )

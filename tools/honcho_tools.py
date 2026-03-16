@@ -222,6 +222,7 @@ registry.register(
     schema=_PROFILE_SCHEMA,
     handler=_handle_honcho_profile,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -230,6 +231,7 @@ registry.register(
     schema=_SEARCH_SCHEMA,
     handler=_handle_honcho_search,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -238,6 +240,7 @@ registry.register(
     schema=_QUERY_SCHEMA,
     handler=_handle_honcho_context,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -246,4 +249,5 @@ registry.register(
     schema=_CONCLUDE_SCHEMA,
     handler=_handle_honcho_conclude,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )

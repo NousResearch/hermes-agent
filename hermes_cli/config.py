@@ -118,6 +118,11 @@ DEFAULT_CONFIG = {
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
         "docker_volumes": [],
+        # Persistent shell — keep a long-lived bash shell across execute() calls
+        # so cwd/env vars/shell variables survive between commands.
+        # Enabled by default for non-local backends (SSH); local is always opt-in
+        # via TERMINAL_LOCAL_PERSISTENT env var.
+        "persistent_shell": True,
     },
     
     "browser": {
@@ -1391,6 +1396,7 @@ def set_config_value(key: str, value: str):
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

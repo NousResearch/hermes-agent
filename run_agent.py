@@ -87,6 +87,7 @@ from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.model_metadata import fetch_model_metadata
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -391,6 +392,15 @@ class AIAgent:
             self.provider = "anthropic"
         else:
             self.api_mode = "chat_completions"
+
+        # Pre-warm OpenRouter model metadata cache in the background.
+        # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
+        # HTTP request on the first API response when pricing is estimated.
+        if self.provider == "openrouter" or "openrouter" in self.base_url.lower():
+            try:
+                fetch_model_metadata()
+            except Exception:
+                pass  # non-critical; pricing will simply show as "unknown"
 
         self.tool_progress_callback = tool_progress_callback
         self.thinking_callback = thinking_callback

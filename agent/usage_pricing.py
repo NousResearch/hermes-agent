@@ -7,6 +7,10 @@ from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_model_metadata
 
+DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
+
+_ZERO = Decimal("0")
+_ONE_MILLION = Decimal("1000000")
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
@@ -73,13 +77,16 @@ class CostResult:
 
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
-_ZERO = Decimal("0")
-_ONE_MILLION = Decimal("1000000")
 
-
-# Official docs snapshot entries. These should only represent models whose
-# published pricing and cache semantics are stable enough to encode exactly.
+# Official docs snapshot entries. Models whose published pricing and cache
+# semantics are stable enough to encode exactly. Entries without confirmed
+# public pricing are marked "forward-looking" — they carry projected prices
+# based on provider patterns and should be updated when official pricing
+# is announced.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # --- Forward-looking: claude-opus-4.6/claude-sonnet-4.6 are projected
+    #     model names. Pricing extrapolated from opus-4/sonnet-4 patterns.
+    #     Update when Anthropic announces official pricing.
     (
         "anthropic",
         "claude-opus-4.6",
@@ -88,9 +95,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from claude-opus-4 pricing patterns)",
+        pricing_version="anthropic-forward-looking-2026-03-16",
     ),
     (
         "anthropic",
@@ -100,9 +107,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("25.00"),
         cache_read_cost_per_million=Decimal("0.50"),
         cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from claude-opus-4 pricing patterns)",
+        pricing_version="anthropic-forward-looking-2026-03-16",
     ),
     (
         "anthropic",
@@ -112,9 +119,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from claude-sonnet-4 pricing patterns)",
+        pricing_version="anthropic-forward-looking-2026-03-16",
     ),
     (
         "anthropic",
@@ -124,9 +131,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from claude-sonnet-4 pricing patterns)",
+        pricing_version="anthropic-forward-looking-2026-03-16",
     ),
     (
         "anthropic",
@@ -208,6 +215,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
+    # --- Forward-looking: gpt-5/gpt-5.4 projected from gpt-4o pricing scale.
+    #     Update when OpenAI announces official pricing.
     (
         "openai",
         "gpt-5",
@@ -215,9 +224,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("1.25"),
         output_cost_per_million=Decimal("10.00"),
         cache_read_cost_per_million=Decimal("0.125"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from gpt-4o pricing scale)",
+        pricing_version="openai-forward-looking-2026-03-16",
     ),
     (
         "openai",
@@ -226,9 +235,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("2.50"),
         output_cost_per_million=Decimal("15.00"),
         cache_read_cost_per_million=Decimal("0.25"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from gpt-4o pricing scale)",
+        pricing_version="openai-forward-looking-2026-03-16",
     ),
     (
         "openai",
@@ -252,6 +261,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
+    # --- Forward-looking: o4-mini pricing projected from o3-mini patterns.
     (
         "openai",
         "o4-mini",
@@ -259,9 +269,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("1.10"),
         output_cost_per_million=Decimal("4.40"),
         cache_read_cost_per_million=Decimal("0.275"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
+        source="forward-looking",
+        source_url="(projected from o3-mini pricing)",
+        pricing_version="openai-forward-looking-2026-03-16",
     ),
     # Anthropic older models (pre-4.6 generation)
     (
@@ -479,6 +489,17 @@ def normalize_usage(
     provider: Optional[str] = None,
     api_mode: Optional[str] = None,
 ) -> CanonicalUsage:
+    """Normalize raw API response usage into canonical token buckets.
+
+    Handles three API shapes:
+    - Anthropic: input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens
+    - Codex Responses: input_tokens includes cache tokens; input_tokens_details.cached_tokens separates them
+    - OpenAI Chat Completions: prompt_tokens includes cache tokens; prompt_tokens_details.cached_tokens separates them
+
+    In both Codex and OpenAI modes, input_tokens is derived by subtracting cache
+    tokens from the total — the API contract is that input/prompt totals include
+    cached tokens and the details object breaks them out.
+    """
     if not response_usage:
         return CanonicalUsage()
 
@@ -606,13 +627,16 @@ def has_known_pricing(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> bool:
-    result = estimate_usage_cost(
-        model_name,
-        CanonicalUsage(),
-        provider=provider,
-        base_url=base_url,
-    )
-    return result.status in {"estimated", "included", "actual"}
+    """Check whether we have pricing data for this model+route.
+
+    Uses direct lookup instead of routing through the full estimation
+    pipeline — avoids creating dummy usage objects just to check status.
+    """
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    if route.billing_mode == "subscription_included":
+        return True
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url)
+    return entry is not None
 
 
 def get_pricing(
@@ -632,9 +656,6 @@ def get_pricing(
         "input": float(entry.input_cost_per_million or _ZERO),
         "output": float(entry.output_cost_per_million or _ZERO),
     }
-
-
-DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 
 def estimate_cost_usd(

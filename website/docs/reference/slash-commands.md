@@ -63,7 +63,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
-| `/usage` | Show token usage for the current session |
+| `/usage` | Show token usage, cost breakdown, and session duration |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` | Show gateway/messaging platform status |
 | `/paste` | Check clipboard for an image and attach it |
@@ -104,7 +104,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/compress` | Manually compress conversation context. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
-| `/usage` | Show token usage for the current session. |
+| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, and session duration. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |

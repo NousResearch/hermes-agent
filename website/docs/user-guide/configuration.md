@@ -441,6 +441,39 @@ Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
 :::
 
+## Smart Model Routing
+
+Optional cheap-vs-strong routing lets Hermes keep your main model for complex work while sending very short/simple turns to a cheaper model.
+
+```yaml
+smart_model_routing:
+  enabled: true
+  max_simple_chars: 160
+  max_simple_words: 28
+  cheap_model:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    # base_url: http://localhost:8000/v1  # optional custom endpoint
+    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+```
+
+How it works:
+- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
+- If the turn looks complex, Hermes stays on your primary model/provider
+- If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically
+
+This is intentionally conservative. It is meant for quick, low-stakes turns like:
+- short factual questions
+- quick rewrites
+- lightweight summaries
+
+It will avoid routing prompts that look like:
+- coding/debugging work
+- tool-heavy requests
+- long or multi-line analysis asks
+
+Use this when you want lower latency or cost without fully changing your default model.
+
 ## Terminal Backend Configuration
 
 Configure which environment the agent uses for terminal commands:
@@ -453,7 +486,8 @@ terminal:
 
   # Docker-specific settings
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
-  docker_volumes:                    # Share host directories with the container
+  docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into /workspace.
+  docker_volumes:                    # Additional explicit host mounts
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"     # :ro for read-only
 
@@ -520,41 +554,30 @@ This is useful for:
 
 Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
 
-### Docker Auto-Mount Current Directory
+### Optional: Mount the Launch Directory into `/workspace`
 
-When using the Docker backend, Hermes **automatically mounts your current working directory** to `/workspace` inside the container. This means you can:
+Docker sandboxes stay isolated by default. Hermes does **not** pass your current host working directory into the container unless you explicitly opt in.
 
-```bash
-cd ~/projects/my-app
-hermes
-# The agent can now see and edit files in ~/projects/my-app via /workspace
+Enable it in `config.yaml`:
+
+```yaml
+terminal:
+  backend: docker
+  docker_mount_cwd_to_workspace: true
 ```
 
-No manual volume configuration needed — just `cd` to your project and run `hermes`.
+When enabled:
+- if you launch Hermes from `~/projects/my-app`, that host directory is bind-mounted to `/workspace`
+- the Docker backend starts in `/workspace`
+- file tools and terminal commands both see the same mounted project
 
-**How it works:**
-- If you're in `/home/user/projects/my-app`, that directory is mounted to `/workspace`
-- The container's working directory is set to `/workspace`
-- Files you edit on the host are immediately visible to the agent, and vice versa
+When disabled, `/workspace` stays sandbox-owned unless you explicitly mount something via `docker_volumes`.
 
-**Disabling auto-mount:**
+Security tradeoff:
+- `false` preserves the sandbox boundary
+- `true` gives the sandbox direct access to the directory you launched Hermes from
 
-If you prefer the old behavior (empty `/workspace` with tmpfs or persistent sandbox), disable auto-mount:
-
-```bash
-export TERMINAL_DOCKER_NO_AUTO_MOUNT=true
-```
-
-**Precedence:**
-
-Auto-mount is skipped when:
-1. `TERMINAL_DOCKER_NO_AUTO_MOUNT=true` is set
-2. You've explicitly configured a volume mount to `/workspace` in `docker_volumes`
-3. `container_persistent: true` is set (persistent sandbox mode uses its own `/workspace`)
-
-:::tip
-Auto-mount is ideal for project-based work where you want the agent to operate on your actual files. For isolated sandboxing where the agent shouldn't access your filesystem, set `TERMINAL_DOCKER_NO_AUTO_MOUNT=true`.
-:::
+Use the opt-in only when you intentionally want the container to work on live host files.
 
 ### Persistent Shell
 
@@ -842,6 +865,27 @@ display:
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
 | `verbose` | Full args, results, and debug logs |
+
+## Privacy
+
+```yaml
+privacy:
+  redact_pii: false  # Strip PII from LLM context (gateway only)
+```
+
+When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
+
+| Field | Treatment |
+|-------|-----------|
+| Phone numbers (user ID on WhatsApp/Signal) | Hashed to `user_<12-char-sha256>` |
+| User IDs | Hashed to `user_<12-char-sha256>` |
+| Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
+| Home channel IDs | Numeric portion hashed |
+| User names / usernames | **Not affected** (user-chosen, publicly visible) |
+
+**Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
+
+Hashes are deterministic — the same user always maps to the same hash, so the model can still distinguish between users in group chats. Routing and delivery use the original values internally.
 
 ## Speech-to-Text (STT)
 

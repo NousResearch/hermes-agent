@@ -47,9 +47,9 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
             return ts
     except (ValueError, OSError, OverflowError) as e:
         # Log specific errors for debugging while gracefully handling edge cases
-        logging.debug("Failed to format timestamp %s: %s", ts, e)
+        logging.debug("Failed to format timestamp %s: %s", ts, e, exc_info=True)
     except Exception as e:
-        logging.debug("Unexpected error formatting timestamp %s: %s", ts, e)
+        logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
 
 
@@ -170,7 +170,12 @@ async def _summarize_session(
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 * (attempt + 1))
             else:
-                logging.warning(f"Session summarization failed after {max_retries} attempts: {e}")
+                logging.warning(
+                    "Session summarization failed after %d attempts: %s",
+                    max_retries,
+                    e,
+                    exc_info=True,
+                )
                 return None
 
 
@@ -237,7 +242,12 @@ def session_search(
                     else:
                         break
                 except Exception as e:
-                    logging.debug("Error resolving parent for session %s: %s", sid, e)
+                    logging.debug(
+                        "Error resolving parent for session %s: %s",
+                        sid,
+                        e,
+                        exc_info=True,
+                    )
                     break
             return sid
 
@@ -270,7 +280,12 @@ def session_search(
                 conversation_text = _truncate_around_matches(conversation_text, query)
                 tasks.append((session_id, match_info, conversation_text, session_meta))
             except Exception as e:
-                logging.warning(f"Failed to prepare session {session_id}: {e}")
+                logging.warning(
+                    "Failed to prepare session %s: %s",
+                    session_id,
+                    e,
+                    exc_info=True,
+                )
 
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
@@ -289,7 +304,10 @@ def session_search(
             # No event loop running, create a new one
             results = asyncio.run(_summarize_all())
         except concurrent.futures.TimeoutError:
-            logging.warning("Session summarization timed out after 60 seconds")
+            logging.warning(
+                "Session summarization timed out after 60 seconds",
+                exc_info=True,
+            )
             return json.dumps({
                 "success": False,
                 "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
@@ -298,7 +316,12 @@ def session_search(
         summaries = []
         for (session_id, match_info, _, _), result in zip(tasks, results):
             if isinstance(result, Exception):
-                logging.warning(f"Failed to summarize session {session_id}: {result}")
+                logging.warning(
+                    "Failed to summarize session %s: %s",
+                    session_id,
+                    result,
+                    exc_info=True,
+                )
                 continue
             if result:
                 summaries.append({
@@ -318,6 +341,7 @@ def session_search(
         }, ensure_ascii=False)
 
     except Exception as e:
+        logging.error("Session search failed: %s", e, exc_info=True)
         return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
 
 

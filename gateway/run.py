@@ -157,6 +157,12 @@ if _config_path.exists():
                     "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
                     "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
                 },
+                "approval": {
+                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
+                    "model": "AUXILIARY_APPROVAL_MODEL",
+                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
+                },
             }
             for _task_key, _env_map in _aux_task_env.items():
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
@@ -318,6 +324,7 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._smart_model_routing = self._load_smart_model_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -587,6 +594,18 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+        from agent.smart_model_routing import resolve_turn_route
+
+        primary = {
+            "model": model,
+            "api_key": runtime_kwargs.get("api_key"),
+            "base_url": runtime_kwargs.get("base_url"),
+            "provider": runtime_kwargs.get("provider"),
+            "api_mode": runtime_kwargs.get("api_mode"),
+        }
+        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to a non-retryable adapter failure after startup."""
         logger.error(
@@ -789,6 +808,20 @@ class GatewayRunner:
             pass
         return None
 
+    @staticmethod
+    def _load_smart_model_routing() -> dict:
+        """Load optional smart cheap-vs-strong model routing config."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("smart_model_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -831,12 +864,15 @@ class GatewayRunner:
             logger.warning("Process checkpoint recovery: %s", e)
         
         connected_count = 0
+        enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
+        startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
+            enabled_platform_count += 1
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
@@ -858,12 +894,22 @@ class GatewayRunner:
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
-                    if adapter.has_fatal_error and not adapter.fatal_error_retryable:
-                        startup_nonretryable_errors.append(
+                    if adapter.has_fatal_error:
+                        target = (
+                            startup_retryable_errors
+                            if adapter.fatal_error_retryable
+                            else startup_nonretryable_errors
+                        )
+                        target.append(
                             f"{platform.value}: {adapter.fatal_error_message}"
+                        )
+                    else:
+                        startup_retryable_errors.append(
+                            f"{platform.value}: failed to connect"
                         )
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
+                startup_retryable_errors.append(f"{platform.value}: {e}")
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -876,7 +922,16 @@ class GatewayRunner:
                     pass
                 self._request_clean_exit(reason)
                 return True
-            logger.warning("No messaging platforms connected.")
+            if enabled_platform_count > 0:
+                reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
+                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                except Exception:
+                    pass
+                return False
+            logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
@@ -1430,8 +1485,17 @@ class GatewayRunner:
         # Set environment variables for tools
         self._set_session_env(context)
         
+        # Read privacy.redact_pii from config (re-read per message)
+        _redact_pii = False
+        try:
+            with open(_config_path, encoding="utf-8") as _pf:
+                _pcfg = yaml.safe_load(_pf) or {}
+            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+        except Exception:
+            pass
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context)
+        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -2899,11 +2963,12 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             def run_sync():
                 agent = AIAgent(
-                    model=model,
-                    **runtime_kwargs,
+                    model=turn_route["model"],
+                    **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -3625,13 +3690,9 @@ class GatewayRunner:
           1. Immediately understand what the user sent (no extra tool call).
           2. Re-examine the image with vision_analyze if it needs more detail.
 
-        Athabasca persistence should happen through Athabasca's own POST
-        /api/uploads flow, using the returned asset.publicUrl rather than local
-        cache paths.
-
         Args:
-            user_text:      The user's original caption / message text.
-            image_paths:    List of local file paths to cached images.
+            user_text:   The user's original caption / message text.
+            image_paths: List of local file paths to cached images.
 
         Returns:
             The enriched message string with vision descriptions prepended.
@@ -3656,16 +3717,10 @@ class GatewayRunner:
                 result = _json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    athabasca_note = (
-                        "\n[If this image needs to persist in Athabasca state, upload the cached file "
-                        "through Athabasca POST /api/uploads and use the returned asset.publicUrl. "
-                        "Do not store the local cache path as the canonical imageUrl.]"
-                    )
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
-                        f"{athabasca_note}"
                     )
                 else:
                     enriched_parts.append(
@@ -4177,9 +4232,10 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
             agent = AIAgent(
-                model=model,
-                **runtime_kwargs,
+                model=turn_route["model"],
+                **turn_route["runtime"],
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,

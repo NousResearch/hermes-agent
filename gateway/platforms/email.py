@@ -135,14 +135,23 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
-def _extract_attachments(msg: email_lib.message.Message) -> List[Dict[str, Any]]:
-    """Extract attachment metadata and cache files locally."""
+def _extract_attachments(
+    msg: email_lib.message.Message,
+    skip_attachments: bool = False,
+) -> List[Dict[str, Any]]:
+    """Extract attachment metadata and cache files locally.
+
+    When *skip_attachments* is True, all attachment/inline parts are ignored
+    (useful for malware protection or bandwidth savings).
+    """
     attachments = []
     if not msg.is_multipart():
         return attachments
 
     for part in msg.walk():
         disposition = str(part.get("Content-Disposition", ""))
+        if skip_attachments and ("attachment" in disposition or "inline" in disposition):
+            continue
         if "attachment" not in disposition and "inline" not in disposition:
             continue
         # Skip text/plain and text/html body parts
@@ -195,6 +204,13 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+
+        # Skip attachments — configured via config.yaml:
+        #   platforms:
+        #     email:
+        #       skip_attachments: true
+        extra = config.extra or {}
+        self._skip_attachments = extra.get("skip_attachments", False)
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -306,7 +322,7 @@ class EmailAdapter(BasePlatformAdapter):
                 message_id = msg.get("Message-ID", "")
                 in_reply_to = msg.get("In-Reply-To", "")
                 body = _extract_text_body(msg)
-                attachments = _extract_attachments(msg)
+                attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
 
                 results.append({
                     "uid": uid,

@@ -2405,6 +2405,44 @@ class HermesCLI:
             return "\n".join(p for p in parts if p)
         return str(value)
 
+    def _handle_title_command(self, cmd: str):
+        """Handle the /title command to set or show the current session's title."""
+        parts = cmd.split(maxsplit=1)
+        if len(parts) > 1:
+            new_title = parts[1].strip()
+            if self._session_db and self.session_id:
+                try:
+                    # Sanitize the title before setting (if method exists in SessionDB)
+                    if hasattr(self._session_db, "sanitize_title"):
+                        new_title = self._session_db.sanitize_title(new_title)
+                    
+                    if not new_title:
+                        print("(._.) Title is empty after cleanup. Please use printable characters.")
+                        return
+
+                    if self._session_db.set_session_title(self.session_id, new_title):
+                        print(f"(^_^)b Session title set: {new_title}")
+                    else:
+                        print("(T_T) Failed to set session title. Session might not be in database.")
+                except Exception as e:
+                    print(f"(>_<) Error setting title: {e}")
+            else:
+                print("(._.) Session database not available or no active session.")
+        else:
+            # Show the current title
+            title = None
+            if self._session_db and self.session_id:
+                try:
+                    title = self._session_db.get_session_title(self.session_id)
+                except Exception:
+                    pass
+            
+            if title:
+                print(f"📌 Current session title: {title}")
+            else:
+                print("No title set for this session.")
+                print("Usage: /title <name>")
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -3008,6 +3046,8 @@ class HermesCLI:
             self._toggle_verbose()
         elif cmd_lower.startswith("/reasoning"):
             self._handle_reasoning_command(cmd_original)
+        elif cmd_lower.startswith("/title"):
+            self._handle_title_command(cmd_original)
         elif cmd_lower == "/compress":
             self._manual_compress()
         elif cmd_lower == "/usage":

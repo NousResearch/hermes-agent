@@ -5069,6 +5069,22 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+
+                        # Persist token counts to session DB for /insights.
+                        # Gateway sessions persist via session_store.update_session()
+                        # after run_conversation returns, so only persist here for
+                        # CLI (and other non-gateway) platforms to avoid double-counting.
+                        if (self._session_db and self.session_id
+                                and getattr(self, 'platform', None) == 'cli'):
+                            try:
+                                self._session_db.update_token_counts(
+                                    self.session_id,
+                                    input_tokens=prompt_tokens,
+                                    output_tokens=completion_tokens,
+                                    model=self.model,
+                                )
+                            except Exception:
+                                pass  # never block the agent loop
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

@@ -77,6 +77,7 @@ if _config_path.exists():
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:

@@ -91,8 +91,8 @@ class TestCwdHandling:
                 "/home/ paths should be replaced for modal backend."
             )
 
-    def test_users_path_replaced_for_docker(self):
-        """TERMINAL_CWD=/Users/... should be replaced with /root for docker."""
+    def test_users_path_replaced_for_docker_by_default(self):
+        """Docker should keep host paths out of the sandbox unless explicitly enabled."""
         with patch.dict(os.environ, {
             "TERMINAL_ENV": "docker",
             "TERMINAL_CWD": "/Users/someone/projects",
@@ -100,8 +100,22 @@ class TestCwdHandling:
             config = _tt_mod._get_env_config()
             assert config["cwd"] == "/root", (
                 f"Expected /root, got {config['cwd']}. "
-                "/Users/ paths should be replaced for docker backend."
+                "Host paths should be discarded for docker backend by default."
             )
+            assert config["host_cwd"] is None
+            assert config["docker_mount_cwd_to_workspace"] is False
+
+    def test_users_path_maps_to_workspace_for_docker_when_enabled(self):
+        """Docker should map the host cwd into /workspace only when explicitly enabled."""
+        with patch.dict(os.environ, {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_CWD": "/Users/someone/projects",
+            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",
+        }):
+            config = _tt_mod._get_env_config()
+            assert config["cwd"] == "/workspace"
+            assert config["host_cwd"] == "/Users/someone/projects"
+            assert config["docker_mount_cwd_to_workspace"] is True
 
     def test_windows_path_replaced_for_modal(self):
         """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
@@ -119,11 +133,26 @@ class TestCwdHandling:
                 # Remove TERMINAL_CWD so it uses default
                 env = os.environ.copy()
                 env.pop("TERMINAL_CWD", None)
+                env.pop("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", None)
                 with patch.dict(os.environ, env, clear=True):
                     config = _tt_mod._get_env_config()
                     assert config["cwd"] == "/root", (
                         f"Backend {backend}: expected /root default, got {config['cwd']}"
                     )
+
+    def test_docker_default_cwd_maps_current_directory_when_enabled(self):
+        """Docker should use /workspace when cwd mounting is explicitly enabled."""
+        with patch("tools.terminal_tool.os.getcwd", return_value="/home/user/project"):
+            with patch.dict(os.environ, {
+                "TERMINAL_ENV": "docker",
+                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",
+            }, clear=False):
+                env = os.environ.copy()
+                env.pop("TERMINAL_CWD", None)
+                with patch.dict(os.environ, env, clear=True):
+                    config = _tt_mod._get_env_config()
+                    assert config["cwd"] == "/workspace"
+                    assert config["host_cwd"] == "/home/user/project"
 
     def test_local_backend_uses_getcwd(self):
         """Local backend should use os.getcwd(), not /root."""
@@ -133,6 +162,31 @@ class TestCwdHandling:
             with patch.dict(os.environ, env, clear=True):
                 config = _tt_mod._get_env_config()
                 assert config["cwd"] == os.getcwd()
+
+    def test_create_environment_passes_docker_host_cwd_and_flag(self, monkeypatch):
+        """Docker host cwd and mount flag should reach DockerEnvironment."""
+        captured = {}
+        sentinel = object()
+
+        def _fake_docker_environment(**kwargs):
+            captured.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+
+        env = _tt_mod._create_environment(
+            env_type="docker",
+            image="python:3.11",
+            cwd="/workspace",
+            timeout=60,
+            container_config={"docker_mount_cwd_to_workspace": True},
+            host_cwd="/home/user/project",
+        )
+
+        assert env is sentinel
+        assert captured["cwd"] == "/workspace"
+        assert captured["host_cwd"] == "/home/user/project"
+        assert captured["auto_mount_cwd"] is True
 
     def test_ssh_preserves_home_paths(self):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""

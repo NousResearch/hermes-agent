@@ -63,7 +63,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
     except Exception as e:
-        logger.warning("Security scan failed for %s: %s", skill_dir, e)
+        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
 import yaml
@@ -219,7 +219,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         try:
             os.unlink(temp_path)
         except OSError:
-            pass
+            logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
         raise
 
 

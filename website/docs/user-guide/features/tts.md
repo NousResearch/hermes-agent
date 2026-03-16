@@ -74,10 +74,11 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------| 
 | **Local Whisper** (default) | Good | Free | None needed |
-| **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+| **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
+| **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
 
 :::info Zero Config
-Local transcription works out of the box — no API key needed. The `faster-whisper` model (~150 MB for `base`) is auto-downloaded on first voice message.
+Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
 :::
 
 ### Configuration
@@ -85,7 +86,7 @@ Local transcription works out of the box — no API key needed. The `faster-whis
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" (free, faster-whisper) | "openai" (API)
+  provider: "local"           # "local" | "groq" | "openai"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
@@ -104,11 +105,16 @@ stt:
 | `medium` | ~1.5 GB | Slower | Great |
 | `large-v3` | ~3 GB | Slowest | Best |
 
-**OpenAI API** — Requires `VOICE_TOOLS_OPENAI_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe`.
+**Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option.
+
+**OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe`.
+
+**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders.
 
 ### Fallback Behavior
 
 If your configured provider isn't available, Hermes automatically falls back:
-- **Local not installed** → Falls back to OpenAI API (if key is set)
-- **OpenAI key not set** → Falls back to local Whisper (if installed)
-- **Neither available** → Voice messages pass through with a note to the user
+- **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
+- **Groq key not set** → Falls back to local transcription, then OpenAI
+- **OpenAI key not set** → Falls back to local transcription, then Groq
+- **Nothing available** → Voice messages pass through with an accurate note to the user

@@ -40,7 +40,7 @@ COMMANDS_BY_CATEGORY = {
         "/voice": "Toggle voice mode (Ctrl+B to record). Usage: /voice [on|off|tts|status]",
     },
     "Tools & Skills": {
-        "/tools": "List available tools",
+        "/tools": "Manage tools: /tools [list|disable|enable] [name...] (e.g. /tools disable web)",
         "/toolsets": "List available toolsets",
         "/skills": "Search, install, inspect, or manage skills from online registries",
         "/cron": "Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove)",

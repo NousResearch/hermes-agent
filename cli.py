@@ -1986,6 +1986,54 @@ class HermesCLI:
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
         print()
     
+    def _handle_tools_command(self, cmd: str):
+        """Handle /tools [list|disable|enable] slash commands.
+
+        Disabled tools are immediately invisible to the LLM:
+        - Built-in toolsets: self.enabled_toolsets is reloaded in-session;
+          get_tool_definitions() reads it on every turn so the next LLM call
+          already sees the pruned tool list.
+        - MCP tools: _reload_mcp() reconnects servers with the fresh exclude
+          list; _should_register() skips excluded tools so they never enter the
+          registry and never appear in the tools parameter sent to the model.
+        """
+        import shlex
+        from argparse import Namespace
+        from hermes_cli.tools_config import tools_disable_enable_command, _get_platform_tools
+        from hermes_cli.config import load_config
+
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = cmd.split()
+
+        subcommand = parts[1] if len(parts) > 1 else ""
+        if subcommand not in ("list", "disable", "enable"):
+            self.show_tools()
+            return
+
+        if subcommand == "list":
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+            return
+
+        names = parts[2:]
+        if not names:
+            print(f"(._.) Usage: /tools {subcommand} <name> [name ...]")
+            print(f"  Built-in toolset:  /tools {subcommand} web")
+            print(f"  MCP tool:          /tools {subcommand} github:create_issue")
+            return
+
+        tools_disable_enable_command(Namespace(tools_action=subcommand, names=names, platform="cli"))
+
+        # Reload built-in toolsets in the running session (immediate effect)
+        if any(":" not in n for n in names):
+            self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+
+        # Reload MCP servers so exclude changes take effect immediately
+        if any(":" in n for n in names):
+            with self._busy_command(self._slow_command_status("/reload-mcp")):
+                self._reload_mcp()
+
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
@@ -2775,8 +2823,8 @@ class HermesCLI:
             return False
         elif cmd_lower == "/help":
             self.show_help()
-        elif cmd_lower == "/tools":
-            self.show_tools()
+        elif cmd_lower == "/tools" or cmd_lower.startswith("/tools "):
+            self._handle_tools_command(cmd_original)
         elif cmd_lower == "/toolsets":
             self.show_toolsets()
         elif cmd_lower == "/config":

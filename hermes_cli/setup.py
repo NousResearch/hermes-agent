@@ -933,11 +933,35 @@ def setup_model_provider(config: dict):
 
         base_url = prompt(
             "  API base URL (e.g., https://api.example.com/v1)", current_url
-        )
+        ).strip()
         api_key = prompt("  API key", password=True)
         model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
 
         if base_url:
+            from hermes_cli.models import probe_api_models
+
+            probe = probe_api_models(api_key, base_url)
+            if probe.get("used_fallback") and probe.get("resolved_base_url"):
+                print_warning(
+                    f"Endpoint verification worked at {probe['resolved_base_url']}/models, "
+                    f"not the exact URL you entered. Saving the working base URL instead."
+                )
+                base_url = probe["resolved_base_url"]
+            elif probe.get("models") is not None:
+                print_success(
+                    f"Verified endpoint via {probe.get('probed_url')} "
+                    f"({len(probe.get('models') or [])} model(s) visible)"
+                )
+            else:
+                print_warning(
+                    f"Could not verify this endpoint via {probe.get('probed_url')}. "
+                    f"Hermes will still save it."
+                )
+                if probe.get("suggested_base_url"):
+                    print_info(
+                        f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}"
+                    )
+
             save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)

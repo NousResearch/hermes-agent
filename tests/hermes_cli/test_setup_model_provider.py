@@ -75,6 +75,58 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     assert calls["count"] == 1
 
 
+def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 3  # Custom endpoint
+        if question == "Configure vision:":
+            return len(choices) - 1  # Skip
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000"
+        if "API key" in message:
+            return "local-key"
+        if "Model name" in message:
+            return "llm"
+        return ""
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": "http://localhost:8000/v1",
+            "suggested_base_url": "http://localhost:8000/v1",
+            "used_fallback": True,
+        },
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    env = _read_env(tmp_path)
+    reloaded = load_config()
+
+    assert env.get("OPENAI_BASE_URL") == "http://localhost:8000/v1"
+    assert env.get("OPENAI_API_KEY") == "local-key"
+    assert reloaded["model"]["provider"] == "custom"
+    assert reloaded["model"]["base_url"] == "http://localhost:8000/v1"
+    assert reloaded["model"]["default"] == "llm"
+
+
 def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):
     """Keep-current should respect config-backed providers, not fall back to OpenRouter."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -207,6 +207,11 @@ DEFAULT_CONFIG = {
         "show_reasoning": False,
         "skin": "default",
     },
+
+    # Privacy settings
+    "privacy": {
+        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+    },
     
     # Text-to-speech configuration
     "tts": {

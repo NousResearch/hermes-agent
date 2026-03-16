@@ -8,9 +8,11 @@ Handles:
 - Dynamic system prompt injection (agent knows its context)
 """
 
+import hashlib
 import logging
 import os
 import json
+import re
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -18,6 +20,41 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# PII redaction helpers
+# ---------------------------------------------------------------------------
+
+_PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
+
+
+def _hash_id(value: str) -> str:
+    """Deterministic 12-char hex hash of an identifier."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _hash_sender_id(value: str) -> str:
+    """Hash a sender ID to ``user_<12hex>``."""
+    return f"user_{_hash_id(value)}"
+
+
+def _hash_chat_id(value: str) -> str:
+    """Hash the numeric portion of a chat ID, preserving platform prefix.
+
+    ``telegram:12345`` → ``telegram:<hash>``
+    ``12345``          → ``<hash>``
+    """
+    colon = value.find(":")
+    if colon > 0:
+        prefix = value[:colon]
+        return f"{prefix}:{_hash_id(value[colon + 1:])}"
+    return _hash_id(value)
+
+
+def _looks_like_phone(value: str) -> bool:
+    """Return True if *value* looks like a phone number (E.164 or similar)."""
+    return bool(_PHONE_RE.match(value.strip()))
 
 from .config import (
     Platform,
@@ -146,7 +183,21 @@ class SessionContext:
         }
 
 
-def build_session_context_prompt(context: SessionContext) -> str:
+_PII_SAFE_PLATFORMS = frozenset({
+    Platform.WHATSAPP,
+    Platform.SIGNAL,
+    Platform.TELEGRAM,
+})
+"""Platforms where user IDs can be safely redacted (no in-message mention system
+that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
+and the LLM needs the real ID to tag users."""
+
+
+def build_session_context_prompt(
+    context: SessionContext,
+    *,
+    redact_pii: bool = False,
+) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
     
@@ -154,7 +205,15 @@ def build_session_context_prompt(context: SessionContext) -> str:
     - Where messages are coming from
     - What platforms are connected
     - Where it can deliver scheduled task outputs
+
+    When *redact_pii* is True **and** the source platform is in
+    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
+    are replaced with deterministic hashes before being sent to the LLM.
+    Platforms like Discord are excluded because mentions need real IDs.
+    Routing still uses the original values (they stay in SessionSource).
     """
+    # Only apply redaction on platforms where IDs aren't needed for mentions
+    redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
     lines = [
         "## Current Session Context",
         "",
@@ -165,7 +224,25 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.platform == Platform.LOCAL:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
-        lines.append(f"**Source:** {platform_name} ({context.source.description})")
+        # Build a description that respects PII redaction
+        src = context.source
+        if redact_pii:
+            # Build a safe description without raw IDs
+            _uname = src.user_name or (
+                _hash_sender_id(src.user_id) if src.user_id else "user"
+            )
+            _cname = src.chat_name or _hash_chat_id(src.chat_id)
+            if src.chat_type == "dm":
+                desc = f"DM with {_uname}"
+            elif src.chat_type == "group":
+                desc = f"group: {_cname}"
+            elif src.chat_type == "channel":
+                desc = f"channel: {_cname}"
+            else:
+                desc = _cname
+        else:
+            desc = src.description
+        lines.append(f"**Source:** {platform_name} ({desc})")
     
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
@@ -175,7 +252,10 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:
-        lines.append(f"**User ID:** {context.source.user_id}")
+        uid = context.source.user_id
+        if redact_pii:
+            uid = _hash_sender_id(uid)
+        lines.append(f"**User ID:** {uid}")
     
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -210,7 +290,8 @@ def build_session_context_prompt(context: SessionContext) -> str:
         lines.append("")
         lines.append("**Home Channels (default destinations):**")
         for platform, home in context.home_channels.items():
-            lines.append(f"  - {platform.value}: {home.name} (ID: {home.chat_id})")
+            hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
+            lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
     
     # Delivery options for scheduled tasks
     lines.append("")
@@ -220,7 +301,10 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        lines.append(f"- `\"origin\"` → Back to this chat ({context.source.chat_name or context.source.chat_id})")
+        _origin_label = context.source.chat_name or (
+            _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
+        )
+        lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
     
     # Local always available
     lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")

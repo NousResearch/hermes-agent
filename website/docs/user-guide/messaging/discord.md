@@ -14,14 +14,70 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
-| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. |
+| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
+| **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
-If you want a normal shared bot channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
+If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
 :::
+
+### Discord Gateway Model
+
+Hermes on Discord is not a webhook that replies statelessly. It runs through the full messaging gateway, which means each incoming message goes through:
+
+1. authorization (`DISCORD_ALLOWED_USERS`)
+2. mention / free-response checks
+3. session lookup
+4. session transcript loading
+5. normal Hermes agent execution, including tools, memory, and slash commands
+6. response delivery back to Discord
+
+That matters because behavior in a busy server depends on both Discord routing and Hermes session policy.
+
+### Session Model in Discord
+
+By default:
+
+- each DM gets its own session
+- each server thread gets its own session namespace
+- each user in a shared channel gets their own session inside that channel
+
+So if Alice and Bob both talk to Hermes in `#research`, Hermes treats those as separate conversations by default even though they are using the same visible Discord channel.
+
+This is controlled by `config.yaml`:
+
+```yaml
+group_sessions_per_user: true
+```
+
+Set it to `false` only if you explicitly want one shared conversation for the entire room:
+
+```yaml
+group_sessions_per_user: false
+```
+
+Shared sessions can be useful for a collaborative room, but they also mean:
+
+- users share context growth and token costs
+- one person's long tool-heavy task can bloat everyone else's context
+- one person's in-flight run can interrupt another person's follow-up in the same room
+
+### Interrupts and Concurrency
+
+Hermes tracks running agents by session key.
+
+With the default `group_sessions_per_user: true`:
+
+- Alice interrupting her own in-flight request only affects Alice's session in that channel
+- Bob can keep talking in the same channel without inheriting Alice's history or interrupting Alice's run
+
+With `group_sessions_per_user: false`:
+
+- the whole room shares one running-agent slot for that channel/thread
+- follow-up messages from different people can interrupt or queue behind each other
 
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
 
@@ -175,12 +231,24 @@ Add the following to your `~/.hermes/.env` file:
 
 ```bash
 # Required
-DISCORD_BOT_TOKEN=your-bot-token-from-developer-portal
+DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=284102345871466496
 
 # Multiple allowed users (comma-separated)
 # DISCORD_ALLOWED_USERS=284102345871466496,198765432109876543
 ```
+
+Optional behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+discord:
+  require_mention: true
+
+group_sessions_per_user: true
+```
+
+- `discord.require_mention: true` keeps Hermes quiet in normal server traffic unless mentioned
+- `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
 ### Start the Gateway
 
@@ -264,6 +332,18 @@ For the full setup and operational guide, see:
 **Cause**: Your User ID isn't in `DISCORD_ALLOWED_USERS`.
 
 **Fix**: Add your User ID to `DISCORD_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway.
+
+### People in the same channel are sharing context unexpectedly
+
+**Cause**: `group_sessions_per_user` is disabled, or the platform cannot provide a user ID for the messages in that context.
+
+**Fix**: Set this in `~/.hermes/config.yaml` and restart the gateway:
+
+```yaml
+group_sessions_per_user: true
+```
+
+If you intentionally want a shared room conversation, leave it off — just expect shared transcript history and shared interrupt behavior.
 
 ## Security
 

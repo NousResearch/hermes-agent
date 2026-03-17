@@ -467,8 +467,8 @@ class AIAgent:
             and Path(getattr(handler, "baseFilename", "")).resolve() == resolved_error_log_path
             for handler in root_logger.handlers
         )
+        from agent.redact import RedactingFormatter
         if not has_errors_log_handler:
-            from agent.redact import RedactingFormatter
             error_log_dir.mkdir(parents=True, exist_ok=True)
             error_file_handler = RotatingFileHandler(
                 error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,

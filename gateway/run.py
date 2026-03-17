@@ -3328,12 +3328,12 @@ class GatewayRunner:
             except ValueError as e:
                 return f"⚠️ {e}"
         else:
-            # Show the current title
+            # Show the current title and session ID
             title = self._session_db.get_session_title(session_id)
             if title:
-                return f"📌 Session title: **{title}**"
+                return f"📌 Session: `{session_id}`\nTitle: **{title}**"
             else:
-                return "No title set. Usage: `/title My Session Name`"
+                return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""
@@ -4510,6 +4510,21 @@ class GatewayRunner:
                     self.session_store._save()
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+
+            # Auto-generate session title after first exchange (non-blocking)
+            if final_response and self._session_db:
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    maybe_auto_title(
+                        self._session_db,
+                        effective_session_id,
+                        message,
+                        final_response,
+                        all_msgs,
+                    )
+                except Exception:
+                    pass
 
             return {
                 "final_response": final_response,

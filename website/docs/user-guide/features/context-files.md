@@ -6,24 +6,24 @@ description: "Project context files — AGENTS.md, global SOUL.md, and .cursorru
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` and a global `AGENTS.md` are loaded from `HERMES_HOME`.
 
 ## Supported Context Files
 
 | File | Purpose | Discovery |
 |------|---------|-----------|
-| **AGENTS.md** | Project instructions, conventions, architecture | Recursive (walks subdirectories) |
+| **AGENTS.md** | Global operating context from `HERMES_HOME` plus project instructions, conventions, architecture from the working tree | Global file + recursive project discovery |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 ## AGENTS.md
 
-`AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
+`AGENTS.md` is the primary operating/project context file. Hermes first loads an optional global `HERMES_HOME/AGENTS.md` for durable, machine-wide guidance, then loads project `AGENTS.md` files from the working tree. Together they tell the agent how your environment and project are structured, what conventions to follow, and any special instructions.
 
 ### Hierarchical Discovery
 
-Hermes walks the directory tree starting from the working directory and loads **all** `AGENTS.md` files found, sorted by depth. This supports monorepo-style setups:
+Hermes loads `HERMES_HOME/AGENTS.md` first when present, then walks the directory tree starting from the working directory and loads **all** project `AGENTS.md` files found, sorted by depth. This supports monorepo-style setups while preserving a durable global layer:
 
 ```
 my-project/
@@ -94,7 +94,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **At session start** — the function scans the working directory
+1. **At session start** — the function loads `HERMES_HOME/AGENTS.md` and `HERMES_HOME/SOUL.md`, then scans the working directory for project context files
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding 20,000 characters are head/tail truncated (70% head, 20% tail, with a marker in the middle)
@@ -108,9 +108,13 @@ The final prompt section looks roughly like:
 
 The following project context files have been loaded and should be followed:
 
+## ~/.hermes/AGENTS.md
+
+[Your global AGENTS.md content here]
+
 ## AGENTS.md
 
-[Your AGENTS.md content here]
+[Your project AGENTS.md content here]
 
 ## .cursorrules
 

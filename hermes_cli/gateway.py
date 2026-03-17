@@ -1039,6 +1039,33 @@ _PLATFORMS = [
              "help": "Only emails from these addresses will be processed."},
         ],
     },
+    {
+        "key": "sms",
+        "label": "SMS (Twilio)",
+        "emoji": "📱",
+        "token_var": "TWILIO_ACCOUNT_SID",
+        "setup_instructions": [
+            "1. Create a Twilio account at https://www.twilio.com/",
+            "2. Get your Account SID and Auth Token from the Twilio Console dashboard",
+            "3. Buy or configure a phone number capable of sending SMS",
+            "4. Set up your webhook URL for inbound SMS:",
+            "   Twilio Console → Phone Numbers → Active Numbers → your number",
+            "   → Messaging → A MESSAGE COMES IN → Webhook → https://your-server:8080/webhooks/twilio",
+        ],
+        "vars": [
+            {"name": "TWILIO_ACCOUNT_SID", "prompt": "Twilio Account SID", "password": False,
+             "help": "Found on the Twilio Console dashboard."},
+            {"name": "TWILIO_AUTH_TOKEN", "prompt": "Twilio Auth Token", "password": True,
+             "help": "Found on the Twilio Console dashboard (click to reveal)."},
+            {"name": "TWILIO_PHONE_NUMBER", "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)", "password": False,
+             "help": "The Twilio phone number to send SMS from."},
+            {"name": "SMS_ALLOWED_USERS", "prompt": "Allowed phone numbers (comma-separated, E.164 format)", "password": False,
+             "is_allowlist": True,
+             "help": "Only messages from these phone numbers will be processed."},
+            {"name": "SMS_HOME_CHANNEL", "prompt": "Home channel phone number (for cron/notification delivery, or empty)", "password": False,
+             "help": "Phone number to deliver cron job results and notifications to."},
+        ],
+    },
 ]
 
 

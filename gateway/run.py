@@ -848,7 +848,8 @@ class GatewayRunner:
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SMS_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")
+                       "SMS_ALLOWED_USERS",
+                       "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
         if not _any_allowlist and not _allow_all:
@@ -982,6 +983,16 @@ class GatewayRunner:
             )
         ):
             self._schedule_update_notification_watch()
+
+        # Drain any recovered process watchers (from crash recovery checkpoint)
+        try:
+            from tools.process_registry import process_registry
+            while process_registry.pending_watchers:
+                watcher = process_registry.pending_watchers.pop(0)
+                asyncio.create_task(self._run_process_watcher(watcher))
+                logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
+        except Exception as e:
+            logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
@@ -1135,9 +1146,30 @@ class GatewayRunner:
         elif platform == Platform.SMS:
             from gateway.platforms.sms import SmsAdapter, check_sms_requirements
             if not check_sms_requirements():
-                logger.warning("SMS: aiohttp not installed or TELNYX_API_KEY not set. Run: pip install 'hermes-agent[sms]'")
+                logger.warning("SMS: aiohttp not installed or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN not set")
                 return None
             return SmsAdapter(config)
+
+        elif platform == Platform.DINGTALK:
+            from gateway.platforms.dingtalk import DingTalkAdapter, check_dingtalk_requirements
+            if not check_dingtalk_requirements():
+                logger.warning("DingTalk: dingtalk-stream not installed or DINGTALK_CLIENT_ID/SECRET not set")
+                return None
+            return DingTalkAdapter(config)
+
+        elif platform == Platform.MATTERMOST:
+            from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
+            if not check_mattermost_requirements():
+                logger.warning("Mattermost: MATTERMOST_TOKEN or MATTERMOST_URL not set, or aiohttp missing")
+                return None
+            return MattermostAdapter(config)
+
+        elif platform == Platform.MATRIX:
+            from gateway.platforms.matrix import MatrixAdapter, check_matrix_requirements
+            if not check_matrix_requirements():
+                logger.warning("Matrix: matrix-nio not installed or credentials not set. Run: pip install 'matrix-nio[e2e]'")
+                return None
+            return MatrixAdapter(config)
 
         return None
     
@@ -1170,6 +1202,9 @@ class GatewayRunner:
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
             Platform.SMS: "SMS_ALLOWED_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1179,6 +1214,9 @@ class GatewayRunner:
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -1430,8 +1468,19 @@ class GatewayRunner:
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        target_command = target.lstrip("/")
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                        command = target_command
+                        # Fall through to normal command dispatch below
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
                 else:
-                    return f"Quick command '/{command}' has unsupported type (only 'exec' is supported)."
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1442,7 +1491,7 @@ class GatewayRunner:
                 if cmd_key in skill_cmds:
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=session_key
+                        cmd_key, user_instruction, task_id=_quick_key
                     )
                     if msg:
                         event.text = msg
@@ -1503,8 +1552,9 @@ class GatewayRunner:
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         try:
+            import yaml as _pii_yaml
             with open(_config_path, encoding="utf-8") as _pf:
-                _pcfg = yaml.safe_load(_pf) or {}
+                _pcfg = _pii_yaml.safe_load(_pf) or {}
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass
@@ -2050,8 +2100,15 @@ class GatewayRunner:
                 session_entry.session_key,
                 input_tokens=agent_result.get("input_tokens", 0),
                 output_tokens=agent_result.get("output_tokens", 0),
+                cache_read_tokens=agent_result.get("cache_read_tokens", 0),
+                cache_write_tokens=agent_result.get("cache_write_tokens", 0),
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
                 model=agent_result.get("model"),
+                estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                cost_status=agent_result.get("cost_status"),
+                cost_source=agent_result.get("cost_source"),
+                provider=agent_result.get("provider"),
+                base_url=agent_result.get("base_url"),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -2121,7 +2178,14 @@ class GatewayRunner:
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
-        
+
+        # Emit session:end hook (session is ending)
+        await self.hooks.emit("session:end", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
+
         # Emit session:reset hook
         await self.hooks.emit("session:reset", {
             "platform": source.platform.value if source.platform else "",
@@ -3027,6 +3091,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.DINGTALK: "hermes-dingtalk",
             }
             platform_toolsets_config = {}
             try:
@@ -3048,6 +3113,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.DINGTALK: "dingtalk",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -4045,6 +4111,7 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
         }
 
         # Try to load platform_toolsets from config
@@ -4069,6 +4136,7 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

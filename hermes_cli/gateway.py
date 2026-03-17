@@ -1002,6 +1002,64 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "matrix",
+        "label": "Matrix",
+        "emoji": "🔐",
+        "token_var": "MATRIX_ACCESS_TOKEN",
+        "setup_instructions": [
+            "1. Works with any Matrix homeserver (self-hosted Synapse/Conduit/Dendrite or matrix.org)",
+            "2. Create a bot user on your homeserver, or use your own account",
+            "3. Get an access token: Element → Settings → Help & About → Access Token",
+            "   Or via API: curl -X POST https://your-server/_matrix/client/v3/login \\",
+            "     -d '{\"type\":\"m.login.password\",\"user\":\"@bot:server\",\"password\":\"...\"}'",
+            "4. Alternatively, provide user ID + password and Hermes will log in directly",
+            "5. For E2EE: set MATRIX_ENCRYPTION=true (requires pip install 'matrix-nio[e2e]')",
+            "6. To find your user ID: it's @username:your-server (shown in Element profile)",
+        ],
+        "vars": [
+            {"name": "MATRIX_HOMESERVER", "prompt": "Homeserver URL (e.g. https://matrix.example.org)", "password": False,
+             "help": "Your Matrix homeserver URL. Works with any self-hosted instance."},
+            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Access token (leave empty to use password login instead)", "password": True,
+             "help": "Paste your access token, or leave empty and provide user ID + password below."},
+            {"name": "MATRIX_USER_ID", "prompt": "User ID (@bot:server — required for password login)", "password": False,
+             "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org"},
+            {"name": "MATRIX_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)", "password": False,
+             "is_allowlist": True,
+             "help": "Matrix user IDs who can interact with the bot."},
+            {"name": "MATRIX_HOME_ROOM", "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications."},
+        ],
+    },
+    {
+        "key": "mattermost",
+        "label": "Mattermost",
+        "emoji": "💬",
+        "token_var": "MATTERMOST_TOKEN",
+        "setup_instructions": [
+            "1. In Mattermost: Integrations → Bot Accounts → Add Bot Account",
+            "   (System Console → Integrations → Bot Accounts must be enabled)",
+            "2. Give it a username (e.g. hermes) and copy the bot token",
+            "3. Works with any self-hosted Mattermost instance — enter your server URL",
+            "4. To find your user ID: click your avatar (top-left) → Profile",
+            "   Your user ID is displayed there — click it to copy.",
+            "   ⚠ This is NOT your username — it's a 26-character alphanumeric ID.",
+            "5. To get a channel ID: click the channel name → View Info → copy the ID",
+        ],
+        "vars": [
+            {"name": "MATTERMOST_URL", "prompt": "Server URL (e.g. https://mm.example.com)", "password": False,
+             "help": "Your Mattermost server URL. Works with any self-hosted instance."},
+            {"name": "MATTERMOST_TOKEN", "prompt": "Bot token", "password": True,
+             "help": "Paste the bot token from step 2 above."},
+            {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Your Mattermost user ID from step 4 above."},
+            {"name": "MATTERMOST_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Channel ID where Hermes delivers cron results and notifications."},
+            {"name": "MATTERMOST_REPLY_MODE", "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)", "password": False,
+             "help": "off = flat channel messages, thread = replies nest under your message."},
+        ],
+    },
+    {
         "key": "whatsapp",
         "label": "WhatsApp",
         "emoji": "📲",
@@ -1012,30 +1070,6 @@ _PLATFORMS = [
         "label": "Signal",
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
-    },
-    {
-        "key": "sms",
-        "label": "SMS (Telnyx)",
-        "emoji": "📱",
-        "token_var": "TELNYX_API_KEY",
-        "setup_instructions": [
-            "1. Create a Telnyx account at https://portal.telnyx.com/",
-            "2. Buy a phone number with SMS capability",
-            "3. Create an API key: API Keys → Create API Key",
-            "4. Set up a Messaging Profile and assign your number to it",
-            "5. Configure the webhook URL: https://your-server/webhooks/telnyx",
-        ],
-        "vars": [
-            {"name": "TELNYX_API_KEY", "prompt": "Telnyx API key", "password": True,
-             "help": "Paste the API key from step 3 above."},
-            {"name": "TELNYX_FROM_NUMBERS", "prompt": "From numbers (comma-separated E.164, e.g. +15551234567)", "password": False,
-             "help": "The Telnyx phone number(s) Hermes will send SMS from."},
-            {"name": "SMS_ALLOWED_USERS", "prompt": "Allowed phone numbers (comma-separated E.164)", "password": False,
-             "is_allowlist": True,
-             "help": "Only messages from these phone numbers will be processed."},
-            {"name": "SMS_HOME_CHANNEL", "prompt": "Home channel phone (for cron/notification delivery, or empty)", "password": False,
-             "help": "A phone number where cron job outputs are delivered."},
-        ],
     },
     {
         "key": "email",
@@ -1061,6 +1095,51 @@ _PLATFORMS = [
             {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
              "is_allowlist": True,
              "help": "Only emails from these addresses will be processed."},
+        ],
+    },
+    {
+        "key": "sms",
+        "label": "SMS (Twilio)",
+        "emoji": "📱",
+        "token_var": "TWILIO_ACCOUNT_SID",
+        "setup_instructions": [
+            "1. Create a Twilio account at https://www.twilio.com/",
+            "2. Get your Account SID and Auth Token from the Twilio Console dashboard",
+            "3. Buy or configure a phone number capable of sending SMS",
+            "4. Set up your webhook URL for inbound SMS:",
+            "   Twilio Console → Phone Numbers → Active Numbers → your number",
+            "   → Messaging → A MESSAGE COMES IN → Webhook → https://your-server:8080/webhooks/twilio",
+        ],
+        "vars": [
+            {"name": "TWILIO_ACCOUNT_SID", "prompt": "Twilio Account SID", "password": False,
+             "help": "Found on the Twilio Console dashboard."},
+            {"name": "TWILIO_AUTH_TOKEN", "prompt": "Twilio Auth Token", "password": True,
+             "help": "Found on the Twilio Console dashboard (click to reveal)."},
+            {"name": "TWILIO_PHONE_NUMBER", "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)", "password": False,
+             "help": "The Twilio phone number to send SMS from."},
+            {"name": "SMS_ALLOWED_USERS", "prompt": "Allowed phone numbers (comma-separated, E.164 format)", "password": False,
+             "is_allowlist": True,
+             "help": "Only messages from these phone numbers will be processed."},
+            {"name": "SMS_HOME_CHANNEL", "prompt": "Home channel phone number (for cron/notification delivery, or empty)", "password": False,
+             "help": "Phone number to deliver cron job results and notifications to."},
+        ],
+    },
+    {
+        "key": "dingtalk",
+        "label": "DingTalk",
+        "emoji": "💬",
+        "token_var": "DINGTALK_CLIENT_ID",
+        "setup_instructions": [
+            "1. Go to https://open-dev.dingtalk.com → Create Application",
+            "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
+            "3. Enable 'Stream Mode' under the bot settings",
+            "4. Add the bot to a group chat or message it directly",
+        ],
+        "vars": [
+            {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
+             "help": "The AppKey from your DingTalk application credentials."},
+            {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
+             "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
 ]
@@ -1095,6 +1174,16 @@ def _platform_status(platform: dict) -> str:
         if all([val, pwd, imap, smtp]):
             return "configured"
         if any([val, pwd, imap, smtp]):
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "matrix":
+        homeserver = get_env_value("MATRIX_HOMESERVER")
+        password = get_env_value("MATRIX_PASSWORD")
+        if (val or password) and homeserver:
+            e2ee = get_env_value("MATRIX_ENCRYPTION")
+            suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
+            return f"configured{suffix}"
+        if val or password or homeserver:
             return "partially configured"
         return "not configured"
     if val:

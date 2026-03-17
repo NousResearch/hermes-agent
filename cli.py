@@ -58,7 +58,12 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
-from agent.usage_pricing import estimate_cost_usd, format_duration_compact, format_token_count_compact, has_known_pricing
+from agent.usage_pricing import (
+    CanonicalUsage,
+    estimate_usage_cost,
+    format_duration_compact,
+    format_token_count_compact,
+)
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -212,7 +217,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": False,
-            "show_cost": False,
+
             "skin": "default",
             "theme_mode": "auto",
         },
@@ -1034,8 +1039,7 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # show_cost: display $ cost in the status bar (off by default)
-        self.show_cost = CLI_CONFIG["display"].get("show_cost", False)
+
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
@@ -1260,12 +1264,14 @@ class HermesCLI:
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
+            "session_input_tokens": 0,
+            "session_output_tokens": 0,
+            "session_cache_read_tokens": 0,
+            "session_cache_write_tokens": 0,
             "session_prompt_tokens": 0,
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
-            "session_cost": 0.0,
-            "pricing_known": has_known_pricing(model_name),
             "compressions": 0,
         }
 
@@ -1273,15 +1279,14 @@ class HermesCLI:
         if not agent:
             return snapshot
 
+        snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
+        snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
+        snapshot["session_cache_read_tokens"] = getattr(agent, "session_cache_read_tokens", 0) or 0
+        snapshot["session_cache_write_tokens"] = getattr(agent, "session_cache_write_tokens", 0) or 0
         snapshot["session_prompt_tokens"] = getattr(agent, "session_prompt_tokens", 0) or 0
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
-        snapshot["session_cost"] = estimate_cost_usd(
-            model_name,
-            snapshot["session_prompt_tokens"],
-            snapshot["session_completion_tokens"],
-        )
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1302,19 +1307,11 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
-            show_cost = getattr(self, "show_cost", False)
-
-            if show_cost:
-                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
-            else:
-                cost_label = None
 
             if width < 52:
                 return f"⚕ {snapshot['model_short']} · {duration_label}"
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
-                if cost_label:
-                    parts.append(cost_label)
                 parts.append(duration_label)
                 return " · ".join(parts)
 
@@ -1326,8 +1323,6 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            if cost_label:
-                parts.append(cost_label)
             parts.append(duration_label)
             return " │ ".join(parts)
         except Exception:
@@ -1338,12 +1333,6 @@ class HermesCLI:
             snapshot = self._get_status_bar_snapshot()
             width = shutil.get_terminal_size((80, 24)).columns
             duration_label = snapshot["duration"]
-            show_cost = getattr(self, "show_cost", False)
-
-            if show_cost:
-                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
-            else:
-                cost_label = None
 
             if width < 52:
                 return [
@@ -1363,11 +1352,6 @@ class HermesCLI:
                     ("class:status-bar-dim", " · "),
                     (self._status_bar_context_style(percent), percent_label),
                 ]
-                if cost_label:
-                    frags.extend([
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", cost_label),
-                    ])
                 frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -1393,11 +1377,6 @@ class HermesCLI:
                 ("class:status-bar-dim", " "),
                 (bar_style, percent_label),
             ]
-            if cost_label:
-                frags.extend([
-                    ("class:status-bar-dim", " │ "),
-                    ("class:status-bar-dim", cost_label),
-                ])
             frags.extend([
                 ("class:status-bar-dim", " │ "),
                 ("class:status-bar-dim", duration_label),
@@ -3653,8 +3632,17 @@ class HermesCLI:
                             self.console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
                         self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        user_args = cmd_original[len(base_cmd):].strip()
+                        aliased_command = f"{target} {user_args}".strip()
+                        return self.process_command(aliased_command)
+                    else:
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (only 'exec' is supported)[/]")
+                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
@@ -4242,6 +4230,10 @@ class HermesCLI:
             return
 
         agent = self.agent
+        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
@@ -4259,33 +4251,45 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
-        cost = estimate_cost_usd(agent.model, prompt, completion)
-        prompt_cost = estimate_cost_usd(agent.model, prompt, 0)
-        completion_cost = estimate_cost_usd(agent.model, 0, completion)
-        pricing_known = has_known_pricing(agent.model)
+        cost_result = estimate_usage_cost(
+            agent.model,
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            ),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+        )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print(f"  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
-        print(f"  Prompt tokens (input):     {prompt:>10,}")
-        print(f"  Completion tokens (output): {completion:>9,}")
+        print(f"  Input tokens:              {input_tokens:>10,}")
+        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+        print(f"  Output tokens:             {output_tokens:>10,}")
+        print(f"  Prompt tokens (total):     {prompt:>10,}")
+        print(f"  Completion tokens:         {completion:>10,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
-        if pricing_known:
-            print(f"  Input cost:              ${prompt_cost:>10.4f}")
-            print(f"  Output cost:             ${completion_cost:>10.4f}")
-            print(f"  Total cost:              ${cost:>10.4f}")
+        print(f"  Cost status:              {cost_result.status:>10}")
+        print(f"  Cost source:              {cost_result.source:>10}")
+        if cost_result.amount_usd is not None:
+            prefix = "~" if cost_result.status == "estimated" else ""
+            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+        elif cost_result.status == "included":
+            print(f"  Total cost:              {'included':>10}")
         else:
-            print(f"  Input cost:              {'n/a':>10}")
-            print(f"  Output cost:             {'n/a':>10}")
             print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
-        if not pricing_known:
+        if cost_result.status == "unknown":
             print(f"  Note:             Pricing unknown for {agent.model}")
 
         if self.verbose:

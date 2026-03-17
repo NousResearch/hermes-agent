@@ -69,6 +69,8 @@ class HonchoClientConfig:
     workspace_id: str = "hermes"
     api_key: str | None = None
     environment: str = "production"
+    # Optional base URL for self-hosted Honcho (overrides environment mapping)
+    base_url: str | None = None
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
@@ -361,13 +363,34 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "Install it with: pip install honcho-ai"
         )
 
-    logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+    # Allow config.yaml honcho.base_url to override the SDK's environment
+    # mapping, enabling remote self-hosted Honcho deployments without
+    # requiring the server to live on localhost.
+    resolved_base_url = config.base_url
+    if not resolved_base_url:
+        try:
+            from hermes_cli.config import load_config
+            hermes_cfg = load_config()
+            honcho_cfg = hermes_cfg.get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+        except Exception:
+            pass
 
-    _honcho_client = Honcho(
-        workspace_id=config.workspace_id,
-        api_key=config.api_key,
-        environment=config.environment,
-    )
+    if resolved_base_url:
+        logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
+    else:
+        logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+
+    kwargs: dict = {
+        "workspace_id": config.workspace_id,
+        "api_key": config.api_key,
+        "environment": config.environment,
+    }
+    if resolved_base_url:
+        kwargs["base_url"] = resolved_base_url
+
+    _honcho_client = Honcho(**kwargs)
 
     return _honcho_client
 

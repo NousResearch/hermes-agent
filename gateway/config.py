@@ -40,9 +40,12 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    MATTERMOST = "mattermost"
+    MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
     SMS = "sms"
+    DINGTALK = "dingtalk"
 
 
 @dataclass
@@ -226,14 +229,14 @@ class GatewayConfig:
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
                 connected.append(platform)
-            # SMS uses api_key from env (checked via extra or env var)
-            elif platform == Platform.SMS and os.getenv("TELNYX_API_KEY"):
-                connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # SMS uses api_key (Twilio auth token) — SID checked via env
+            elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
         return connected
     
@@ -441,6 +444,8 @@ def load_gateway_config() -> GatewayConfig:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.MATTERMOST: "MATTERMOST_TOKEN",
+        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -534,6 +539,53 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # Mattermost
+    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    if mattermost_token:
+        mattermost_url = os.getenv("MATTERMOST_URL", "")
+        if not mattermost_url:
+            logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
+        if Platform.MATTERMOST not in config.platforms:
+            config.platforms[Platform.MATTERMOST] = PlatformConfig()
+        config.platforms[Platform.MATTERMOST].enabled = True
+        config.platforms[Platform.MATTERMOST].token = mattermost_token
+        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+        if mattermost_home:
+            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+                platform=Platform.MATTERMOST,
+                chat_id=mattermost_home,
+                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Matrix
+    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
+    if matrix_token or os.getenv("MATRIX_PASSWORD"):
+        if not matrix_homeserver:
+            logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
+        if Platform.MATRIX not in config.platforms:
+            config.platforms[Platform.MATRIX] = PlatformConfig()
+        config.platforms[Platform.MATRIX].enabled = True
+        if matrix_token:
+            config.platforms[Platform.MATRIX].token = matrix_token
+        config.platforms[Platform.MATRIX].extra["homeserver"] = matrix_homeserver
+        matrix_user = os.getenv("MATRIX_USER_ID", "")
+        if matrix_user:
+            config.platforms[Platform.MATRIX].extra["user_id"] = matrix_user
+        matrix_password = os.getenv("MATRIX_PASSWORD", "")
+        if matrix_password:
+            config.platforms[Platform.MATRIX].extra["password"] = matrix_password
+        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
+        matrix_home = os.getenv("MATRIX_HOME_ROOM")
+        if matrix_home:
+            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+                platform=Platform.MATRIX,
+                chat_id=matrix_home,
+                name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
+            )
+
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
     if hass_token:
@@ -567,13 +619,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             )
 
-    # SMS (Telnyx)
-    telnyx_key = os.getenv("TELNYX_API_KEY")
-    if telnyx_key:
+    # SMS (Twilio)
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    if twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
-        config.platforms[Platform.SMS].api_key = telnyx_key
+        config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
         sms_home = os.getenv("SMS_HOME_CHANNEL")
         if sms_home:
             config.platforms[Platform.SMS].home_channel = HomeChannel(

@@ -34,8 +34,11 @@ _EXTRA_ENV_KEYS = frozenset({
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+    "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
+    "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
 })
 
 import yaml
@@ -354,6 +357,11 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "website_blocklist": {
+            "enabled": False,
+            "domains": [],
+            "shared_files": [],
+        },
     },
 
     # Config schema version - bump this when adding new required fields
@@ -371,6 +379,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    10: ["TAVILY_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -542,6 +551,14 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Tool API keys ──
+    "PARALLEL_API_KEY": {
+        "description": "Parallel API key for AI-native web search and extract",
+        "prompt": "Parallel API key",
+        "url": "https://parallel.ai/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_API_KEY": {
         "description": "Firecrawl API key for web search and scraping",
         "prompt": "Firecrawl API key",
@@ -557,6 +574,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+    },
+    "TAVILY_API_KEY": {
+        "description": "Tavily API key for AI-native web search, extract, and crawl",
+        "prompt": "Tavily API key",
+        "url": "https://app.tavily.com/home",
+        "tools": ["web_search", "web_extract", "web_crawl"],
+        "password": True,
+        "category": "tool",
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
@@ -684,6 +709,55 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Slack App Token (xapp-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
+        "category": "messaging",
+    },
+    "MATTERMOST_URL": {
+        "description": "Mattermost server URL (e.g. https://mm.example.com)",
+        "prompt": "Mattermost server URL",
+        "url": "https://mattermost.com/deploy/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_TOKEN": {
+        "description": "Mattermost bot token or personal access token",
+        "prompt": "Mattermost bot token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATTERMOST_ALLOWED_USERS": {
+        "description": "Comma-separated Mattermost user IDs allowed to use the bot",
+        "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_HOMESERVER": {
+        "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
+        "prompt": "Matrix homeserver URL",
+        "url": "https://matrix.org/ecosystem/servers/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ACCESS_TOKEN": {
+        "description": "Matrix access token (preferred over password login)",
+        "prompt": "Matrix access token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATRIX_USER_ID": {
+        "description": "Matrix user ID (e.g. @hermes:example.org)",
+        "prompt": "Matrix user ID (@user:server)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ALLOWED_USERS": {
+        "description": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
+        "prompt": "Allowed Matrix user IDs (comma-separated)",
+        "url": None,
+        "password": False,
         "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {
@@ -1449,7 +1523,9 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
@@ -1598,7 +1674,8 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',

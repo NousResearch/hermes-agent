@@ -50,13 +50,16 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test"):
-    return {
+def _watcher_dict(session_id="proc_test", thread_id=""):
+    d = {
         "session_id": session_id,
         "check_interval": 0,
         "platform": "telegram",
         "chat_id": "123",
     }
+    if thread_id:
+        d["thread_id"] = thread_id
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -196,3 +199,47 @@ async def test_run_process_watcher_respects_notification_mode(
     if expected_fragment is not None:
         sent_message = adapter.send.await_args.args[1]
         assert expected_fragment in sent_message
+
+
+@pytest.mark.asyncio
+async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
+    """thread_id from watcher dict is forwarded as metadata to adapter.send()."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict(thread_id="42"))
+
+    assert adapter.send.await_count == 1
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] == {"thread_id": "42"}
+
+
+@pytest.mark.asyncio
+async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
+    """When thread_id is empty, metadata should be None (general topic)."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    assert adapter.send.await_count == 1
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] is None

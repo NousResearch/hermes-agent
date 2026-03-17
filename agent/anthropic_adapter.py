@@ -200,7 +200,10 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     req = urllib.request.Request(
         "https://console.anthropic.com/v1/oauth/token",
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+        },
         method="POST",
     )
 
@@ -510,7 +513,10 @@ def run_hermes_oauth_login() -> Optional[str]:
         req = urllib.request.Request(
             _OAUTH_TOKEN_URL,
             data=exchange_data,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            },
             method="POST",
         )
 
@@ -588,7 +594,10 @@ def refresh_hermes_oauth_token() -> Optional[str]:
         req = urllib.request.Request(
             _OAUTH_TOKEN_URL,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            },
             method="POST",
         )
 

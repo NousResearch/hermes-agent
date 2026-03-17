@@ -6,6 +6,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
 import json
+import logging
 import tempfile
 import os
 import re
@@ -13,6 +14,8 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any
+
+logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 
@@ -528,10 +531,18 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
-    """Get all jobs that are due to run now."""
+    """Get all jobs that are due to run now.
+
+    For recurring jobs (cron/interval), if the scheduled time is stale
+    (more than one period in the past, e.g. because the gateway was down),
+    the job is fast-forwarded to the next future run instead of firing
+    immediately.  This prevents a burst of missed jobs on gateway restart.
+    """
     now = _hermes_now()
     jobs = [_apply_skill_fields(j) for j in load_jobs()]
+    raw_jobs = load_jobs()  # For saving updates
     due = []
+    needs_save = False
 
     for job in jobs:
         if not job.get("enabled", True):
@@ -543,7 +554,36 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
+
+            # For recurring jobs, check if the scheduled time is stale
+            # (gateway was down and missed the window). Fast-forward to
+            # the next future occurrence instead of firing a stale run.
+            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > 120:
+                # More than 2 minutes late — this is a missed run, not a current one.
+                # Recompute next_run_at to the next future occurrence.
+                new_next = compute_next_run(schedule, now.isoformat())
+                if new_next:
+                    logger.info(
+                        "Job '%s' missed its scheduled time (%s). "
+                        "Fast-forwarding to next run: %s",
+                        job.get("name", job["id"]),
+                        next_run,
+                        new_next,
+                    )
+                    # Update the job in storage
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["next_run_at"] = new_next
+                            needs_save = True
+                            break
+                    continue  # Skip this run
+
             due.append(job)
+
+    if needs_save:
+        save_jobs(raw_jobs)
 
     return due
 

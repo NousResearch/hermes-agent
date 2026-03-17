@@ -2967,6 +2967,35 @@ class AIAgent:
         close that worker-local client, so retries and other requests never
         inherit a closed transport.
         """
+        # Hardening: only chat_completions supports token-by-token streaming via
+        # self.client.chat.completions.create(stream=True). For other API modes
+        # (Anthropic/Codex), fall back to the interruptible API call and forward
+        # the full response once so voice/TTS still receives text.
+        if self.api_mode != "chat_completions":
+            response = self._interruptible_api_call(api_kwargs)
+            if stream_callback is not None and response:
+                try:
+                    content = None
+                    # Prefer chat_completions-like response shape
+                    try:
+                        content = response.choices[0].message.content
+                    except (AttributeError, IndexError, TypeError):
+                        pass
+                    # Fallback: Anthropic native content blocks
+                    if not content and self.api_mode == "anthropic_messages":
+                        text_parts = [
+                            block.text
+                            for block in getattr(response, "content", [])
+                            if getattr(block, "type", None) == "text"
+                            and getattr(block, "text", None)
+                        ]
+                        content = " ".join(text_parts) if text_parts else None
+                    if content:
+                        stream_callback(content)
+                except Exception:
+                    pass
+            return response
+
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
 
@@ -3064,6 +3093,7 @@ class AIAgent:
         Falls back to _interruptible_api_call on provider errors indicating
         streaming is not supported.
         """
+
         if self.api_mode == "codex_responses":
             # Codex streams internally via _run_codex_stream. The main dispatch
             # in _interruptible_api_call already calls it; we just need to

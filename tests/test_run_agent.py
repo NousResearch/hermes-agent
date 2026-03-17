@@ -2457,14 +2457,6 @@ class TestStreamingApiCall:
         assert resp.model == "gpt-4"
 
 
-# ===================================================================
-# Interrupt _vprint force=True verification
-# ===================================================================
-
-
-class TestInterruptVprintForceTrue:
-    """All interrupt _vprint calls must use force=True so they are always visible."""
-
     def test_all_interrupt_vprint_have_force_true(self):
         """Scan source for _vprint calls containing 'Interrupt' — each must have force=True."""
         import inspect

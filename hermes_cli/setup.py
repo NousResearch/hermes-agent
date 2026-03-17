@@ -1360,12 +1360,12 @@ def setup_model_provider(config: dict):
         if existing_key:
             print_info(f"Current: {existing_key[:8]}... (configured)")
             if prompt_yes_no("Update API key?", False):
-                api_key = prompt_text("OpenCode Zen API key", password=True)
+                api_key = prompt("  OpenCode Zen API key", password=True)
                 if api_key:
                     save_env_value("OPENCODE_ZEN_API_KEY", api_key)
                     print_success("OpenCode Zen API key updated")
         else:
-            api_key = prompt_text("OpenCode Zen API key", password=True)
+            api_key = prompt("  OpenCode Zen API key", password=True)
             if api_key:
                 save_env_value("OPENCODE_ZEN_API_KEY", api_key)
                 print_success("OpenCode Zen API key saved")
@@ -1393,12 +1393,12 @@ def setup_model_provider(config: dict):
         if existing_key:
             print_info(f"Current: {existing_key[:8]}... (configured)")
             if prompt_yes_no("Update API key?", False):
-                api_key = prompt_text("OpenCode Go API key", password=True)
+                api_key = prompt("  OpenCode Go API key", password=True)
                 if api_key:
                     save_env_value("OPENCODE_GO_API_KEY", api_key)
                     print_success("OpenCode Go API key updated")
         else:
-            api_key = prompt_text("OpenCode Go API key", password=True)
+            api_key = prompt("  OpenCode Go API key", password=True)
             if api_key:
                 save_env_value("OPENCODE_GO_API_KEY", api_key)
                 print_success("OpenCode Go API key saved")

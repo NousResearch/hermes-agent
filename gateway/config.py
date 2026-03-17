@@ -432,9 +432,13 @@ def load_gateway_config() -> GatewayConfig:
             # Bridge whatsapp settings from config.yaml into platform config
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
-                if Platform.WHATSAPP not in config.platforms:
-                    config.platforms[Platform.WHATSAPP] = PlatformConfig()
-                config.platforms[Platform.WHATSAPP].extra["reply_prefix"] = whatsapp_cfg["reply_prefix"]
+                if "platforms" not in gw_data:
+                    gw_data["platforms"] = {}
+                if "whatsapp" not in gw_data["platforms"]:
+                    gw_data["platforms"]["whatsapp"] = {}
+                if "extra" not in gw_data["platforms"]["whatsapp"]:
+                    gw_data["platforms"]["whatsapp"]["extra"] = {}
+                gw_data["platforms"]["whatsapp"]["extra"]["reply_prefix"] = whatsapp_cfg["reply_prefix"]
     except Exception:
         pass
 

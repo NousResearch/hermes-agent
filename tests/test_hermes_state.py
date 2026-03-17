@@ -210,6 +210,14 @@ class TestFTS5Search:
         sources = [r["source"] for r in results]
         assert all(s == "telegram" for s in sources)
 
+    def test_search_default_sources_include_acp(self, db):
+        db.create_session(session_id="s1", source="acp")
+        db.append_message("s1", role="user", content="ACP question about Python")
+
+        results = db.search_messages("Python")
+        sources = [r["source"] for r in results]
+        assert "acp" in sources
+
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="What is FastAPI?")

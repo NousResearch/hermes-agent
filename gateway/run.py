@@ -2248,7 +2248,8 @@ class GatewayRunner:
             )
 
             # Auto voice reply: send TTS audio before the text response
-            if self._should_send_voice_reply(event, response, agent_messages):
+            _already_sent = bool(agent_result.get("already_sent"))
+            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, return None so
@@ -3054,6 +3055,7 @@ class GatewayRunner:
         event: MessageEvent,
         response: str,
         agent_messages: list,
+        already_sent: bool = False,
     ) -> bool:
         """Decide whether the runner should send a TTS voice reply.
 
@@ -3062,8 +3064,9 @@ class GatewayRunner:
         - response is empty or an error
         - agent already called text_to_speech tool (dedup)
         - voice input and base adapter auto-TTS already handled it (skip_double)
-          Exception: Discord voice channel — base play_tts is a no-op there,
-          so the runner must handle VC playback.
+          UNLESS streaming already consumed the response (already_sent=True),
+          in which case the base adapter won't have text for auto-TTS so the
+          runner must handle it.
         """
         if not response or response.startswith("Error:"):
             return False
@@ -3093,7 +3096,10 @@ class GatewayRunner:
 
         # Dedup: base adapter auto-TTS already handles voice input
         # (play_tts plays in VC when connected, so runner can skip).
-        if is_voice_input:
+        # When streaming already delivered the text (already_sent=True),
+        # the base adapter will receive None and can't run auto-TTS,
+        # so the runner must take over.
+        if is_voice_input and not already_sent:
             return False
 
         return True

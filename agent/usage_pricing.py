@@ -152,6 +152,62 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-prompt-caching-2026-03-16",
     ),
+    # OpenAI
+    (
+        "openai",
+        "gpt-4o",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4o-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.075"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1-nano",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
     (
         "openai",
         "gpt-5",
@@ -173,6 +229,140 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "o3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("40.00"),
+        cache_read_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "o3-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.10"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.55"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "o4-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.10"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.275"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    # Anthropic older models (pre-4.6 generation)
+    (
+        "anthropic",
+        "claude-3-5-sonnet-20241022",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+        pricing_version="anthropic-pricing-2026-03-16",
+    ),
+    (
+        "anthropic",
+        "claude-3-5-haiku-20241022",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+        pricing_version="anthropic-pricing-2026-03-16",
+    ),
+    (
+        "anthropic",
+        "claude-3-opus-20240229",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+        pricing_version="anthropic-pricing-2026-03-16",
+    ),
+    (
+        "anthropic",
+        "claude-3-haiku-20240307",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.25"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        cache_write_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+        pricing_version="anthropic-pricing-2026-03-16",
+    ),
+    # DeepSeek
+    (
+        "deepseek",
+        "deepseek-chat",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-03-16",
+    ),
+    (
+        "deepseek",
+        "deepseek-reasoner",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.55"),
+        output_cost_per_million=Decimal("2.19"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-03-16",
+    ),
+    # Google Gemini
+    (
+        "google",
+        "gemini-2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("10.00"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-03-16",
+    ),
+    (
+        "google",
+        "gemini-2.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-03-16",
+    ),
+    (
+        "google",
+        "gemini-2.0-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.40"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-03-16",
     ),
 }
 
@@ -425,13 +615,17 @@ def has_known_pricing(
     return result.status in {"estimated", "included", "actual"}
 
 
-def get_pricing(model_name: str) -> Dict[str, float]:
+def get_pricing(
+    model_name: str,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Dict[str, float]:
     """Backward-compatible thin wrapper for legacy callers.
 
     Returns only non-cache input/output fields when a pricing entry exists.
     Unknown routes return zeroes.
     """
-    entry = get_pricing_entry(model_name)
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url)
     if not entry:
         return {"input": 0.0, "output": 0.0}
     return {
@@ -443,7 +637,14 @@ def get_pricing(model_name: str) -> Dict[str, float]:
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 
-def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+def estimate_cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> float:
     """Backward-compatible helper for legacy callers.
 
     This uses non-cached input/output only. New code should call
@@ -452,6 +653,8 @@ def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> floa
     result = estimate_usage_cost(
         model,
         CanonicalUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+        provider=provider,
+        base_url=base_url,
     )
     return float(result.amount_usd or _ZERO)
 

@@ -73,7 +73,6 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_NEUTTS_VOICE = ""  # empty = use neutts_cli default voice
 DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
@@ -265,24 +264,38 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 
 def _check_neutts_available() -> bool:
-    """Check if neutts_cli is importable (installed locally)."""
+    """Check if the neutts engine is importable (installed locally)."""
     try:
         import importlib.util
-        return importlib.util.find_spec("neutts_cli") is not None
+        return importlib.util.find_spec("neutts") is not None
     except Exception:
         return False
 
 
-def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using the local NeuTTS CLI.
+def _default_neutts_ref_audio() -> str:
+    """Return path to the bundled default voice reference audio."""
+    return str(Path(__file__).parent / "neutts_samples" / "jo.wav")
 
-    Calls neutts_cli.cli synth via subprocess. Outputs WAV by default;
-    the caller handles conversion to .ogg for Telegram if needed.
+
+def _default_neutts_ref_text() -> str:
+    """Return path to the bundled default voice reference transcript."""
+    return str(Path(__file__).parent / "neutts_samples" / "jo.txt")
+
+
+def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local NeuTTS engine.
+
+    Runs synthesis in a subprocess via tools/neutts_synth.py to keep the
+    ~500MB model in a separate process that exits after synthesis.
+    Outputs WAV; the caller handles conversion for Telegram if needed.
     """
     import sys
 
     neutts_config = tts_config.get("neutts", {})
-    voice = neutts_config.get("voice", DEFAULT_NEUTTS_VOICE)
+    ref_audio = neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()
+    ref_text = neutts_config.get("ref_text", "") or _default_neutts_ref_text()
+    model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
+    device = neutts_config.get("device", "cpu")
 
     # NeuTTS outputs WAV natively — use a .wav path for generation,
     # let the caller convert to the final format afterward.
@@ -290,14 +303,23 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     if not output_path.endswith(".wav"):
         wav_path = output_path.rsplit(".", 1)[0] + ".wav"
 
-    cmd = [sys.executable, "-m", "neutts_cli.cli", "synth", "--text", text, "--out", wav_path]
-    if voice:
-        cmd.extend(["--voice", voice])
+    synth_script = str(Path(__file__).parent / "neutts_synth.py")
+    cmd = [
+        sys.executable, synth_script,
+        "--text", text,
+        "--out", wav_path,
+        "--ref-audio", ref_audio,
+        "--ref-text", ref_text,
+        "--model", model,
+        "--device", device,
+    ]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        raise RuntimeError(f"NeuTTS synthesis failed: {stderr or 'unknown error'}")
+        # Filter out the "OK:" line from stderr
+        error_lines = [l for l in stderr.splitlines() if not l.startswith("OK:")]
+        raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
 
     # If the caller wanted .mp3 or .ogg, convert from WAV
     if wav_path != output_path:

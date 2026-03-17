@@ -80,9 +80,24 @@ class ToolRegistry:
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
+    
+    # ------------------------------------------------------------------
+    # Deregister tools (for dynamic tool discovery)
+    # ------------------------------------------------------------------
+    
+    def deregister(self, name: str):
+        """Remove a tool from the registry."""
+        if name in self._tools:
+            entry = self._tools.pop(name)
+            # Also remove from toolset check if it was the last tool
+            if entry.toolset not in [e.toolset for e in self._tools.values()]:
+                self._toolset_checks.pop(entry.toolset, None)
+            logger.debug("Deregistered tool: %s", name)
+    
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------
+    
 
     def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
@@ -152,6 +167,10 @@ class ToolRegistry:
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
         return {name: e.toolset for name, e in self._tools.items()}
+    
+    def has_tool(self, name: str) -> bool:
+        """Checks whether or not a tool exists"""
+        return name in self._tools
 
     def is_toolset_available(self, toolset: str) -> bool:
         """Check if a toolset's requirements are met.

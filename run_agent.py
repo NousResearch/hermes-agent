@@ -923,10 +923,15 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    @staticmethod
+    def _base_url_uses_direct_openai_responses_api(base_url: Optional[str]) -> bool:
+        """Return True when a base URL targets OpenAI's native Responses API."""
+        normalized_base_url = (base_url or "").lower()
+        return "api.openai.com" in normalized_base_url and "openrouter" not in normalized_base_url
+
     def _uses_direct_openai_responses_api(self) -> bool:
         """Return True when this session targets OpenAI's native Responses API."""
-        base_url = (self.base_url or "").lower()
-        return "api.openai.com" in base_url and "openrouter" not in base_url
+        return self._base_url_uses_direct_openai_responses_api(self.base_url)
 
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -3333,13 +3338,18 @@ class AIAgent:
                     fb_provider)
                 return False
 
-            # Determine api_mode from provider
+            # Determine api_mode from provider/base URL.
             fb_api_mode = "chat_completions"
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider == "anthropic":
                 fb_api_mode = "anthropic_messages"
             fb_base_url = str(fb_client.base_url)
+            if (
+                fb_api_mode == "chat_completions"
+                and self._base_url_uses_direct_openai_responses_api(fb_base_url)
+            ):
+                fb_api_mode = "codex_responses"
 
             old_model = self.model
             self.model = fb_model

@@ -277,6 +277,25 @@ class TestTryActivateFallback:
             assert agent.api_mode == "codex_responses"
             assert agent.client is mock_client
 
+    def test_activates_direct_openai_responses_fallback(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "gpt-5.4"},
+        )
+        mock_client = _mock_resolve(
+            api_key="sk-openai-key",
+            base_url="https://api.openai.com/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.4"),
+        ):
+            result = agent._try_activate_fallback()
+            assert result is True
+            assert agent.model == "gpt-5.4"
+            assert agent.provider == "openrouter"
+            assert agent.api_mode == "codex_responses"
+            assert agent.client is mock_client
+
     def test_codex_fallback_fails_gracefully_without_credentials(self):
         """Codex fallback should return False if no OAuth credentials available."""
         agent = _make_agent(

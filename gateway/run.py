@@ -6216,10 +6216,9 @@ class GatewayRunner:
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
-            else:
-                self._pending_messages[_quick_key] = event.text
+            # NOTE: self._pending_messages was write-only (never consumed).
+            # The actual interrupt message is delivered via adapter._pending_messages
+            # which is read by _run_agent. Removed to prevent unbounded growth.
             return None
 
         # Check for commands
@@ -6491,13 +6490,23 @@ class GatewayRunner:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Sanitize env to prevent credential leakage —
+                            # quick commands run in the gateway process which
+                            # has all API keys in os.environ.
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
+                                env=sanitized_env,
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()
+                            # Redact any remaining sensitive patterns in output
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
                             return "Quick command timed out (30s)."

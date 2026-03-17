@@ -163,6 +163,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
         base_url_env_var="AI_GATEWAY_BASE_URL",
     ),
+    "opencode-zen": ProviderConfig(
+        id="opencode-zen",
+        name="OpenCode Zen",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        api_key_env_vars=("OPENCODE_ZEN_API_KEY",),
+        base_url_env_var="OPENCODE_ZEN_BASE_URL",
+    ),
+    "opencode-go": ProviderConfig(
+        id="opencode-go",
+        name="OpenCode Go",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/go/v1",
+        api_key_env_vars=("OPENCODE_GO_API_KEY",),
+        base_url_env_var="OPENCODE_GO_BASE_URL",
+    ),
 }
 
 
@@ -541,6 +557,8 @@ def resolve_provider(
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
+        "opencode": "opencode-zen", "zen": "opencode-zen",
+        "go": "opencode-go", "opencode-go-sub": "opencode-go",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

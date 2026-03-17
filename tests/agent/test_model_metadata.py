@@ -112,8 +112,13 @@ class TestDefaultContextLengths:
 
     def test_gpt4_models_128k(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4" in key:
+            if "gpt-4" in key and "gpt-4.1" not in key:
                 assert value == 128000, f"{key} should be 128000"
+
+    def test_gpt41_models_1m(self):
+        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
+            if "gpt-4.1" in key:
+                assert value == 1047576, f"{key} should be 1047576"
 
     def test_gemini_models_1m(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():

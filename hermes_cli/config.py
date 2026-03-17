@@ -354,6 +354,11 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "website_blocklist": {
+            "enabled": True,
+            "domains": [],
+            "shared_files": [],
+        },
     },
 
     # Config schema version - bump this when adding new required fields

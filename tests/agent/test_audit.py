@@ -225,6 +225,73 @@ class TestProblemDetection:
             assert severities.index("error") < severities.index("warning")
 
 
+class TestAuditSearch:
+
+    def test_fts_search_finds_error_message(self, audit_db):
+        audit_db.log_api_error(error="Connection timeout to api.anthropic.com", error_type="TimeoutError")
+        audit_db.log_api_error(error="Rate limited by OpenRouter", error_type="RateLimitError")
+        results = audit_db.search("anthropic")
+        assert len(results) >= 1
+        assert "anthropic" in results[0]["error_message"].lower()
+
+    def test_fts_search_finds_tool_name(self, audit_db):
+        audit_db.log_tool_call(tool_name="web_search", args={"query": "test"})
+        audit_db.log_tool_call(tool_name="terminal", args={"command": "ls"})
+        results = audit_db.search("web_search")
+        assert len(results) >= 1
+
+    def test_search_empty_returns_empty(self, audit_db):
+        assert audit_db.search("nonexistent_xyz_123") == []
+
+
+class TestAuditPrune:
+
+    def test_prune_removes_old_events(self, audit_db):
+        # Insert old event
+        audit_db._insert(
+            timestamp=time.time() - 200 * 86400,  # 200 days ago
+            event_type="tool_call", severity="info", tool_name="old",
+        )
+        audit_db.log_tool_call(tool_name="recent")
+        assert len(audit_db.query(limit=100)) == 2
+        deleted = audit_db.prune(older_than_days=90)
+        assert deleted == 1
+        remaining = audit_db.query(limit=100)
+        assert len(remaining) == 1
+        assert remaining[0]["tool_name"] == "recent"
+
+    def test_prune_keeps_recent(self, audit_db):
+        audit_db.log_tool_call(tool_name="fresh")
+        deleted = audit_db.prune(older_than_days=1)
+        assert deleted == 0
+        assert len(audit_db.query()) == 1
+
+
+class TestAuditIntegration:
+    """Integration test: verify model_tools.py writes to audit log."""
+
+    def test_tool_dispatch_writes_audit_event(self, tmp_path, monkeypatch):
+        """When a tool is dispatched via model_tools, the audit logger records it."""
+        from agent.audit import AuditLogger
+
+        test_audit = AuditLogger(db_path=tmp_path / "integration_audit.db")
+        monkeypatch.setattr("agent.audit._audit_logger", test_audit)
+
+        # Dispatch a tool call through model_tools.handle_function_call
+        import model_tools
+        model_tools.handle_function_call(
+            function_name="web_search",
+            function_args={"query": "test integration"},
+            task_id="integration-test",
+        )
+
+        # Tool may not be registered in test env → tool_error event
+        # Either way, audit should have logged something
+        all_events = test_audit.query(limit=10)
+        assert len(all_events) >= 1, "Audit should have at least one event after tool dispatch"
+        test_audit.close()
+
+
 class TestAuditLoggerResilience:
 
     def test_closed_logger_does_not_crash(self, audit_db):

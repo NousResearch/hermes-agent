@@ -2375,6 +2375,23 @@ def cmd_audit(args):
         print()
 
     elif action == "list":
+        # Full-text search takes priority
+        search_query = getattr(args, "search", None)
+        if search_query:
+            events = audit.search(search_query, limit=getattr(args, "limit", 50) or 50)
+            if not events:
+                print(f"No results for '{search_query}'.")
+                return
+            from datetime import datetime
+            for ev in events:
+                ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%H:%M:%S")
+                sev = ev["severity"][0].upper()
+                etype = ev["event_type"]
+                tool = ev.get("tool_name") or ""
+                err = ev.get("error_message") or ""
+                print(f"  {ts} [{sev}] {etype} {tool} {err[:80]}")
+            return
+
         kwargs = {}
         if getattr(args, "type", None):
             kwargs["event_type"] = args.type
@@ -2460,6 +2477,20 @@ def cmd_audit(args):
 
         if not detected and not events:
             print(f"No problems in the last {hours} hours.")
+
+    elif action == "prune":
+        days = getattr(args, "older_than", 90) or 90
+        if not getattr(args, "yes", False):
+            try:
+                confirm = input(f"Delete audit events older than {days} days? [y/N]: ").strip().lower()
+                if confirm not in ("y", "yes"):
+                    print("Cancelled.")
+                    return
+            except (KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+        deleted = audit.prune(older_than_days=days)
+        print(f"Deleted {deleted} audit events older than {days} days.")
 
 
 def cmd_uninstall(args):
@@ -3800,6 +3831,7 @@ For more help on a command:
     audit_list = audit_subparsers.add_parser("list", help="List audit events")
     audit_list.add_argument("--type", help="Filter by event type (tool_call, api_error, etc.)")
     audit_list.add_argument("--session", help="Filter by session ID")
+    audit_list.add_argument("--search", help="Full-text search across errors, tools, context")
     audit_list.add_argument("--tool", help="Filter by tool name")
     audit_list.add_argument("--severity", help="Filter by severity (info, warning, error, critical)")
     audit_list.add_argument("--hours", type=float, help="Time window in hours")
@@ -3812,6 +3844,10 @@ For more help on a command:
     audit_export = audit_subparsers.add_parser("export", help="Export audit events as JSONL")
     audit_export.add_argument("--hours", type=float, default=24, help="Time window in hours (default: 24)")
     audit_export.add_argument("--output", "-o", help="Output file (default: stdout)")
+
+    audit_prune = audit_subparsers.add_parser("prune", help="Delete old audit events")
+    audit_prune.add_argument("--older-than", type=int, default=90, help="Delete events older than N days (default: 90)")
+    audit_prune.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
 
     audit_parser.set_defaults(func=cmd_audit)
 

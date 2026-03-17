@@ -3075,6 +3075,15 @@ class AIAgent:
             new_token = resolve_anthropic_token()
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
+            try:
+                from agent.audit import get_audit_logger, EVENT_AUTH_FAILURE
+                get_audit_logger().log_security_event(
+                    event_type=EVENT_AUTH_FAILURE, severity="error",
+                    session_id=self.session_id,
+                    context={"reason": "resolve_token_exception", "error": str(exc)[:200]},
+                )
+            except Exception:
+                pass
             return False
 
         if not isinstance(new_token, str) or not new_token.strip():
@@ -3092,12 +3101,32 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(new_token, getattr(self, "_anthropic_base_url", None))
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
+            try:
+                from agent.audit import get_audit_logger, EVENT_AUTH_FAILURE
+                get_audit_logger().log_security_event(
+                    event_type=EVENT_AUTH_FAILURE, severity="error",
+                    session_id=self.session_id,
+                    context={"reason": "rebuild_client_failed", "error": str(exc)[:200]},
+                )
+            except Exception:
+                pass
             return False
 
         self._anthropic_api_key = new_token
         # Update OAuth flag — token type may have changed (API key ↔ OAuth)
         from agent.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token)
+
+        try:
+            from agent.audit import get_audit_logger, EVENT_AUTH_REFRESH
+            get_audit_logger().log_security_event(
+                event_type=EVENT_AUTH_REFRESH, severity="info",
+                **self._audit_ctx(),
+                context={"reason": "token_refreshed", "provider": "anthropic"},
+            )
+        except Exception:
+            pass
+
         return True
 
     def _anthropic_messages_create(self, api_kwargs: dict):
@@ -3486,6 +3515,19 @@ class AIAgent:
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             self._fallback_activated = True
+
+            # Audit log: fallback activation
+            try:
+                from agent.audit import get_audit_logger, EVENT_FALLBACK
+                get_audit_logger().log_session_event(
+                    event_type=EVENT_FALLBACK,
+                    session_id=self.session_id,
+                    model=fb_model,
+                    provider=fb_provider,
+                    context={"old_model": old_model, "new_model": fb_model, "new_provider": fb_provider},
+                )
+            except Exception:
+                pass
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
@@ -4210,7 +4252,25 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
+        pre_count = len(messages)
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        post_count = len(compressed)
+
+        # Audit log: compression event
+        try:
+            from agent.audit import get_audit_logger, EVENT_COMPRESSION
+            get_audit_logger().log_session_event(
+                event_type=EVENT_COMPRESSION,
+                session_id=self.session_id,
+                context={
+                    "messages_before": pre_count,
+                    "messages_after": post_count,
+                    "tokens_before": approx_tokens,
+                    "compression_count": self.context_compressor.compression_count,
+                },
+            )
+        except Exception:
+            pass
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
@@ -5655,21 +5715,6 @@ class AIAgent:
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
 
-                        # Audit log: successful API call
-                        try:
-                            from agent.audit import get_audit_logger
-                            get_audit_logger().log_api_call(
-                                model=self.model,
-                                provider=self.provider,
-                                status_code=200,
-                                duration_ms=api_duration * 1000 if api_duration else None,
-                                input_tokens=prompt_tokens,
-                                output_tokens=completion_tokens,
-                                session_id=self.session_id,
-                            )
-                        except Exception:
-                            pass
-
                         self.session_input_tokens += canonical_usage.input_tokens
                         self.session_output_tokens += canonical_usage.output_tokens
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
@@ -5687,6 +5732,27 @@ class AIAgent:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
+
+                        # Audit log: successful API call with cost
+                        try:
+                            from agent.audit import get_audit_logger
+                            get_audit_logger().log_api_call(
+                                model=self.model,
+                                provider=self.provider,
+                                status_code=200,
+                                duration_ms=api_duration * 1000 if api_duration else None,
+                                input_tokens=prompt_tokens,
+                                output_tokens=completion_tokens,
+                                session_id=self.session_id,
+                                context={
+                                    "cost_usd": float(cost_result.amount_usd) if cost_result.amount_usd else None,
+                                    "cost_status": cost_result.status,
+                                    "cache_read": canonical_usage.cache_read_tokens,
+                                    "cache_write": canonical_usage.cache_write_tokens,
+                                },
+                            )
+                        except Exception:
+                            pass
 
                         # Persist token counts to session DB for /insights.
                         # Gateway sessions persist via session_store.update_session()

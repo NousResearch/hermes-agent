@@ -88,6 +88,21 @@ CREATE INDEX IF NOT EXISTS idx_events_tool ON events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_events_error ON events(event_type, error_type);
 """
 
+FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    error_message,
+    tool_name,
+    context,
+    content=events,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
+    INSERT INTO events_fts(rowid, error_message, tool_name, context)
+    VALUES (new.id, new.error_message, new.tool_name, new.context);
+END;
+"""
+
 
 class AuditLogger:
     """Thread-safe, append-only audit event logger backed by SQLite.
@@ -120,6 +135,10 @@ class AuditLogger:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(SCHEMA_SQL)
+            try:
+                self._conn.executescript(FTS_SQL)
+            except Exception:
+                pass  # FTS optional — works without it
             self._conn.commit()
         except Exception as e:
             logger.debug("Failed to initialize audit database: %s", e)
@@ -390,6 +409,34 @@ class AuditLogger:
             logger.debug("Audit summary failed: %s", e)
             return {}
 
+    def search(self, query: str, limit: int = 50) -> List[Dict]:
+        """Full-text search across error messages, tool names, and context."""
+        if not self._conn or not query:
+            return []
+        try:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT e.* FROM events e JOIN events_fts f ON e.id = f.rowid "
+                    "WHERE events_fts MATCH ? ORDER BY e.timestamp DESC LIMIT ?",
+                    (query, limit),
+                )
+                columns = [d[0] for d in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.debug("Audit search failed (FTS may not be available): %s", e)
+            # Fallback: LIKE search on error_message
+            try:
+                with self._lock:
+                    cursor = self._conn.execute(
+                        "SELECT * FROM events WHERE error_message LIKE ? OR tool_name LIKE ? "
+                        "ORDER BY timestamp DESC LIMIT ?",
+                        (f"%{query}%", f"%{query}%", limit),
+                    )
+                    columns = [d[0] for d in cursor.description]
+                    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            except Exception:
+                return []
+
     def detect_problems(self, last_hours: float = 24) -> List[Dict]:
         """Analyze recent events and detect patterns that indicate problems.
 
@@ -520,6 +567,23 @@ class AuditLogger:
         severity_order = {"critical": 0, "error": 1, "warning": 2, "info": 3}
         problems.sort(key=lambda p: severity_order.get(p["severity"], 9))
         return problems
+
+    def prune(self, older_than_days: int = 90) -> int:
+        """Delete audit events older than the given number of days.
+
+        Returns the number of deleted events.
+        """
+        if not self._conn:
+            return 0
+        cutoff = time.time() - (older_than_days * 86400)
+        try:
+            with self._lock:
+                cursor = self._conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+                self._conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.debug("Audit prune failed: %s", e)
+            return 0
 
     def close(self):
         self._closed = True

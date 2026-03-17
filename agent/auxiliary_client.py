@@ -1252,6 +1252,7 @@ def _resolve_task_provider_model(
             if isinstance(comp, dict):
                 cfg_provider = comp.get("summary_provider", "").strip() or None
                 cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
+                cfg_base_url = cfg_base_url or comp.get("summary_base_url", "").strip() or None
 
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
     resolved_model = model or env_model or cfg_model

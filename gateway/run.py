@@ -1542,8 +1542,9 @@ class GatewayRunner:
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         try:
+            import yaml as _pii_yaml
             with open(_config_path, encoding="utf-8") as _pf:
-                _pcfg = yaml.safe_load(_pf) or {}
+                _pcfg = _pii_yaml.safe_load(_pf) or {}
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass

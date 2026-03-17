@@ -555,6 +555,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             session_info = provider.create_session(task_id)
     
     with _cleanup_lock:
+        # Double-check: another thread may have created a session while we
+        # were doing the network call. Use the existing one to avoid leaking
+        # orphan cloud sessions.
+        if task_id in _active_sessions:
+            return _active_sessions[task_id]
         _active_sessions[task_id] = session_info
     
     return session_info

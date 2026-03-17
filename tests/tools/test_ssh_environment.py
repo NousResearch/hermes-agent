@@ -67,6 +67,55 @@ class TestBuildSSHCommand:
         assert env._build_ssh_command()[-1] == "u@h"
 
 
+class TestWorkdirShellEscaping:
+    """workdir must be shell-escaped to prevent command injection via cwd parameter."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
+                            lambda *a, **k: subprocess.CompletedProcess([], 0))
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
+                            lambda *a, **k: MagicMock(stdout=iter([]),
+                                                      stderr=iter([]),
+                                                      stdin=MagicMock()))
+        monkeypatch.setattr("tools.environments.ssh.time.sleep", lambda _: None)
+
+    def test_workdir_with_shell_metacharacters_is_escaped(self):
+        """A workdir like '/tmp/$(rm -rf /)' must not execute the subshell."""
+        env = SSHEnvironment(host="h", user="u")
+        # Capture what command gets built
+        commands_sent = []
+        original_popen = subprocess.Popen
+
+        def _capture_popen(cmd, *a, **k):
+            commands_sent.append(cmd)
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter([])
+            mock_proc.stderr = iter([])
+            mock_proc.stdin = MagicMock()
+            mock_proc.wait.return_value = 0
+            mock_proc.returncode = 0
+            mock_proc.poll.return_value = 0
+            return mock_proc
+
+        import tools.environments.ssh as ssh_mod
+        ssh_mod.subprocess.Popen = _capture_popen
+
+        try:
+            env._execute_oneshot("ls", cwd='/tmp/$(rm -rf /)')
+        except Exception:
+            pass
+        finally:
+            ssh_mod.subprocess.Popen = original_popen
+
+        # The wrapped command should have the workdir quoted/escaped
+        assert commands_sent, "No command was captured"
+        wrapped_cmd = commands_sent[0][-1]  # last arg is the shell command
+        # The malicious subshell must NOT appear unquoted
+        assert "$(rm -rf /)" not in wrapped_cmd or "'" in wrapped_cmd or '"' in wrapped_cmd, \
+            f"workdir not escaped — shell injection possible: {wrapped_cmd}"
+
+
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):
         """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""

@@ -154,6 +154,34 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "Force-installed" in reason
 
+    # -- agent-created policy --
+
+    def test_safe_agent_created_allowed(self):
+        allowed, _ = should_allow_install(self._result("agent-created", "safe"))
+        assert allowed is True
+
+    def test_caution_agent_created_allowed(self):
+        """Agent-created skills with caution verdict (e.g. docker refs) should pass."""
+        f = [Finding("docker_pull", "medium", "supply_chain", "SKILL.md", 1, "docker pull img", "pulls Docker image")]
+        allowed, reason = should_allow_install(self._result("agent-created", "caution", f))
+        assert allowed is True
+        assert "agent-created" in reason
+
+    def test_dangerous_agent_created_blocked(self):
+        """Agent-created skills with dangerous verdict (critical findings) stay blocked."""
+        f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
+        allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
+        assert allowed is False
+        assert "Blocked" in reason
+
+    def test_force_overrides_dangerous_for_agent_created(self):
+        f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
+        allowed, reason = should_allow_install(
+            self._result("agent-created", "dangerous", f), force=True
+        )
+        assert allowed is True
+        assert "Force-installed" in reason
+
 
 # ---------------------------------------------------------------------------
 # scan_file — pattern detection

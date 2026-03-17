@@ -1185,11 +1185,20 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(message.message_thread_id) if message.message_thread_id else None,
         )
         
+        # Extract reply context if this message is a reply
+        reply_to_id = None
+        reply_to_text = None
+        if message.reply_to_message:
+            reply_to_id = str(message.reply_to_message.message_id)
+            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
             timestamp=message.date,
         )

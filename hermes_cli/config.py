@@ -16,7 +16,6 @@ import os
 import platform
 import re
 import stat
-import sys
 import subprocess
 import sys
 import tempfile

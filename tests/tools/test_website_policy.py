@@ -89,7 +89,7 @@ def test_default_config_exposes_website_blocklist_shape():
     from hermes_cli.config import DEFAULT_CONFIG
 
     website_blocklist = DEFAULT_CONFIG["security"]["website_blocklist"]
-    assert website_blocklist["enabled"] is True
+    assert website_blocklist["enabled"] is False
     assert website_blocklist["domains"] == []
     assert website_blocklist["shared_files"] == []
 
@@ -100,7 +100,7 @@ def test_load_website_blocklist_uses_enabled_default_when_section_missing(tmp_pa
 
     policy = load_website_blocklist(config_path)
 
-    assert policy == {"enabled": True, "rules": []}
+    assert policy == {"enabled": False, "rules": []}
 
 
 def test_load_website_blocklist_raises_clean_error_for_invalid_domains_type(tmp_path):
@@ -232,8 +232,11 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
 
     monkeypatch.setattr(Path, "read_text", failing_read_text)
 
-    with pytest.raises(WebsitePolicyError, match="Failed to read shared blocklist file"):
-        load_website_blocklist(config_path)
+    # Unreadable shared files are now warned and skipped (not raised),
+    # so the blocklist loads successfully but without those rules.
+    result = load_website_blocklist(config_path)
+    assert result["enabled"] is True
+    assert result["rules"] == []  # shared file rules skipped
 
 
 def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
@@ -311,7 +314,8 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
     assert result["blocked_by_policy"]["rule"] == "blocked.test"
 
 
-def test_browser_navigate_returns_clean_policy_error_for_missing_shared_file(monkeypatch, tmp_path):
+def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path):
+    """Missing shared blocklist files are warned and skipped, not fatal."""
     from tools import browser_tool
 
     config_path = tmp_path / "config.yaml"
@@ -330,12 +334,9 @@ def test_browser_navigate_returns_clean_policy_error_for_missing_shared_file(mon
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(browser_tool, "check_website_access", lambda url: check_website_access(url, config_path=config_path))
-
-    result = json.loads(browser_tool.browser_navigate("https://allowed.test"))
-
-    assert result["success"] is False
-    assert "Website policy error" in result["error"]
+    # check_website_access should return None (allow) — missing file is skipped
+    result = check_website_access("https://allowed.test", config_path=config_path)
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -365,20 +366,23 @@ async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     assert "Blocked by website policy" in result["results"][0]["error"]
 
 
-@pytest.mark.asyncio
-async def test_web_extract_returns_clean_policy_error_for_malformed_config(monkeypatch, tmp_path):
-    from tools import web_tools
-
+def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypatch):
+    """Malformed config with default path should fail open (return None), not crash."""
     config_path = tmp_path / "config.yaml"
     config_path.write_text("security: [oops\n", encoding="utf-8")
 
-    monkeypatch.setattr(web_tools, "check_website_access", lambda url: check_website_access(url, config_path=config_path))
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    # With explicit config_path (test mode), errors propagate
+    with pytest.raises(WebsitePolicyError):
+        check_website_access("https://example.com", config_path=config_path)
 
-    result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+    # Simulate default path by pointing HERMES_HOME to tmp_path
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import website_policy
+    website_policy.invalidate_cache()
 
-    assert result["results"][0]["url"] == "https://allowed.test"
-    assert "Website policy error" in result["results"][0]["error"]
+    # With default path, errors are caught and fail open
+    result = check_website_access("https://example.com")
+    assert result is None  # allowed, not crashed
 
 
 @pytest.mark.asyncio

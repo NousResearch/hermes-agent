@@ -799,6 +799,7 @@ class SlackAdapter(BasePlatformAdapter):
             "compact": "/compress", "compress": "/compress",
             "resume": "/resume",
             "background": "/background",
+            "bg": "/bg",
             "usage": "/usage",
             "insights": "/insights",
             "title": "/title",

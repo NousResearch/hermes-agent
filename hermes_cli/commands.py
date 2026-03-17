@@ -30,6 +30,7 @@ COMMANDS_BY_CATEGORY = {
         "/rollback": "List or restore filesystem checkpoints (usage: /rollback [number])",
         "/stop": "Kill all running background processes",
         "/background": "Run a prompt in the background (usage: /background <prompt>)",
+        "/bg": "Run a prompt in the background (alias for /background)",
     },
     "Configuration": {
         "/config": "Show current configuration",

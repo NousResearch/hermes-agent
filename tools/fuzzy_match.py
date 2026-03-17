@@ -6,16 +6,17 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 9-strategy chain (inspired by OpenCode):
+The 8-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
-3. Block anchor - Match first+last lines, use similarity for middle
-4. Whitespace normalized - Collapse multiple spaces/tabs to single space
-5. Indentation flexible - Ignore indentation differences entirely
-6. Escape normalized - Convert \\n literals to actual newlines
-7. Trimmed boundary - Trim first/last line whitespace only
+3. Whitespace normalized - Collapse multiple spaces/tabs to single space
+4. Indentation flexible - Ignore indentation differences entirely
+5. Escape normalized - Convert \\n literals to actual newlines
+6. Trimmed boundary - Trim first/last line whitespace only
+7. Block anchor - Match first+last lines, use similarity for middle
 8. Context-aware - 50% line similarity threshold
-9. Multi-occurrence - For replace_all flag
+
+Multi-occurrence matching is handled via the replace_all flag.
 
 Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace

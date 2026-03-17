@@ -44,7 +44,7 @@ hermes-agent/
 │   ├── terminal_tool.py  # Terminal orchestration
 │   ├── process_registry.py # Background process management
 │   ├── file_tools.py     # File read/write/search/patch
-│   ├── web_tools.py      # Firecrawl search/extract
+│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
 │   ├── browser_tool.py   # Browserbase browser automation
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py  # Subagent delegation

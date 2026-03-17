@@ -1,8 +1,11 @@
-"""Tests for Firecrawl client configuration and singleton behavior.
+"""Tests for web backend client configuration and singleton behavior.
 
 Coverage:
   _get_firecrawl_client() — configuration matrix, singleton caching,
   constructor failure recovery, return value verification, edge cases.
+  _get_backend() — backend selection logic with env var combinations.
+  _get_parallel_client() — Parallel client configuration, singleton caching.
+  check_web_api_key() — unified availability check.
 """
 
 import os
@@ -117,3 +120,155 @@ class TestFirecrawlClientConfig:
                 from tools.web_tools import _get_firecrawl_client
                 with pytest.raises(ValueError):
                     _get_firecrawl_client()
+
+
+class TestBackendSelection:
+    """Test suite for _get_backend() backend selection logic."""
+
+    _ENV_KEYS = ("WEB_SEARCH_BACKEND", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")
+
+    def setup_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    # ── Explicit backend selection ────────────────────────────────────
+
+    def test_explicit_parallel(self):
+        """WEB_SEARCH_BACKEND=parallel → 'parallel' regardless of keys."""
+        with patch.dict(os.environ, {"WEB_SEARCH_BACKEND": "parallel"}):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "parallel"
+
+    def test_explicit_firecrawl(self):
+        """WEB_SEARCH_BACKEND=firecrawl → 'firecrawl' even if Parallel key set."""
+        with patch.dict(os.environ, {
+            "WEB_SEARCH_BACKEND": "firecrawl",
+            "PARALLEL_API_KEY": "test-key",
+        }):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "firecrawl"
+
+    def test_explicit_case_insensitive(self):
+        """WEB_SEARCH_BACKEND=Parallel (mixed case) → 'parallel'."""
+        with patch.dict(os.environ, {"WEB_SEARCH_BACKEND": "Parallel"}):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "parallel"
+
+    # ── Auto-detect mode ──────────────────────────────────────────────
+
+    def test_auto_prefers_parallel_when_key_set(self):
+        """Auto mode with PARALLEL_API_KEY → 'parallel'."""
+        with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "parallel"
+
+    def test_auto_prefers_firecrawl_when_both_set(self):
+        """Auto mode with both keys → 'firecrawl' preferred (existing backend)."""
+        with patch.dict(os.environ, {
+            "PARALLEL_API_KEY": "test-key",
+            "FIRECRAWL_API_KEY": "fc-test",
+        }):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "firecrawl"
+
+    def test_auto_falls_back_to_firecrawl(self):
+        """Auto mode with only FIRECRAWL_API_KEY → 'firecrawl'."""
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "firecrawl"
+
+    def test_auto_no_keys_defaults_to_firecrawl(self):
+        """Auto mode with no keys → 'firecrawl' (will fail at client init)."""
+        from tools.web_tools import _get_backend
+        assert _get_backend() == "firecrawl"
+
+    def test_invalid_backend_falls_through_to_auto(self):
+        """WEB_SEARCH_BACKEND=invalid → treated as 'auto'."""
+        with patch.dict(os.environ, {
+            "WEB_SEARCH_BACKEND": "tavily",
+            "PARALLEL_API_KEY": "test-key",
+        }):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "parallel"
+
+
+class TestParallelClientConfig:
+    """Test suite for Parallel client initialization."""
+
+    def setup_method(self):
+        import tools.web_tools
+        tools.web_tools._parallel_client = None
+        os.environ.pop("PARALLEL_API_KEY", None)
+
+    def teardown_method(self):
+        import tools.web_tools
+        tools.web_tools._parallel_client = None
+        os.environ.pop("PARALLEL_API_KEY", None)
+
+    def test_creates_client_with_key(self):
+        """PARALLEL_API_KEY set → creates Parallel client."""
+        with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            from tools.web_tools import _get_parallel_client
+            from parallel import Parallel
+            client = _get_parallel_client()
+            assert client is not None
+            assert isinstance(client, Parallel)
+
+    def test_no_key_raises_with_helpful_message(self):
+        """No PARALLEL_API_KEY → ValueError with guidance."""
+        from tools.web_tools import _get_parallel_client
+        with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
+            _get_parallel_client()
+
+    def test_singleton_returns_same_instance(self):
+        """Second call returns cached client."""
+        with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            from tools.web_tools import _get_parallel_client
+            client1 = _get_parallel_client()
+            client2 = _get_parallel_client()
+            assert client1 is client2
+
+
+class TestCheckWebApiKey:
+    """Test suite for check_web_api_key() unified availability check."""
+
+    _ENV_KEYS = ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")
+
+    def setup_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        for key in self._ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_parallel_key_only(self):
+        with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_firecrawl_key_only(self):
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_firecrawl_url_only(self):
+        with patch.dict(os.environ, {"FIRECRAWL_API_URL": "http://localhost:3002"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_no_keys_returns_false(self):
+        from tools.web_tools import check_web_api_key
+        assert check_web_api_key() is False
+
+    def test_both_keys_returns_true(self):
+        with patch.dict(os.environ, {
+            "PARALLEL_API_KEY": "test-key",
+            "FIRECRAWL_API_KEY": "fc-test",
+        }):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True

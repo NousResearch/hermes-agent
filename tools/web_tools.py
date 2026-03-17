@@ -609,10 +609,8 @@ def _get_exa_client():
                 "EXA_API_KEY environment variable not set. "
                 "Get your API key at https://exa.ai"
             )
-        _exa_client = Exa(
-            api_key=api_key,
-            additional_headers={"x-exa-integration": "hermes-agent"},
-        )
+        _exa_client = Exa(api_key=api_key)
+        _exa_client.headers["x-exa-integration"] = "hermes-agent"
     return _exa_client
 
 
@@ -628,16 +626,22 @@ def _exa_search(query: str, limit: int = 5) -> dict:
     response = _get_exa_client().search(
         query,
         num_results=min(limit, 20),
-        contents={"highlights": True},
+        contents={
+            "highlights": {
+                "num_sentences": 3,
+                "highlights_per_url": 1,
+            },
+        },
     )
 
     web_results = []
     for i, result in enumerate(response.results or []):
         highlights = result.highlights or []
+        description = highlights[0] if highlights else ""
         web_results.append({
             "url": result.url or "",
             "title": result.title or "",
-            "description": " ".join(highlights) if highlights else "",
+            "description": description,
             "position": i + 1,
         })
 

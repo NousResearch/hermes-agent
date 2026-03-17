@@ -318,16 +318,17 @@ class TestExaClientConfig:
         os.environ.pop("EXA_API_KEY", None)
 
     def test_creates_client_with_key(self):
-        """EXA_API_KEY set → creates Exa client."""
+        """EXA_API_KEY set → creates Exa client with integration header."""
         with patch.dict(os.environ, {"EXA_API_KEY": "test-key"}):
             with patch("exa_py.Exa") as mock_exa:
+                mock_instance = MagicMock()
+                mock_instance.headers = {}
+                mock_exa.return_value = mock_instance
                 from tools.web_tools import _get_exa_client
                 result = _get_exa_client()
-                mock_exa.assert_called_once_with(
-                    api_key="test-key",
-                    additional_headers={"x-exa-integration": "hermes-agent"},
-                )
-                assert result is mock_exa.return_value
+                mock_exa.assert_called_once_with(api_key="test-key")
+                assert result is mock_instance
+                assert mock_instance.headers["x-exa-integration"] == "hermes-agent"
 
     def test_no_key_raises_with_helpful_message(self):
         """No EXA_API_KEY → ValueError with guidance."""

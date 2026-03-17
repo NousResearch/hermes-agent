@@ -2993,7 +2993,8 @@ For more help on a command:
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument("identifier", help="Skill identifier (e.g. openai/skills/skill-creator)")
     skills_install.add_argument("--category", default="", help="Category folder to install into")
-    skills_install.add_argument("--force", "--yes", "-y", dest="force", action="store_true", help="Install despite blocked scan verdict")
+    skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
+    skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
 
     skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")

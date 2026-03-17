@@ -1,0 +1,12 @@
+.git
+.github
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.tmp-hermes-home
+.tmp-runtime-home
+.plans
+uv.lock

@@ -4251,7 +4251,7 @@ class GatewayRunner:
                 if _hm.get("role") in ("tool", "function"):
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
+                        for _match in re.finditer(r'MEDIA:\s*([^\n]+?)(?=\s*MEDIA:|\n|$)', _hc, re.IGNORECASE):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
                                 _history_media_paths.add(_p)
@@ -4304,7 +4304,7 @@ class GatewayRunner:
                     if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
+                            for match in re.finditer(r'MEDIA:\s*([^\n]+?)(?=\s*MEDIA:|\n|$)', content, re.IGNORECASE):
                                 path = match.group(1).strip().rstrip('",}')
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")

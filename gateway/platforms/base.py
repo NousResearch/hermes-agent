@@ -707,10 +707,11 @@ class BasePlatformAdapter(ABC):
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
         
-        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
+        # Extract MEDIA:<path> tags, allowing optional whitespace after the colon,
+        # quoted/backticked paths, and paths with spaces (stop at newline or next MEDIA:).
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+?)(?=\s*MEDIA:|\n|$)[`"']?''',
+            re.IGNORECASE,
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -828,8 +829,11 @@ class BasePlatformAdapter(ABC):
         
         try:
             # Call the handler (this can take a while with tool calls)
-            response = await self._message_handler(event)
-            
+            raw_response = await self._message_handler(event)
+            # Handler may return a dict (e.g. {"final_response": "...", "already_sent": ...})
+            # or a plain string; we need the text for MEDIA extraction and sending (Fixes #1803)
+            response = (raw_response.get("final_response") or "") if isinstance(raw_response, dict) else (raw_response or "")
+
             # Send response if any
             if not response:
                 logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
@@ -839,6 +843,9 @@ class BasePlatformAdapter(ABC):
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
+                # Strip any remaining internal directives from message body (fixes #1561)
+                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = re.sub(r"MEDIA:\s*[^\n]+?(?=\s*MEDIA:|\n|$)", "", text_content, flags=re.IGNORECASE).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 

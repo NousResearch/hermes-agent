@@ -35,17 +35,20 @@ CONTEXT_PROBE_TIERS = [
 ]
 
 DEFAULT_CONTEXT_LENGTHS = {
+    # Claude 4.6 (Opus + Sonnet) natively support 1M context window via Anthropic API
+    # Other Claude 4.x models are limited to 200K (1M requires a feature flag or is unavailable)
+    # https://docs.anthropic.com/en/docs/about-claude/models
     "anthropic/claude-opus-4": 200000,
     "anthropic/claude-opus-4.5": 200000,
-    "anthropic/claude-opus-4.6": 200000,
+    "anthropic/claude-opus-4.6": 1_000_000,
     "anthropic/claude-sonnet-4": 200000,
     "anthropic/claude-sonnet-4-20250514": 200000,
     "anthropic/claude-sonnet-4.5": 200000,
-    "anthropic/claude-sonnet-4.6": 200000,
+    "anthropic/claude-sonnet-4.6": 1_000_000,
     "anthropic/claude-haiku-4.5": 200000,
     # Bare Anthropic model IDs (for native API provider)
-    "claude-opus-4-6": 200000,
-    "claude-sonnet-4-6": 200000,
+    "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-4-6": 1_000_000,
     "claude-opus-4-5-20251101": 200000,
     "claude-sonnet-4-5-20250929": 200000,
     "claude-opus-4-1-20250805": 200000,

@@ -70,6 +70,7 @@ Thread safety:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -82,6 +83,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Need lazy import for tools because registry singleton is patched during tests
+# from tools.registry import registry
+# from toolsets import create_custom_toolset, TOOLSETS
+
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
 # ---------------------------------------------------------------------------
@@ -89,6 +94,8 @@ logger = logging.getLogger(__name__)
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
+_MCP_NOTIFICATION_TYPES = False
+_MCP_MESSAGE_HANDLER_SUPPORTED = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -112,8 +119,37 @@ try:
         _MCP_SAMPLING_TYPES = True
     except ImportError:
         logger.debug("MCP sampling types not available -- sampling disabled")
+    try:
+        from mcp.types import (
+            ServerNotification,
+            ServerRequest,
+            ToolListChangedNotification,
+            PromptListChangedNotification,
+            ResourceListChangedNotification,
+        )
+        _MCP_NOTIFICATION_TYPES = True
+    except ImportError:
+        logger.debug("MCP Notification types not availiable -- Dynamic Tool change disabled ")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
+    
+
+# Check if client session supports message handler, done For backwards compatibility
+# This is ugly, but I have no idea what "older SDK version" needs to be supported, sorry
+def _client_session_supports_message_handler() -> bool:
+    try:
+        return "message_handler" in inspect.signature(ClientSession).parameters
+    except (TypeError, ValueError):
+        return False
+
+# Should only check if MCP imported successfully
+
+_MCP_MESSAGE_HANDLER_SUPPORTED = _MCP_AVAILABLE and _client_session_supports_message_handler()
+    
+if not _MCP_MESSAGE_HANDLER_SUPPORTED:
+    logger.debug("Current MCP sdk version does not support message handlers, dynamic mcp tool discovery not enabled")
+
+    
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -688,7 +724,7 @@ class MCPServerTask:
     __slots__ = (
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
-        "_sampling", "_registered_tool_names",
+        "_sampling", "_registered_tool_names", "_refresh_lock"
     )
 
     def __init__(self, name: str):
@@ -703,10 +739,47 @@ class MCPServerTask:
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
         self._registered_tool_names: list[str] = []
+        self._refresh_lock = asyncio.Lock()
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
+    
+    # Need to guarentee handler to not block garbage collection if Clientsession
+    # outlives Server Task for some reason, it shouldn't, but use factory method
+    # just to be safe here (defensive programming)
+    def _make_message_handler(self):
+        server = self  # explicit closure reference
+        
+        # Refer to see mcp.client.session.MessageHandlerFnT
+        async def _handler(message: 'ServerRequest | ServerNotification | Exception'):
+            try:
+                if isinstance(message, Exception):
+                    logger.debug("MCP message handler saw exception: %s", message)
+                    return
+
+                if isinstance(message, ServerNotification):
+                    match message.root:
+                        case ToolListChangedNotification():
+                            logger.info(
+                                "MCP server '%s': received tools/list_changed notification",
+                                self.name,
+                            )
+                            await self._refresh_tools()
+                        
+                        # Deal with Resources/ prompt change notification later, low prio
+                        case PromptListChangedNotification():
+                            pass
+                        
+                        case ResourceListChangedNotification():
+                            pass
+                        
+                        case _:
+                            pass
+
+            except Exception:
+                logger.exception("Error in MCP message handler")
+        return _handler
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
@@ -728,8 +801,13 @@ class MCPServerTask:
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        message_handler = self._make_message_handler() if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED else None
+        kwargs = {**sampling_kwargs}
+        if message_handler is not None:
+            kwargs["message_handler"] = message_handler
+        
         async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+            async with ClientSession(read_stream, write_stream, **kwargs) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
@@ -750,18 +828,24 @@ class MCPServerTask:
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        
+        message_handler = self._make_message_handler() if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED else None
+        kwargs = {**sampling_kwargs}
+        if message_handler is not None:
+            kwargs["message_handler"] = message_handler
+            
         async with streamablehttp_client(
             url,
             headers=headers,
             timeout=float(connect_timeout),
         ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+            async with ClientSession(read_stream, write_stream, **kwargs) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
                 await self._shutdown_event.wait()
-
+    
     async def _discover_tools(self):
         """Discover tools from the connected session."""
         if self.session is None:
@@ -773,6 +857,36 @@ class MCPServerTask:
             else []
         )
 
+    async def _refresh_tools(self):
+        """Rediscover tools from the connected session, called by message_handler"""
+        from tools.registry import registry
+        from toolsets import TOOLSETS
+        
+        async with self._refresh_lock:
+            # Step 1: fetch new tool list (async)
+            tools_result = await self.session.list_tools()
+            new_mcp_tools = tools_result.tools if hasattr(tools_result, 'tools') else []
+
+            # Step 2: remove old tool names from hermes-* toolsets (sync, no await)
+            for ts_name, ts in TOOLSETS.items():
+                if ts_name.startswith("hermes-"):
+                    ts["tools"] = [t for t in ts["tools"] if t not in self._registered_tool_names]
+
+            # Step 3: deregister old tools from registry
+            for prefixed_name in self._registered_tool_names:
+                registry.deregister(prefixed_name)
+
+            # Step 4: update state and re-register
+            self._tools = new_mcp_tools
+            self._registered_tool_names = _register_server_tools(
+                self.name, self, self._config
+            )
+
+            logger.info(
+                "MCP server '%s': dynamically refreshed %d tools",
+                self.name, len(self._registered_tool_names),
+            )
+    
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
 
@@ -1386,35 +1500,22 @@ def _existing_tool_names() -> List[str]:
             names.append(schema["name"])
     return names
 
-
-async def _discover_and_register_server(name: str, config: dict) -> List[str]:
-    """Connect to a single MCP server, discover tools, and register them.
-
-    Also registers utility tools for MCP Resources and Prompts support
-    (list_resources, read_resource, list_prompts, get_prompt).
-
-    Returns list of registered tool names.
+def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
+    """Register tools from an already-connected server into the registry.
+    
+    Handles include/exclude filtering, utility tools, toolset creation,
+    and hermes-* injection.
+    
+    Returns:
+        List of registered prefixed tool names.
     """
+    
     from tools.registry import registry
-    from toolsets import create_custom_toolset
-
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-    server = await asyncio.wait_for(
-        _connect_server(name, config),
-        timeout=connect_timeout,
-    )
-    with _lock:
-        _servers[name] = server
-
+    from toolsets import create_custom_toolset, TOOLSETS
+    
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
 
-    # Selective tool loading: honour include/exclude lists from config.
-    # Rules (matching issue #690 spec):
-    #   tools.include — whitelist: only these tool names are registered
-    #   tools.exclude — blacklist: all tools EXCEPT these are registered
-    #   include takes precedence over exclude
-    #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
     include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
@@ -1430,6 +1531,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         if not _should_register(mcp_tool.name):
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
             continue
+        
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
 
@@ -1444,8 +1546,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         )
         registered_names.append(tool_name_prefixed)
 
-    # Register MCP Resources & Prompts utility tools, filtered by config and
-    # only when the server actually supports the corresponding capability.
+    # Register MCP Resources & Prompts utility tools
     _handler_factories = {
         "list_resources": _make_list_resources_handler,
         "read_resource": _make_read_resource_handler,
@@ -1469,8 +1570,6 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         )
         registered_names.append(schema["name"])
 
-    server._registered_tool_names = list(registered_names)
-
     # Create a custom toolset so these tools are discoverable
     if registered_names:
         create_custom_toolset(
@@ -1478,6 +1577,29 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             description=f"MCP tools from {name} server",
             tools=registered_names,
         )
+        
+        # Dynamically inject into all hermes-* platform toolsets
+        for ts_name, ts in TOOLSETS.items():
+            if ts_name.startswith("hermes-"):
+                for tool_name in registered_names:
+                    if tool_name not in ts["tools"]:
+                        ts["tools"].append(tool_name)
+
+    return registered_names
+
+async def _discover_and_register_server(name: str, config: dict) -> List[str]:
+    """Connect to a single MCP server, discover tools, and register them."""
+    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    server = await asyncio.wait_for(
+        _connect_server(name, config),
+        timeout=connect_timeout,
+    )
+    with _lock:
+        _servers[name] = server
+        
+    # Delegate the synchronous registration logic
+    registered_names = _register_server_tools(name, server, config)
+    server._registered_tool_names = list(registered_names)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
@@ -1486,7 +1608,6 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         ", ".join(registered_names),
     )
     return registered_names
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -1570,7 +1691,8 @@ def discover_mcp_tools() -> List[str]:
                 for tool_name in all_tools:
                     if tool_name not in ts["tools"]:
                         ts["tools"].append(tool_name)
-
+    # Moved Dynamic injection of platform toolsets to _register_server_tools
+    
     # Print summary
     total_servers = len(new_servers)
     ok_servers = total_servers - failed_count

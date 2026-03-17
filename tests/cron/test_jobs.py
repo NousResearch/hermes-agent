@@ -304,16 +304,33 @@ class TestMarkJobRun:
 
 
 class TestGetDueJobs:
-    def test_past_due_returned(self, tmp_cron_dir):
+    def test_past_due_within_window_returned(self, tmp_cron_dir):
+        """Jobs less than 2 minutes late are still considered due (not stale)."""
         job = create_job(prompt="Due now", schedule="every 1h")
-        # Force next_run_at to the past
+        # Force next_run_at to just 1 minute ago (within the 2-min window)
         jobs = load_jobs()
-        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(seconds=60)).isoformat()
         save_jobs(jobs)
 
         due = get_due_jobs()
         assert len(due) == 1
         assert due[0]["id"] == job["id"]
+
+    def test_stale_past_due_skipped(self, tmp_cron_dir):
+        """Recurring jobs more than 2 minutes late are fast-forwarded, not fired."""
+        job = create_job(prompt="Stale", schedule="every 1h")
+        # Force next_run_at to 5 minutes ago (beyond the 2-min window)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+        assert len(due) == 0
+        # next_run_at should be fast-forwarded to the future
+        updated = get_job(job["id"])
+        from cron.jobs import _ensure_aware, _hermes_now
+        next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
+        assert next_dt > _hermes_now()
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

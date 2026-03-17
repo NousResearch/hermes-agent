@@ -460,9 +460,9 @@ def load_soul_md() -> Optional[str]:
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Discovery: global AGENTS.md from HERMES_HOME, project-local AGENTS.md
-    (recursive), .cursorrules / .cursor/rules/*.mdc, and SOUL.md from
-    HERMES_HOME only. Each capped at 20,000 chars.
+    Discovery: optional user-authored AGENTS.md from HERMES_HOME,
+    project-local AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
+    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -473,7 +473,7 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Global AGENTS.md from HERMES_HOME
+    # Optional user-authored global AGENTS.md from HERMES_HOME
     try:
         from hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()

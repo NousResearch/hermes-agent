@@ -219,7 +219,6 @@ def load_cli_config() -> Dict[str, Any]:
             "streaming": False,
 
             "skin": "default",
-            "theme_mode": "auto",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding

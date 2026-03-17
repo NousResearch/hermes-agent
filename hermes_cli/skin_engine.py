@@ -114,7 +114,6 @@ class SkinConfig:
     name: str
     description: str = ""
     colors: Dict[str, str] = field(default_factory=dict)
-    colors_light: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
@@ -123,12 +122,7 @@ class SkinConfig:
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
     def get_color(self, key: str, fallback: str = "") -> str:
-        """Get a color value with fallback.
-
-        In light theme mode, returns the light override if available.
-        """
-        if get_theme_mode() == "light" and key in self.colors_light:
-            return self.colors_light[key]
+        """Get a color value with fallback."""
         return self.colors.get(key, fallback)
 
     def get_spinner_list(self, key: str) -> List[str]:
@@ -174,21 +168,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#DAA520",
             "session_border": "#8B8682",
         },
-        "colors_light": {
-            "banner_border": "#7A5A00",
-            "banner_title": "#6B4C00",
-            "banner_accent": "#7A5500",
-            "banner_dim": "#8B7355",
-            "banner_text": "#3D2B00",
-            "prompt": "#3D2B00",
-            "ui_accent": "#7A5500",
-            "ui_label": "#01579B",
-            "ui_ok": "#1B5E20",
-            "input_rule": "#7A5A00",
-            "response_border": "#6B4C00",
-            "session_label": "#5C4300",
-            "session_border": "#8B7355",
-        },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
         },
@@ -221,21 +200,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#C7A96B",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
-        },
-        "colors_light": {
-            "banner_border": "#6B1010",
-            "banner_title": "#5C4300",
-            "banner_accent": "#8B1A1A",
-            "banner_dim": "#5C4030",
-            "banner_text": "#3A1800",
-            "prompt": "#3A1800",
-            "ui_accent": "#8B1A1A",
-            "ui_label": "#5C4300",
-            "ui_ok": "#1B5E20",
-            "input_rule": "#6B1010",
-            "response_border": "#7A1515",
-            "session_label": "#5C4300",
-            "session_border": "#5C4A3A",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
@@ -301,22 +265,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#888888",
             "session_border": "#555555",
         },
-        "colors_light": {
-            "banner_border": "#333333",
-            "banner_title": "#222222",
-            "banner_accent": "#333333",
-            "banner_dim": "#555555",
-            "banner_text": "#333333",
-            "prompt": "#222222",
-            "ui_accent": "#333333",
-            "ui_label": "#444444",
-            "ui_ok": "#444444",
-            "ui_error": "#333333",
-            "input_rule": "#333333",
-            "response_border": "#444444",
-            "session_label": "#444444",
-            "session_border": "#666666",
-        },
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
@@ -348,21 +296,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#7eb8f6",
             "session_border": "#4b5563",
         },
-        "colors_light": {
-            "banner_border": "#1A3A7A",
-            "banner_title": "#1A3570",
-            "banner_accent": "#1E4090",
-            "banner_dim": "#3B4555",
-            "banner_text": "#1A2A50",
-            "prompt": "#1A2A50",
-            "ui_accent": "#1A3570",
-            "ui_label": "#1E3A80",
-            "ui_ok": "#1B5E20",
-            "input_rule": "#1A3A7A",
-            "response_border": "#2A4FA0",
-            "session_label": "#1A3570",
-            "session_border": "#5A6070",
-        },
         "spinner": {},
         "branding": {
             "agent_name": "Hermes Agent",
@@ -393,21 +326,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#5DB8F5",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
-        },
-        "colors_light": {
-            "banner_border": "#0D3060",
-            "banner_title": "#0D3060",
-            "banner_accent": "#154080",
-            "banner_dim": "#2A4565",
-            "banner_text": "#0A2850",
-            "prompt": "#0A2850",
-            "ui_accent": "#0D3060",
-            "ui_label": "#0D3060",
-            "ui_ok": "#1B5E20",
-            "input_rule": "#0D3060",
-            "response_border": "#1A5090",
-            "session_label": "#0D3060",
-            "session_border": "#3A5575",
         },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
@@ -472,23 +390,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_border": "#B7B7B7",
             "session_label": "#919191",
             "session_border": "#656565",
-        },
-        "colors_light": {
-            "banner_border": "#666666",
-            "banner_title": "#222222",
-            "banner_accent": "#333333",
-            "banner_dim": "#555555",
-            "banner_text": "#333333",
-            "prompt": "#222222",
-            "ui_accent": "#333333",
-            "ui_label": "#444444",
-            "ui_ok": "#444444",
-            "ui_error": "#333333",
-            "ui_warn": "#444444",
-            "input_rule": "#666666",
-            "response_border": "#555555",
-            "session_label": "#444444",
-            "session_border": "#777777",
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
@@ -555,21 +456,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "#FFD39A",
             "session_border": "#6C4724",
         },
-        "colors_light": {
-            "banner_border": "#7A3511",
-            "banner_title": "#5C2D00",
-            "banner_accent": "#8B4000",
-            "banner_dim": "#5A3A1A",
-            "banner_text": "#3A1E00",
-            "prompt": "#3A1E00",
-            "ui_accent": "#8B4000",
-            "ui_label": "#5C2D00",
-            "ui_ok": "#1B5E20",
-            "input_rule": "#7A3511",
-            "response_border": "#8B4513",
-            "session_label": "#5C2D00",
-            "session_border": "#6B5540",
-        },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
             "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
@@ -623,8 +509,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
-_theme_mode: str = "auto"
-_resolved_theme_mode: Optional[str] = None
 
 
 def _skins_dir() -> Path:
@@ -652,8 +536,6 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     default = _BUILTIN_SKINS["default"]
     colors = dict(default.get("colors", {}))
     colors.update(data.get("colors", {}))
-    colors_light = dict(default.get("colors_light", {}))
-    colors_light.update(data.get("colors_light", {}))
     spinner = dict(default.get("spinner", {}))
     spinner.update(data.get("spinner", {}))
     branding = dict(default.get("branding", {}))
@@ -663,7 +545,6 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         name=data.get("name", "unknown"),
         description=data.get("description", ""),
         colors=colors,
-        colors_light=colors_light,
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
@@ -744,39 +625,6 @@ def get_active_skin_name() -> str:
     return _active_skin_name
 
 
-def get_theme_mode() -> str:
-    """Return the resolved theme mode: "light" or "dark".
-
-    When ``_theme_mode`` is ``"auto"``, detection is attempted once and cached.
-    If detection returns ``"unknown"``, defaults to ``"dark"``.
-    """
-    global _resolved_theme_mode
-    if _theme_mode in ("light", "dark"):
-        return _theme_mode
-    # Auto mode — detect and cache
-    if _resolved_theme_mode is None:
-        try:
-            from hermes_cli.colors import detect_terminal_background
-            detected = detect_terminal_background()
-        except Exception:
-            detected = "unknown"
-        _resolved_theme_mode = detected if detected in ("light", "dark") else "dark"
-    return _resolved_theme_mode
-
-
-def set_theme_mode(mode: str) -> None:
-    """Set the theme mode to "light", "dark", or "auto"."""
-    global _theme_mode, _resolved_theme_mode
-    _theme_mode = mode
-    # Reset cached detection so it re-runs on next get_theme_mode() if auto
-    _resolved_theme_mode = None
-
-
-def get_theme_mode_setting() -> str:
-    """Return the raw theme mode setting (may be "auto", "light", or "dark")."""
-    return _theme_mode
-
-
 def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin from CLI config at startup.
 
@@ -788,13 +636,6 @@ def init_skin_from_config(config: dict) -> None:
         set_active_skin(skin_name.strip())
     else:
         set_active_skin("default")
-
-    # Theme mode
-    theme_mode = display.get("theme_mode", "auto")
-    if isinstance(theme_mode, str) and theme_mode.strip():
-        set_theme_mode(theme_mode.strip())
-    else:
-        set_theme_mode("auto")
 
 
 # =============================================================================
@@ -849,14 +690,6 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
 
-    # Use lighter background colours for completion menus in light mode
-    if get_theme_mode() == "light":
-        menu_bg = "bg:#e8e8e8"
-        menu_sel_bg = "bg:#d0d0d0"
-    else:
-        menu_bg = "bg:#1a1a2e"
-        menu_sel_bg = "bg:#333355"
-
     return {
         "input-area": prompt,
         "placeholder": f"{dim} italic",
@@ -865,11 +698,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "hint": f"{dim} italic",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"{menu_bg} {text}",
-        "completion-menu.completion": f"{menu_bg} {text}",
-        "completion-menu.completion.current": f"{menu_sel_bg} {title}",
-        "completion-menu.meta.completion": f"{menu_bg} {dim}",
-        "completion-menu.meta.completion.current": f"{menu_sel_bg} {label}",
+        "completion-menu": f"bg:#1a1a2e {text}",
+        "completion-menu.completion": f"bg:#1a1a2e {text}",
+        "completion-menu.completion.current": f"bg:#333355 {title}",
+        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
+        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

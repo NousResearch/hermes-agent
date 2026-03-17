@@ -168,19 +168,28 @@ def generate_systemd_unit() -> str:
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
+# Cap rapid crash loops — 5 failures within 2 minutes triggers cooldown
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
 ExecStop={hermes_cli} gateway stop
+# Kill leaked browser processes (chrome, chromium) from browser automation tools
+ExecStopPost=/bin/bash -c 'pkill -9 -f "chrom.*remote-debugging-port" 2>/dev/null || true'
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
-Restart=on-failure
-RestartSec=10
-KillMode=mixed
+# Restart on any exit — not just failure codes — so the gateway self-heals
+Restart=always
+RestartSec=15
+# Kill the entire cgroup so orphan browser processes die with the service
+KillMode=control-group
 KillSignal=SIGTERM
-TimeoutStopSec=15
+# Give Python time to gracefully disconnect messaging platforms, then SIGKILL
+TimeoutStopSec=20
+SendSIGKILL=yes
 StandardOutput=journal
 StandardError=journal
 
@@ -412,8 +421,8 @@ def run_gateway(verbose: bool = False, replace: bool = False):
     print("└─────────────────────────────────────────────────────────┘")
     print()
     
-    # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
+    # Exit with code 1 if gateway fails to connect any platform.
+    # systemd Restart=always will auto-restart regardless of exit code.
     success = asyncio.run(start_gateway(replace=replace))
     if not success:
         sys.exit(1)

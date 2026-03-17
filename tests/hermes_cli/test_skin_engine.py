@@ -13,9 +13,13 @@ def reset_skin_state():
     from hermes_cli import skin_engine
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._theme_mode = "auto"
+    skin_engine._resolved_theme_mode = None
     yield
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
+    skin_engine._theme_mode = "auto"
+    skin_engine._resolved_theme_mode = None
 
 
 class TestSkinConfig:
@@ -312,3 +316,65 @@ class TestCliBrandingHelpers:
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"
+
+
+class TestThemeMode:
+    def test_get_theme_mode_defaults_to_dark_on_unknown(self):
+        from hermes_cli.skin_engine import get_theme_mode, set_theme_mode
+
+        set_theme_mode("auto")
+        # In a test env, detection returns "unknown" → defaults to "dark"
+        with patch("hermes_cli.colors.detect_terminal_background", return_value="unknown"):
+            from hermes_cli import skin_engine
+            skin_engine._resolved_theme_mode = None  # force re-detection
+            assert get_theme_mode() == "dark"
+
+    def test_set_theme_mode_light(self):
+        from hermes_cli.skin_engine import get_theme_mode, set_theme_mode
+
+        set_theme_mode("light")
+        assert get_theme_mode() == "light"
+
+    def test_set_theme_mode_dark(self):
+        from hermes_cli.skin_engine import get_theme_mode, set_theme_mode
+
+        set_theme_mode("dark")
+        assert get_theme_mode() == "dark"
+
+    def test_get_color_respects_light_mode(self):
+        from hermes_cli.skin_engine import SkinConfig, set_theme_mode
+
+        skin = SkinConfig(
+            name="test",
+            colors={"banner_title": "#FFD700", "prompt": "#FFF8DC"},
+            colors_light={"banner_title": "#6B4C00"},
+        )
+        set_theme_mode("light")
+        assert skin.get_color("banner_title") == "#6B4C00"
+        # Key not in colors_light falls back to colors
+        assert skin.get_color("prompt") == "#FFF8DC"
+
+    def test_get_color_falls_back_in_dark_mode(self):
+        from hermes_cli.skin_engine import SkinConfig, set_theme_mode
+
+        skin = SkinConfig(
+            name="test",
+            colors={"banner_title": "#FFD700", "prompt": "#FFF8DC"},
+            colors_light={"banner_title": "#6B4C00"},
+        )
+        set_theme_mode("dark")
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_color("prompt") == "#FFF8DC"
+
+    def test_init_skin_from_config_reads_theme_mode(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_theme_mode_setting
+
+        init_skin_from_config({"display": {"skin": "default", "theme_mode": "light"}})
+        assert get_theme_mode_setting() == "light"
+
+    def test_builtin_skins_have_colors_light(self):
+        from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
+
+        for name, data in _BUILTIN_SKINS.items():
+            skin = _build_skin_config(data)
+            assert len(skin.colors_light) > 0, f"Skin '{name}' has empty colors_light"

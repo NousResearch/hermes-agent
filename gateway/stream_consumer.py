@@ -68,6 +68,7 @@ class GatewayStreamConsumer:
         self._already_sent = False
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
+        self._last_sent_text = ""   # Track last-sent text to skip redundant edits
 
     @property
     def already_sent(self) -> bool:
@@ -141,6 +142,9 @@ class GatewayStreamConsumer:
         try:
             if self._message_id is not None:
                 if self._edit_supported:
+                    # Skip if text is identical to what we last sent
+                    if text == self._last_sent_text:
+                        return
                     # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
@@ -149,6 +153,7 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        self._last_sent_text = text
                     else:
                         # Edit not supported by this adapter — stop streaming,
                         # let the normal send path handle the final response.
@@ -170,6 +175,7 @@ class GatewayStreamConsumer:
                 if result.success and result.message_id:
                     self._message_id = result.message_id
                     self._already_sent = True
+                    self._last_sent_text = text
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False

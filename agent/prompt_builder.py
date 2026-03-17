@@ -56,6 +56,61 @@ def _scan_context_content(content: str, filename: str) -> str:
 
     return content
 
+
+def _find_git_root(start: Path) -> Optional[Path]:
+    """Walk *start* and its parents looking for a ``.git`` directory.
+
+    Returns the directory containing ``.git``, or ``None`` if we hit the
+    filesystem root without finding one.
+    """
+    current = start.resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+_HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+
+
+def _find_hermes_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
+
+    Search order: *cwd* first, then each parent directory up to (and
+    including) the git repository root.  Returns the first match, or
+    ``None`` if nothing is found.
+    """
+    stop_at = _find_git_root(cwd)
+    current = cwd.resolve()
+
+    for directory in [current, *current.parents]:
+        for name in _HERMES_MD_NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+        # Stop walking at the git root (or filesystem root).
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _strip_yaml_frontmatter(content: str) -> str:
+    """Remove optional YAML frontmatter (``---`` delimited) from *content*.
+
+    The frontmatter may contain structured config (model overrides, tool
+    settings) that will be handled separately in a future PR.  For now we
+    strip it so only the human-readable markdown body is injected into the
+    system prompt.
+    """
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            # Skip past the closing --- and any trailing newline
+            body = content[end + 4:].lstrip("\n")
+            return body if body else content
+    return content
+
+
 # =========================================================================
 # Constants
 # =========================================================================
@@ -440,6 +495,28 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     if cursorrules_content:
         cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
         sections.append(cursorrules_content)
+
+    # .hermes.md / HERMES.md — per-project agent config (walk to git root)
+    hermes_md_content = ""
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if hermes_md_path:
+        try:
+            content = hermes_md_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _strip_yaml_frontmatter(content)
+                rel = hermes_md_path.name
+                try:
+                    rel = str(hermes_md_path.relative_to(cwd_path))
+                except ValueError:
+                    pass
+                content = _scan_context_content(content, rel)
+                hermes_md_content = f"## {rel}\n\n{content}"
+        except Exception as e:
+            logger.debug("Could not read %s: %s", hermes_md_path, e)
+
+    if hermes_md_content:
+        hermes_md_content = _truncate_content(hermes_md_content, ".hermes.md")
+        sections.append(hermes_md_content)
 
     # SOUL.md from HERMES_HOME only
     try:

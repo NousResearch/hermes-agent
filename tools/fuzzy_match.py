@@ -252,31 +252,36 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
 def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
     Strategy 7: Match by anchoring on first and last lines.
-    
+
     If first and last lines match exactly, accept middle with adaptive similarity threshold.
+    Adjusted with permissive thresholds and unicode/whitespace normalization.
     """
-    pattern_lines = pattern.split('\n')
+    pattern_lines = pattern.split("\n")
     if len(pattern_lines) < 2:
         return []  # Need at least 2 lines for anchoring
-    
+
     first_line = pattern_lines[0].strip()
     last_line = pattern_lines[-1].strip()
-    
-    orig_content_lines = content.split('\n')
+
+    # Use normalized content for matching (consistent with other strategies)
+    # and original content for precise character offsets.
+    orig_content_lines = content.split("\n")
     norm_content_lines = [line.strip() for line in orig_content_lines]
-    
+
     pattern_line_count = len(pattern_lines)
-    
+
     # First pass: collect potential matches (first+last line anchors)
-    potential_matches = []
+    potential_matches: List[int] = []
     for i in range(len(norm_content_lines) - pattern_line_count + 1):
-        if (norm_content_lines[i] == first_line and 
-            norm_content_lines[i + pattern_line_count - 1] == last_line):
+        if (
+            norm_content_lines[i] == first_line
+            and norm_content_lines[i + pattern_line_count - 1] == last_line
+        ):
             potential_matches.append(i)
-    
-    matches = []
+
+    matches: List[Tuple[int, int]] = []
     candidate_count = len(potential_matches)
-    
+
     # Thresholding logic: 0.10 for unique matches (max flexibility), 0.30 for multiple candidates
     threshold = 0.10 if candidate_count == 1 else 0.30
 
@@ -285,17 +290,19 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
             similarity = 1.0
         else:
             # Compare normalized middle sections
-            content_middle = '\n'.join(norm_content_lines[i+1:i+pattern_line_count-1])
-            pattern_middle = '\n'.join(pattern_lines[1:-1])
+            content_middle = "\n".join(
+                norm_content_lines[i + 1 : i + pattern_line_count - 1]
+            )
+            pattern_middle = "\n".join(pattern_lines[1:-1])
             similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
-        
+
         if similarity >= threshold:
             # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
             start_pos, end_pos = _calculate_line_positions(
                 orig_content_lines, i, i + pattern_line_count, len(content)
             )
             matches.append((start_pos, end_pos))
-    
+
     return matches
 
 

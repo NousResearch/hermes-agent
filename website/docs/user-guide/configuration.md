@@ -31,6 +31,7 @@ hermes config edit         # Open config.yaml in your editor
 hermes config set KEY VAL  # Set a specific value
 hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
+hermes config backup       # Git-based config backup (see Config Backup)
 
 # Examples:
 hermes config set model anthropic/claude-opus-4

@@ -367,7 +367,7 @@ class AuditLogger:
             with self._lock:
                 cur = self._conn.execute
                 total = cur("SELECT COUNT(*) FROM events WHERE timestamp > ?", (since,)).fetchone()[0]
-                errors = cur("SELECT COUNT(*) FROM events WHERE timestamp > ? AND severity IN ('error', 'critical')", (since,)).fetchone()[0]
+                errors = cur("SELECT COUNT(*) FROM events WHERE timestamp > ? AND (severity IN ('error', 'critical') OR event_type IN ('api_error', 'tool_error'))", (since,)).fetchone()[0]
                 tool_calls = cur("SELECT COUNT(*) FROM events WHERE timestamp > ? AND event_type = 'tool_call'", (since,)).fetchone()[0]
                 api_calls = cur("SELECT COUNT(*) FROM events WHERE timestamp > ? AND event_type = 'api_call'", (since,)).fetchone()[0]
                 api_errors = cur("SELECT COUNT(*) FROM events WHERE timestamp > ? AND event_type = 'api_error'", (since,)).fetchone()[0]

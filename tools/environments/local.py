@@ -8,8 +8,14 @@ import signal
 import subprocess
 import threading
 import time
+from threading import Lock
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+# Global subprocess tracking to prevent runaway processes
+_subprocess_lock = Lock()
+_active_subprocesses: int = 0
+MAX_CONCURRENT_SUBPROCESSES = 20  # Max concurrent processes allowed
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
@@ -27,6 +33,30 @@ _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
 # Built dynamically from the provider registry so new providers are
 # automatically covered without manual blocklist maintenance.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+
+
+def _increment_subprocess_count() -> bool:
+    """Increment active subprocess counter. Returns False if limit exceeded."""
+    global _active_subprocesses
+    with _subprocess_lock:
+        if _active_subprocesses >= MAX_CONCURRENT_SUBPROCESSES:
+            return False
+        _active_subprocesses += 1
+        return True
+
+
+def _decrement_subprocess_count():
+    """Decrement active subprocess counter."""
+    global _active_subprocesses
+    with _subprocess_lock:
+        _active_subprocesses = max(0, _active_subprocesses - 1)
+
+
+def _get_active_subprocess_count() -> int:
+    """Get current number of active subprocesses."""
+    global _active_subprocesses
+    with _subprocess_lock:
+        return _active_subprocesses
 
 
 def _build_provider_env_blocklist() -> frozenset:
@@ -343,16 +373,42 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                 results.append("")
         return results
 
-    def _kill_shell_children(self):
+    def _kill_shell_children(self, force: bool = False):
+        """Kill child processes of the shell. 
+        
+        Args:
+            force: If True, use SIGKILL (-9) instead of SIGTERM
+        """
         if self._shell_pid is None:
             return
+        
+        # First try graceful SIGTERM
         try:
             subprocess.run(
                 ["pkill", "-P", str(self._shell_pid)],
                 capture_output=True, timeout=5,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired:
+            # Graceful kill timed out - force kill
+            try:
+                subprocess.run(
+                    ["pkill", "-9", "-P", str(self._shell_pid)],
+                    capture_output=True, timeout=3,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+        except FileNotFoundError:
             pass
+        
+        # If force requested, also try SIGKILL directly on the shell pid
+        if force:
+            try:
+                subprocess.run(
+                    ["pkill", "-9", "-P", str(self._shell_pid)],
+                    capture_output=True, timeout=3,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
@@ -382,6 +438,14 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             f" exit $__hermes_rc"
         )
         run_env = _make_run_env(self.env)
+
+        # Check subprocess limit before spawning
+        if not _increment_subprocess_count():
+            return {
+                "output": "",
+                "exit_code": -1,
+                "error": f"Subprocess limit reached ({MAX_CONCURRENT_SUBPROCESSES} max). Wait for other commands to finish.",
+            }
 
         proc = subprocess.Popen(
             [user_shell, "-lic", fenced_cmd],
@@ -418,42 +482,46 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                     proc.stdout.close()
                 except Exception:
                     pass
-
         reader = threading.Thread(target=_drain_stdout, daemon=True)
         reader.start()
+
         deadline = time.monotonic() + effective_timeout
 
-        while proc.poll() is None:
-            if is_interrupted():
-                try:
-                    if _IS_WINDOWS:
-                        proc.terminate()
-                    else:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
-                reader.join(timeout=2)
-                return {
-                    "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                try:
-                    if _IS_WINDOWS:
-                        proc.terminate()
-                    else:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    proc.kill()
-                reader.join(timeout=2)
-                return self._timeout_result(effective_timeout)
-            time.sleep(0.2)
+        try:
+            while proc.poll() is None:
+                if is_interrupted():
+                    try:
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            pgid = os.getpgid(proc.pid)
+                            os.killpg(pgid, signal.SIGTERM)
+                            try:
+                                proc.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        proc.kill()
+                    reader.join(timeout=2)
+                    return {
+                        "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
+                        "returncode": 130,
+                    }
+                if time.monotonic() > deadline:
+                    try:
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        proc.kill()
+                    reader.join(timeout=2)
+                    return self._timeout_result(effective_timeout)
+                time.sleep(0.2)
 
-        reader.join(timeout=5)
-        output = _extract_fenced_output("".join(_output_chunks))
-        return {"output": output, "returncode": proc.returncode}
+            reader.join(timeout=5)
+            output = _extract_fenced_output("".join(_output_chunks))
+            return {"output": output, "returncode": proc.returncode}
+        finally:
+            # Always decrement subprocess counter
+            _decrement_subprocess_count()

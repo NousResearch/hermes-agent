@@ -750,3 +750,40 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
+    """Debug dumps should show /responses URL when in codex_responses mode."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
+
+
+def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):
+    """Debug dumps should show /chat/completions URL for chat_completions mode."""
+    import json
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"

@@ -58,6 +58,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax-cn": "MiniMax-M2.5-highspeed",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
+    "opencode-zen": "gemini-3-flash",
+    "opencode-go": "glm-5",
 }
 
 # OpenRouter app attribution headers

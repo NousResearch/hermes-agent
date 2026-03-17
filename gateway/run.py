@@ -1177,7 +1177,8 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
+Platform.SMS: "SMS_ALLOWED_USERS",
+Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1186,7 +1187,8 @@ class GatewayRunner:
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
-            Platform.SMS: "SMS_ALLOW_ALL_USERS",
+Platform.SMS: "SMS_ALLOW_ALL_USERS",
+Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -3046,6 +3048,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.DINGTALK: "hermes-dingtalk",
             }
             platform_toolsets_config = {}
             try:
@@ -3067,6 +3070,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.DINGTALK: "dingtalk",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -4064,6 +4068,7 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
         }
 
         # Try to load platform_toolsets from config
@@ -4088,6 +4093,7 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

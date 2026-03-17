@@ -116,6 +116,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi-k2": 262144,
     "qwen3-coder": 32768,
     "big-pickle": 128000,
+    # Alibaba Cloud / DashScope Qwen models
+    "qwen3.5-plus": 131072,
+    "qwen3-max": 131072,
+    "qwen3-coder-plus": 131072,
+    "qwen3-coder-next": 131072,
+    "qwen-plus-latest": 131072,
+    "qwen3.5-flash": 131072,
+    "qwen-vl-max": 32768,
 }
 
 

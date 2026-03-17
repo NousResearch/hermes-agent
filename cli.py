@@ -3548,7 +3548,7 @@ class HermesCLI:
             self._handle_rollback_command(cmd_original)
         elif cmd_lower == "/stop":
             self._handle_stop_command()
-        elif cmd_lower.startswith("/background"):
+        elif cmd_lower.startswith("/background") or cmd_lower.startswith("/bg"):
             self._handle_background_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)

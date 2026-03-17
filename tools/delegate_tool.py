@@ -259,6 +259,7 @@ def _run_single_child(
     """
     child_start = time.monotonic()
     # Save parent tool names so finally block can restore them (same scope fix)
+    import model_tools
     _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     # Get the progress callback from the child agent

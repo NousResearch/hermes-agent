@@ -85,6 +85,13 @@ class TestCronjobRequirements:
 
         assert check_cronjob_requirements() is True
 
+    def test_accepts_exec_ask(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+
+        assert check_cronjob_requirements() is True
+
     def test_rejects_when_no_session_env(self, monkeypatch):
         """Without any session env vars, cronjob tool should not be available."""
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

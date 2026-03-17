@@ -1849,6 +1849,23 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        # -----------------------------------------------------------------
+        # Inject reply context when user replies to a message not in history.
+        # Telegram (and other platforms) let users reply to specific messages,
+        # but if the quoted message is from a previous session, cron delivery,
+        # or background task, the agent has no context about what's being
+        # referenced. Prepend the quoted text so the agent understands. (#1594)
+        # -----------------------------------------------------------------
+        if getattr(event, 'reply_to_text', None) and event.reply_to_message_id:
+            reply_snippet = event.reply_to_text[:500]
+            found_in_history = any(
+                reply_snippet[:200] in (msg.get("content") or "")
+                for msg in history
+                if msg.get("role") in ("assistant", "user", "tool")
+            )
+            if not found_in_history:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+
         try:
             # Emit agent:start hook
             hook_ctx = {

@@ -236,7 +236,6 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
-        "theme_mode": "auto",
     },
 
     # Privacy settings

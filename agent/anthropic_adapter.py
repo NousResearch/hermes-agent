@@ -54,7 +54,37 @@ _OAUTH_ONLY_BETAS = [
 
 # Claude Code identity — required for OAuth requests to be routed correctly.
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
-_CLAUDE_CODE_VERSION = "2.1.2"
+# The version must stay reasonably current — Anthropic rejects OAuth requests
+# when the spoofed user-agent version is too far behind the actual release.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+
+
+def _detect_claude_code_version() -> str:
+    """Detect the installed Claude Code version, fall back to a static constant.
+
+    Anthropic's OAuth infrastructure validates the user-agent version and may
+    reject requests with a version that's too old.  Detecting dynamically means
+    users who keep Claude Code updated never hit stale-version 400s.
+    """
+    import subprocess as _sp
+
+    for cmd in ("claude", "claude-code"):
+        try:
+            result = _sp.run(
+                [cmd, "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
+                version = result.stdout.strip().split()[0]
+                if version and version[0].isdigit():
+                    return version
+        except Exception:
+            pass
+    return _CLAUDE_CODE_VERSION_FALLBACK
+
+
+_CLAUDE_CODE_VERSION = _detect_claude_code_version()
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
 

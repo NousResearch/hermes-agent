@@ -1,178 +1,192 @@
 ---
 sidebar_position: 10
 title: "DingTalk"
-description: "Set up Hermes Agent as a DingTalk bot using Stream Mode for real-time messaging"
+description: "Set up Hermes Agent as a DingTalk chatbot"
 ---
 
 # DingTalk Setup
 
-Hermes connects to DingTalk through the [dingtalk-stream](https://pypi.org/project/dingtalk-stream/) SDK using Stream Mode — a WebSocket-based protocol that requires no public webhook URL. Messages arrive in real-time and responses are sent via the session webhook in markdown format.
+Hermes Agent integrates with DingTalk (钉钉) as a chatbot, letting you chat with your AI assistant through direct messages or group chats. The bot connects via DingTalk's Stream Mode — a long-lived WebSocket connection that requires no public URL or webhook server — and replies using markdown-formatted messages through DingTalk's session webhook API.
 
-DingTalk (钉钉) is Alibaba's enterprise communication platform with over 700 million registered users, making it the #1 business application in China. It combines messaging, video conferencing, task management, and workflow automation into a single platform used by millions of organizations.
+Before setup, here's the part most people want to know: how Hermes behaves once it's in your DingTalk workspace.
 
-:::info Dependencies
-The DingTalk adapter requires additional Python packages:
+## How Hermes Behaves
+
+| Context | Behavior |
+|---------|----------|
+| **DMs (1:1 chat)** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **Group chats** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
+| **Shared groups with multiple users** | By default, Hermes isolates session history per user inside the group. Two people talking in the same group do not share one transcript unless you explicitly disable that. |
+
+### Session Model in DingTalk
+
+By default:
+
+- each DM gets its own session
+- each user in a shared group chat gets their own session inside that group
+
+This is controlled by `config.yaml`:
+
+```yaml
+group_sessions_per_user: true
+```
+
+Set it to `false` only if you explicitly want one shared conversation for the entire group:
+
+```yaml
+group_sessions_per_user: false
+```
+
+This guide walks you through the full setup process — from creating your DingTalk bot to sending your first message.
+
+## Prerequisites
+
+Install the required Python packages:
 
 ```bash
 pip install dingtalk-stream httpx
 ```
 
-`httpx` is already a core Hermes dependency, so in practice you only need `dingtalk-stream`.
+- `dingtalk-stream` — DingTalk's official SDK for Stream Mode (WebSocket-based real-time messaging)
+- `httpx` — async HTTP client used for sending replies via session webhooks
+
+## Step 1: Create a DingTalk App
+
+1. Go to the [DingTalk Developer Console](https://open-dev.dingtalk.com/).
+2. Log in with your DingTalk admin account.
+3. Click **Application Development** → **Custom Apps** → **Create App via H5 Micro-App** (or **Robot** depending on your console version).
+4. Fill in:
+   - **App Name**: e.g., `Hermes Agent`
+   - **Description**: optional
+5. After creating, navigate to **Credentials & Basic Info** to find your **Client ID** (AppKey) and **Client Secret** (AppSecret). Copy both.
+
+:::warning[Credentials shown only once]
+The Client Secret is only displayed once when you create the app. If you lose it, you'll need to regenerate it. Never share these credentials publicly or commit them to Git.
 :::
 
----
+## Step 2: Enable the Robot Capability
 
-## Prerequisites
-
-- **DingTalk developer account** — register at [open-dev.dingtalk.com](https://open-dev.dingtalk.com)
-- **An application created** on the DingTalk Open Platform with Robot (机器人) capability enabled
-
----
-
-## Step 1: Create a DingTalk Application
-
-1. Go to [open-dev.dingtalk.com](https://open-dev.dingtalk.com) and log in
-2. Click **Create Application** (创建应用)
-3. Fill in the application name and description
-4. Under **Capabilities** (添加能力), enable **Robot** (机器人)
-5. In the Robot configuration:
-   - Enable **Stream Mode** (Stream 模式) — this is critical, as it eliminates the need for a public webhook URL
-   - Set the bot name and avatar
-6. Navigate to **Credentials & Basic Info** (凭证与基本信息) to find:
-   - **AppKey** — this is your `DINGTALK_CLIENT_ID`
-   - **AppSecret** — this is your `DINGTALK_CLIENT_SECRET`
-7. Publish the application (发布)
+1. In your app's settings page, go to **Add Capability** → **Robot**.
+2. Enable the robot capability.
+3. Under **Message Reception Mode**, select **Stream Mode** (recommended — no public URL needed).
 
 :::tip
-Stream Mode is strongly recommended over the legacy HTTP webhook approach. It works behind firewalls, NATs, and requires no public IP or domain — the SDK maintains a persistent WebSocket connection to DingTalk's servers.
+Stream Mode is the recommended setup. It uses a long-lived WebSocket connection initiated from your machine, so you don't need a public IP, domain name, or webhook endpoint. This works behind NAT, firewalls, and on local machines.
 :::
 
----
+## Step 3: Find Your DingTalk User ID
 
-## Step 2: Configure Hermes
+Hermes Agent uses your DingTalk User ID to control who can interact with the bot. DingTalk User IDs are alphanumeric strings set by your organization's admin.
 
-The easiest way:
+To find yours:
+
+1. Ask your DingTalk organization admin — User IDs are configured in the DingTalk admin console under **Contacts** → **Members**.
+2. Alternatively, the bot logs the `sender_id` for each incoming message. Start the gateway, send the bot a message, then check the logs for your ID.
+
+## Step 4: Configure Hermes Agent
+
+### Option A: Interactive Setup (Recommended)
+
+Run the guided setup command:
 
 ```bash
 hermes gateway setup
 ```
 
-Select **DingTalk** from the platform menu. The wizard will:
+Select **DingTalk** when prompted, then paste your Client ID, Client Secret, and allowed user IDs when asked.
 
-1. Check if `dingtalk-stream` is installed
-2. Prompt for your AppKey (Client ID)
-3. Prompt for your AppSecret (Client Secret)
-4. Configure allowed users and access policies
+### Option B: Manual Configuration
 
-### Manual Configuration
-
-Add to `~/.hermes/.env`:
+Add the following to your `~/.hermes/.env` file:
 
 ```bash
 # Required
 DINGTALK_CLIENT_ID=your-app-key
 DINGTALK_CLIENT_SECRET=your-app-secret
 
-# Security (recommended)
-DINGTALK_ALLOWED_USERS=user1_staff_id,user2_staff_id    # Comma-separated DingTalk staff IDs
+# Security: restrict who can interact with the bot
+DINGTALK_ALLOWED_USERS=user-id-1
 
-# Optional
-DINGTALK_HOME_CHANNEL=user1_staff_id                     # Default delivery target for cron jobs
+# Multiple allowed users (comma-separated)
+# DINGTALK_ALLOWED_USERS=user-id-1,user-id-2
 ```
 
-Then start the gateway:
+Optional behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+group_sessions_per_user: true
+```
+
+- `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
+
+### Start the Gateway
+
+Once configured, start the DingTalk gateway:
 
 ```bash
-hermes gateway              # Foreground
-hermes gateway install      # Install as a user service
-sudo hermes gateway install --system   # Linux only: boot-time system service
+hermes gateway
 ```
 
----
+The bot should connect to DingTalk's Stream Mode within a few seconds. Send it a message — either a DM or in a group where it's been added — to test.
 
-## Access Control
-
-### DM Access
-
-DM access follows the same pattern as all other Hermes platforms:
-
-1. **`DINGTALK_ALLOWED_USERS` set** → only those users can message
-2. **No allowlist set** → unknown users get a DM pairing code (approve via `hermes pairing approve dingtalk CODE`)
-3. **`DINGTALK_ALLOW_ALL_USERS=true`** → anyone can message (use with caution)
-
-### Group Access
-
-In group chats, the bot responds when @mentioned. Group access follows the same rules — only allowed users can trigger the bot, even in groups.
-
----
-
-## Features
-
-### Stream Mode (No Webhook URL)
-
-Unlike traditional bot platforms that require a publicly accessible webhook endpoint, DingTalk's Stream Mode uses a persistent WebSocket connection initiated from your side. This means:
-
-- **No public IP required** — works behind firewalls and NATs
-- **No domain or SSL certificate needed** — the SDK handles the connection
-- **Automatic reconnection** — if the connection drops, the adapter reconnects with exponential backoff (2s → 5s → 10s → 30s → 60s)
-
-### Markdown Replies
-
-Responses are sent in DingTalk's markdown format, which supports rich text formatting including headers, bold, italic, links, and code blocks.
-
-### DM and Group Chat
-
-The adapter supports both:
-
-- **Direct Messages (1:1)** — private conversations with the bot
-- **Group Chat** — the bot responds when @mentioned in a group
-
-### Message Deduplication
-
-The adapter tracks recently processed message IDs (up to 1,000 messages within a 5-minute window) to prevent duplicate processing if DingTalk redelivers a message.
-
-### Auto-Reconnection
-
-If the WebSocket connection drops, the adapter automatically reconnects using exponential backoff:
-
-- Retry intervals: 2s, 5s, 10s, 30s, 60s
-- Reconnection is transparent — no manual intervention needed
-
----
+:::tip
+You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
+:::
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| **"dingtalk-stream not installed"** | Run `pip install dingtalk-stream httpx` in the Hermes environment |
-| **"DINGTALK_CLIENT_ID not set"** | Set `DINGTALK_CLIENT_ID` and `DINGTALK_CLIENT_SECRET` in `~/.hermes/.env` |
-| **Bot not responding** | Verify the application is published on open-dev.dingtalk.com and Stream Mode is enabled |
-| **Connection keeps dropping** | Check network connectivity. The adapter will auto-reconnect with backoff. Check logs for specific error messages. |
-| **Messages processed twice** | This is rare — the deduplication window handles most cases. If persistent, check that only one gateway instance is running. |
-| **Bot responds to no one** | Configure `DINGTALK_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
-| **Group messages ignored** | Ensure the bot is @mentioned in group chats. Only @mentions trigger the bot in groups. |
+### Bot is not responding to messages
 
----
+**Cause**: The robot capability isn't enabled, or `DINGTALK_ALLOWED_USERS` doesn't include your User ID.
+
+**Fix**: Verify the robot capability is enabled in your app settings and that Stream Mode is selected. Check that your User ID is in `DINGTALK_ALLOWED_USERS`. Restart the gateway.
+
+### "dingtalk-stream not installed" error
+
+**Cause**: The `dingtalk-stream` Python package is not installed.
+
+**Fix**: Install it:
+
+```bash
+pip install dingtalk-stream httpx
+```
+
+### "DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required"
+
+**Cause**: The credentials aren't set in your environment or `.env` file.
+
+**Fix**: Verify `DINGTALK_CLIENT_ID` and `DINGTALK_CLIENT_SECRET` are set correctly in `~/.hermes/.env`. The Client ID is your AppKey, and the Client Secret is your AppSecret from the DingTalk Developer Console.
+
+### Stream disconnects / reconnection loops
+
+**Cause**: Network instability, DingTalk platform maintenance, or credential issues.
+
+**Fix**: The adapter automatically reconnects with exponential backoff (2s → 5s → 10s → 30s → 60s). Check that your credentials are valid and your app hasn't been deactivated. Verify your network allows outbound WebSocket connections.
+
+### Bot is offline
+
+**Cause**: The Hermes gateway isn't running, or it failed to connect.
+
+**Fix**: Check that `hermes gateway` is running. Look at the terminal output for error messages. Common issues: wrong credentials, app deactivated, `dingtalk-stream` or `httpx` not installed.
+
+### "No session_webhook available"
+
+**Cause**: The bot tried to reply but doesn't have a session webhook URL. This typically happens if the webhook expired or the bot was restarted between receiving the message and sending the reply.
+
+**Fix**: Send a new message to the bot — each incoming message provides a fresh session webhook for replies. This is a normal DingTalk limitation; the bot can only reply to messages it has received recently.
 
 ## Security
 
 :::warning
-**Always configure access controls.** The bot has terminal access by default. Without `DINGTALK_ALLOWED_USERS` or DM pairing, the gateway denies all incoming messages as a safety measure.
+Always set `DINGTALK_ALLOWED_USERS` to restrict who can interact with the bot. Without it, the gateway denies all users by default as a safety measure. Only add User IDs of people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
 :::
 
-- Use DM pairing or explicit allowlists for safe onboarding of new users
-- Keep your AppSecret confidential — treat it like a password
-- The `DINGTALK_CLIENT_SECRET` in `~/.hermes/.env` should be readable only by the user running Hermes
-- DingTalk's Stream Mode connection is encrypted via TLS
+For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
----
+## Notes
 
-## Environment Variables Reference
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DINGTALK_CLIENT_ID` | Yes | — | DingTalk application AppKey |
-| `DINGTALK_CLIENT_SECRET` | Yes | — | DingTalk application AppSecret |
-| `DINGTALK_ALLOWED_USERS` | No | — | Comma-separated DingTalk staff IDs |
-| `DINGTALK_ALLOW_ALL_USERS` | No | `false` | Allow all users (not recommended) |
-| `DINGTALK_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |
+- **Stream Mode**: No public URL, domain name, or webhook server needed. The connection is initiated from your machine via WebSocket, so it works behind NAT and firewalls.
+- **Markdown responses**: Replies are formatted in DingTalk's markdown format for rich text display.
+- **Message deduplication**: The adapter deduplicates messages with a 5-minute window to prevent processing the same message twice.
+- **Auto-reconnection**: If the stream connection drops, the adapter automatically reconnects with exponential backoff.
+- **Message length limit**: Responses are capped at 20,000 characters per message. Longer responses are truncated.

@@ -741,6 +741,7 @@ def setup_model_provider(config: dict):
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
         "OpenCode Go (open models, $10/month subscription)",
+        "xgate (ai.xgate.run inference endpoint)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1412,7 +1413,39 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 14 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 14:  # xgate
+        selected_provider = "xgate"
+        print()
+        print_header("xgate API Key")
+        pconfig = PROVIDER_REGISTRY["xgate"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Configure an API key if your xgate deployment requires one.")
+        print()
+
+        existing_key = get_env_value("XGATE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt_text("xgate API key", password=True)
+                if api_key:
+                    save_env_value("XGATE_API_KEY", api_key)
+                    print_success("xgate API key updated")
+        else:
+            api_key = prompt_text("xgate API key", password=True)
+            if api_key:
+                save_env_value("XGATE_API_KEY", api_key)
+                print_success("xgate API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "xgate", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 15 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1583,7 +1616,7 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
+        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "xgate", "kilocode", "ai-gateway"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1644,7 +1677,7 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "xgate", "kilocode", "anthropic") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)

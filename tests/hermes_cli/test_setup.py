@@ -53,6 +53,7 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
         "hermes_cli.auth.fetch_nous_models",
         lambda *args, **kwargs: ["gemini-3-flash"],
     )
+    monkeypatch.setattr("hermes_cli.setup._setup_tts_provider", lambda config: None)
 
     setup_model_provider(config)
     save_config(config)
@@ -88,6 +89,7 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
         "hermes_cli.setup.prompt",
         lambda *args, **kwargs: next(prompt_values),
     )
+    monkeypatch.setattr("hermes_cli.setup._setup_tts_provider", lambda config: None)
 
     setup_model_provider(config)
     save_config(config)
@@ -135,6 +137,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
         "hermes_cli.codex_models.get_codex_model_ids",
         _fake_get_codex_model_ids,
     )
+    monkeypatch.setattr("hermes_cli.setup._setup_tts_provider", lambda config: None)
 
     setup_model_provider(config)
     save_config(config)

@@ -400,6 +400,13 @@ def load_gateway_config() -> GatewayConfig:
                     True,
                 )
 
+            # Bridge streaming config from config.yaml into gateway runtime.
+            # The docs tell users to put streaming settings in config.yaml,
+            # so we must bridge them here (config.yaml overrides gateway.json).
+            streaming_cfg = yaml_cfg.get("streaming")
+            if isinstance(streaming_cfg, dict):
+                config.streaming = StreamingConfig.from_dict(streaming_cfg)
+
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
             discord_cfg = yaml_cfg.get("discord", {})

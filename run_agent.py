@@ -5971,19 +5971,32 @@ class AIAgent:
                             # Don't add anything to messages, just retry the API call
                             continue
                         else:
-                            # Instead of returning partial, inject a helpful message and let model recover
-                            self._vprint(f"{self.log_prefix}⚠️  Injecting recovery message for invalid JSON...")
+                            # Instead of returning partial, inject tool error results so the model can recover.
+                            # Using tool results (not user messages) preserves role alternation.
+                            self._vprint(f"{self.log_prefix}⚠️  Injecting recovery tool results for invalid JSON...")
                             self._invalid_json_retries = 0  # Reset for next attempt
                             
-                            # Add a user message explaining the issue
-                            recovery_msg = (
-                                f"Your tool call to '{tool_name}' had invalid JSON arguments. "
-                                f"Error: {error_msg}. "
-                                f"For tools with no required parameters, use an empty object: {{}}. "
-                                f"Please either retry the tool call with valid JSON, or respond without using that tool."
-                            )
-                            recovery_dict = {"role": "user", "content": recovery_msg}
-                            messages.append(recovery_dict)
+                            # Append the assistant message with its (broken) tool_calls
+                            recovery_assistant = self._build_assistant_message(assistant_message, finish_reason)
+                            messages.append(recovery_assistant)
+                            
+                            # Respond with tool error results for each tool call
+                            invalid_names = {name for name, _ in invalid_json_args}
+                            for tc in assistant_message.tool_calls:
+                                if tc.function.name in invalid_names:
+                                    err = next(e for n, e in invalid_json_args if n == tc.function.name)
+                                    tool_result = (
+                                        f"Error: Invalid JSON arguments. {err}. "
+                                        f"For tools with no required parameters, use an empty object: {{}}. "
+                                        f"Please retry with valid JSON."
+                                    )
+                                else:
+                                    tool_result = "Skipped: other tool call in this response had invalid JSON."
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": tool_result,
+                                })
                             continue
                     
                     # Reset retry counter on successful JSON validation
@@ -6220,10 +6233,11 @@ class AIAgent:
                 
                 if not pending_handled:
                     # Error happened before tool processing (e.g. response parsing).
-                    # Use a user-role message so the model can see what went wrong
-                    # without confusing the API with a fabricated assistant turn.
+                    # Choose role to avoid consecutive same-role messages.
+                    last_role = messages[-1].get("role") if messages else None
+                    err_role = "assistant" if last_role == "user" else "user"
                     sys_err_msg = {
-                        "role": "user",
+                        "role": err_role,
                         "content": f"[System error during processing: {error_msg}]",
                     }
                     messages.append(sys_err_msg)

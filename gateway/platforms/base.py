@@ -291,6 +291,13 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+
+    # Optional normalized transcription metadata for voice/audio inputs.
+    # ``text`` may be promoted to the transcript for command/interrupt parity,
+    # while these fields preserve that the content originated from STT.
+    transcription_text: Optional[str] = None
+    transcription_backend: Optional[str] = None
+    transcription_origin: Optional[str] = None
     
     # Reply context
     reply_to_message_id: Optional[str] = None

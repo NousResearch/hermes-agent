@@ -17,10 +17,13 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
+import urllib
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +43,8 @@ DEFAULT_WEBHOOK_PORT = 8080
 
 # E.164 phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
+
+_TWILIO_SIGNATURE_HEADER = "X-Twilio-Signature"
 
 
 def _redact_phone(phone: str) -> str:
@@ -86,6 +91,67 @@ class SmsAdapter(BasePlatformAdapter):
         creds = f"{self._account_sid}:{self._auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         return f"Basic {encoded}"
+
+    def _signature_validation_enabled(self) -> bool:
+        val = os.getenv("SMS_VALIDATE_TWILIO_SIGNATURE", "true").strip().lower()
+        return val in ("1", "true", "yes", "on")
+
+    def _public_webhook_base_url(self) -> str:
+        # Prefer explicit public URL for reverse proxies / TLS termination.
+        # Example: https://example.com/webhooks/twilio  (or without path; we append request path)
+        return os.getenv("SMS_WEBHOOK_PUBLIC_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def _build_request_url_for_signature(request) -> str:
+        """
+        Build the URL Twilio used to sign the request.
+
+        We prefer proxy headers when present, because the adapter often runs behind
+        a reverse proxy / tunnel (ngrok, Cloudflare, etc.).
+        """
+        # aiohttp exposes request.host (may include port) and request.path_qs
+        xf_proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+        xf_host = request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+
+        scheme = xf_proto or request.scheme
+        host = xf_host or request.host
+        return f"{scheme}://{host}{request.path_qs}"
+
+    def _twilio_expected_signature(self, url: str, form: Dict[str, List[str]]) -> str:
+        """
+        Compute Twilio signature (base64(hmac_sha1(auth_token, url + sorted(params)))).
+
+        Twilio's webhook signature is computed over the request URL and the POST
+        parameters. parse_qs gives list-values; we use the first value for each key.
+        """
+        # Twilio uses URL (no decoding) + concatenation of param name + value sorted by name.
+        pairs = []
+        for k in sorted(form.keys()):
+            vals = form.get(k) or [""]
+            v = vals[0] if isinstance(vals, list) and vals else str(vals)
+            pairs.append(f"{k}{v}")
+        data = (url + "".join(pairs)).encode("utf-8")
+
+        mac = hmac.new(self._auth_token.encode("utf-8"), data, digestmod="sha1")
+        return base64.b64encode(mac.digest()).decode("ascii")
+
+    def _is_valid_twilio_signature(self, request, form: Dict[str, List[str]]) -> bool:
+        provided = request.headers.get(_TWILIO_SIGNATURE_HEADER, "")
+        if not provided:
+            return False
+
+        public_base = self._public_webhook_base_url()
+        if public_base:
+            # If user provides full URL including path, respect it; else append request path.
+            if public_base.endswith(request.path):
+                url = public_base
+            else:
+                url = f"{public_base}{request.path}"
+        else:
+            url = self._build_request_url_for_signature(request)
+
+        expected = self._twilio_expected_signature(url, form)
+        return secrets.compare_digest(expected, provided)
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -218,6 +284,25 @@ class SmsAdapter(BasePlatformAdapter):
                 content_type="application/xml",
                 status=400,
             )
+
+        # Validate Twilio signature unless explicitly disabled.
+        if self._signature_validation_enabled():
+            try:
+                if not self._is_valid_twilio_signature(request, form):
+                    logger.warning("[sms] webhook rejected: invalid Twilio signature")
+                    return web.Response(
+                        text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                        content_type="application/xml",
+                        status=403,
+                    )
+            except Exception as e:
+                # Fail closed when validation is enabled.
+                logger.warning("[sms] webhook rejected: signature validation error: %s", e)
+                return web.Response(
+                    text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    content_type="application/xml",
+                    status=403,
+                )
 
         # Extract fields (parse_qs returns lists)
         from_number = (form.get("From", [""]))[0].strip()

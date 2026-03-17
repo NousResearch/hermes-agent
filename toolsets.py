@@ -183,12 +183,6 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
-
-    "inference": {
-        "description": "inference.sh CLI (infsh) — run 150+ AI apps: image gen (FLUX, Reve), video (Veo, Wan), LLMs, search (Tavily, Exa), 3D, and more",
-        "tools": ["infsh", "infsh_install"],
-        "includes": []
-    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",

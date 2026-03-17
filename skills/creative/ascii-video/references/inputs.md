@@ -1,13 +1,6 @@
 # Input Sources
 
-**Cross-references:**
-- Grid system, resolution presets: `architecture.md`
-- Effect building blocks (audio-reactive modulation): `effects.md`
-- Scene protocol, SCENES table (feature routing): `scenes.md`
-- Shader pipeline, output encoding: `shaders.md`
-- Performance tuning (audio chunking, WAV caching): `optimization.md`
-- Common bugs (sample rate, dtype, silence handling): `troubleshooting.md`
-- Complete scene examples with feature usage: `examples.md`
+> **See also:** architecture.md · effects.md · scenes.md · shaders.md · optimization.md · troubleshooting.md
 
 ## Audio Analysis
 

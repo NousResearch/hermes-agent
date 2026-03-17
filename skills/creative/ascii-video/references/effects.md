@@ -2,13 +2,7 @@
 
 Effect building blocks that produce visual patterns. In v2, these are used **inside scene functions** that return a pixel canvas directly. The building blocks below operate on grid coordinate arrays and produce `(chars, colors)` or value/hue fields that the scene function renders to canvas via `_render_vf()`.
 
-**Cross-references:**
-- Grid system, palettes, color: `architecture.md`
-- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
-- Scene protocol, render_clip, SCENES table: `scenes.md`
-- Shader pipeline, feedback buffer: `shaders.md`
-- Complete scene examples using these effects: `examples.md`
-- Common bugs (broadcasting, clipping): `troubleshooting.md`
+> **See also:** architecture.md · composition.md · scenes.md · shaders.md · troubleshooting.md
 
 ## Design Philosophy
 
@@ -109,142 +103,7 @@ def bg_cellular(g, f, t, n_centers=12, hue=0.5, bri=0.6, pal=PAL_BLOCKS):
 
 ---
 
-## Radial Effects
-
-### Concentric Rings
-Bass/sub-driven pulsing rings from center. Scale ring count and thickness with bass energy.
-```python
-def eff_rings(g, f, t, hue=0.5, n_base=6, pal=PAL_DEFAULT):
-    n_rings = int(n_base + f["sub_r"] * 25 + f["bass"] * 10)
-    spacing = 2 + f["bass_r"] * 7 + f["rms"] * 3
-    ring_cv = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for ri in range(n_rings):
-        rad = (ri+1) * spacing + f["bdecay"] * 15
-        wobble = f["mid_r"]*5*np.sin(g.angle*3 + t*4) + f["hi_r"]*3*np.sin(g.angle*7 - t*6)
-        rd = np.abs(g.dist - rad - wobble)
-        th = 1 + f["sub"] * 3
-        ring_cv = np.maximum(ring_cv, np.clip((1 - rd/th) * (0.4 + f["bass"]*0.8), 0, 1))
-    # Color by angle + distance for rainbow rings
-    h = g.angle/(2*np.pi) + g.dist*0.005 + f["sub_r"]*0.2
-    return ring_cv, h
-```
-
-### Radial Rays
-```python
-def eff_rays(g, f, t, n_base=8, hue=0.5):
-    n_rays = int(n_base + f["hi_r"] * 25)
-    ray = np.clip(np.cos(g.angle*n_rays + t*3) * f["bdecay"]*0.6 * (1-g.dist_n), 0, 0.7)
-    return ray
-```
-
-### Spiral Arms (Logarithmic)
-```python
-def eff_spiral(g, f, t, n_arms=3, tightness=2.5, hue=0.5):
-    arm_cv = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for ai in range(n_arms):
-        offset = ai * 2*np.pi / n_arms
-        log_r = np.log(g.dist + 1) * tightness
-        arm_phase = g.angle + offset - log_r + t * 0.8
-        arm_val = np.clip(np.cos(arm_phase * n_arms) * 0.6 + 0.2, 0, 1)
-        arm_val *= (0.4 + f["rms"]*0.6) * np.clip(1 - g.dist_n*0.5, 0.2, 1)
-        arm_cv = np.maximum(arm_cv, arm_val)
-    return arm_cv
-```
-
-### Center Glow / Pulse
-```python
-def eff_glow(g, f, t, intensity=0.6, spread=2.0):
-    return np.clip(intensity * np.exp(-g.dist_n * spread) * (0.5 + f["rms"]*2 + np.sin(t*1.2)*0.2), 0, 0.9)
-```
-
-### Tunnel / Depth
-```python
-def eff_tunnel(g, f, t, speed=3.0, complexity=6):
-    tunnel_d = 1.0 / (g.dist_n + 0.1)
-    v1 = np.sin(tunnel_d*2 - t*speed) * 0.45 + 0.55
-    v2 = np.sin(g.angle*complexity + tunnel_d*1.5 - t*2) * 0.35 + 0.55
-    return v1 * 0.5 + v2 * 0.5
-```
-
-### Vortex (Rotating Distortion)
-```python
-def eff_vortex(g, f, t, twist=3.0, pulse=True):
-    """Twisting radial pattern -- distance modulates angle."""
-    twisted = g.angle + g.dist_n * twist * np.sin(t * 0.5)
-    val = np.sin(twisted * 4 - t * 2) * 0.5 + 0.5
-    if pulse:
-        val *= 0.5 + f.get("bass", 0.3) * 0.8
-    return np.clip(val, 0, 1)
-```
-
----
-
-## Wave Effects
-
-### Multi-Band Frequency Waves
-Each frequency band draws its own wave at different spatial/temporal frequencies:
-```python
-def eff_freq_waves(g, f, t, bands=None):
-    if bands is None:
-        bands = [("sub",0.06,1.2,0.0), ("bass",0.10,2.0,0.08), ("lomid",0.15,3.0,0.16),
-                 ("mid",0.22,4.5,0.25), ("himid",0.32,6.5,0.4), ("hi",0.45,8.5,0.55)]
-    mid = g.rows / 2.0
-    composite = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for band_key, sf, tf, hue_base in bands:
-        amp = f.get(band_key, 0.3) * g.rows * 0.4
-        y_wave = mid - np.sin(g.cc*sf + t*tf) * amp
-        y_wave += np.sin(g.cc*sf*2.3 + t*tf*1.7) * amp * 0.2  # harmonic
-        dist = np.abs(g.rr - y_wave)
-        thickness = 2 + f.get(band_key, 0.3) * 5
-        intensity = np.clip((1 - dist/thickness) * f.get(band_key, 0.3) * 1.5, 0, 1)
-        composite = np.maximum(composite, intensity)
-    return composite
-```
-
-### Interference Pattern
-6-8 overlapping sine waves creating moire-like patterns:
-```python
-def eff_interference(g, f, t, n_waves=5):
-    """Parametric interference -- vary n_waves for complexity."""
-    # Each wave has different orientation, frequency, and feature driver
-    drivers = ["mid_r", "himid_r", "bass_r", "lomid_r", "hi_r"]
-    vals = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for i in range(min(n_waves, len(drivers))):
-        angle = i * np.pi / n_waves  # spread orientations
-        freq = 0.06 + i * 0.03
-        sp = 0.5 + i * 0.3
-        proj = g.cc * np.cos(angle) + g.rr * np.sin(angle)
-        vals += np.sin(proj * freq + t * sp) * f.get(drivers[i], 0.3) * 2.5
-    return np.clip(vals * 0.12 + 0.45, 0.1, 1)
-```
-
-### Aurora / Horizontal Bands
-```python
-def eff_aurora(g, f, t, hue=0.4, n_bands=3):
-    val = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for i in range(n_bands):
-        freq_r = 0.08 + i * 0.04
-        freq_c = 0.012 + i * 0.008
-        sp_r = 0.7 + i * 0.3
-        sp_c = 0.18 + i * 0.12
-        val += np.sin(g.rr*freq_r + t*sp_r) * np.sin(g.cc*freq_c + t*sp_c) * (0.6 / n_bands)
-    return np.clip(val * (f.get("lomid_r", 0.3)*3 + 0.2), 0, 0.7)
-```
-
-### Ripple (Point-Source Waves)
-```python
-def eff_ripple(g, f, t, sources=None, freq=0.3, damping=0.02):
-    """Concentric ripples from point sources. Sources = [(row_frac, col_frac), ...]"""
-    if sources is None:
-        sources = [(0.5, 0.5)]  # center
-    val = np.zeros((g.rows, g.cols), dtype=np.float32)
-    for ry, rx in sources:
-        dy = g.rr - g.rows * ry
-        dx = g.cc - g.cols * rx
-        d = np.sqrt(dy**2 + dx**2)
-        val += np.sin(d * freq - t * 4) * np.exp(-d * damping) * 0.5
-    return np.clip(val + 0.5, 0, 1)
-```
+> **Note:** The v1 `eff_rings`, `eff_rays`, `eff_spiral`, `eff_glow`, `eff_tunnel`, `eff_vortex`, `eff_freq_waves`, `eff_interference`, `eff_aurora`, and `eff_ripple` functions are superseded by the `vf_*` value field generators below (used via `_render_vf()`). The `vf_*` versions integrate with the multi-grid composition pipeline and are preferred for all new scenes.
 
 ---
 
@@ -1967,3 +1826,40 @@ def scene_complex(r, f, t, S):
 ```
 
 Vary the **value field combo**, **hue field**, **palette**, **blend modes**, **feedback config**, and **shader chain** per section for maximum visual variety. With 12 value fields × 8 hue fields × 14 palettes × 20 blend modes × 7 feedback transforms × 38 shaders, the combinations are effectively infinite.
+
+---
+
+## Combining Effects — Creative Guide
+
+The catalog above is vocabulary. Here's how to compose it into something that looks intentional.
+
+### Layering for Depth
+Every scene should have at least two layers at different grid densities:
+- **Background** (sm or xs): dense, dim texture that prevents flat black. fBM, smooth noise, or domain warp at low brightness (bri=0.15-0.25).
+- **Content** (md): the main visual — rings, voronoi, spirals, tunnel. Full brightness.
+- **Accent** (lg or xl): sparse highlights — particles, text stencil, glow pulse. Screen-blended on top.
+
+### Interesting Effect Pairs
+| Pair | Blend | Why it works |
+|------|-------|-------------|
+| fBM + voronoi edges | `screen` | Organic fills the cells, edges add structure |
+| Domain warp + plasma | `difference` | Psychedelic organic interference |
+| Tunnel + vortex | `screen` | Depth perspective + rotational energy |
+| Spiral + interference | `exclusion` | Moire patterns from different spatial frequencies |
+| Reaction-diffusion + fire | `add` | Living organic base + dynamic foreground |
+| SDF geometry + domain warp | `screen` | Clean shapes floating in organic texture |
+
+### Effects as Masks
+Any value field can be used as a mask for another effect via `mask_from_vf()`:
+- Voronoi cells masking fire (fire visible only inside cells)
+- fBM masking a solid color layer (organic color clouds)
+- SDF shapes masking a reaction-diffusion field
+- Animated iris/wipe revealing one effect over another
+
+### Inventing New Effects
+For every project, create at least one effect that isn't in the catalog:
+- **Combine two vf_* functions** with math: `np.clip(vf_fbm(...) * vf_rings(...), 0, 1)`
+- **Apply coordinate transforms** before evaluation: `vf_plasma(twisted_grid, ...)`
+- **Use one field to modulate another's parameters**: `vf_spiral(..., tightness=2 + vf_fbm(...) * 5)`
+- **Stack time offsets**: render the same field at `t` and `t - 0.5`, difference-blend for motion trails
+- **Mirror a value field** through an SDF boundary for kaleidoscopic geometry

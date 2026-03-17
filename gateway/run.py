@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -79,6 +80,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
 _hermes_home = get_hermes_home()
+
+# UUID action map for inline keyboard callbacks (chat_id, action_id) -> action dict
+_keyboard_actions: Dict[tuple[str, str], Dict] = {}
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -378,6 +382,71 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         model = model_cfg.get("default") or model_cfg.get("model") or model
     return model
+
+
+_MODELS_PER_PAGE = 8
+
+
+def _model_providers_keyboard(chat_id: str, current_model: str) -> tuple[str, List[List[Dict]]]:
+    """Build provider selection keyboard."""
+    from hermes_cli.models import providers
+    rows: List[List[Dict]] = []
+    pair: List[Dict] = []
+    for prov in providers():
+        action_id = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, action_id)] = {
+            "type": "model_provider", "provider": prov, "current_model": current_model
+        }
+        btn_label = f"* {prov}" if prov in current_model else prov
+        pair.append({"text": btn_label, "callback_data": action_id})
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    cancel_id = uuid.uuid4().hex[:16]
+    _keyboard_actions[(chat_id, cancel_id)] = {"type": "model_cancel"}
+    rows.append([{"text": "Cancel", "callback_data": cancel_id}])
+    return f"Current: {current_model}\n\nSelect provider:", rows
+
+
+def _model_list_keyboard(chat_id: str, provider: str, current_model: str, page: int = 0) -> tuple[str, List[List[Dict]]]:
+    """Build paginated model list keyboard."""
+    from hermes_cli.models import models_for_provider
+    all_models = models_for_provider(provider)
+    if not all_models:
+        return f"No models for {provider}", []
+    total = len(all_models)
+    page_models = all_models[page * _MODELS_PER_PAGE:(page + 1) * _MODELS_PER_PAGE]
+    rows: List[List[Dict]] = []
+    pair: List[Dict] = []
+    for mid in page_models:
+        action_id = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, action_id)] = {"type": "model_select", "model_id": mid}
+        label = f"* {mid}" if mid == current_model else mid
+        display = label[:30] + "…" if len(label) > 30 else label
+        pair.append({"text": display, "callback_data": action_id})
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    nav: List[Dict] = []
+    if page > 0:
+        pid = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, pid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1}
+        nav.append({"text": "< Prev", "callback_data": pid})
+    if (page + 1) * _MODELS_PER_PAGE < total:
+        nid = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, nid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1}
+        nav.append({"text": "Next >", "callback_data": nid})
+    if nav:
+        rows.append(nav)
+    back_id = uuid.uuid4().hex[:16]
+    _keyboard_actions[(chat_id, back_id)] = {"type": "model_back", "current_model": current_model}
+    rows.append([{"text": "<< Providers", "callback_data": back_id}])
+    total_pages = max(1, (total + _MODELS_PER_PAGE - 1) // _MODELS_PER_PAGE)
+    return f"Provider: {provider} ({total} models) — page {page+1}/{total_pages}\nCurrent: {current_model}", rows
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -1846,7 +1915,11 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
-        
+
+        # Inline keyboard callback — text is a uuid hex with no "/" prefix
+        if not command and event.text and (event.source.chat_id, event.text.strip()) in _keyboard_actions:
+            return await self._handle_model_callback(event)
+
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
@@ -3233,6 +3306,258 @@ class GatewayRunner:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
     
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - show or change the current model."""
+        import yaml
+        from hermes_cli.models import (
+            parse_model_input,
+            validate_requested_model,
+            curated_models_for_provider,
+            normalize_provider,
+            _PROVIDER_LABELS,
+        )
+
+        args = event.get_command_args().strip()
+        config_path = _hermes_home / 'config.yaml'
+
+        # Resolve current model and provider from config
+        current = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        current_provider = "openrouter"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, str):
+                    current = model_cfg
+                elif isinstance(model_cfg, dict):
+                    current = model_cfg.get("default", current)
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+
+        # Resolve "auto" to the actual provider using credential detection
+        current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
+
+        # Detect custom endpoint: provider resolved to openrouter but a custom
+        # base URL is configured — the user set up a custom endpoint.
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
+
+        if not args:
+            # If a fallback model is active, show it instead of config
+            if self._effective_model:
+                eff_provider = self._effective_provider or 'unknown'
+                eff_label = _PROVIDER_LABELS.get(eff_provider, eff_provider)
+                cfg_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+                lines = [
+                    f"🤖 **Active model:** `{self._effective_model}` (fallback)",
+                    f"**Provider:** {eff_label}",
+                    f"**Primary model** (`{current}` via {cfg_label}) is rate-limited.",
+                    "",
+                ]
+                lines.append("To change: `/model model-name`")
+                lines.append("Switch provider: `/model provider:model-name`")
+                return "\n".join(lines)
+
+            # Try to show interactive keyboard if adapter supports it
+            source = event.source
+            adapter = self.adapters.get(source.platform) if source.platform else None
+            if adapter and hasattr(adapter, "send_keyboard"):
+                try:
+                    text, rows = _model_providers_keyboard(source.chat_id, current)
+                    await adapter.send_keyboard(source.chat_id, text, rows)
+                    return None
+                except Exception:
+                    pass  # Fall back to text response
+            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+            lines = [
+                f"🤖 **Current model:** `{current}`",
+                f"**Provider:** {provider_label}",
+            ]
+            # Show custom endpoint URL when using a custom provider
+            if current_provider == "custom":
+                from hermes_cli.models import _get_custom_base_url
+                custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                if custom_url:
+                    lines.append(f"**Endpoint:** `{custom_url}`")
+            lines.append("")
+            curated = curated_models_for_provider(current_provider)
+            if curated:
+                lines.append(f"**Available models ({provider_label}):**")
+                for mid, desc in curated:
+                    marker = " ←" if mid == current else ""
+                    label = f"  _{desc}_" if desc else ""
+                    lines.append(f"• `{mid}`{label}{marker}")
+                lines.append("")
+            lines.append("To change: `/model model-name`")
+            lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
+            return "\n".join(lines)
+
+        # Parse provider:model syntax
+        target_provider, new_model = parse_model_input(args, current_provider)
+
+        # Detect custom/local provider — skip auto-detection to prevent
+        # silently accepting an OpenRouter model name on a localhost endpoint.
+        # Users must use explicit provider:model syntax to switch away.
+        _resolved_base = ""
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider as _rtp
+            _resolved_base = _rtp(requested=current_provider).get("base_url", "")
+        except Exception:
+            pass
+        is_custom = current_provider == "custom" or (
+            "localhost" in _resolved_base or "127.0.0.1" in _resolved_base
+        )
+
+        # Auto-detect provider when no explicit provider:model syntax was used
+        if target_provider == current_provider and not is_custom:
+            from hermes_cli.models import detect_provider_for_model
+            detected = detect_provider_for_model(new_model, current_provider)
+            if detected:
+                target_provider, new_model = detected
+        provider_changed = target_provider != current_provider
+
+        # Resolve credentials for the target provider (for API probe)
+        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+        base_url = "https://openrouter.ai/api/v1"
+        if provider_changed:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=target_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+            except Exception as e:
+                provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                return f"⚠️ Could not resolve credentials for provider '{provider_label}': {e}"
+        else:
+            # Use current provider's base_url from config or registry
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=current_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+            except Exception:
+                pass
+
+        # Validate the model against the live API
+        try:
+            validation = validate_requested_model(
+                new_model,
+                target_provider,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception:
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
+
+        if not validation.get("accepted"):
+            msg = validation.get("message", "Invalid model")
+            tip = "\n\nUse `/model` to see available models, `/provider` to see providers" if "Did you mean" not in msg else ""
+            return f"⚠️ {msg}{tip}"
+
+        # Persist to config only if validation approves
+        if validation.get("persist"):
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = new_model
+                if provider_changed:
+                    user_config["model"]["provider"] = target_provider
+                with open(config_path, 'w', encoding="utf-8") as f:
+                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return f"⚠️ Failed to save model change: {e}"
+
+        # Set env vars so the next agent run picks up the change
+        os.environ["HERMES_MODEL"] = new_model
+        if provider_changed:
+            os.environ["HERMES_INFERENCE_PROVIDER"] = target_provider
+
+        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+        provider_note = f"\n**Provider:** {provider_label}" if provider_changed else ""
+
+        warning = ""
+        if validation.get("message"):
+            warning = f"\n⚠️ {validation['message']}"
+
+        if validation.get("persist"):
+            persist_note = "saved to config"
+        else:
+            persist_note = "this session only — will revert on restart"
+        # Clear fallback state since user explicitly chose a model
+        self._effective_model = None
+        self._effective_provider = None
+
+        # Helpful hint when staying on a custom/local endpoint
+        custom_hint = ""
+        if is_custom and not provider_changed:
+            endpoint = _resolved_base or "custom endpoint"
+            custom_hint = (
+                f"\n**Endpoint:** `{endpoint}`"
+                "\n_To switch providers, use_ `/model provider:model`"
+                "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
+            )
+
+        return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
+
+    async def _handle_model_callback(self, event: MessageEvent) -> None:
+        """Handle inline keyboard callbacks for model selection."""
+        import yaml
+        chat_id = event.source.chat_id
+        action = _keyboard_actions.pop((chat_id, event.text.strip()), None)
+        if not action:
+            return
+        adapter = self.adapters.get(event.source.platform) if event.source.platform else None
+        msg_id = event.message_id
+
+        t = action.get("type")
+        if t == "model_provider":
+            text, rows = _model_list_keyboard(chat_id, action["provider"], action["current_model"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_page":
+            text, rows = _model_list_keyboard(chat_id, action["provider"], action["current_model"], action["page"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_back":
+            text, rows = _model_providers_keyboard(chat_id, action["current_model"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_select":
+            new_model = action["model_id"]
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path) as f:
+                        user_config = yaml.safe_load(f) or {}
+                if not isinstance(user_config.get("model"), dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = new_model
+                with open(config_path, "w") as f:
+                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                os.environ["HERMES_MODEL"] = new_model
+                confirm = f"✓ Switched to: {new_model}\n(takes effect on next message)"
+                if adapter:
+                    await adapter.send_keyboard(chat_id, confirm, [], message_id=msg_id)
+            except Exception as e:
+                if adapter:
+                    await adapter.send_keyboard(chat_id, f"Failed to save: {e}", [], message_id=msg_id)
+        elif t == "model_cancel":
+            if adapter:
+                await adapter.send_keyboard(chat_id, "Cancelled.", [], message_id=msg_id)
+
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
         import yaml

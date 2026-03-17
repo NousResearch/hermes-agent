@@ -377,7 +377,8 @@ def _run_single_child(
         # for any subsequent execute_code calls or other consumers.
         saved = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved, list):
-            model_tools._last_resolved_tool_names = saved
+            import model_tools as _mt
+            _mt._last_resolved_tool_names = saved
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, send_message_tool
+from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -345,3 +345,49 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Regression: long messages are chunked before platform dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestSendToPlatformChunking:
+    def test_long_message_is_chunked(self):
+        """Messages exceeding the platform limit are split into multiple sends."""
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "ch", long_msg,
+                )
+            )
+        assert result["success"] is True
+        assert send.await_count >= 3
+        for call in send.await_args_list:
+            assert len(call.args[2]) <= 2020  # each chunk fits the limit
+
+    def test_telegram_media_attaches_to_last_chunk(self):
+        """When chunked, media files are sent only with the last chunk."""
+        sent_calls = []
+
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+            sent_calls.append(media_files or [])
+            return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+
+        long_msg = "word " * 2000  # ~10000 chars, well over 4096
+        media = [("/tmp/photo.png", False)]
+        with patch("tools.send_message_tool._send_telegram", fake_send):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.TELEGRAM,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "123", long_msg, media_files=media,
+                )
+            )
+        assert len(sent_calls) >= 3
+        assert all(call == [] for call in sent_calls[:-1])
+        assert sent_calls[-1] == media

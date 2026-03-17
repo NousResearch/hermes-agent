@@ -6,10 +6,10 @@ description: "Complete reference for interactive CLI and messaging slash command
 
 # Slash Commands Reference
 
-Hermes has two slash-command surfaces:
+Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTRY` in `hermes_cli/commands.py`:
 
-- **Interactive CLI slash commands** — handled by `cli.py` / `hermes_cli/commands.py`
-- **Messaging slash commands** — handled by `gateway/run.py`
+- **Interactive CLI slash commands** — dispatched by `cli.py`, with autocomplete from the registry
+- **Messaging slash commands** — dispatched by `gateway/run.py`, with help text and platform menus generated from the registry
 
 Installed skills are also exposed as dynamic slash commands on both surfaces. That includes bundled skills like `/plan`, which opens plan mode and saves markdown plans under `.hermes/plans/` relative to the active workspace/backend working directory.
 

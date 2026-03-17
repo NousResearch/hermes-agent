@@ -1,5 +1,9 @@
 # Plan: Centralize Slash Command Registry
 
+> **Status: COMPLETED** — Implemented in PR #1603. The registry is live in
+> `hermes_cli/commands.py`. See `AGENTS.md` § "Slash Command Registry" for
+> the current developer guide.
+
 ## Problem
 
 Slash command definitions are scattered across 7+ locations with significant drift:

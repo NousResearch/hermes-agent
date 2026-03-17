@@ -128,7 +128,7 @@ checkpoints: true
 
 ### User-Facing Rollback
 
-**CLI slash command** — add `/rollback` to `process_command()` in `cli.py`:
+**Slash command** — `/rollback` is registered in `COMMAND_REGISTRY` in `hermes_cli/commands.py` and dispatched by both CLI (`process_command()`) and gateway. Adding a new command follows the pattern in AGENTS.md § "Adding a Slash Command".
 
 ```
 /rollback         — List recent checkpoints for the current directory
@@ -144,8 +144,6 @@ Shows a numbered list:
 
 Use /rollback <number> to restore, e.g. /rollback 1
 ```
-
-**Gateway slash command** — add `/rollback` to gateway/run.py with the same behavior.
 
 **CLI subcommand** — `hermes rollback` (optional, lower priority).
 

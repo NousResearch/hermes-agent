@@ -94,7 +94,7 @@ def _get_safe_write_root() -> Optional[str]:
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(path))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     # 1) Static deny list
     if resolved in WRITE_DENIED_PATHS:

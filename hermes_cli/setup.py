@@ -1666,6 +1666,7 @@ def _check_espeak_ng() -> bool:
 
 def _install_neutts_deps() -> bool:
     """Install NeuTTS dependencies with user approval. Returns True on success."""
+    import subprocess
     import sys
 
     # Check espeak-ng

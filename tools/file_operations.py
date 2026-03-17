@@ -75,14 +75,40 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
+def _get_safe_write_root() -> Optional[str]:
+    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
+
+    When set, all write_file/patch operations are constrained to this
+    directory tree.  Writes outside it are denied even if the target is
+    not on the static deny list.  Opt-in hardening for gateway/messaging
+    deployments that should only touch a workspace checkout.
+    """
+    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+    if not root:
+        return None
+    try:
+        return os.path.realpath(os.path.expanduser(root))
+    except Exception:
+        return None
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(path))
+
+    # 1) Static deny list
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
+
+    # 2) Optional safe-root sandbox
+    safe_root = _get_safe_write_root()
+    if safe_root:
+        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
+            return True
+
     return False
 
 

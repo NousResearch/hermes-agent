@@ -155,6 +155,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "ai-gateway": ProviderConfig(
+        id="ai-gateway",
+        name="AI Gateway",
+        auth_type="api_key",
+        inference_base_url="https://ai-gateway.vercel.sh/v1",
+        api_key_env_vars=("AI_GATEWAY_API_KEY",),
+        base_url_env_var="AI_GATEWAY_BASE_URL",
+    ),
 }
 
 
@@ -532,6 +540,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

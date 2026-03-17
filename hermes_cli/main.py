@@ -768,6 +768,7 @@ def cmd_model(args):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "ai-gateway": "AI Gateway",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -787,6 +788,7 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -855,7 +857,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "ai-gateway"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 

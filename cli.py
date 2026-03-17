@@ -58,7 +58,12 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
-from agent.usage_pricing import estimate_cost_usd, format_duration_compact, format_token_count_compact, has_known_pricing
+from agent.usage_pricing import (
+    CanonicalUsage,
+    estimate_usage_cost,
+    format_duration_compact,
+    format_token_count_compact,
+)
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -1260,12 +1265,17 @@ class HermesCLI:
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
+            "session_input_tokens": 0,
+            "session_output_tokens": 0,
+            "session_cache_read_tokens": 0,
+            "session_cache_write_tokens": 0,
             "session_prompt_tokens": 0,
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "session_cost": 0.0,
-            "pricing_known": has_known_pricing(model_name),
+            "cost_status": "unknown",
+            "cost_source": "none",
             "compressions": 0,
         }
 
@@ -1273,15 +1283,28 @@ class HermesCLI:
         if not agent:
             return snapshot
 
+        snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
+        snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
+        snapshot["session_cache_read_tokens"] = getattr(agent, "session_cache_read_tokens", 0) or 0
+        snapshot["session_cache_write_tokens"] = getattr(agent, "session_cache_write_tokens", 0) or 0
         snapshot["session_prompt_tokens"] = getattr(agent, "session_prompt_tokens", 0) or 0
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
-        snapshot["session_cost"] = estimate_cost_usd(
+        cost_result = estimate_usage_cost(
             model_name,
-            snapshot["session_prompt_tokens"],
-            snapshot["session_completion_tokens"],
+            CanonicalUsage(
+                input_tokens=snapshot["session_input_tokens"],
+                output_tokens=snapshot["session_output_tokens"],
+                cache_read_tokens=snapshot["session_cache_read_tokens"],
+                cache_write_tokens=snapshot["session_cache_write_tokens"],
+            ),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
         )
+        snapshot["session_cost"] = float(cost_result.amount_usd or 0)
+        snapshot["cost_status"] = cost_result.status
+        snapshot["cost_source"] = cost_result.source
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1305,7 +1328,14 @@ class HermesCLI:
             show_cost = getattr(self, "show_cost", False)
 
             if show_cost:
-                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+                if snapshot["cost_status"] == "actual":
+                    cost_label = f"${snapshot['session_cost']:.2f}"
+                elif snapshot["cost_status"] == "estimated":
+                    cost_label = f"~${snapshot['session_cost']:.2f}"
+                elif snapshot["cost_status"] == "included":
+                    cost_label = "included"
+                else:
+                    cost_label = "cost n/a"
             else:
                 cost_label = None
 
@@ -1341,7 +1371,14 @@ class HermesCLI:
             show_cost = getattr(self, "show_cost", False)
 
             if show_cost:
-                cost_label = f"${snapshot['session_cost']:.2f}" if snapshot["pricing_known"] else "cost n/a"
+                if snapshot["cost_status"] == "actual":
+                    cost_label = f"${snapshot['session_cost']:.2f}"
+                elif snapshot["cost_status"] == "estimated":
+                    cost_label = f"~${snapshot['session_cost']:.2f}"
+                elif snapshot["cost_status"] == "included":
+                    cost_label = "included"
+                else:
+                    cost_label = "cost n/a"
             else:
                 cost_label = None
 
@@ -4250,6 +4287,10 @@ class HermesCLI:
             return
 
         agent = self.agent
+        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
@@ -4267,33 +4308,45 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
-        cost = estimate_cost_usd(agent.model, prompt, completion)
-        prompt_cost = estimate_cost_usd(agent.model, prompt, 0)
-        completion_cost = estimate_cost_usd(agent.model, 0, completion)
-        pricing_known = has_known_pricing(agent.model)
+        cost_result = estimate_usage_cost(
+            agent.model,
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            ),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+        )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print(f"  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
-        print(f"  Prompt tokens (input):     {prompt:>10,}")
-        print(f"  Completion tokens (output): {completion:>9,}")
+        print(f"  Input tokens:              {input_tokens:>10,}")
+        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+        print(f"  Output tokens:             {output_tokens:>10,}")
+        print(f"  Prompt tokens (total):     {prompt:>10,}")
+        print(f"  Completion tokens:         {completion:>10,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
-        if pricing_known:
-            print(f"  Input cost:              ${prompt_cost:>10.4f}")
-            print(f"  Output cost:             ${completion_cost:>10.4f}")
-            print(f"  Total cost:              ${cost:>10.4f}")
+        print(f"  Cost status:              {cost_result.status:>10}")
+        print(f"  Cost source:              {cost_result.source:>10}")
+        if cost_result.amount_usd is not None:
+            prefix = "~" if cost_result.status == "estimated" else ""
+            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+        elif cost_result.status == "included":
+            print(f"  Total cost:              {'included':>10}")
         else:
-            print(f"  Input cost:              {'n/a':>10}")
-            print(f"  Output cost:             {'n/a':>10}")
             print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
-        if not pricing_known:
+        if cost_result.status == "unknown":
             print(f"  Note:             Pricing unknown for {agent.model}")
 
         if self.verbose:

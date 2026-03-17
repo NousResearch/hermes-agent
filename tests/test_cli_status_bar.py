@@ -16,6 +16,10 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
 def _attach_agent(
     cli_obj,
     *,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
@@ -26,6 +30,12 @@ def _attach_agent(
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
+        provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
+        base_url="",
+        session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
+        session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
+        session_cache_read_tokens=cache_read_tokens,
+        session_cache_write_tokens=cache_write_tokens,
         session_prompt_tokens=prompt_tokens,
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
@@ -128,8 +138,8 @@ class TestCLIUsageReport:
         output = capsys.readouterr().out
 
         assert "Model:" in output
-        assert "Input cost:" in output
-        assert "Output cost:" in output
+        assert "Cost status:" in output
+        assert "Cost source:" in output
         assert "Total cost:" in output
         assert "$" in output
         assert "0.064" in output

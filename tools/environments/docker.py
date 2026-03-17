@@ -458,6 +458,20 @@ class DockerEnvironment(BaseEnvironment):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         self._inner.cleanup()
 
+        if not self._persistent and self._container_id:
+            # Inner cleanup only runs `docker stop` in background; container is left
+            # as stopped. When container_persistent=false we must remove it.
+            docker_exe = find_docker() or self._inner.config.executable
+            try:
+                subprocess.run(
+                    [docker_exe, "rm", "-f", self._container_id],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except Exception as e:
+                logger.warning("Failed to remove non-persistent container %s: %s", self._container_id, e)
+            self._container_id = None
+
         if not self._persistent:
             import shutil
             for d in (self._workspace_dir, self._home_dir):

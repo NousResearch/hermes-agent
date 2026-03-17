@@ -854,17 +854,22 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
         
+        # Exclude hidden directories (matching ripgrep's default behavior).
+        # This prevents the agent from discovering internal cache files
+        # (e.g. .hub/index-cache/) that may contain unvetted content.
+        hidden_exclude = "-not -path '*/.*'"
+        
         # Use find with modification time sorting
         # -printf '%T@ %p\n' outputs: timestamp path
         # sort -rn sorts by timestamp descending (newest first)
-        cmd = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
         
         result = self._exec(cmd, timeout=60)
         
         if not result.stdout.strip():
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
             result = self._exec(cmd_simple, timeout=60)
         
@@ -1004,6 +1009,10 @@ class ShellFileOperations(FileOperations):
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
+        
+        # Exclude hidden directories (matching ripgrep's default behavior).
+        # This prevents searching inside .hub/index-cache/, .git/, etc.
+        cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

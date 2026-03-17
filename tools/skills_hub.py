@@ -2063,6 +2063,15 @@ def _read_index_cache(key: str) -> Optional[Any]:
 def _write_index_cache(key: str, data: Any) -> None:
     """Write data to cache."""
     INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
+    # this directory.  Cache files contain unvetted community content that
+    # could include adversarial text (prompt injection via catalog entries).
+    ignore_file = HUB_DIR / ".ignore"
+    if not ignore_file.exists():
+        try:
+            ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
+        except OSError:
+            pass
     cache_file = INDEX_CACHE_DIR / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))

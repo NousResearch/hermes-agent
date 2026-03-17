@@ -118,6 +118,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        # Buffer rapid text messages so Telegram client-side splits of long
+        # messages are aggregated into a single MessageEvent.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
 
@@ -795,12 +800,17 @@ class TelegramAdapter(BasePlatformAdapter):
         return text
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages."""
+        """Handle incoming text messages.
+
+        Telegram clients split long messages into multiple updates.  Buffer
+        rapid successive text messages from the same user/chat and aggregate
+        them into a single MessageEvent before dispatching.
+        """
         if not update.message or not update.message.text:
             return
-        
+
         event = self._build_message_event(update.message, MessageType.TEXT)
-        await self.handle_message(event)
+        self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -844,6 +854,68 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION)
         event.text = "\n".join(parts)
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Telegram client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When Telegram splits a long user message into multiple updates,
+        they arrive within a few hundred milliseconds.  This method
+        concatenates them and waits for a short quiet period before
+        dispatching the combined message.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is None:
+            self._pending_text_batches[key] = event
+        else:
+            # Append text from the follow-up chunk
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        # Cancel any pending flush and restart the timer
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_seconds)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Telegram] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Photo batching
+    # ------------------------------------------------------------------
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
         """Return a batching key for Telegram photos/albums."""

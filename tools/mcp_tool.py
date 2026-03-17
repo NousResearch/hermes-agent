@@ -83,9 +83,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Import the tool registry singleton
-from tools.registry import registry
-from toolsets import create_custom_toolset, TOOLSETS
+# Need lazy import for tools because registry singleton is patched during tests
+# from tools.registry import registry
+# from toolsets import create_custom_toolset, TOOLSETS
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -724,7 +724,7 @@ class MCPServerTask:
     __slots__ = (
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
-        "_sampling", "_registered_tool_names",
+        "_sampling", "_registered_tool_names", "_refresh_lock"
     )
 
     def __init__(self, name: str):
@@ -739,6 +739,7 @@ class MCPServerTask:
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
         self._registered_tool_names: list[str] = []
+        self._refresh_lock = asyncio.Lock()
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -858,18 +859,32 @@ class MCPServerTask:
 
     async def _refresh_tools(self):
         """Rediscover tools from the connected session, called by message_handler"""
+        from tools.registry import registry
+        from toolsets import TOOLSETS
+        
         async with self._refresh_lock:
-            # Step 1: fetch (async)
+            # Step 1: fetch new tool list (async)
             tools_result = await self.session.list_tools()
             new_mcp_tools = tools_result.tools if hasattr(tools_result, 'tools') else []
-            
-            # Step 2-6: deregister + re-register (all sync, no await)
+
+            # Step 2: remove old tool names from hermes-* toolsets (sync, no await)
+            for ts_name, ts in TOOLSETS.items():
+                if ts_name.startswith("hermes-"):
+                    ts["tools"] = [t for t in ts["tools"] if t not in self._registered_tool_names]
+
+            # Step 3: deregister old tools from registry
             for prefixed_name in self._registered_tool_names:
                 registry.deregister(prefixed_name)
-            
+
+            # Step 4: update state and re-register
             self._tools = new_mcp_tools
             self._registered_tool_names = _register_server_tools(
                 self.name, self, self._config
+            )
+
+            logger.info(
+                "MCP server '%s': dynamically refreshed %d tools",
+                self.name, len(self._registered_tool_names),
             )
     
     async def run(self, config: dict):
@@ -1494,6 +1509,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     Returns:
         List of registered prefixed tool names.
     """
+    
+    from tools.registry import registry
+    from toolsets import create_custom_toolset, TOOLSETS
     
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"

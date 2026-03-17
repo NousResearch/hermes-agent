@@ -7,6 +7,29 @@ import hermes_cli.gateway as gateway_cli
 
 
 class TestSystemdServiceRefresh:
+    def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.systemd_install()
+
+        assert unit_path.read_text(encoding="utf-8") == "new unit\n"
+        assert calls[:2] == [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", gateway_cli.get_service_name()],
+        ]
+
     def test_systemd_start_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -96,6 +119,71 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestLaunchdServiceRecovery:
+    def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install()
+
+        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        assert calls[:2] == [
+            ["launchctl", "unload", str(plist_path)],
+            ["launchctl", "load", str(plist_path)],
+        ]
+
+    def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "start", "ai.hermes.gateway"] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "start", "ai.hermes.gateway"],
+        ]
+
+    def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="Could not find service"),
+        )
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert str(plist_path) in output
+        assert "stale" in output.lower()
+        assert "not loaded" in output.lower()
+
+
 class TestGatewayServiceDetection:
     def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
@@ -157,6 +245,34 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
 
         assert calls == [(False, False)]
+
+    def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_restart",
+            lambda: (_ for _ in ()).throw(
+                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "start", "ai.hermes.gateway"])
+            ),
+        )
+
+        run_calls = []
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=False, replace=False: run_calls.append((verbose, replace)))
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda force=False: 0)
+
+        try:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False))
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected gateway_command to exit when service restart fails")
+
+        assert run_calls == []
 
 
 class TestEnsureUserSystemdEnv:

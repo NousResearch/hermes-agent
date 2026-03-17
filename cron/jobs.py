@@ -168,6 +168,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         try:
             # Parse and validate
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+            # Make naive timestamps timezone-aware at parse time so the stored
+            # value doesn't depend on the system timezone matching at check time.
+            if dt.tzinfo is None:
+                dt = dt.astimezone()  # Interpret as local timezone
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),

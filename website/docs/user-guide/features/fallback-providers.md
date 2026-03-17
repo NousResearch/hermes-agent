@@ -43,6 +43,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
+| Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
 
 ### Custom Endpoint Fallback

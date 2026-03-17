@@ -187,7 +187,7 @@ def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_pa
     save_config(config)
 
     picks = iter([
-        9,  # keep current provider
+        10,  # keep current provider (shifted +1 by kilocode insertion)
         1,  # configure vision with OpenAI
         5,  # use default gpt-4o-mini vision model
         4,  # keep current Anthropic model

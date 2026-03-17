@@ -135,6 +135,8 @@ All container backends run with security hardening:
 - Full namespace isolation
 - Persistent workspace via volumes, not writable root layer
 
+Docker can optionally receive an explicit env allowlist via `terminal.docker_forward_env`, but forwarded variables are visible to commands inside the container and should be treated as exposed to that session.
+
 ## Background Process Management
 
 Start background processes and manage them:

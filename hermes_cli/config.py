@@ -118,6 +118,7 @@ DEFAULT_CONFIG = {
         "cwd": ".",  # Use current directory
         "timeout": 180,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "docker_forward_env": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",

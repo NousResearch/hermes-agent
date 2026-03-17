@@ -212,6 +212,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 terminal:
   backend: docker
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)
   container_disk: 51200   # MB (default 50GB, requires overlay2 on XFS)
@@ -225,6 +226,10 @@ terminal:
 
 :::tip
 For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+:::
+
+:::warning
+If you add names to `terminal.docker_forward_env`, those variables are intentionally injected into the container for terminal commands. This is useful for task-specific credentials like `GITHUB_TOKEN`, but it also means code running in the container can read and exfiltrate them.
 :::
 
 ## Terminal Backend Security Comparison

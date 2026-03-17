@@ -251,8 +251,8 @@ class CheckpointManager:
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory.
 
-        Returns a list of dicts with keys: hash, short_hash, timestamp, reason.
-        Most recent first.
+        Returns a list of dicts with keys: hash, short_hash, timestamp, reason,
+        files_changed, insertions, deletions.  Most recent first.
         """
         abs_dir = str(Path(working_dir).resolve())
         shadow = _shadow_repo_path(abs_dir)
@@ -260,14 +260,6 @@ class CheckpointManager:
         if not (shadow / "HEAD").exists():
             return []
 
-        ok, stdout, _ = _run_git(
-            ["log", "--format=%H|%h|%aI|%s", "--no-walk=unsorted",
-             "--all" if False else "HEAD",  # just HEAD lineage
-             "-n", str(self.max_snapshots)],
-            shadow, abs_dir,
-        )
-
-        # Simpler: just use regular log
         ok, stdout, _ = _run_git(
             ["log", "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             shadow, abs_dir,
@@ -280,19 +272,95 @@ class CheckpointManager:
         for line in stdout.splitlines():
             parts = line.split("|", 3)
             if len(parts) == 4:
-                results.append({
+                entry = {
                     "hash": parts[0],
                     "short_hash": parts[1],
                     "timestamp": parts[2],
                     "reason": parts[3],
-                })
+                    "files_changed": 0,
+                    "insertions": 0,
+                    "deletions": 0,
+                }
+                # Get diffstat for this commit
+                stat_ok, stat_out, _ = _run_git(
+                    ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
+                    shadow, abs_dir,
+                    allowed_returncodes={128, 129},  # first commit has no parent
+                )
+                if stat_ok and stat_out:
+                    self._parse_shortstat(stat_out, entry)
+                results.append(entry)
         return results
 
-    def restore(self, working_dir: str, commit_hash: str) -> Dict:
+    @staticmethod
+    def _parse_shortstat(stat_line: str, entry: Dict) -> None:
+        """Parse git --shortstat output into entry dict."""
+        import re
+        m = re.search(r'(\d+) file', stat_line)
+        if m:
+            entry["files_changed"] = int(m.group(1))
+        m = re.search(r'(\d+) insertion', stat_line)
+        if m:
+            entry["insertions"] = int(m.group(1))
+        m = re.search(r'(\d+) deletion', stat_line)
+        if m:
+            entry["deletions"] = int(m.group(1))
+
+    def diff(self, working_dir: str, commit_hash: str) -> Dict:
+        """Show diff between a checkpoint and the current working tree.
+
+        Returns dict with success, diff text, and stat summary.
+        """
+        abs_dir = str(Path(working_dir).resolve())
+        shadow = _shadow_repo_path(abs_dir)
+
+        if not (shadow / "HEAD").exists():
+            return {"success": False, "error": "No checkpoints exist for this directory"}
+
+        # Verify the commit exists
+        ok, _, err = _run_git(
+            ["cat-file", "-t", commit_hash], shadow, abs_dir,
+        )
+        if not ok:
+            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
+
+        # Stage current state to compare against checkpoint
+        _run_git(["add", "-A"], shadow, abs_dir, timeout=_GIT_TIMEOUT * 2)
+
+        # Get stat summary: checkpoint vs current working tree
+        ok_stat, stat_out, _ = _run_git(
+            ["diff", "--stat", commit_hash, "--cached"],
+            shadow, abs_dir,
+        )
+
+        # Get actual diff (limited to avoid terminal flood)
+        ok_diff, diff_out, _ = _run_git(
+            ["diff", commit_hash, "--cached", "--no-color"],
+            shadow, abs_dir,
+        )
+
+        # Unstage to avoid polluting the shadow repo index
+        _run_git(["reset", "HEAD", "--quiet"], shadow, abs_dir)
+
+        if not ok_stat and not ok_diff:
+            return {"success": False, "error": "Could not generate diff"}
+
+        return {
+            "success": True,
+            "stat": stat_out if ok_stat else "",
+            "diff": diff_out if ok_diff else "",
+        }
+
+    def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
         """Restore files to a checkpoint state.
 
-        Uses ``git checkout <hash> -- .`` which restores tracked files
-        without moving HEAD — safe and reversible.
+        Uses ``git checkout <hash> -- .`` (or a specific file) which restores
+        tracked files without moving HEAD — safe and reversible.
+
+        Parameters
+        ----------
+        file_path : str, optional
+            If provided, restore only this file instead of the entire directory.
 
         Returns dict with success/error info.
         """
@@ -312,14 +380,15 @@ class CheckpointManager:
         # Take a checkpoint of current state before restoring (so you can undo the undo)
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
-        # Restore
+        # Restore — full directory or single file
+        restore_target = file_path if file_path else "."
         ok, stdout, err = _run_git(
-            ["checkout", commit_hash, "--", "."],
+            ["checkout", commit_hash, "--", restore_target],
             shadow, abs_dir, timeout=_GIT_TIMEOUT * 2,
         )
 
         if not ok:
-            return {"success": False, "error": "Restore failed", "debug": err or None}
+            return {"success": False, "error": f"Restore failed: {err}", "debug": err or None}
 
         # Get info about what was restored
         ok2, reason_out, _ = _run_git(
@@ -327,12 +396,15 @@ class CheckpointManager:
         )
         reason = reason_out if ok2 else "unknown"
 
-        return {
+        result = {
             "success": True,
             "restored_to": commit_hash[:8],
             "reason": reason,
             "directory": abs_dir,
         }
+        if file_path:
+            result["file"] = file_path
+        return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory for checkpointing.
@@ -458,7 +530,19 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
             ts = ts.split("T")[1].split("+")[0].split("-")[0][:5]  # HH:MM
             date = cp["timestamp"].split("T")[0]
             ts = f"{date} {ts}"
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}")
 
-    lines.append(f"\nUse /rollback <number> to restore, e.g. /rollback 1")
+        # Build change summary
+        files = cp.get("files_changed", 0)
+        ins = cp.get("insertions", 0)
+        dele = cp.get("deletions", 0)
+        if files:
+            stat = f"  ({files} file{'s' if files != 1 else ''}, +{ins}/-{dele})"
+        else:
+            stat = ""
+
+        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+
+    lines.append(f"\n  /rollback <N>             restore to checkpoint N")
+    lines.append(f"  /rollback diff <N>        preview changes since checkpoint N")
+    lines.append(f"  /rollback <N> <file>      restore a single file from checkpoint N")
     return "\n".join(lines)

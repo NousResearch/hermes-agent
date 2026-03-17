@@ -45,7 +45,7 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_close", "browser_get_images",
-    "browser_vision",
+    "browser_vision", "browser_console",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -119,7 +119,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
-            "browser_vision", "web_search"
+            "browser_vision", "browser_console", "web_search"
         ],
         "includes": []
     },
@@ -127,6 +127,12 @@ TOOLSETS = {
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
+        "includes": []
+    },
+    
+    "messaging": {
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+        "tools": ["send_message"],
         "includes": []
     },
     
@@ -236,7 +242,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
+            "browser_vision", "browser_console",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -292,10 +298,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-sms": {
+        "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms"]
     }
 }
 

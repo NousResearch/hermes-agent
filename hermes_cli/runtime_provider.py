@@ -33,6 +33,18 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+_VALID_API_MODES = {"chat_completions", "codex_responses"}
+
+
+def _parse_api_mode(raw: Any) -> Optional[str]:
+    """Validate an api_mode value from config. Returns None if invalid."""
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in _VALID_API_MODES:
+            return normalized
+    return None
+
+
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
     """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
@@ -86,11 +98,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         menu_key = f"custom:{name_norm}"
         if requested_norm not in {name_norm, menu_key}:
             continue
-        return {
+        result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
+        api_mode = _parse_api_mode(entry.get("api_mode"))
+        if api_mode:
+            result["api_mode"] = api_mode
+        return result
 
     return None
 
@@ -121,7 +137,7 @@ def _resolve_named_custom_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": "chat_completions",
+        "api_mode": custom_provider.get("api_mode", "chat_completions"),
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -193,7 +209,7 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": "chat_completions",
+        "api_mode": _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -266,6 +282,19 @@ def resolve_runtime_provider(
             "base_url": "https://api.anthropic.com",
             "api_key": token,
             "source": "env",
+            "requested_provider": requested_provider,
+        }
+
+    # Alibaba Cloud / DashScope (Anthropic-compatible endpoint)
+    if provider == "alibaba":
+        creds = resolve_api_key_provider_credentials(provider)
+        base_url = creds.get("base_url", "").rstrip("/") or "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+        return {
+            "provider": "alibaba",
+            "api_mode": "anthropic_messages",
+            "base_url": base_url,
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
 

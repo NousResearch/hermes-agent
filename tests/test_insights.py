@@ -123,28 +123,16 @@ def populated_db(db):
 # =========================================================================
 
 class TestPricing:
-    def test_exact_match(self):
-        pricing = _get_pricing("gpt-4o")
-        assert pricing["input"] == 2.50
-        assert pricing["output"] == 10.00
-
     def test_provider_prefix_stripped(self):
         pricing = _get_pricing("anthropic/claude-sonnet-4-20250514")
         assert pricing["input"] == 3.00
         assert pricing["output"] == 15.00
 
-    def test_prefix_match(self):
-        pricing = _get_pricing("claude-3-5-sonnet-20241022")
-        assert pricing["input"] == 3.00
-
-    def test_keyword_heuristic_opus(self):
+    def test_unknown_models_do_not_use_heuristics(self):
         pricing = _get_pricing("some-new-opus-model")
-        assert pricing["input"] == 15.00
-        assert pricing["output"] == 75.00
-
-    def test_keyword_heuristic_haiku(self):
+        assert pricing == _DEFAULT_PRICING
         pricing = _get_pricing("anthropic/claude-haiku-future")
-        assert pricing["input"] == 0.80
+        assert pricing == _DEFAULT_PRICING
 
     def test_unknown_model_returns_zero_cost(self):
         """Unknown/custom models should NOT have fabricated costs."""
@@ -168,67 +156,53 @@ class TestPricing:
         pricing = _get_pricing("")
         assert pricing == _DEFAULT_PRICING
 
-    def test_deepseek_heuristic(self):
-        pricing = _get_pricing("deepseek-v3")
-        assert pricing["input"] == 0.14
-
-    def test_gemini_heuristic(self):
-        pricing = _get_pricing("gemini-3.0-ultra")
-        assert pricing["input"] == 0.15
-
-    def test_dated_model_gpt4o_mini(self):
-        """gpt-4o-mini-2024-07-18 should match gpt-4o-mini, NOT gpt-4o."""
-        pricing = _get_pricing("gpt-4o-mini-2024-07-18")
-        assert pricing["input"] == 0.15  # gpt-4o-mini price, not gpt-4o's 2.50
-
-    def test_dated_model_o3_mini(self):
-        """o3-mini-2025-01-31 should match o3-mini, NOT o3."""
-        pricing = _get_pricing("o3-mini-2025-01-31")
-        assert pricing["input"] == 1.10  # o3-mini price, not o3's 10.00
-
-    def test_dated_model_gpt41_mini(self):
-        """gpt-4.1-mini-2025-04-14 should match gpt-4.1-mini, NOT gpt-4.1."""
-        pricing = _get_pricing("gpt-4.1-mini-2025-04-14")
-        assert pricing["input"] == 0.40  # gpt-4.1-mini, not gpt-4.1's 2.00
-
-    def test_dated_model_gpt41_nano(self):
-        """gpt-4.1-nano-2025-04-14 should match gpt-4.1-nano, NOT gpt-4.1."""
-        pricing = _get_pricing("gpt-4.1-nano-2025-04-14")
-        assert pricing["input"] == 0.10  # gpt-4.1-nano, not gpt-4.1's 2.00
-
 
 class TestHasKnownPricing:
     def test_known_commercial_model(self):
-        assert _has_known_pricing("gpt-4o") is True
+        assert _has_known_pricing("gpt-4o", provider="openai") is True
         assert _has_known_pricing("anthropic/claude-sonnet-4-20250514") is True
-        assert _has_known_pricing("deepseek-chat") is True
+        assert _has_known_pricing("gpt-4.1", provider="openai") is True
 
     def test_unknown_custom_model(self):
         assert _has_known_pricing("FP16_Hermes_4.5") is False
         assert _has_known_pricing("my-custom-model") is False
+        assert _has_known_pricing("glm-5") is False
         assert _has_known_pricing("") is False
         assert _has_known_pricing(None) is False
 
-    def test_heuristic_matched_models(self):
-        """Models matched by keyword heuristics should be considered known."""
-        assert _has_known_pricing("some-opus-model") is True
-        assert _has_known_pricing("future-sonnet-v2") is True
+    def test_heuristic_matched_models_are_not_considered_known(self):
+        assert _has_known_pricing("some-opus-model") is False
+        assert _has_known_pricing("future-sonnet-v2") is False
 
 
 class TestEstimateCost:
     def test_basic_cost(self):
-        # gpt-4o: 2.50/M input, 10.00/M output
-        cost = _estimate_cost("gpt-4o", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(12.50, abs=0.01)
+        cost, status = _estimate_cost(
+            "anthropic/claude-sonnet-4-20250514",
+            1_000_000,
+            1_000_000,
+            provider="anthropic",
+        )
+        assert status == "estimated"
+        assert cost == pytest.approx(18.0, abs=0.01)
 
     def test_zero_tokens(self):
-        cost = _estimate_cost("gpt-4o", 0, 0)
+        cost, status = _estimate_cost("gpt-4o", 0, 0, provider="openai")
+        assert status == "estimated"
         assert cost == 0.0
 
-    def test_small_usage(self):
-        cost = _estimate_cost("gpt-4o", 1000, 500)
-        # 1000 * 2.50/1M + 500 * 10.00/1M = 0.0025 + 0.005 = 0.0075
-        assert cost == pytest.approx(0.0075, abs=0.0001)
+    def test_cache_aware_usage(self):
+        cost, status = _estimate_cost(
+            "anthropic/claude-sonnet-4-20250514",
+            1000,
+            500,
+            cache_read_tokens=2000,
+            cache_write_tokens=400,
+            provider="anthropic",
+        )
+        assert status == "estimated"
+        expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
+        assert cost == pytest.approx(expected, abs=0.0001)
 
 
 # =========================================================================
@@ -659,8 +633,13 @@ class TestEdgeCases:
 
     def test_mixed_commercial_and_custom_models(self, db):
         """Mix of commercial and custom models: only commercial ones get costs."""
-        db.create_session(session_id="s1", source="cli", model="gpt-4o")
-        db.update_token_counts("s1", input_tokens=10000, output_tokens=5000)
+        db.create_session(session_id="s1", source="cli", model="anthropic/claude-sonnet-4-20250514")
+        db.update_token_counts(
+            "s1",
+            input_tokens=10000,
+            output_tokens=5000,
+            billing_provider="anthropic",
+        )
         db.create_session(session_id="s2", source="cli", model="my-local-llama")
         db.update_token_counts("s2", input_tokens=10000, output_tokens=5000)
         db._conn.commit()
@@ -671,13 +650,13 @@ class TestEdgeCases:
         # Cost should only come from gpt-4o, not from the custom model
         overview = report["overview"]
         assert overview["estimated_cost"] > 0
-        assert "gpt-4o" in overview["models_with_pricing"]  # list now, not set
+        assert "claude-sonnet-4-20250514" in overview["models_with_pricing"]  # list now, not set
         assert "my-local-llama" in overview["models_without_pricing"]
 
         # Verify individual model entries
-        gpt = next(m for m in report["models"] if m["model"] == "gpt-4o")
-        assert gpt["has_pricing"] is True
-        assert gpt["cost"] > 0
+        claude = next(m for m in report["models"] if m["model"] == "claude-sonnet-4-20250514")
+        assert claude["has_pricing"] is True
+        assert claude["cost"] > 0
 
         llama = next(m for m in report["models"] if m["model"] == "my-local-llama")
         assert llama["has_pricing"] is False

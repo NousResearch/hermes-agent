@@ -2329,8 +2329,9 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
         callback = MagicMock()
+        agent.stream_delta_callback = callback
 
-        resp = agent._streaming_api_call({"messages": []}, callback)
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello World"
         assert resp.choices[0].finish_reason == "stop"
@@ -2347,7 +2348,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 1
@@ -2363,7 +2364,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 2
@@ -2378,7 +2379,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "I'll search"
         assert len(resp.choices[0].message.tool_calls) == 1
@@ -2387,7 +2388,7 @@ class TestStreamingApiCall:
         chunks = [_make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content is None
         assert resp.choices[0].message.tool_calls is None
@@ -2399,9 +2400,9 @@ class TestStreamingApiCall:
             _make_chunk(finish_reason="stop"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
-        callback = MagicMock(side_effect=ValueError("boom"))
+        agent.stream_delta_callback = MagicMock(side_effect=ValueError("boom"))
 
-        resp = agent._streaming_api_call({"messages": []}, callback)
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello World"
 
@@ -2412,7 +2413,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.model == "gpt-4o"
 
@@ -2420,22 +2421,23 @@ class TestStreamingApiCall:
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        agent._streaming_api_call({"messages": [], "model": "test"}, MagicMock())
+        agent._interruptible_streaming_api_call({"messages": [], "model": "test"})
 
         call_kwargs = agent.client.chat.completions.create.call_args
         assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
 
-    def test_api_exception_propagated(self, agent):
+    def test_api_exception_falls_back_to_non_streaming(self, agent):
+        """When streaming fails before any deltas, fallback to non-streaming is attempted."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
-
+        # The fallback also uses the same client, so it'll fail too
         with pytest.raises(ConnectionError, match="fail"):
-            agent._streaming_api_call({"messages": []}, MagicMock())
+            agent._interruptible_streaming_api_call({"messages": []})
 
     def test_response_has_uuid_id(self, agent):
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.id.startswith("stream-")
         assert len(resp.id) > len("stream-")
@@ -2449,7 +2451,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello"
         assert resp.model == "gpt-4"
@@ -2505,7 +2507,7 @@ class TestAnthropicInterruptHandler:
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""
         import inspect
-        source = inspect.getsource(AIAgent._streaming_api_call)
+        source = inspect.getsource(AIAgent._interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
             "_streaming_api_call must handle Anthropic interrupt"
 

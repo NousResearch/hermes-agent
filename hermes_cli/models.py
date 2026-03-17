@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
@@ -78,6 +79,82 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    "deepseek": [
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ],
+    "opencode-zen": [
+        "gpt-5.4-pro",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-5-nano",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4",
+        "claude-haiku-4-5",
+        "claude-3-5-haiku",
+        "gemini-3.1-pro",
+        "gemini-3-pro",
+        "gemini-3-flash",
+        "minimax-m2.5",
+        "minimax-m2.5-free",
+        "minimax-m2.1",
+        "glm-5",
+        "glm-4.7",
+        "glm-4.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2",
+        "qwen3-coder",
+        "big-pickle",
+    ],
+    "opencode-go": [
+        "glm-5",
+        "kimi-k2.5",
+        "minimax-m2.5",
+    ],
+    "ai-gateway": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5",
+        "openai/gpt-4.1",
+        "openai/gpt-4.1-mini",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-v3.2",
+    ],
+    "kilocode": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ],
+    "alibaba": [
+        "qwen3.5-plus",
+        "qwen3-max",
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "qwen-plus-latest",
+        "qwen3.5-flash",
+        "qwen-vl-max",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -89,6 +166,12 @@ _PROVIDER_LABELS = {
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "opencode-zen": "OpenCode Zen",
+    "opencode-go": "OpenCode Go",
+    "ai-gateway": "AI Gateway",
+    "kilocode": "Kilo Code",
+    "alibaba": "Alibaba Cloud (DashScope)",
     "custom": "Custom endpoint",
 }
 
@@ -103,6 +186,21 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "deep-seek": "deepseek",
+    "opencode": "opencode-zen",
+    "zen": "opencode-zen",
+    "go": "opencode-go",
+    "opencode-go-sub": "opencode-go",
+    "aigateway": "ai-gateway",
+    "vercel": "ai-gateway",
+    "vercel-ai-gateway": "ai-gateway",
+    "kilo": "kilocode",
+    "kilo-code": "kilocode",
+    "kilo-gateway": "kilocode",
+    "dashscope": "alibaba",
+    "aliyun": "alibaba",
+    "qwen": "alibaba",
+    "alibaba-cloud": "alibaba",
 }
 
 
@@ -136,7 +234,9 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "opencode-zen", "opencode-go",
+        "ai-gateway", "deepseek", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -150,9 +250,12 @@ def list_available_providers() -> list[dict[str, str]]:
         # Check if this provider has credentials available
         has_creds = False
         try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            runtime = resolve_runtime_provider(requested=pid)
-            has_creds = bool(runtime.get("api_key"))
+            if pid == "custom":
+                has_creds = bool(_get_custom_base_url())
+            else:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=pid)
+                has_creds = bool(runtime.get("api_key"))
         except Exception:
             pass
         result.append({
@@ -191,6 +294,19 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     return (current_provider, stripped)
 
 
+def _get_custom_base_url() -> str:
+    """Get the custom endpoint base_url from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            return str(model_cfg.get("base_url", "")).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]]:
     """Return ``(model_id, description)`` tuples for a provider's model list.
 
@@ -210,6 +326,111 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
     # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
+
+
+def detect_provider_for_model(
+    model_name: str,
+    current_provider: str,
+) -> Optional[tuple[str, str]]:
+    """Auto-detect the best provider for a model name.
+
+    Returns ``(provider_id, model_name)`` — the model name may be remapped
+    (e.g. bare ``deepseek-chat`` → ``deepseek/deepseek-chat`` for OpenRouter).
+    Returns ``None`` when no confident match is found.
+
+    Priority:
+    1. Direct provider with credentials (highest)
+    2. Direct provider without credentials → remap to OpenRouter slug
+    3. OpenRouter catalog match
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return None
+
+    name_lower = name.lower()
+
+    # Aggregators list other providers' models — never auto-switch TO them
+    _AGGREGATORS = {"nous", "openrouter"}
+
+    # If the model belongs to the current provider's catalog, don't suggest switching
+    current_models = _PROVIDER_MODELS.get(current_provider, [])
+    if any(name_lower == m.lower() for m in current_models):
+        return None
+
+    # --- Step 1: check static provider catalogs for a direct match ---
+    direct_match: Optional[str] = None
+    for pid, models in _PROVIDER_MODELS.items():
+        if pid == current_provider or pid in _AGGREGATORS:
+            continue
+        if any(name_lower == m.lower() for m in models):
+            direct_match = pid
+            break
+
+    if direct_match:
+        # Check if we have credentials for this provider
+        has_creds = False
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            pconfig = PROVIDER_REGISTRY.get(direct_match)
+            if pconfig:
+                import os
+                for env_var in pconfig.api_key_env_vars:
+                    if os.getenv(env_var, "").strip():
+                        has_creds = True
+                        break
+        except Exception:
+            pass
+
+        if has_creds:
+            return (direct_match, name)
+
+        # No direct creds — try to find this model on OpenRouter instead
+        or_slug = _find_openrouter_slug(name)
+        if or_slug:
+            return ("openrouter", or_slug)
+        # Still return the direct provider — credential resolution will
+        # give a clear error rather than silently using the wrong provider
+        return (direct_match, name)
+
+    # --- Step 2: check OpenRouter catalog ---
+    # First try exact match (handles provider/model format)
+    or_slug = _find_openrouter_slug(name)
+    if or_slug:
+        if current_provider != "openrouter":
+            return ("openrouter", or_slug)
+        # Already on openrouter, just return the resolved slug
+        if or_slug != name:
+            return ("openrouter", or_slug)
+        return None  # already on openrouter with matching name
+
+    return None
+
+
+def _find_openrouter_slug(model_name: str) -> Optional[str]:
+    """Find the full OpenRouter model slug for a bare or partial model name.
+
+    Handles:
+    - Exact match: ``anthropic/claude-opus-4.6`` → as-is
+    - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
+    - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
+    """
+    name_lower = model_name.strip().lower()
+    if not name_lower:
+        return None
+
+    # Exact match (already has provider/ prefix)
+    for mid, _ in OPENROUTER_MODELS:
+        if name_lower == mid.lower():
+            return mid
+
+    # Try matching just the model part (after the /)
+    for mid, _ in OPENROUTER_MODELS:
+        if "/" in mid:
+            _, model_part = mid.split("/", 1)
+            if name_lower == model_part.lower():
+                return mid
+
+    return None
 
 
 def normalize_provider(provider: Optional[str]) -> str:
@@ -252,7 +473,7 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
             from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
             creds = resolve_nous_runtime_credentials()
             if creds:
-                live = fetch_nous_models(creds.get("api_key", ""), creds.get("base_url", ""))
+                live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
                 if live:
                     return live
         except Exception:
@@ -261,6 +482,22 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         live = _fetch_anthropic_models()
         if live:
             return live
+    if normalized == "ai-gateway":
+        live = _fetch_ai_gateway_models()
+        if live:
+            return live
+    if normalized == "custom":
+        base_url = _get_custom_base_url()
+        if base_url:
+            # Try common API key env vars for custom endpoints
+            api_key = (
+                os.getenv("CUSTOM_API_KEY", "")
+                or os.getenv("OPENAI_API_KEY", "")
+                or os.getenv("OPENROUTER_API_KEY", "")
+            )
+            live = fetch_api_models(api_key, base_url)
+            if live:
+                return live
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 
@@ -362,6 +599,33 @@ def probe_api_models(
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
     }
+
+
+def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available language models with tool-use from AI Gateway."""
+    api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
+    if not base_url:
+        from hermes_constants import AI_GATEWAY_BASE_URL
+        base_url = AI_GATEWAY_BASE_URL
+
+    url = base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return [
+                m["id"]
+                for m in data.get("data", [])
+                if m.get("id")
+                and m.get("type") == "language"
+                and "tool-use" in (m.get("tags") or [])
+            ]
+    except Exception:
+        return None
 
 
 def fetch_api_models(

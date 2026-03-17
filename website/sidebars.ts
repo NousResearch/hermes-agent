@@ -48,6 +48,10 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/signal',
             'user-guide/messaging/email',
             'user-guide/messaging/homeassistant',
+            'user-guide/messaging/mattermost',
+            'user-guide/messaging/matrix',
+            'user-guide/messaging/dingtalk',
+            'user-guide/messaging/open-webui',
           ],
         },
         {
@@ -87,6 +91,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Integrations',
           items: [
+            'user-guide/features/api-server',
             'user-guide/features/acp',
             'user-guide/features/mcp',
             'user-guide/features/honcho',

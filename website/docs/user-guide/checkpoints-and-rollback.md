@@ -6,9 +6,27 @@ description: "Filesystem safety nets for destructive operations using shadow git
 
 # Checkpoints and `/rollback`
 
-Hermes Agent can automatically snapshot your project before **destructive operations** (like file write/patch tools) and restore it later with a single command.
+Hermes Agent automatically snapshots your project before **destructive operations** and lets you restore it with a single command. Checkpoints are **enabled by default** — there's zero cost when no file-mutating tools fire.
 
 This safety net is powered by an internal **Checkpoint Manager** that keeps a separate shadow git repository under `~/.hermes/checkpoints/` — your real project `.git` is never touched.
+
+## What Triggers a Checkpoint
+
+Checkpoints are taken automatically before:
+
+- **File tools** — `write_file` and `patch`
+- **Destructive terminal commands** — `rm`, `mv`, `sed -i`, `truncate`, `shred`, output redirects (`>`), and `git reset`/`clean`/`checkout`
+
+The agent creates **at most one checkpoint per directory per turn**, so long-running sessions don't spam snapshots.
+
+## Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `/rollback` | List all checkpoints with change stats |
+| `/rollback <N>` | Restore to checkpoint N (also undoes last chat turn) |
+| `/rollback diff <N>` | Preview diff between checkpoint N and current state |
+| `/rollback <N> <file>` | Restore a single file from checkpoint N |
 
 ## How Checkpoints Work
 
@@ -21,24 +39,11 @@ At a high level:
   - Stages and commits the current state with a short, human‑readable reason.
 - These commits form a checkpoint history that you can inspect and restore via `/rollback`.
 
-Internally, the Checkpoint Manager:
-
-- Stores shadow repos under:
-  - `~/.hermes/checkpoints/<hash>/`
-- Keeps metadata about:
-  - The original working directory (`HERMES_WORKDIR` file in the shadow repo).
-  - Excluded paths such as:
-    - `node_modules/`, `dist/`, `build/`
-    - `.venv/`, `__pycache__/`, `*.pyc`
-    - `.git/`, `.cache/`, `.pytest_cache/`, etc.
-
-The agent creates **at most one checkpoint per directory per turn**, so long running sessions do not spam snapshots.
-
 ```mermaid
 flowchart LR
   user["User command\n(hermes, gateway)"]
   agent["AIAgent\n(run_agent.py)"]
-  tools["File tools\n(write/patch)"]
+  tools["File & terminal tools"]
   cpMgr["CheckpointManager"]
   shadowRepo["Shadow git repo\n~/.hermes/checkpoints/<hash>"]
 
@@ -50,108 +55,128 @@ flowchart LR
   tools -->|"apply changes"| agent
 ```
 
-## Enabling Checkpoints
+## Configuration
 
-Checkpoints are controlled by a simple on/off flag and a maximum snapshot count **per directory**:
-
-- `checkpoints_enabled` – master switch
-- `checkpoint_max_snapshots` – soft cap on history depth per directory
-
-You can configure these in `~/.hermes/config.yaml`:
+Checkpoints are enabled by default. Configure in `~/.hermes/config.yaml`:
 
 ```yaml
-agent:
-  checkpoints_enabled: true
-  checkpoint_max_snapshots: 50
+checkpoints:
+  enabled: true          # master switch (default: true)
+  max_snapshots: 50      # max checkpoints per directory
 ```
 
-Or via CLI flags (exact wiring may depend on your version of the CLI):
+To disable:
 
-```bash
-hermes --checkpoints
-# or
-hermes chat --checkpoints
+```yaml
+checkpoints:
+  enabled: false
 ```
 
 When disabled, the Checkpoint Manager is a no‑op and never attempts git operations.
 
 ## Listing Checkpoints
 
-Hermes exposes an interactive way to list checkpoints for the current working directory.
+From a CLI session:
 
-From the CLI session where you are working on a project:
-
-```bash
-# Ask Hermes to show checkpoints for the current directory
+```
 /rollback
 ```
 
-Hermes responds with a formatted list similar to:
+Hermes responds with a formatted list showing change statistics:
 
 ```text
 📸 Checkpoints for /path/to/project:
 
-  1. a1b2c3d 2026-03-13 10:24  auto: before apply_patch
-  2. d4e5f6a 2026-03-13 10:15  pre-rollback snapshot (restoring to a1b2c3d0)
+  1. 4270a8c  2026-03-16 04:36  before patch  (1 file, +1/-0)
+  2. eaf4c1f  2026-03-16 04:35  before write_file
+  3. b3f9d2e  2026-03-16 04:34  before terminal: sed -i s/old/new/ config.py  (1 file, +1/-1)
 
-Use /rollback <number> to restore, e.g. /rollback 1
+  /rollback <N>             restore to checkpoint N
+  /rollback diff <N>        preview changes since checkpoint N
+  /rollback <N> <file>      restore a single file from checkpoint N
 ```
 
 Each entry shows:
 
 - Short hash
 - Timestamp
-- Reason (commit message for the snapshot)
+- Reason (what triggered the snapshot)
+- Change summary (files changed, insertions/deletions)
+
+## Previewing Changes with `/rollback diff`
+
+Before committing to a restore, preview what has changed since a checkpoint:
+
+```
+/rollback diff 1
+```
+
+This shows a git diff stat summary followed by the actual diff:
+
+```text
+test.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -1 +1 @@
+-print('original content')
++print('modified content')
+```
+
+Long diffs are capped at 80 lines to avoid flooding the terminal.
 
 ## Restoring with `/rollback`
 
-Once you have identified the snapshot you want to go back to, use `/rollback` with the number from the list:
+Restore to a checkpoint by number:
 
-```bash
-# Restore to the most recent snapshot
+```
 /rollback 1
 ```
 
 Behind the scenes, Hermes:
 
 1. Verifies the target commit exists in the shadow repo.
-2. Takes a **pre‑rollback snapshot** of the current state so you can “undo the undo” later.
-3. Runs `git checkout <hash> -- .` in the shadow repo, restoring tracked files in your working directory.
+2. Takes a **pre‑rollback snapshot** of the current state so you can "undo the undo" later.
+3. Restores tracked files in your working directory.
+4. **Undoes the last conversation turn** so the agent's context matches the restored filesystem state.
 
-On success, Hermes responds with a short summary like:
+On success:
 
 ```text
-✅ Restored /path/to/project to a1b2c3d
-Reason: auto: before apply_patch
+✅ Restored to checkpoint 4270a8c5: before patch
+A pre-rollback snapshot was saved automatically.
+(^_^)b Undid 4 message(s). Removed: "Now update test.py to ..."
+  4 message(s) remaining in history.
+  Chat turn undone to match restored file state.
 ```
 
-If something goes wrong (missing commit, git error), you will see a clear error message and details will be logged.
+The conversation undo ensures the agent doesn't "remember" changes that have been rolled back, avoiding confusion on the next turn.
+
+## Single-File Restore
+
+Restore just one file from a checkpoint without affecting the rest of the directory:
+
+```
+/rollback 1 src/broken_file.py
+```
+
+This is useful when the agent made changes to multiple files but only one needs to be reverted.
 
 ## Safety and Performance Guards
 
 To keep checkpointing safe and fast, Hermes applies several guardrails:
 
-- **Git availability**
-  - If `git` is not found on `PATH`, checkpoints are transparently disabled.
-  - A debug log entry is emitted, but your session continues normally.
-- **Directory scope**
-  - Hermes skips overly broad directories such as:
-    - Root (`/`)
-    - Your home directory (`$HOME`)
-  - This prevents accidental snapshots of your entire filesystem.
-- **Repository size**
-  - Before committing, Hermes performs a quick file count.
-  - If the directory has more than a configured threshold (e.g. `50,000` files),
-    checkpoints are skipped to avoid large git operations.
-- **No‑change snapshots**
-  - If there are no changes since the last snapshot, the checkpoint is skipped
-    instead of committing an empty diff.
-
-All errors inside the Checkpoint Manager are treated as **non‑fatal**: they are logged at debug level and your tools continue to run.
+- **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
+- **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
+- **Repository size** — directories with more than 50,000 files are skipped to avoid slow git operations.
+- **No‑change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
+- **Non‑fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
 
 ## Where Checkpoints Live
 
-By default, all shadow repos live under:
+All shadow repos live under:
 
 ```text
 ~/.hermes/checkpoints/
@@ -160,21 +185,19 @@ By default, all shadow repos live under:
   └── ...
 ```
 
-Each `<hash>` is derived from the absolute path of the working directory. Inside each shadow repo you will find:
+Each `<hash>` is derived from the absolute path of the working directory. Inside each shadow repo you'll find:
 
 - Standard git internals (`HEAD`, `refs/`, `objects/`)
 - An `info/exclude` file containing a curated ignore list
 - A `HERMES_WORKDIR` file pointing back to the original project root
 
-You normally never need to touch these manually; they are documented here so advanced users understand how the safety net works.
+You normally never need to touch these manually.
 
 ## Best Practices
 
-- **Keep checkpoints enabled** for interactive development and refactors.
-- **Use `/rollback` instead of `git reset`** when you want to undo agent‑driven changes only.
-- **Combine with Git branches and worktrees** for maximum safety:
-  - Keep each Hermes session in its own worktree/branch.
-  - Let checkpoints act as an extra layer of protection on top.
+- **Leave checkpoints enabled** — they're on by default and have zero cost when no files are modified.
+- **Use `/rollback diff` before restoring** — preview what will change to pick the right checkpoint.
+- **Use `/rollback` instead of `git reset`** when you want to undo agent-driven changes only.
+- **Combine with Git worktrees** for maximum safety — keep each Hermes session in its own worktree/branch, with checkpoints as an extra layer.
 
-For running multiple agents in parallel on the same repo without interfering with each other, see the dedicated guide on [Git worktrees](./git-worktrees.md).
-
+For running multiple agents in parallel on the same repo, see the guide on [Git worktrees](./git-worktrees.md).

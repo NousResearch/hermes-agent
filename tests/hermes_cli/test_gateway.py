@@ -39,7 +39,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
 
     def fake_run(cmd, capture_output=False, text=False, check=False):
-        if cmd[:4] == ["systemctl", "--user", "status", gateway.SERVICE_NAME]:
+        if cmd[:4] == ["systemctl", "--user", "status", gateway.get_service_name()]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["systemctl", "--user", "is-active"]:
             return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
@@ -76,7 +76,7 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     assert unit_path.exists()
     assert [cmd for cmd, _ in calls] == [
         ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", gateway.SERVICE_NAME],
+        ["systemctl", "--user", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == [True]
     assert "User service installed and enabled" in out
@@ -110,7 +110,7 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
     assert unit_path.read_text(encoding="utf-8") == "scope=True user=alice\n"
     assert [cmd for cmd, _ in calls] == [
         ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", gateway.SERVICE_NAME],
+        ["systemctl", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == []
     assert "Configured to run as: alice" not in out  # generated test unit has no User= line

@@ -66,6 +66,14 @@ class TestHandleBackgroundCommand:
         assert "/background" in result
 
     @pytest.mark.asyncio
+    async def test_bg_alias_no_prompt_shows_usage(self):
+        """Running /bg with no prompt shows usage."""
+        runner = _make_runner()
+        event = _make_event(text="/bg")
+        result = await runner._handle_background_command(event)
+        assert "Usage:" in result
+
+    @pytest.mark.asyncio
     async def test_empty_prompt_shows_usage(self):
         """Running /background with only whitespace shows usage."""
         runner = _make_runner()
@@ -270,6 +278,13 @@ class TestBackgroundInHelp:
         source = inspect.getsource(GatewayRunner._handle_message)
         assert '"background"' in source
 
+    def test_bg_alias_is_known_command(self):
+        """The /bg alias is in the _known_commands set."""
+        from gateway.run import GatewayRunner
+        import inspect
+        source = inspect.getsource(GatewayRunner._handle_message)
+        assert '"bg"' in source
+
 
 # ---------------------------------------------------------------------------
 # CLI /background command definition
@@ -283,6 +298,11 @@ class TestBackgroundInCLICommands:
         """The /background command is in the COMMANDS dict."""
         from hermes_cli.commands import COMMANDS
         assert "/background" in COMMANDS
+
+    def test_bg_alias_in_commands_dict(self):
+        """The /bg alias is in the COMMANDS dict."""
+        from hermes_cli.commands import COMMANDS
+        assert "/bg" in COMMANDS
 
     def test_background_in_session_category(self):
         """The /background command is in the Session category."""

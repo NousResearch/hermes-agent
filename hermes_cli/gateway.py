@@ -31,6 +31,7 @@ def find_gateway_pids() -> list:
     pids = []
     patterns = [
         "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     ]

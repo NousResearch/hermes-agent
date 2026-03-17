@@ -162,6 +162,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
+        "summary_base_url": None,
     },
     "smart_model_routing": {
         "enabled": False,

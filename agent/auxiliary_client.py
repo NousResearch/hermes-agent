@@ -1248,12 +1248,16 @@ def _resolve_task_provider_model(
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
 
-        # Backwards compat: compression section has its own keys
-        if task == "compression" and not cfg_provider:
+        # Backwards compat: compression section has its own keys.
+        # The auxiliary.compression defaults to provider="auto", so treat
+        # both None and "auto" as "not explicitly configured".
+        if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
             comp = config.get("compression", {}) if isinstance(config, dict) else {}
             if isinstance(comp, dict):
                 cfg_provider = comp.get("summary_provider", "").strip() or None
                 cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
+                _sbu = comp.get("summary_base_url") or ""
+                cfg_base_url = cfg_base_url or _sbu.strip() or None
 
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
     resolved_model = model or env_model or cfg_model

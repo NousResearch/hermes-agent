@@ -218,13 +218,18 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `SESSION_IDLE_MINUTES` | Reset sessions after N minutes of inactivity (default: 1440) |
 | `SESSION_RESET_HOUR` | Daily reset hour in 24h format (default: 4 = 4am) |
 
-## Context Compression
+## Context Compression (config.yaml only)
 
-| Variable | Description |
-|----------|-------------|
-| `CONTEXT_COMPRESSION_ENABLED` | Enable auto-compression (default: `true`) |
-| `CONTEXT_COMPRESSION_THRESHOLD` | Trigger at this % of limit (default: 0.50) |
-| `CONTEXT_COMPRESSION_MODEL` | Model for summaries |
+Context compression is configured exclusively through the `compression` section in `config.yaml` — there are no environment variables for it.
+
+```yaml
+compression:
+  enabled: true
+  threshold: 0.50
+  summary_model: google/gemini-3-flash-preview
+  summary_provider: auto
+  summary_base_url: null  # Custom OpenAI-compatible endpoint for summaries
+```
 
 ## Auxiliary Task Overrides
 
@@ -238,8 +243,6 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `AUXILIARY_WEB_EXTRACT_MODEL` | Override model for web extraction/summarization |
 | `AUXILIARY_WEB_EXTRACT_BASE_URL` | Direct OpenAI-compatible endpoint for web extraction/summarization |
 | `AUXILIARY_WEB_EXTRACT_API_KEY` | API key paired with `AUXILIARY_WEB_EXTRACT_BASE_URL` |
-| `CONTEXT_COMPRESSION_PROVIDER` | Override provider for context compression summaries |
-| `CONTEXT_COMPRESSION_MODEL` | Override model for context compression summaries |
 
 For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 

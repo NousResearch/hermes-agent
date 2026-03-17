@@ -130,17 +130,8 @@ if _config_path.exists():
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)
-        _compression_cfg = _cfg.get("compression", {})
-        if _compression_cfg and isinstance(_compression_cfg, dict):
-            _compression_env_map = {
-                "enabled": "CONTEXT_COMPRESSION_ENABLED",
-                "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
-                "summary_model": "CONTEXT_COMPRESSION_MODEL",
-                "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
-            }
-            for _cfg_key, _env_var in _compression_env_map.items():
-                if _cfg_key in _compression_cfg:
-                    os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        # Compression config is read directly from config.yaml by run_agent.py
+        # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).
         # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
@@ -1631,10 +1622,6 @@ class GatewayRunner:
                         ).lower() in ("true", "1", "yes")
             except Exception:
                 pass
-
-            # Check env override for disabling compression entirely
-            if os.getenv("CONTEXT_COMPRESSION_ENABLED", "").lower() in ("false", "0", "no"):
-                _hyg_compression_enabled = False
 
             if _hyg_compression_enabled:
                 _hyg_context_length = get_model_context_length(_hyg_model)

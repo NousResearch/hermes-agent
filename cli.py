@@ -380,22 +380,10 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
     
-    # Apply compression config to environment variables
-    compression_config = defaults.get("compression", {})
-    compression_env_mappings = {
-        "enabled": "CONTEXT_COMPRESSION_ENABLED",
-        "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
-        "summary_model": "CONTEXT_COMPRESSION_MODEL",
-        "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
-    }
-    
-    for config_key, env_var in compression_env_mappings.items():
-        if config_key in compression_config:
-            os.environ[env_var] = str(compression_config[config_key])
-    
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # (Compression is handled in the compression section above.)
+    # Compression config is read directly from config.yaml by run_agent.py and
+    # auxiliary_client.py — no env var bridging needed.
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
     auxiliary_config = defaults.get("auxiliary", {})

@@ -837,10 +837,17 @@ class AIAgent:
         
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
-        # Configuration via config.yaml (compression section) or environment variables
-        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.50"))
-        compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
-        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
+        # Configuration via config.yaml (compression section)
+        try:
+            from hermes_cli.config import load_config as _load_compression_config
+            _compression_cfg = _load_compression_config().get("compression", {})
+            if not isinstance(_compression_cfg, dict):
+                _compression_cfg = {}
+        except ImportError:
+            _compression_cfg = {}
+        compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
+        compression_summary_model = _compression_cfg.get("summary_model") or None
         
         self.context_compressor = ContextCompressor(
             model=self.model,

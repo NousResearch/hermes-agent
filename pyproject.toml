@@ -55,6 +55,7 @@ pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
+hindsight = ["hindsight-client>=0.4.0"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
@@ -78,6 +79,7 @@ all = [
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[hindsight]",
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",

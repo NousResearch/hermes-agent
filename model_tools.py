@@ -101,7 +101,7 @@ def _discover_tools():
         try:
             importlib.import_module(mod_name)
         except Exception as e:
-            logger.debug("Could not import %s: %s", mod_name, e)
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
 
 
 _discover_tools()

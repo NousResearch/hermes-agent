@@ -463,17 +463,22 @@ def run_hermes_oauth_login() -> Optional[str]:
     print()
     print("Authorize Hermes with your Claude Pro/Max subscription.")
     print()
-    print("Open this link in your browser:")
+    print("╭─ Claude Pro/Max Authorization ────────────────────╮")
+    print("│                                                   │")
+    print("│  Open this link in your browser:                  │")
+    print("╰───────────────────────────────────────────────────╯")
     print()
     print(f"  {auth_url}")
     print()
 
-    # Try to open browser automatically (works on desktop, silently fails on headless)
+    # Try to open browser automatically (works on desktop, silently fails on headless/SSH)
     try:
         webbrowser.open(auth_url)
+        print("  (Browser opened automatically)")
     except Exception:
         pass
 
+    print()
     print("After authorizing, you'll see a code. Paste it below.")
     print()
     try:

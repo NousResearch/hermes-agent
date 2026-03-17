@@ -164,76 +164,72 @@ def _normalize_local_command_model(model_name: Optional[str]) -> str:
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
-    Priority:
-      1. Explicit config value  (``stt.provider``)
-      2. Auto-detect: local > groq (free) > openai (paid)
-      3. Disabled (returns "none")
+    When ``stt.provider`` is explicitly set in config, that choice is
+    honoured — no silent cloud fallback.  When no provider is configured,
+    auto-detect tries: local > groq (free) > openai (paid).
     """
     if not is_stt_enabled(stt_config):
         return "none"
 
+    explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
-    if provider == "local":
-        if _HAS_FASTER_WHISPER:
-            return "local"
-        if _has_local_command():
-            logger.info("faster-whisper not installed, falling back to local STT command")
-            return "local_command"
-        # Local requested but not available — fall back to groq, then openai
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            logger.info("faster-whisper not installed, falling back to Groq Whisper API")
-            return "groq"
-        if _HAS_OPENAI and _resolve_openai_api_key():
-            logger.info("faster-whisper not installed, falling back to OpenAI Whisper API")
-            return "openai"
-        return "none"
+    # --- Explicit provider: respect the user's choice ----------------------
 
-    if provider == "local_command":
-        if _has_local_command():
-            return "local_command"
-        if _HAS_FASTER_WHISPER:
-            logger.info("Local STT command unavailable, falling back to local faster-whisper")
-            return "local"
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            logger.info("Local STT command unavailable, falling back to Groq Whisper API")
-            return "groq"
-        if _HAS_OPENAI and _resolve_openai_api_key():
-            logger.info("Local STT command unavailable, falling back to OpenAI Whisper API")
-            return "openai"
-        return "none"
+    if explicit:
+        if provider == "local":
+            if _HAS_FASTER_WHISPER:
+                return "local"
+            if _has_local_command():
+                return "local_command"
+            logger.warning(
+                "STT provider 'local' configured but unavailable "
+                "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
+            )
+            return "none"
 
-    if provider == "groq":
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            return "groq"
-        # Groq requested but no key — fall back
-        if _HAS_FASTER_WHISPER:
-            logger.info("GROQ_API_KEY not set, falling back to local faster-whisper")
-            return "local"
-        if _has_local_command():
-            logger.info("GROQ_API_KEY not set, falling back to local STT command")
-            return "local_command"
-        if _HAS_OPENAI and _resolve_openai_api_key():
-            logger.info("GROQ_API_KEY not set, falling back to OpenAI Whisper API")
-            return "openai"
-        return "none"
+        if provider == "local_command":
+            if _has_local_command():
+                return "local_command"
+            if _HAS_FASTER_WHISPER:
+                logger.info("Local STT command unavailable, using local faster-whisper")
+                return "local"
+            logger.warning(
+                "STT provider 'local_command' configured but unavailable"
+            )
+            return "none"
 
-    if provider == "openai":
-        if _HAS_OPENAI and _resolve_openai_api_key():
-            return "openai"
-        # OpenAI requested but no key — fall back
-        if _HAS_FASTER_WHISPER:
-            logger.info("OpenAI STT key not set, falling back to local faster-whisper")
-            return "local"
-        if _has_local_command():
-            logger.info("OpenAI STT key not set, falling back to local STT command")
-            return "local_command"
-        if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
-            logger.info("OpenAI STT key not set, falling back to Groq Whisper API")
-            return "groq"
-        return "none"
+        if provider == "groq":
+            if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+                return "groq"
+            logger.warning(
+                "STT provider 'groq' configured but GROQ_API_KEY not set"
+            )
+            return "none"
 
-    return provider  # Unknown — let it fail downstream
+        if provider == "openai":
+            if _HAS_OPENAI and _resolve_openai_api_key():
+                return "openai"
+            logger.warning(
+                "STT provider 'openai' configured but no API key available"
+            )
+            return "none"
+
+        return provider  # Unknown — let it fail downstream
+
+    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+
+    if _HAS_FASTER_WHISPER:
+        return "local"
+    if _has_local_command():
+        return "local_command"
+    if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+        logger.info("No local STT available, using Groq Whisper API")
+        return "groq"
+    if _HAS_OPENAI and _resolve_openai_api_key():
+        logger.info("No local STT available, using OpenAI Whisper API")
+        return "openai"
+    return "none"
 
 # ---------------------------------------------------------------------------
 # Shared validation

@@ -1421,8 +1421,19 @@ class GatewayRunner:
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        target_command = target.lstrip("/")
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                        command = target_command
+                        # Fall through to normal command dispatch below
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
                 else:
-                    return f"Quick command '/{command}' has unsupported type (only 'exec' is supported)."
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:

@@ -296,7 +296,7 @@ app.post('/send', async (req, res) => {
   try {
     // Prefix responses so the user can distinguish agent replies from their
     // own messages (especially in self-chat / "Message Yourself").
-    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
+    const prefixed = WHATSAPP_MODE === 'self-chat' ? `⚕ *Hermes Agent*\n────────────\n${message}` : message;
     const sent = await sock.sendMessage(chatId, { text: prefixed });
 
     // Track sent message ID to prevent echo-back loops
@@ -325,7 +325,7 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
-    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
+    const prefixed = WHATSAPP_MODE === 'self-chat' ? `⚕ *Hermes Agent*\n────────────\n${message}` : message;
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
     await sock.sendMessage(chatId, { text: prefixed, edit: key });
     res.json({ success: true });

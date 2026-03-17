@@ -42,6 +42,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    DINGTALK = "dingtalk"
 
 
 @dataclass

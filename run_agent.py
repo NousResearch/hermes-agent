@@ -86,6 +86,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -390,6 +391,15 @@ class AIAgent:
             self.provider = "anthropic"
         else:
             self.api_mode = "chat_completions"
+
+        # Pre-warm OpenRouter model metadata cache in a background thread.
+        # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
+        # HTTP request on the first API response when pricing is estimated.
+        if self.provider == "openrouter" or "openrouter" in self.base_url.lower():
+            threading.Thread(
+                target=lambda: fetch_model_metadata(),
+                daemon=True,
+            ).start()
 
         self.tool_progress_callback = tool_progress_callback
         self.thinking_callback = thinking_callback
@@ -850,6 +860,14 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
         self.session_api_calls = 0
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_estimated_cost_usd = 0.0
+        self.session_cost_status = "unknown"
+        self.session_cost_source = "none"
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -5272,26 +5290,14 @@ class AIAgent:
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
-                        if self.api_mode in ("codex_responses", "anthropic_messages"):
-                            prompt_tokens = getattr(response.usage, 'input_tokens', 0) or 0
-                            if self.api_mode == "anthropic_messages":
-                                # Anthropic splits input into cache_read + cache_creation
-                                # + non-cached input_tokens. Without adding the cached
-                                # portions, the context bar shows only the tiny non-cached
-                                # portion (e.g. 3 tokens) instead of the real total (~18K).
-                                # Other providers (OpenAI/Codex) already include cached
-                                # tokens in their input_tokens/prompt_tokens field.
-                                prompt_tokens += getattr(response.usage, 'cache_read_input_tokens', 0) or 0
-                                prompt_tokens += getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
-                            completion_tokens = getattr(response.usage, 'output_tokens', 0) or 0
-                            total_tokens = (
-                                getattr(response.usage, 'total_tokens', None)
-                                or (prompt_tokens + completion_tokens)
-                            )
-                        else:
-                            prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
-                            completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-                            total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
+                        canonical_usage = normalize_usage(
+                            response.usage,
+                            provider=self.provider,
+                            api_mode=self.api_mode,
+                        )
+                        prompt_tokens = canonical_usage.prompt_tokens
+                        completion_tokens = canonical_usage.output_tokens
+                        total_tokens = canonical_usage.total_tokens
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
@@ -5310,6 +5316,22 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+                        self.session_input_tokens += canonical_usage.input_tokens
+                        self.session_output_tokens += canonical_usage.output_tokens
+                        self.session_cache_read_tokens += canonical_usage.cache_read_tokens
+                        self.session_cache_write_tokens += canonical_usage.cache_write_tokens
+                        self.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                        cost_result = estimate_usage_cost(
+                            self.model,
+                            canonical_usage,
+                            provider=self.provider,
+                            base_url=self.base_url,
+                        )
+                        if cost_result.amount_usd is not None:
+                            self.session_estimated_cost_usd += float(cost_result.amount_usd)
+                        self.session_cost_status = cost_result.status
+                        self.session_cost_source = cost_result.source
 
                         # Persist token counts to session DB for /insights.
                         # Gateway sessions persist via session_store.update_session()
@@ -5320,8 +5342,19 @@ class AIAgent:
                             try:
                                 self._session_db.update_token_counts(
                                     self.session_id,
-                                    input_tokens=prompt_tokens,
-                                    output_tokens=completion_tokens,
+                                    input_tokens=canonical_usage.input_tokens,
+                                    output_tokens=canonical_usage.output_tokens,
+                                    cache_read_tokens=canonical_usage.cache_read_tokens,
+                                    cache_write_tokens=canonical_usage.cache_write_tokens,
+                                    reasoning_tokens=canonical_usage.reasoning_tokens,
+                                    estimated_cost_usd=float(cost_result.amount_usd)
+                                    if cost_result.amount_usd is not None else None,
+                                    cost_status=cost_result.status,
+                                    cost_source=cost_result.source,
+                                    billing_provider=self.provider,
+                                    billing_base_url=self.base_url,
+                                    billing_mode="subscription_included"
+                                    if cost_result.status == "included" else None,
                                     model=self.model,
                                 )
                             except Exception:
@@ -6242,6 +6275,21 @@ class AIAgent:
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "input_tokens": self.session_input_tokens,
+            "output_tokens": self.session_output_tokens,
+            "cache_read_tokens": self.session_cache_read_tokens,
+            "cache_write_tokens": self.session_cache_write_tokens,
+            "reasoning_tokens": self.session_reasoning_tokens,
+            "prompt_tokens": self.session_prompt_tokens,
+            "completion_tokens": self.session_completion_tokens,
+            "total_tokens": self.session_total_tokens,
+            "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+            "estimated_cost_usd": self.session_estimated_cost_usd,
+            "cost_status": self.session_cost_status,
+            "cost_source": self.session_cost_source,
         }
         self._response_was_previewed = False
         

@@ -26,7 +26,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    billing_provider TEXT,
+    billing_base_url TEXT,
+    billing_mode TEXT,
+    estimated_cost_usd REAL,
+    actual_cost_usd REAL,
+    cost_status TEXT,
+    cost_source TEXT,
+    pricing_version TEXT,
     title TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -154,6 +165,26 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Index already exists
                 cursor.execute("UPDATE schema_version SET version = 4")
+            if current_version < 5:
+                new_columns = [
+                    ("cache_read_tokens", "INTEGER DEFAULT 0"),
+                    ("cache_write_tokens", "INTEGER DEFAULT 0"),
+                    ("reasoning_tokens", "INTEGER DEFAULT 0"),
+                    ("billing_provider", "TEXT"),
+                    ("billing_base_url", "TEXT"),
+                    ("billing_mode", "TEXT"),
+                    ("estimated_cost_usd", "REAL"),
+                    ("actual_cost_usd", "REAL"),
+                    ("cost_status", "TEXT"),
+                    ("cost_source", "TEXT"),
+                    ("pricing_version", "TEXT"),
+                ]
+                for name, column_type in new_columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE sessions ADD COLUMN {name} {column_type}")
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 5")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -233,8 +264,22 @@ class SessionDB:
             self._conn.commit()
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
         model: str = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+        actual_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        pricing_version: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
     ) -> None:
         """Increment token counters and backfill model if not already set."""
         with self._lock:
@@ -242,9 +287,40 @@ class SessionDB:
                 """UPDATE sessions SET
                    input_tokens = input_tokens + ?,
                    output_tokens = output_tokens + ?,
+                   cache_read_tokens = cache_read_tokens + ?,
+                   cache_write_tokens = cache_write_tokens + ?,
+                   reasoning_tokens = reasoning_tokens + ?,
+                   estimated_cost_usd = COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0),
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE COALESCE(actual_cost_usd, 0) + ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?)
                    WHERE id = ?""",
-                (input_tokens, output_tokens, model, session_id),
+                (
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    reasoning_tokens,
+                    estimated_cost_usd,
+                    actual_cost_usd,
+                    actual_cost_usd,
+                    cost_status,
+                    cost_source,
+                    pricing_version,
+                    billing_provider,
+                    billing_base_url,
+                    billing_mode,
+                    model,
+                    session_id,
+                ),
             )
             self._conn.commit()
 

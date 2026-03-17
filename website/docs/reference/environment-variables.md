@@ -80,6 +80,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 |----------|-------------|
 | `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona` |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `python:3.11`) |
+| `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |

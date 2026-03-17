@@ -557,6 +557,25 @@ class TestSendDocument:
         call_kwargs = connected_adapter._bot.send_document.call_args[1]
         assert call_kwargs["reply_to_message_id"] == 50
 
+    @pytest.mark.asyncio
+    async def test_send_document_thread_id(self, connected_adapter, tmp_path):
+        """metadata thread_id is forwarded as message_thread_id (required for Telegram forum groups)."""
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 data")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 103
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            metadata={"thread_id": "789"},
+        )
+
+        call_kwargs = connected_adapter._bot.send_document.call_args[1]
+        assert call_kwargs["message_thread_id"] == 789
+
 
 class TestTelegramPhotoBatching:
     @pytest.mark.asyncio
@@ -654,3 +673,22 @@ class TestSendVideo:
 
         assert result.success is False
         assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_video_thread_id(self, connected_adapter, tmp_path):
+        """metadata thread_id is forwarded as message_thread_id (required for Telegram forum groups)."""
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 201
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+            metadata={"thread_id": "789"},
+        )
+
+        call_kwargs = connected_adapter._bot.send_video.call_args[1]
+        assert call_kwargs["message_thread_id"] == 789

@@ -72,10 +72,11 @@ class TestCLIQuickCommands:
 
     def test_unknown_command_still_shows_error(self):
         cli = self._make_cli({})
-        cli.process_command("/nonexistent")
-        cli.console.print.assert_called()
-        args = cli.console.print.call_args_list[0][0][0]
-        assert "unknown command" in args.lower()
+        with patch("cli._cprint") as mock_cprint:
+            cli.process_command("/nonexistent")
+            mock_cprint.assert_called()
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+            assert "unknown command" in printed.lower()
 
     def test_timeout_shows_error(self):
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})

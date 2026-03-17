@@ -1364,7 +1364,12 @@ class TelegramAdapter(BasePlatformAdapter):
         query = update.callback_query
         if not query or not self._message_handler:
             return
-        await query.answer()
+        if not query.message:
+            return
+        try:
+            await query.answer()
+        except Exception:
+            pass  # already answered or timed out
 
         chat = query.message.chat
         user = query.from_user

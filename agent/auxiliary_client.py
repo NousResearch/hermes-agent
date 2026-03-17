@@ -706,6 +706,8 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
 
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
+    global auxiliary_is_nous
+    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):
         client, model = try_fn()

@@ -828,29 +828,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
 
-    # ── Version 8 → 9: clear stale ANTHROPIC_TOKEN when better creds exist ──
+    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
+    # The new Anthropic auth flow no longer uses this env var.
     if current_ver < 9:
         try:
             old_token = get_env_value("ANTHROPIC_TOKEN")
             if old_token:
-                has_api_key = bool(get_env_value("ANTHROPIC_API_KEY"))
-                has_claude_code = False
-                try:
-                    from agent.anthropic_adapter import (
-                        read_claude_code_credentials,
-                        is_claude_code_token_valid,
-                    )
-                    cc_creds = read_claude_code_credentials()
-                    has_claude_code = bool(
-                        cc_creds and is_claude_code_token_valid(cc_creds)
-                    )
-                except Exception:
-                    pass
-                if has_api_key or has_claude_code:
-                    save_env_value("ANTHROPIC_TOKEN", "")
-                    if not quiet:
-                        source = "ANTHROPIC_API_KEY" if has_api_key else "Claude Code credentials"
-                        print(f"  ✓ Cleared stale ANTHROPIC_TOKEN (using {source} instead)")
+                save_env_value("ANTHROPIC_TOKEN", "")
+                if not quiet:
+                    print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
 

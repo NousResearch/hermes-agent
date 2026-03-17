@@ -1843,6 +1843,20 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        # -----------------------------------------------------------------
+        # Inject reply context when user replies to a message not in history
+        # -----------------------------------------------------------------
+        if event.reply_to_text and event.reply_to_message_id:
+            # Check if the replied-to text is already visible in conversation history
+            reply_text_snippet = event.reply_to_text[:200]
+            found_in_history = any(
+                reply_text_snippet in (msg.get("content") or "")
+                for msg in history
+                if msg.get("role") in ("assistant", "user", "tool")
+            )
+            if not found_in_history:
+                message_text = f'[Replying to: "{event.reply_to_text}"]\n\n{message_text}'
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -1906,6 +1920,17 @@ class GatewayRunner:
                     asyncio.create_task(self._run_process_watcher(watcher))
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
+
+            # Check for pending background delegations (delegate_task background=true)
+            try:
+                from tools.delegate_tool import _pending_background_delegations
+                while _pending_background_delegations:
+                    entry = _pending_background_delegations.pop(0)
+                    asyncio.create_task(self._run_background_task(
+                        entry["prompt"], entry["source"], entry["task_id"]
+                    ))
+            except Exception as e:
+                logger.error("Background delegation setup error: %s", e)
 
             # Check if the agent encountered a dangerous command needing approval
             try:
@@ -3056,6 +3081,192 @@ class GatewayRunner:
             except Exception:
                 pass
 
+    async def _handle_server_command(self, event: MessageEvent) -> str:
+        """Handle /server command — show server resource usage."""
+        import asyncio
+        import shutil
+
+        loop = asyncio.get_event_loop()
+
+        def _collect():
+            import subprocess, os, time
+
+            info = {}
+
+            # CPU
+            try:
+                with open("/proc/cpuinfo") as f:
+                    cpuinfo = f.read()
+                cores = cpuinfo.count("processor\t")
+                model = ""
+                for line in cpuinfo.splitlines():
+                    if line.startswith("model name"):
+                        model = line.split(":", 1)[1].strip()
+                        break
+                info["cpu_model"] = model
+                info["cpu_cores"] = cores
+            except Exception:
+                info["cpu_model"] = "unknown"
+                info["cpu_cores"] = "?"
+
+            # Load average
+            try:
+                load1, load5, load15 = os.getloadavg()
+                info["load"] = f"{load1:.2f} / {load5:.2f} / {load15:.2f}"
+            except Exception:
+                info["load"] = "?"
+
+            # Memory
+            try:
+                with open("/proc/meminfo") as f:
+                    meminfo = {}
+                    for line in f:
+                        parts = line.split(":")
+                        if len(parts) == 2:
+                            key = parts[0].strip()
+                            val = parts[1].strip().split()[0]  # kB
+                            meminfo[key] = int(val)
+                total = meminfo.get("MemTotal", 0)
+                avail = meminfo.get("MemAvailable", 0)
+                used = total - avail
+                info["mem_total"] = total
+                info["mem_used"] = used
+                info["mem_avail"] = avail
+                info["mem_pct"] = round(used / total * 100, 1) if total else 0
+            except Exception:
+                info["mem_total"] = info["mem_used"] = info["mem_avail"] = 0
+                info["mem_pct"] = 0
+
+            # Swap
+            try:
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("SwapTotal:"):
+                            info["swap_total"] = int(line.split()[1])
+                        elif line.startswith("SwapFree:"):
+                            info["swap_free"] = int(line.split()[1])
+                info.setdefault("swap_total", 0)
+                info.setdefault("swap_free", 0)
+                info["swap_used"] = info["swap_total"] - info["swap_free"]
+            except Exception:
+                info["swap_total"] = info["swap_used"] = 0
+
+            # Disk
+            try:
+                st = shutil.disk_usage("/")
+                info["disk_total"] = st.total
+                info["disk_used"] = st.used
+                info["disk_free"] = st.free
+                info["disk_pct"] = round(st.used / st.total * 100, 1)
+            except Exception:
+                info["disk_total"] = info["disk_used"] = info["disk_free"] = 0
+                info["disk_pct"] = 0
+
+            # Uptime
+            try:
+                with open("/proc/uptime") as f:
+                    raw = float(f.read().split()[0])
+                days = int(raw // 86400)
+                hours = int((raw % 86400) // 3600)
+                mins = int((raw % 3600) // 60)
+                parts = []
+                if days:
+                    parts.append(f"{days}d")
+                if hours:
+                    parts.append(f"{hours}h")
+                parts.append(f"{mins}m")
+                info["uptime"] = " ".join(parts)
+            except Exception:
+                info["uptime"] = "?"
+
+            # GPU (nvidia)
+            try:
+                r = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    gpus = []
+                    for line in r.stdout.strip().splitlines():
+                        parts = [p.strip() for p in line.split(",")]
+                        if len(parts) >= 5:
+                            gpus.append({
+                                "name": parts[0],
+                                "mem_used": parts[1],
+                                "mem_total": parts[2],
+                                "util": parts[3],
+                                "temp": parts[4],
+                            })
+                    info["gpus"] = gpus
+            except Exception:
+                pass
+
+            return info
+
+        info = await loop.run_in_executor(None, _collect)
+
+        def _fmt_kb(kb):
+            if kb >= 1048576:
+                return f"{kb / 1048576:.1f} GB"
+            elif kb >= 1024:
+                return f"{kb / 1024:.0f} MB"
+            return f"{kb} KB"
+
+        def _fmt_bytes(b):
+            if b >= 1073741824:
+                return f"{b / 1073741824:.1f} GB"
+            elif b >= 1048576:
+                return f"{b / 1048576:.0f} MB"
+            return f"{b / 1024:.0f} KB"
+
+        def _bar(pct, width=10):
+            filled = round(pct / 100 * width)
+            return "▓" * filled + "░" * (width - filled)
+
+        lines = ["🖥  Server Status\n"]
+
+        # CPU
+        lines.append(f"CPU  {info['cpu_model']}")
+        lines.append(f"     {info['cpu_cores']} cores · load {info['load']}\n")
+
+        # Memory
+        mem_bar = _bar(info["mem_pct"])
+        lines.append(f"RAM  {mem_bar} {info['mem_pct']}%")
+        lines.append(f"     {_fmt_kb(info['mem_used'])} / {_fmt_kb(info['mem_total'])}")
+        if info.get("swap_total", 0) > 0:
+            swap_pct = round(info["swap_used"] / info["swap_total"] * 100, 1) if info["swap_total"] else 0
+            lines.append(f"     swap: {_fmt_kb(info['swap_used'])} / {_fmt_kb(info['swap_total'])} ({swap_pct}%)")
+        else:
+            lines.append(f"     swap: none")
+        lines.append("")
+
+        # GPU
+        gpus = info.get("gpus", [])
+        if gpus:
+            for i, gpu in enumerate(gpus):
+                try:
+                    gpu_mem_pct = round(float(gpu["mem_used"]) / float(gpu["mem_total"]) * 100, 1)
+                except (ValueError, ZeroDivisionError):
+                    gpu_mem_pct = 0
+                gpu_bar = _bar(gpu_mem_pct)
+                lines.append(f"GPU{i} {gpu['name']}")
+                lines.append(f"     {gpu_bar} {gpu_mem_pct}%")
+                lines.append(f"     {gpu['mem_used']} / {gpu['mem_total']} MiB · util {gpu['util']}% · {gpu['temp']}°C")
+                lines.append("")
+        else:
+            lines.append("GPU  none\n")
+
+        # Disk
+        disk_bar = _bar(info["disk_pct"])
+        lines.append(f"DISK {disk_bar} {info['disk_pct']}%")
+        lines.append(f"     {_fmt_bytes(info['disk_used'])} / {_fmt_bytes(info['disk_total'])}\n")
+
+        # Uptime
+        lines.append(f"UP   {info['uptime']}")
+
+        return "\n".join(lines)
+
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
@@ -4023,7 +4234,15 @@ class GatewayRunner:
                 progress_queue.put(msg)
                 return
             
-            if preview:
+            # Background delegation: show distinct indicator
+            if tool_name == "delegate_task" and args and args.get("background"):
+                if preview:
+                    if len(preview) > 80:
+                        preview = preview[:77] + "..."
+                    msg = f"🔀⏳ delegate_task_bg: \"{preview}\""
+                else:
+                    msg = f"🔀⏳ delegate_task_bg..."
+            elif preview:
                 # Truncate preview to keep messages clean
                 if len(preview) > 80:
                     preview = preview[:77] + "..."
@@ -4261,6 +4480,9 @@ class GatewayRunner:
             
             # Store agent reference for interrupt support
             agent_holder[0] = agent
+            # Expose gateway source so delegate_task(background=true) can
+            # register delivery info for the background delegation watcher.
+            agent._gateway_source = source
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             

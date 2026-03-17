@@ -121,3 +121,40 @@ class TestSlashCommandPrefixMatching:
         mock_help.assert_called_once()
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed
+
+    def test_shortest_match_preferred_over_longer_skill(self):
+        """/qui should dispatch to /quit (5 chars) not report ambiguous with /quint-pipeline (15 chars)."""
+        cli_obj = _make_cli()
+        fake_skill = {"/quint-pipeline": {"name": "Quint Pipeline", "description": "test"}}
+
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill):
+            # /quit is caught by the exact "/quit" branch → process_command returns False
+            result = cli_obj.process_command("/qui")
+
+        # Returns False because /quit was dispatched (exits chat loop)
+        assert result is False
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_tied_shortest_matches_still_ambiguous(self):
+        """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
+        cli_obj = _make_cli()
+        printed = []
+        import cli as cli_mod
+        with patch.object(cli_mod, '_cprint', side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/re")
+        combined = " ".join(printed)
+        assert "Ambiguous" in combined or "Did you mean" in combined
+
+    def test_exact_typed_name_dispatches_over_longer_match(self):
+        """/help typed with /help-extra skill installed → exact match wins."""
+        cli_obj = _make_cli()
+        fake_skill = {"/help-extra": {"name": "Help Extra", "description": ""}}
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill), \
+             patch.object(cli_obj, 'show_help') as mock_help:
+            cli_obj.process_command("/help")
+        mock_help.assert_called_once()
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed

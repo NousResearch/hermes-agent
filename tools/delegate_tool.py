@@ -360,12 +360,18 @@ def _run_single_child(
                 logger.debug("Could not remove child from active_children: %s", e)
 
 
+# Pending background delegations — gateway picks these up after _run_agent returns.
+# Each entry is {"prompt": str, "source": SessionSource, "task_id": str}.
+_pending_background_delegations: list = []
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    background: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -374,6 +380,10 @@ def delegate_task(
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+
+    When background=True, the child runs in a daemon thread and the call
+    returns immediately.  The gateway delivers the result to the user's
+    chat when the child finishes (same flow as /background).
 
     Returns JSON with results array, one entry per task.
     """
@@ -412,6 +422,40 @@ def delegate_task(
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
         return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
+
+    # ---- Background mode: fire-and-forget (reuses /background flow) ----
+    if background:
+        if len(task_list) != 1:
+            return json.dumps({"error": "background=true only supports a single task, not batch."})
+
+        import uuid
+
+        t = task_list[0]
+        task_id = f"bg_delegate_{uuid.uuid4().hex[:10]}"
+
+        # Build the full prompt the background agent will execute
+        prompt_parts = [t["goal"]]
+        if t.get("context"):
+            prompt_parts.append(f"\nCONTEXT:\n{t['context']}")
+        prompt = "\n".join(prompt_parts)
+
+        # Grab gateway delivery info from parent agent (set by gateway/run.py)
+        source = getattr(parent_agent, '_gateway_source', None)
+        if not source:
+            return json.dumps({"error": "background=true requires gateway context (not available in CLI mode)."})
+
+        # Queue for gateway pickup — it will call _run_background_task()
+        _pending_background_delegations.append({
+            "prompt": prompt,
+            "source": source,
+            "task_id": task_id,
+        })
+
+        return json.dumps({
+            "status": "dispatched",
+            "background_task_id": task_id,
+            "message": "Running in background. Result will be delivered when ready.",
+        })
 
     if not task_list:
         return json.dumps({"error": "No tasks provided."})
@@ -730,6 +774,23 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Fire-and-forget mode. Returns immediately while the "
+                    "subagent runs in the background. The result is delivered "
+                    "to the user's chat when done (same as /background). "
+                    "Only works for single tasks, not batch.\n\n"
+                    "When to use background=true:\n"
+                    "- Long-running tasks (30s+): browser automation, complex research, external tools\n"
+                    "- When the user wants to keep chatting while the task runs\n"
+                    "- Any delegation where blocking the conversation is worse than async delivery\n\n"
+                    "When to use background=false (default):\n"
+                    "- When YOU need the result to continue your current response\n"
+                    "- Quick tasks that finish in seconds\n"
+                    "- When the result must be processed/formatted before showing the user"
+                ),
+            },
         },
         "required": [],
     },
@@ -749,6 +810,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        background=args.get("background", False),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

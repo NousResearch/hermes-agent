@@ -3974,6 +3974,7 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
+                background=function_args.get("background", False),
                 parent_agent=self,
             )
         else:
@@ -4305,8 +4306,12 @@ class AIAgent:
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
+                is_background = function_args.get("background", False)
                 if tasks_arg and isinstance(tasks_arg, list):
                     spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                elif is_background:
+                    goal_preview = (function_args.get("goal") or "")[:30]
+                    spinner_label = f"🔀⏳ delegate_task_bg: {goal_preview}" if goal_preview else "🔀⏳ delegate_task_bg"
                 else:
                     goal_preview = (function_args.get("goal") or "")[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
@@ -4324,6 +4329,7 @@ class AIAgent:
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
+                        background=function_args.get("background", False),
                         parent_agent=self,
                     )
                     _delegate_result = function_result

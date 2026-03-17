@@ -114,11 +114,12 @@ class HonchoClientConfig:
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
+        api_key = os.environ.get("HONCHO_API_KEY")
         return cls(
             workspace_id=workspace_id,
-            api_key=os.environ.get("HONCHO_API_KEY"),
+            api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
-            enabled=True,
+            enabled=bool(api_key),
         )
 
     @classmethod

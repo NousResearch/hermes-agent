@@ -414,7 +414,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
-            except Exception:
+            except Exception as fmt_err:
+                # "Message is not modified" is a no-op, not an error
+                if "not modified" in str(fmt_err).lower():
+                    return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -423,6 +426,32 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
+            err_str = str(e).lower()
+            # "Message is not modified" — content identical, treat as success
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            # Flood control / RetryAfter — back off and retry once
+            retry_after = getattr(e, "retry_after", None)
+            if retry_after is not None or "retry after" in err_str:
+                wait = retry_after if retry_after else 1.0
+                logger.warning(
+                    "[%s] Telegram flood control, waiting %.1fs",
+                    self.name, wait,
+                )
+                await asyncio.sleep(wait)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=content,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_err:
+                    logger.error(
+                        "[%s] Edit retry failed after flood wait: %s",
+                        self.name, retry_err,
+                    )
+                    return SendResult(success=False, error=str(retry_err))
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,

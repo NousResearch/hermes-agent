@@ -146,6 +146,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    "alibaba": [
+        "qwen3.5-plus",
+        "qwen3-max",
+        "qwen3-coder-plus",
+        "qwen3-coder-next",
+        "qwen-plus-latest",
+        "qwen3.5-flash",
+        "qwen-vl-max",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -162,6 +171,7 @@ _PROVIDER_LABELS = {
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
+    "alibaba": "Alibaba Cloud (DashScope)",
     "custom": "Custom endpoint",
 }
 
@@ -187,6 +197,10 @@ _PROVIDER_ALIASES = {
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
+    "dashscope": "alibaba",
+    "aliyun": "alibaba",
+    "qwen": "alibaba",
+    "alibaba-cloud": "alibaba",
 }
 
 
@@ -220,7 +234,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

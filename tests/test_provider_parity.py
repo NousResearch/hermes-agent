@@ -759,8 +759,13 @@ class TestReasoningEffortDefaults:
             base_url="https://api.openai.com/v1",
         )
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert kwargs["reasoning_effort"] == "medium"
-        assert "extra_body" not in kwargs or "reasoning" not in kwargs.get("extra_body", {})
+        assert agent.api_mode == "codex_responses"
+        assert kwargs["reasoning"]["effort"] == "medium"
+        assert "reasoning_effort" not in kwargs
+        assert "messages" not in kwargs
+        assert kwargs["input"][0]["role"] == "user"
+        assert kwargs["tools"][0]["name"] == "web_search"
+        assert "function" not in kwargs["tools"][0]
 
     def test_direct_openai_reasoning_disabled(self, monkeypatch):
         agent = _make_agent(
@@ -770,7 +775,9 @@ class TestReasoningEffortDefaults:
         )
         agent.reasoning_config = {"enabled": False}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert "reasoning_effort" not in kwargs
+        assert agent.api_mode == "codex_responses"
+        assert "reasoning" not in kwargs
+        assert kwargs["include"] == []
 
     def test_direct_openai_reasoning_coerces_extended_levels(self, monkeypatch):
         agent = _make_agent(
@@ -780,4 +787,5 @@ class TestReasoningEffortDefaults:
         )
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert kwargs["reasoning_effort"] == "high"
+        assert agent.api_mode == "codex_responses"
+        assert kwargs["reasoning"]["effort"] == "xhigh"

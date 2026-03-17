@@ -392,6 +392,12 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        # Direct OpenAI sessions use the Responses API path. GPT-5 tool calls
+        # with reasoning are rejected on /v1/chat/completions, and Hermes is a
+        # tool-using client by default.
+        if self.api_mode == "chat_completions" and self._uses_direct_openai_responses_api():
+            self.api_mode = "codex_responses"
+
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
@@ -912,13 +918,15 @@ class AIAgent:
         'max_completion_tokens'. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        _is_direct_openai = (
-            "api.openai.com" in self.base_url.lower()
-            and "openrouter" not in self.base_url.lower()
-        )
+        _is_direct_openai = self._uses_direct_openai_responses_api()
         if _is_direct_openai:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
+
+    def _uses_direct_openai_responses_api(self) -> bool:
+        """Return True when this session targets OpenAI's native Responses API."""
+        base_url = (self.base_url or "").lower()
+        return "api.openai.com" in base_url and "openrouter" not in base_url
 
     def _direct_openai_reasoning_effort(self) -> Optional[str]:
         """Return the OpenAI chat-completions reasoning effort, if applicable.
@@ -931,8 +939,7 @@ class AIAgent:
         if self.api_mode == "codex_responses":
             return None
 
-        base_url = (self.base_url or "").lower()
-        if "api.openai.com" not in base_url or "openrouter" in base_url:
+        if not self._uses_direct_openai_responses_api():
             return None
 
         if self.reasoning_config and isinstance(self.reasoning_config, dict):

@@ -23,6 +23,25 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _resolve_api_mode(*, provider: str, base_url: Optional[str]) -> str:
+    """Select the Hermes transport mode for the resolved provider/base URL.
+
+    Direct ``api.openai.com`` traffic uses the Responses API path. Hermes is a
+    tool-using agent, and GPT-5 tool calls with reasoning are rejected on
+    ``/v1/chat/completions`` by OpenAI.
+    """
+    normalized_provider = (provider or "").strip().lower()
+    normalized_base_url = (base_url or "").strip().lower().rstrip("/")
+
+    if normalized_provider == "openai-codex":
+        return "codex_responses"
+    if normalized_provider == "anthropic":
+        return "anthropic_messages"
+    if "api.openai.com" in normalized_base_url and "openrouter" not in normalized_base_url:
+        return "codex_responses"
+    return "chat_completions"
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
@@ -137,7 +156,8 @@ def _resolve_named_custom_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": custom_provider.get("api_mode", "chat_completions"),
+        "api_mode": custom_provider.get("api_mode")
+        or _resolve_api_mode(provider="openrouter", base_url=base_url),
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -209,7 +229,8 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions",
+        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+        or _resolve_api_mode(provider="openrouter", base_url=base_url),
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -259,7 +280,10 @@ def resolve_runtime_provider(
         creds = resolve_codex_runtime_credentials()
         return {
             "provider": "openai-codex",
-            "api_mode": "codex_responses",
+            "api_mode": _resolve_api_mode(
+                provider="openai-codex",
+                base_url=creds.get("base_url", "").rstrip("/"),
+            ),
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "hermes-auth-store"),
@@ -278,7 +302,10 @@ def resolve_runtime_provider(
             )
         return {
             "provider": "anthropic",
-            "api_mode": "anthropic_messages",
+            "api_mode": _resolve_api_mode(
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            ),
             "base_url": "https://api.anthropic.com",
             "api_key": token,
             "source": "env",
@@ -304,7 +331,10 @@ def resolve_runtime_provider(
         creds = resolve_api_key_provider_credentials(provider)
         return {
             "provider": provider,
-            "api_mode": "chat_completions",
+            "api_mode": _resolve_api_mode(
+                provider=provider,
+                base_url=creds.get("base_url", "").rstrip("/"),
+            ),
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "env"),

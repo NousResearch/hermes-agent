@@ -154,6 +154,38 @@ def test_custom_endpoint_prefers_openai_key(monkeypatch):
     assert resolved["api_key"] == "zai-key"
 
 
+def test_direct_openai_custom_endpoint_uses_responses_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "sk-openai-key"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_explicit_direct_openai_base_url_uses_responses_mode(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_api_key="sk-explicit",
+        explicit_base_url="https://api.openai.com/v1/",
+    )
+
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "sk-explicit"
+    assert resolved["api_mode"] == "codex_responses"
+
+
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
     """Persisted custom endpoints in config.yaml must still resolve when
     OPENAI_BASE_URL is absent from the current environment."""

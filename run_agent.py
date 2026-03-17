@@ -5492,6 +5492,27 @@ class AIAgent:
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
                     ])
+
+                    # Fallback heuristic: Anthropic sometimes returns a generic
+                    # 400 invalid_request_error with just "Error" as the message
+                    # when the context is too large.  If the error message is very
+                    # short/generic AND the session is large, treat it as a
+                    # probable context-length error and attempt compression rather
+                    # than aborting.  This prevents an infinite failure loop where
+                    # each failed message gets persisted, making the session even
+                    # larger. (#1630)
+                    if not is_context_length_error and status_code == 400:
+                        ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
+                        is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
+                        is_generic_error = len(error_msg.strip()) < 30  # e.g. just "error"
+                        if is_large_session and is_generic_error:
+                            is_context_length_error = True
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Generic 400 with large session "
+                                f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
+                                f"treating as probable context overflow.",
+                                force=True,
+                            )
                     
                     if is_context_length_error:
                         compressor = self.context_compressor
@@ -5591,7 +5612,19 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.", force=True)
                         self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
-                        self._persist_session(messages, conversation_history)
+                        # Skip session persistence when the error is likely
+                        # context-overflow related (status 400 + large session).
+                        # Persisting the failed user message would make the
+                        # session even larger, causing the same failure on the
+                        # next attempt. (#1630)
+                        if status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80):
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Skipping session persistence "
+                                f"for large failed session to prevent growth loop.",
+                                force=True,
+                            )
+                        else:
+                            self._persist_session(messages, conversation_history)
                         return {
                             "final_response": None,
                             "messages": messages,

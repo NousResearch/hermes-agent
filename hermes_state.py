@@ -809,17 +809,18 @@ class SessionDB:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source."""
-        if source:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                (source, limit, offset),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
-        return [dict(row) for row in cursor.fetchall()]
+        with self._lock:
+            if source:
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    (source, limit, offset),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+            return [dict(row) for row in cursor.fetchall()]
 
     # =========================================================================
     # Utility
@@ -871,26 +872,28 @@ class SessionDB:
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
-        self._conn.execute(
-            "DELETE FROM messages WHERE session_id = ?", (session_id,)
-        )
-        self._conn.execute(
-            "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
-            (session_id,),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            self._conn.execute(
+                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+                (session_id,),
+            )
+            self._conn.commit()
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages. Returns True if found."""
-        cursor = self._conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
-        )
-        if cursor.fetchone()[0] == 0:
-            return False
-        self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-        self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        self._conn.commit()
-        return True
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
+            )
+            if cursor.fetchone()[0] == 0:
+                return False
+            self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._conn.commit()
+            return True
 
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
         """
@@ -900,22 +903,23 @@ class SessionDB:
         import time as _time
         cutoff = _time.time() - (older_than_days * 86400)
 
-        if source:
-            cursor = self._conn.execute(
-                """SELECT id FROM sessions
-                   WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                (cutoff,),
-            )
-        session_ids = [row["id"] for row in cursor.fetchall()]
+        with self._lock:
+            if source:
+                cursor = self._conn.execute(
+                    """SELECT id FROM sessions
+                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
+                    (cutoff, source),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
+                    (cutoff,),
+                )
+            session_ids = [row["id"] for row in cursor.fetchall()]
 
-        for sid in session_ids:
-            self._conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-            self._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            for sid in session_ids:
+                self._conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                self._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
 
-        self._conn.commit()
+            self._conn.commit()
         return len(session_ids)

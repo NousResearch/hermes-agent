@@ -509,6 +509,22 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "XGATE_API_KEY": {
+        "description": "xgate API key",
+        "prompt": "xgate API Key",
+        "url": "https://ai.xgate.run/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XGATE_BASE_URL": {
+        "description": "Custom xgate base URL (advanced)",
+        "prompt": "xgate Base URL",
+        "url": "https://ai.xgate.run/v1",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key for Qwen models",
         "prompt": "DashScope API Key",

@@ -69,6 +69,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_XGATE_BASE_URL = "https://ai.xgate.run/v1"
 
 
 # =============================================================================
@@ -170,6 +171,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
         base_url_env_var="AI_GATEWAY_BASE_URL",
+    ),
+    "xgate": ProviderConfig(
+        id="xgate",
+        name="xgate",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_XGATE_BASE_URL,
+        api_key_env_vars=("XGATE_API_KEY",),
+        base_url_env_var="XGATE_BASE_URL",
     ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
@@ -573,6 +582,7 @@ def resolve_provider(
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
+        "daydreams": "xgate",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",

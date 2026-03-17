@@ -37,6 +37,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("xgate", "xgate", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
@@ -72,6 +73,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_xgate_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["xgate"]
+        assert pconfig.api_key_env_vars == ("XGATE_API_KEY",)
+        assert pconfig.base_url_env_var == "XGATE_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -82,6 +88,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["xgate"].inference_base_url == "https://ai.xgate.run/v1"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
 
@@ -102,6 +109,7 @@ PROVIDER_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "XGATE_API_KEY", "XGATE_BASE_URL",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -135,6 +143,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_xgate(self):
+        assert resolve_provider("xgate") == "xgate"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -158,6 +169,9 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_daydreams(self):
+        assert resolve_provider("daydreams") == "xgate"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -203,6 +217,10 @@ class TestResolveProvider:
     def test_auto_detects_minimax_cn_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
+
+    def test_auto_detects_xgate_key(self, monkeypatch):
+        monkeypatch.setenv("XGATE_API_KEY", "test-xgate-key")
+        assert resolve_provider("auto") == "xgate"
 
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
@@ -250,6 +268,14 @@ class TestApiKeyProviderStatus:
         monkeypatch.setenv("KIMI_BASE_URL", "https://custom.kimi.example/v1")
         status = get_api_key_provider_status("kimi-coding")
         assert status["base_url"] == "https://custom.kimi.example/v1"
+
+    def test_xgate_status_uses_env_key(self, monkeypatch):
+        monkeypatch.setenv("XGATE_API_KEY", "test-xgate-key")
+        monkeypatch.setenv("XGATE_BASE_URL", "https://ai.xgate.run/v1")
+        status = get_api_key_provider_status("xgate")
+        assert status["configured"] is True
+        assert status["key_source"] == "XGATE_API_KEY"
+        assert status["base_url"] == "https://ai.xgate.run/v1"
 
     def test_get_auth_status_dispatches_to_api_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
@@ -302,7 +328,14 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("ai-gateway")
         assert creds["provider"] == "ai-gateway"
         assert creds["api_key"] == "gw-secret-key"
-        assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
+
+    def test_resolve_xgate_with_key(self, monkeypatch):
+        monkeypatch.setenv("XGATE_API_KEY", "xgate-secret-key")
+        monkeypatch.setenv("XGATE_BASE_URL", "https://ai.xgate.run/v1")
+        creds = resolve_api_key_provider_credentials("xgate")
+        assert creds["provider"] == "xgate"
+        assert creds["api_key"] == "xgate-secret-key"
+        assert creds["base_url"] == "https://ai.xgate.run/v1"
 
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
@@ -386,6 +419,16 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "gw-key"
         assert "ai-gateway.vercel.sh" in result["base_url"]
+
+    def test_runtime_xgate(self, monkeypatch):
+        monkeypatch.setenv("XGATE_API_KEY", "xgate-key")
+        monkeypatch.setenv("XGATE_BASE_URL", "https://ai.xgate.run/v1")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="xgate")
+        assert result["provider"] == "xgate"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "xgate-key"
+        assert result["base_url"] == "https://ai.xgate.run/v1"
 
     def test_runtime_kilocode(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")

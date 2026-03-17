@@ -3956,6 +3956,8 @@ class GatewayRunner:
 
         logger.debug("Process watcher ended: %s", session_id)
 
+    _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
+
     async def _run_agent(
         self,
         message: str,
@@ -3963,7 +3965,8 @@ class GatewayRunner:
         history: List[Dict[str, Any]],
         source: SessionSource,
         session_id: str,
-        session_key: str = None
+        session_key: str = None,
+        _interrupt_depth: int = 0,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -4552,6 +4555,20 @@ class GatewayRunner:
                 if adapter and hasattr(adapter, '_active_sessions') and session_key and session_key in adapter._active_sessions:
                     adapter._active_sessions[session_key].clear()
                 
+                # Cap recursion depth to prevent resource exhaustion when the
+                # user sends multiple messages while the agent keeps failing. (#816)
+                if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
+                    logger.warning(
+                        "Interrupt recursion depth %d reached for session %s — "
+                        "queueing message instead of recursing.",
+                        _interrupt_depth, session_key,
+                    )
+                    # Queue the pending message for normal processing on next turn
+                    adapter = self.adapters.get(source.platform)
+                    if adapter and hasattr(adapter, 'queue_message'):
+                        adapter.queue_message(session_key, pending)
+                    return result_holder[0] or {"final_response": response, "messages": history}
+
                 # Don't send the interrupted response to the user — it's just noise
                 # like "Operation interrupted." They already know they sent a new
                 # message, so go straight to processing it.
@@ -4564,7 +4581,8 @@ class GatewayRunner:
                     history=updated_history,
                     source=source,
                     session_id=session_id,
-                    session_key=session_key
+                    session_key=session_key,
+                    _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
             # Stop progress sender and interrupt monitor

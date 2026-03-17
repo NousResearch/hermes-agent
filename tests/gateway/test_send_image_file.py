@@ -147,6 +147,26 @@ class TestTelegramSendImageFile:
         call_kwargs = adapter._bot.send_photo.call_args.kwargs
         assert len(call_kwargs["caption"]) == 1024
 
+    def test_thread_id_forwarded(self, adapter, tmp_path):
+        """metadata thread_id is forwarded as message_thread_id (required for Telegram forum groups)."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 43
+        adapter._bot.send_photo = AsyncMock(return_value=mock_msg)
+
+        _run(
+            adapter.send_image_file(
+                chat_id="12345",
+                image_path=str(img),
+                metadata={"thread_id": "789"},
+            )
+        )
+
+        call_kwargs = adapter._bot.send_photo.call_args.kwargs
+        assert call_kwargs["message_thread_id"] == 789
+
 
 # ---------------------------------------------------------------------------
 # Discord send_image_file tests

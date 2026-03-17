@@ -578,23 +578,26 @@ class TelegramAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             import os
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=f"Image file not found: {image_path}")
-            
+
+            _thread = metadata.get("thread_id") if metadata else None
             with open(image_path, "rb") as image_file:
                 msg = await self._bot.send_photo(
                     chat_id=int(chat_id),
                     photo=image_file,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -613,6 +616,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
@@ -624,6 +628,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             display_name = file_name or os.path.basename(file_path)
+            _thread = metadata.get("thread_id") if metadata else None
 
             with open(file_path, "rb") as f:
                 msg = await self._bot.send_document(
@@ -632,6 +637,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     filename=display_name,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -644,6 +650,7 @@ class TelegramAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a video natively as a Telegram video message."""
@@ -654,12 +661,14 @@ class TelegramAdapter(BasePlatformAdapter):
             if not os.path.exists(video_path):
                 return SendResult(success=False, error=f"Video file not found: {video_path}")
 
+            _thread = metadata.get("thread_id") if metadata else None
             with open(video_path, "rb") as f:
                 msg = await self._bot.send_video(
                     chat_id=int(chat_id),
                     video=f,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

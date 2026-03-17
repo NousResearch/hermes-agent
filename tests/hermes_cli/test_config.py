@@ -15,6 +15,8 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     save_env_value_secure,
+    sanitize_env_file,
+    _sanitize_env_lines,
 )
 
 
@@ -203,3 +205,133 @@ class TestSaveConfigAtomicity:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
+
+
+class TestSanitizeEnvLines:
+    """Tests for .env file corruption repair."""
+
+    def test_splits_concatenated_keys(self):
+        """Two KEY=VALUE pairs jammed on one line get split."""
+        lines = ["ANTHROPIC_API_KEY=sk-ant-xxxOPENAI_BASE_URL=https://api.openai.com/v1\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
+            "OPENAI_BASE_URL=https://api.openai.com/v1\n",
+        ]
+
+    def test_drops_stale_placeholder(self):
+        """KEY=*** entries are removed."""
+        lines = [
+            "OPENROUTER_API_KEY=sk-or-real\n",
+            "ANTHROPIC_TOKEN=***\n",
+            "FAL_KEY=fal-real\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "OPENROUTER_API_KEY=sk-or-real\n",
+            "FAL_KEY=fal-real\n",
+        ]
+
+    def test_drops_quoted_placeholder(self):
+        """KEY='***' and KEY=\"***\" are also removed."""
+        lines = ['ANTHROPIC_TOKEN="***"\n', "OTHER_KEY='***'\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == []
+
+    def test_preserves_clean_file(self):
+        """A well-formed .env file passes through unchanged (modulo trailing newlines)."""
+        lines = [
+            "OPENROUTER_API_KEY=sk-or-xxx\n",
+            "FIRECRAWL_API_KEY=fc-xxx\n",
+            "# a comment\n",
+            "\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_preserves_comments_and_blanks(self):
+        lines = ["# comment\n", "\n", "KEY=val\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_adds_missing_trailing_newline(self):
+        """Lines missing trailing newline get one added."""
+        lines = ["FOO_BAR=baz"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["FOO_BAR=baz\n"]
+
+    def test_three_concatenated_keys(self):
+        """Three known keys on one line all get separated."""
+        lines = ["FAL_KEY=111FIRECRAWL_API_KEY=222GITHUB_TOKEN=333\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "FAL_KEY=111\n",
+            "FIRECRAWL_API_KEY=222\n",
+            "GITHUB_TOKEN=333\n",
+        ]
+
+    def test_value_with_equals_sign_not_split(self):
+        """A value containing '=' shouldn't be falsely split (lowercase in value)."""
+        lines = ["OPENAI_BASE_URL=https://api.example.com/v1?key=abc123\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_unknown_keys_not_split(self):
+        """Unknown key names on one line are NOT split (avoids false positives)."""
+        lines = ["CUSTOM_VAR=value123OTHER_THING=value456\n"]
+        result = _sanitize_env_lines(lines)
+        # Unknown keys stay on one line — no false split
+        assert len(result) == 1
+
+    def test_value_ending_with_digits_still_splits(self):
+        """Concatenation is detected even when value ends with digits."""
+        lines = ["OPENROUTER_API_KEY=sk-or-v1-abc123OPENAI_BASE_URL=https://api.openai.com/v1\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0].startswith("OPENROUTER_API_KEY=")
+        assert result[1].startswith("OPENAI_BASE_URL=")
+
+    def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
+        """save_env_value sanitizes corrupted lines when writing a new key."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\n"
+            "STALE_KEY=***\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("NEW_KEY", "new-value")
+
+            content = env_file.read_text()
+            lines = content.strip().split("\n")
+
+            # Corrupted line should be split, placeholder removed, new key added
+            assert "ANTHROPIC_API_KEY=sk-ant" in lines
+            assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
+            assert "NEW_KEY=new-value" in lines
+            assert "STALE_KEY=***" not in content
+
+    def test_sanitize_env_file_returns_fix_count(self, tmp_path):
+        """sanitize_env_file reports how many entries were fixed."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FAL_KEY=good\n"
+            "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
+            "STALE=***\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes > 0
+
+            # Verify file is now clean
+            content = env_file.read_text()
+            assert "STALE=***" not in content
+            assert "OPENROUTER_API_KEY=val\n" in content
+            assert "FIRECRAWL_API_KEY=val2\n" in content
+
+    def test_sanitize_env_file_noop_on_clean_file(self, tmp_path):
+        """No changes when file is already clean."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GOOD_KEY=good\nOTHER_KEY=other\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes == 0

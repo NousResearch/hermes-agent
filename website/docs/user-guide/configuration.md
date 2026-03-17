@@ -463,9 +463,18 @@ smart_model_routing:
     model: google/gemini-2.5-flash
     # base_url: http://localhost:8000/v1  # optional custom endpoint
     # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+  intent_routes:
+    coding:
+      provider: openrouter
+      model: anthropic/claude-sonnet-4
+    thinking:
+      provider: openrouter
+      model: openai/gpt-4.1-mini
 ```
 
 How it works:
+- Hermes classifies each turn as `simple`, `coding`, `tool`, or `thinking`
+- If an `intent_routes` entry exists for that intent, Hermes uses that route
 - If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
 - If the turn looks complex, Hermes stays on your primary model/provider
 - If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically

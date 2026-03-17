@@ -64,6 +64,13 @@ model:
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
+#   intent_routes:
+#     coding:
+#       provider: openrouter
+#       model: anthropic/claude-sonnet-4
+#     thinking:
+#       provider: openrouter
+#       model: openai/gpt-4.1-mini
 
 # =============================================================================
 # Git Worktree Isolation

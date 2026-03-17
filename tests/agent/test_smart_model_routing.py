@@ -38,6 +38,129 @@ def test_skips_tool_heavy_prompt_keywords():
     assert choose_cheap_model_route(prompt, _BASE_CONFIG) is None
 
 
+def test_routes_coding_prompt_to_dedicated_intent_route(monkeypatch):
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": kwargs["requested"],
+            "base_url": kwargs.get("explicit_base_url") or "https://route.example/v1",
+            "api_key": "route-key",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    cfg = {
+        "enabled": True,
+        "cheap_model": {
+            "provider": "openrouter",
+            "model": "google/gemini-2.5-flash",
+        },
+        "intent_routes": {
+            "coding": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            }
+        },
+    }
+    primary = {
+        "model": "openai/gpt-4.1",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "api_key": "sk-primary",
+    }
+
+    result = resolve_turn_route("please debug this traceback:\n```python\nraise ValueError('bad')\n```", cfg, primary)
+
+    assert result["model"] == "anthropic/claude-sonnet-4"
+    assert result["runtime"]["provider"] == "openrouter"
+    assert result["label"] == "smart route[coding] → anthropic/claude-sonnet-4 (openrouter)"
+
+
+def test_routes_thinking_prompt_to_dedicated_intent_route(monkeypatch):
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": kwargs["requested"],
+            "base_url": "https://route.example/v1",
+            "api_key": "route-key",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    cfg = {
+        "enabled": True,
+        "cheap_model": {
+            "provider": "openrouter",
+            "model": "google/gemini-2.5-flash",
+        },
+        "intent_routes": {
+            "thinking": {
+                "provider": "openrouter",
+                "model": "openai/gpt-4.1-mini",
+            }
+        },
+    }
+    primary = {
+        "model": "openai/gpt-4.1",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "api_key": "sk-primary",
+    }
+
+    result = resolve_turn_route("can you analyze the tradeoffs here?", cfg, primary)
+
+    assert result["model"] == "openai/gpt-4.1-mini"
+    assert result["runtime"]["provider"] == "openrouter"
+    assert result["label"] == "smart route[thinking] → openai/gpt-4.1-mini (openrouter)"
+
+
+def test_routes_tool_prompt_to_dedicated_intent_route(monkeypatch):
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": kwargs["requested"],
+            "base_url": "https://route.example/v1",
+            "api_key": "route-key",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    cfg = {
+        "enabled": True,
+        "cheap_model": {
+            "provider": "openrouter",
+            "model": "google/gemini-2.5-flash",
+        },
+        "intent_routes": {
+            "tool": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            }
+        },
+    }
+    primary = {
+        "model": "openai/gpt-4.1",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "api_key": "sk-primary",
+    }
+
+    result = resolve_turn_route("run this command and inspect the files", cfg, primary)
+
+    assert result["model"] == "anthropic/claude-sonnet-4"
+    assert result["runtime"]["provider"] == "openrouter"
+    assert result["label"] == "smart route[tool] → anthropic/claude-sonnet-4 (openrouter)"
+
+
 def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_resolved(monkeypatch):
     from agent.smart_model_routing import resolve_turn_route
 

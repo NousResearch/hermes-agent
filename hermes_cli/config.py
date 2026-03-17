@@ -168,6 +168,14 @@ DEFAULT_CONFIG = {
         "max_simple_chars": 160,
         "max_simple_words": 28,
         "cheap_model": {},
+        # Optional intent-specific routes. Each entry can use the same shape as
+        # cheap_model: provider, model, optional base_url, and api_key_env.
+        # Example:
+        # "intent_routes": {
+        #     "coding": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        #     "thinking": {"provider": "openrouter", "model": "openai/gpt-4.1-mini"},
+        # }
+        "intent_routes": {},
     },
     
     # Auxiliary model config — provider:model for each side task.

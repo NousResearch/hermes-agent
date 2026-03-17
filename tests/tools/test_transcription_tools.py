@@ -7,6 +7,7 @@ end-to-end dispatch.  All external dependencies are mocked.
 
 import os
 import struct
+import subprocess
 import wave
 from unittest.mock import MagicMock, patch
 
@@ -45,7 +46,10 @@ def sample_ogg(tmp_path):
 def clean_env(monkeypatch):
     """Ensure no real API keys leak into tests."""
     monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
 
 # ============================================================================
@@ -62,19 +66,12 @@ class TestGetProviderGroq:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
-    def test_groq_fallback_to_local(self, monkeypatch):
+    def test_groq_explicit_no_fallback(self, monkeypatch):
+        """Explicit groq with no key returns none — no cross-provider fallback."""
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "groq"}) == "local"
-
-    def test_groq_fallback_to_openai(self, monkeypatch):
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
-        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "groq"}) == "openai"
+            assert _get_provider({"provider": "groq"}) == "none"
 
     def test_groq_nothing_available(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -86,36 +83,25 @@ class TestGetProviderGroq:
 
 
 class TestGetProviderFallbackPriority:
-    """Cross-provider fallback priority tests."""
+    """Auto-detect fallback priority and explicit provider behaviour."""
 
-    def test_local_fallback_prefers_groq_over_openai(self, monkeypatch):
-        """When local unavailable, groq (free) is preferred over openai (paid)."""
+    def test_auto_detect_prefers_local(self):
+        """Auto-detect prefers local over any cloud provider."""
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "local"
+
+    def test_auto_detect_prefers_groq_over_openai(self, monkeypatch):
+        """Auto-detect: groq (free) is preferred over openai (paid)."""
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "local"}) == "groq"
+            assert _get_provider({}) == "groq"
 
-    def test_local_fallback_to_groq_only(self, monkeypatch):
-        """When only groq key available, falls back to groq."""
-        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "local"}) == "groq"
-
-    def test_openai_fallback_to_groq(self, monkeypatch):
-        """When openai key missing but groq available, falls back to groq."""
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "openai"}) == "groq"
-
-    def test_openai_nothing_available(self, monkeypatch):
-        """When no openai key and no local, returns none."""
+    def test_explicit_openai_no_key_returns_none(self, monkeypatch):
+        """Explicit openai with no key returns none — no cross-provider fallback."""
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
@@ -131,6 +117,84 @@ class TestGetProviderFallbackPriority:
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "local"
+
+
+# ============================================================================
+# Explicit provider config respected  (GH-1774)
+# ============================================================================
+
+class TestExplicitProviderRespected:
+    """When stt.provider is explicitly set, that choice is authoritative.
+    No silent fallback to a different cloud provider."""
+
+    def test_explicit_local_no_fallback_to_openai(self, monkeypatch):
+        """GH-1774: provider=local must not silently fall back to openai
+        even when an OpenAI API key is set."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key-here")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({"provider": "local"})
+            assert result == "none", f"Expected 'none' but got {result!r}"
+
+    def test_explicit_local_no_fallback_to_groq(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({"provider": "local"})
+            assert result == "none"
+
+    def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
+        """Local-to-local_command fallback is fine — both are local."""
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --output_dir {output_dir} --language {language}",
+        )
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({"provider": "local"})
+            assert result == "local_command"
+
+    def test_explicit_groq_no_fallback_to_openai(self, monkeypatch):
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({"provider": "groq"})
+            assert result == "none"
+
+    def test_explicit_openai_no_fallback_to_groq(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({"provider": "openai"})
+            assert result == "none"
+
+    def test_auto_detect_still_falls_back_to_cloud(self, monkeypatch):
+        """When no provider is explicitly set, auto-detect cloud fallback works."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            # Empty dict = no explicit provider, uses DEFAULT_PROVIDER auto-detect
+            result = _get_provider({})
+            assert result == "openai"
+
+    def test_auto_detect_prefers_groq_over_openai(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            result = _get_provider({})
+            assert result == "groq"
 
 
 # ============================================================================
@@ -277,6 +341,63 @@ class TestTranscribeOpenAIExtended:
 
         assert result["success"] is False
         assert "Permission denied" in result["error"]
+
+
+class TestTranscribeLocalCommand:
+    def test_auto_detects_local_whisper_binary(self, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")
+
+        from tools.transcription_tools import _get_local_command_template
+
+        template = _get_local_command_template()
+
+        assert template is not None
+        assert template.startswith("/opt/homebrew/bin/whisper ")
+        assert "{model}" in template
+        assert "{output_dir}" in template
+
+    def test_command_fallback_with_template(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "en")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                output_path = cmd[-1]
+                with open(output_path, "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello from local command"
+        assert result["provider"] == "local_command"
 
 
 # ============================================================================
@@ -611,6 +732,20 @@ class TestTranscribeAudioDispatch:
         assert "No STT provider" in result["error"]
         assert "faster-whisper" in result["error"]
         assert "GROQ_API_KEY" in result["error"]
+
+    def test_explicit_openai_no_key_returns_error(self, monkeypatch, sample_ogg):
+        """Explicit provider=openai with no key returns an error, not a fallback."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is False
+        assert "No STT provider" in result["error"]
 
     def test_invalid_file_short_circuits(self):
         from tools.transcription_tools import transcribe_audio

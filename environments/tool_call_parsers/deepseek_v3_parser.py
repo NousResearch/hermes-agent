@@ -10,12 +10,13 @@ Format uses special unicode tokens:
     <｜tool▁call▁end｜>
     <｜tool▁calls▁end｜>
 
-Based on VLLM's DeepSeekV3ToolParser.extract_tool_calls()
+Fixes Issue #989: Support for multiple simultaneous tool calls.
 """
 
 import re
 import uuid
-from typing import List, Optional
+import logging
+from typing import List, Optional, Tuple
 
 from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,
@@ -24,6 +25,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from environments.tool_call_parsers import ParseResult, ToolCallParser, register_parser
 
+logger = logging.getLogger(__name__)
 
 @register_parser("deepseek_v3")
 class DeepSeekV3ToolCallParser(ToolCallParser):
@@ -32,45 +34,56 @@ class DeepSeekV3ToolCallParser(ToolCallParser):
 
     Uses special unicode tokens with fullwidth angle brackets and block elements.
     Extracts type, function name, and JSON arguments from the structured format.
+    Ensures all tool calls are captured when the model executes multiple actions.
     """
 
     START_TOKEN = "<｜tool▁calls▁begin｜>"
 
-    # Regex captures: type, function_name, function_arguments
+    # Updated PATTERN: Using \s* instead of literal \n for increased robustness
+    # against variations in model formatting (Issue #989).
     PATTERN = re.compile(
-        r"<｜tool▁call▁begin｜>(?P<type>.*?)<｜tool▁sep｜>(?P<function_name>.*?)\n```json\n(?P<function_arguments>.*?)\n```<｜tool▁call▁end｜>",
+        r"<｜tool▁call▁begin｜>(?P<type>.*?)<｜tool▁sep｜>(?P<function_name>.*?)\s*```json\s*(?P<function_arguments>.*?)\s*```\s*<｜tool▁call▁end｜>",
         re.DOTALL,
     )
 
     def parse(self, text: str) -> ParseResult:
+        """
+        Parses the input text and extracts all available tool calls.
+        """
         if self.START_TOKEN not in text:
             return text, None
 
         try:
-            matches = self.PATTERN.findall(text)
+            # Using finditer to capture ALL tool calls in the sequence
+            matches = list(self.PATTERN.finditer(text))
             if not matches:
                 return text, None
 
             tool_calls: List[ChatCompletionMessageToolCall] = []
+            
             for match in matches:
-                tc_type, func_name, func_args = match
+                func_name = match.group("function_name").strip()
+                func_args = match.group("function_arguments").strip()
+                
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
                         id=f"call_{uuid.uuid4().hex[:8]}",
                         type="function",
                         function=Function(
-                            name=func_name.strip(),
-                            arguments=func_args.strip(),
+                            name=func_name,
+                            arguments=func_args,
                         ),
                     )
                 )
 
-            if not tool_calls:
-                return text, None
+            if tool_calls:
+                # Content is text before the first tool call block
+                content_index = text.find(self.START_TOKEN)
+                content = text[:content_index].strip()
+                return content if content else None, tool_calls
 
-            # Content is everything before the tool calls section
-            content = text[: text.find(self.START_TOKEN)].strip()
-            return content if content else None, tool_calls
+            return text, None
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error parsing DeepSeek V3 tool calls: {e}")
             return text, None

@@ -311,16 +311,41 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 )
             compressed.append(msg)
 
+        _merge_summary_into_tail = False
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
-            compressed.append({"role": summary_role, "content": summary})
+            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+            # Pick a role that avoids consecutive same-role with both neighbors.
+            # Priority: avoid colliding with head (already committed), then tail.
+            if last_head_role in ("assistant", "tool"):
+                summary_role = "user"
+            else:
+                summary_role = "assistant"
+            # If the chosen role collides with the tail AND flipping wouldn't
+            # collide with the head, flip it.
+            if summary_role == first_tail_role:
+                flipped = "assistant" if summary_role == "user" else "user"
+                if flipped != last_head_role:
+                    summary_role = flipped
+                else:
+                    # Both roles would create consecutive same-role messages
+                    # (e.g. head=assistant, tail=user — neither role works).
+                    # Merge the summary into the first tail message instead
+                    # of inserting a standalone message that breaks alternation.
+                    _merge_summary_into_tail = True
+            if not _merge_summary_into_tail:
+                compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
                 print("   ⚠️  No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
+            msg = messages[i].copy()
+            if _merge_summary_into_tail and i == compress_end:
+                original = msg.get("content") or ""
+                msg["content"] = summary + "\n\n" + original
+                _merge_summary_into_tail = False
+            compressed.append(msg)
 
         self.compression_count += 1
 

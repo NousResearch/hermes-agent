@@ -98,3 +98,60 @@ async def test_polling_conflict_stops_polling_and_notifies_handler(monkeypatch):
     assert adapter.has_fatal_error is True
     updater.stop.assert_awaited()
     fatal_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    builder = MagicMock()
+    builder.token.return_value = builder
+    app = SimpleNamespace(
+        bot=SimpleNamespace(),
+        updater=SimpleNamespace(),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(side_effect=RuntimeError("Temporary failure in name resolution")),
+        start=AsyncMock(),
+    )
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.fatal_error_code == "telegram_connect_error"
+    assert adapter.fatal_error_retryable is True
+    assert "Temporary failure in name resolution" in adapter.fatal_error_message
+
+
+@pytest.mark.asyncio
+async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    updater = SimpleNamespace(running=False, stop=AsyncMock())
+    app = SimpleNamespace(
+        updater=updater,
+        running=False,
+        stop=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    adapter._app = app
+
+    warning = MagicMock()
+    monkeypatch.setattr("gateway.platforms.telegram.logger.warning", warning)
+
+    await adapter.disconnect()
+
+    updater.stop.assert_not_awaited()
+    app.stop.assert_not_awaited()
+    app.shutdown.assert_awaited_once()
+    warning.assert_not_called()

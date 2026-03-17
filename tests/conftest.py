@@ -26,6 +26,18 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
+    # Reset plugin singleton so tests don't leak plugins from ~/.hermes/plugins/
+    try:
+        import hermes_cli.plugins as _plugins_mod
+        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
+    except Exception:
+        pass
+    # Tests should not inherit the agent's current gateway/messaging surface.
+    # Individual tests that need gateway behavior set these explicitly.
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
 
 @pytest.fixture()
@@ -95,7 +107,11 @@ def _ensure_current_event_loop(request):
 
 @pytest.fixture(autouse=True)
 def _enforce_test_timeout():
-    """Kill any individual test that takes longer than 30 seconds."""
+    """Kill any individual test that takes longer than 30 seconds.
+    SIGALRM is Unix-only; skip on Windows."""
+    if sys.platform == "win32":
+        yield
+        return
     old = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(30)
     yield

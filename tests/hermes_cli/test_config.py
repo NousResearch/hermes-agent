@@ -12,9 +12,12 @@ from hermes_cli.config import (
     ensure_hermes_home,
     load_config,
     load_env,
+    migrate_config,
     save_config,
     save_env_value,
     save_env_value_secure,
+    sanitize_env_file,
+    _sanitize_env_lines,
 )
 
 
@@ -203,3 +206,174 @@ class TestSaveConfigAtomicity:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
+
+
+class TestSanitizeEnvLines:
+    """Tests for .env file corruption repair."""
+
+    def test_splits_concatenated_keys(self):
+        """Two KEY=VALUE pairs jammed on one line get split."""
+        lines = ["ANTHROPIC_API_KEY=sk-ant-xxxOPENAI_BASE_URL=https://api.openai.com/v1\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
+            "OPENAI_BASE_URL=https://api.openai.com/v1\n",
+        ]
+
+    def test_preserves_clean_file(self):
+        """A well-formed .env file passes through unchanged (modulo trailing newlines)."""
+        lines = [
+            "OPENROUTER_API_KEY=sk-or-xxx\n",
+            "FIRECRAWL_API_KEY=fc-xxx\n",
+            "# a comment\n",
+            "\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_preserves_comments_and_blanks(self):
+        lines = ["# comment\n", "\n", "KEY=val\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_adds_missing_trailing_newline(self):
+        """Lines missing trailing newline get one added."""
+        lines = ["FOO_BAR=baz"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["FOO_BAR=baz\n"]
+
+    def test_three_concatenated_keys(self):
+        """Three known keys on one line all get separated."""
+        lines = ["FAL_KEY=111FIRECRAWL_API_KEY=222GITHUB_TOKEN=333\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "FAL_KEY=111\n",
+            "FIRECRAWL_API_KEY=222\n",
+            "GITHUB_TOKEN=333\n",
+        ]
+
+    def test_value_with_equals_sign_not_split(self):
+        """A value containing '=' shouldn't be falsely split (lowercase in value)."""
+        lines = ["OPENAI_BASE_URL=https://api.example.com/v1?key=abc123\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == lines
+
+    def test_unknown_keys_not_split(self):
+        """Unknown key names on one line are NOT split (avoids false positives)."""
+        lines = ["CUSTOM_VAR=value123OTHER_THING=value456\n"]
+        result = _sanitize_env_lines(lines)
+        # Unknown keys stay on one line — no false split
+        assert len(result) == 1
+
+    def test_value_ending_with_digits_still_splits(self):
+        """Concatenation is detected even when value ends with digits."""
+        lines = ["OPENROUTER_API_KEY=sk-or-v1-abc123OPENAI_BASE_URL=https://api.openai.com/v1\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0].startswith("OPENROUTER_API_KEY=")
+        assert result[1].startswith("OPENAI_BASE_URL=")
+
+    def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
+        """save_env_value sanitizes corrupted lines when writing a new key."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\n"
+            "FAL_KEY=existing\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("MESSAGING_CWD", "/tmp")
+
+            content = env_file.read_text()
+            lines = content.strip().split("\n")
+
+            # Corrupted line should be split, new key added
+            assert "ANTHROPIC_API_KEY=sk-ant" in lines
+            assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
+            assert "MESSAGING_CWD=/tmp" in lines
+
+    def test_sanitize_env_file_returns_fix_count(self, tmp_path):
+        """sanitize_env_file reports how many entries were fixed."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FAL_KEY=good\n"
+            "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes > 0
+
+            # Verify file is now clean
+            content = env_file.read_text()
+            assert "OPENROUTER_API_KEY=val\n" in content
+            assert "FIRECRAWL_API_KEY=val2\n" in content
+
+    def test_sanitize_env_file_noop_on_clean_file(self, tmp_path):
+        """No changes when file is already clean."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GOOD_KEY=good\nOTHER_KEY=other\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+            assert fixes == 0
+
+
+class TestOptionalEnvVarsRegistry:
+    """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
+
+    def test_tavily_api_key_registered(self):
+        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
+
+    def test_tavily_api_key_is_tool_category(self):
+        """TAVILY_API_KEY is in the 'tool' category."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["category"] == "tool"
+
+    def test_tavily_api_key_is_password(self):
+        """TAVILY_API_KEY is marked as password."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["password"] is True
+
+    def test_tavily_api_key_has_url(self):
+        """TAVILY_API_KEY has a URL."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
+
+    def test_tavily_in_env_vars_by_version(self):
+        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "TAVILY_API_KEY" in all_vars
+
+
+class TestAnthropicTokenMigration:
+    """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
+
+    def _write_config_version(self, tmp_path, version):
+        config_path = tmp_path / "config.yaml"
+        import yaml
+        config_path.write_text(yaml.safe_dump({"_config_version": version}))
+
+    def test_clears_token_on_upgrade_to_v9(self, tmp_path):
+        """ANTHROPIC_TOKEN is cleared unconditionally when upgrading to v9."""
+        self._write_config_version(tmp_path, 8)
+        (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=old-token\n")
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_TOKEN": "old-token",
+        }):
+            migrate_config(interactive=False, quiet=True)
+            assert load_env().get("ANTHROPIC_TOKEN") == ""
+
+    def test_skips_on_version_9_or_later(self, tmp_path):
+        """Already at v9 — ANTHROPIC_TOKEN is not touched."""
+        self._write_config_version(tmp_path, 9)
+        (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=current-token\n")
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_TOKEN": "current-token",
+        }):
+            migrate_config(interactive=False, quiet=True)
+            assert load_env().get("ANTHROPIC_TOKEN") == "current-token"

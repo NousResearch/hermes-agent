@@ -24,10 +24,13 @@ Every installed skill is automatically available as a slash command:
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
+/plan design a rollout for migrating our auth provider
 
 # Just the skill name loads it and lets the agent ask what you need:
 /excalidraw
 ```
+
+The bundled `plan` skill is a good example of a skill-backed slash command with custom behavior. Running `/plan [request]` tells Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:
 
@@ -137,7 +140,7 @@ When a missing value is encountered, Hermes asks for it securely only when the s
 
 ## Skill Directory Structure
 
-```
+```text
 ~/.hermes/skills/                  # Single source of truth
 ├── mlops/                         # Category directory
 │   ├── axolotl/

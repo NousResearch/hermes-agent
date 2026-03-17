@@ -115,3 +115,13 @@ class TestConfigYamlRouting:
         set_config_value("terminal.docker_image", "python:3.12")
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
+
+    def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "docker_mount_cwd_to_workspace: 'true'" in config or "docker_mount_cwd_to_workspace: true" in config
+        assert (
+            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
+            or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
+        )

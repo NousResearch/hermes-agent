@@ -1,14 +1,6 @@
 # Architecture Reference
 
-**Cross-references:**
-- Effect building blocks (value fields, noise, SDFs, particles): `effects.md`
-- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
-- Scene protocol, render_clip, SCENES table: `scenes.md`
-- Shader pipeline, feedback buffer, output encoding: `shaders.md`
-- Complete scene examples: `examples.md`
-- Input sources (audio analysis, video, TTS): `inputs.md`
-- Performance tuning, hardware detection: `optimization.md`
-- Common bugs (broadcasting, font, encoding): `troubleshooting.md`
+> **See also:** composition.md · effects.md · scenes.md · shaders.md · inputs.md · optimization.md · troubleshooting.md
 
 ## Grid System
 

@@ -168,7 +168,8 @@ Then start the gateway:
 
 ```bash
 hermes gateway              # Foreground
-hermes gateway install      # Install as a system service
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 ---
@@ -192,8 +193,8 @@ Understanding how Hermes behaves in different contexts:
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Bot responds to every message — no @mention needed |
-| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`) |
-| **Threads** | Bot replies in threads when the triggering message is in a thread |
+| **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
+| **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. |
 
 :::tip
 In channels, always @mention the bot. Simply typing a message without mentioning it will be ignored.
@@ -224,7 +225,7 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 
 Hermes supports voice on Slack:
 
-- **Incoming:** Voice/audio messages are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY`)
+- **Incoming:** Voice/audio messages are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as audio file attachments
 
 ---

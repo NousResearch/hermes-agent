@@ -26,7 +26,7 @@ Make it a **Tool** when:
 
 Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
 
-```
+```text
 skills/
 ├── research/
 │   └── arxiv/

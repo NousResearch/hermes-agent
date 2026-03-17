@@ -315,7 +315,7 @@ def build_delivery_context_for_tool(
     origin: Optional[SessionSource] = None
 ) -> Dict[str, Any]:
     """
-    Build context for the schedule_cronjob tool to understand delivery options.
+    Build context for the unified cronjob tool to understand delivery options.
     
     This is passed to the tool so it can validate and explain delivery targets.
     """

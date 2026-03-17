@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
 import sys
@@ -37,6 +37,8 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("ai-gateway", "AI Gateway", "api_key"),
+        ("kilocode", "Kilo Code", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -65,11 +67,23 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_ai_gateway_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["ai-gateway"]
+        assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
+        assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
+
+    def test_kilocode_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["kilocode"]
+        assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
+        assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
+        assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -84,9 +98,14 @@ class TestProviderRegistry:
 # =============================================================================
 
 PROVIDER_ENV_VARS = (
-    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
+    "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
+    "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
+    "NOUS_API_KEY",
     "OPENAI_BASE_URL",
 )
 
@@ -95,6 +114,7 @@ PROVIDER_ENV_VARS = (
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
 
 
 class TestResolveProvider:
@@ -111,6 +131,9 @@ class TestResolveProvider:
 
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
+
+    def test_explicit_ai_gateway(self):
+        assert resolve_provider("ai-gateway") == "ai-gateway"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
@@ -129,6 +152,24 @@ class TestResolveProvider:
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
+
+    def test_alias_aigateway(self):
+        assert resolve_provider("aigateway") == "ai-gateway"
+
+    def test_alias_vercel(self):
+        assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_explicit_kilocode(self):
+        assert resolve_provider("kilocode") == "kilocode"
+
+    def test_alias_kilo(self):
+        assert resolve_provider("kilo") == "kilocode"
+
+    def test_alias_kilo_code(self):
+        assert resolve_provider("kilo-code") == "kilocode"
+
+    def test_alias_kilo_gateway(self):
+        assert resolve_provider("kilo-gateway") == "kilocode"
 
     def test_alias_case_insensitive(self):
         assert resolve_provider("GLM") == "zai"
@@ -162,6 +203,14 @@ class TestResolveProvider:
     def test_auto_detects_minimax_cn_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
+
+    def test_auto_detects_ai_gateway_key(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
+        assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_detects_kilocode_key(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
+        assert resolve_provider("auto") == "kilocode"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -248,6 +297,26 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "mmcn-secret-key"
         assert creds["base_url"] == "https://api.minimaxi.com/v1"
 
+    def test_resolve_ai_gateway_with_key(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret-key")
+        creds = resolve_api_key_provider_credentials("ai-gateway")
+        assert creds["provider"] == "ai-gateway"
+        assert creds["api_key"] == "gw-secret-key"
+        assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
+
+    def test_resolve_kilocode_with_key(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
+        creds = resolve_api_key_provider_credentials("kilocode")
+        assert creds["provider"] == "kilocode"
+        assert creds["api_key"] == "kilo-secret-key"
+        assert creds["base_url"] == "https://api.kilo.ai/api/gateway"
+
+    def test_resolve_kilocode_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
+        monkeypatch.setenv("KILOCODE_BASE_URL", "https://custom.kilo.example/v1")
+        creds = resolve_api_key_provider_credentials("kilocode")
+        assert creds["base_url"] == "https://custom.kilo.example/v1"
+
     def test_resolve_with_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         monkeypatch.setenv("GLM_BASE_URL", "https://custom.glm.example/v4")
@@ -308,6 +377,24 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="minimax")
         assert result["provider"] == "minimax"
         assert result["api_key"] == "mm-key"
+
+    def test_runtime_ai_gateway(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="ai-gateway")
+        assert result["provider"] == "ai-gateway"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gw-key"
+        assert "ai-gateway.vercel.sh" in result["base_url"]
+
+    def test_runtime_kilocode(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="kilocode")
+        assert result["provider"] == "kilocode"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "kilo-key"
+        assert "kilo.ai" in result["base_url"]
 
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")
@@ -426,3 +513,30 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setenv("GLM_API_KEY", "sk-kimi-looks-like-kimi-but-isnt")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+# =============================================================================
+# Kimi / Moonshot model list isolation tests
+# =============================================================================
+
+class TestKimiMoonshotModelListIsolation:
+    """Moonshot (legacy) users must not see Coding Plan-only models."""
+
+    def test_moonshot_list_excludes_coding_plan_only_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        moonshot_models = _PROVIDER_MODELS["moonshot"]
+        coding_plan_only = {"kimi-for-coding", "kimi-k2-thinking-turbo"}
+        leaked = set(moonshot_models) & coding_plan_only
+        assert not leaked, f"Moonshot list contains Coding Plan-only models: {leaked}"
+
+    def test_moonshot_list_contains_shared_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        moonshot_models = _PROVIDER_MODELS["moonshot"]
+        assert "kimi-k2.5" in moonshot_models
+        assert "kimi-k2-thinking" in moonshot_models
+
+    def test_coding_plan_list_contains_plan_specific_models(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        coding_models = _PROVIDER_MODELS["kimi-coding"]
+        assert "kimi-for-coding" in coding_models
+        assert "kimi-k2-thinking-turbo" in coding_models

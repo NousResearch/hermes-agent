@@ -83,6 +83,14 @@ class TestSessionResetPolicy:
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
 
+    def test_from_dict_treats_null_values_as_defaults(self):
+        restored = SessionResetPolicy.from_dict(
+            {"mode": None, "at_hour": None, "idle_minutes": None}
+        )
+        assert restored.mode == "both"
+        assert restored.at_hour == 4
+        assert restored.idle_minutes == 1440
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
@@ -96,6 +104,7 @@ class TestGatewayConfigRoundtrip:
             },
             reset_triggers=["/new"],
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
+            group_sessions_per_user=False,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -104,6 +113,7 @@ class TestGatewayConfigRoundtrip:
         assert restored.platforms[Platform.TELEGRAM].token == "tok_123"
         assert restored.reset_triggers == ["/new"]
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+        assert restored.group_sessions_per_user is False
 
 
 class TestLoadGatewayConfig:
@@ -124,6 +134,18 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("group_sessions_per_user: false\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.group_sessions_per_user is False
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

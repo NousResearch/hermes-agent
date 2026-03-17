@@ -207,16 +207,17 @@ honcho: {}
 
 Honcho context is fetched asynchronously to avoid blocking the response path:
 
-```
-Turn N:
-  user message
-    → consume cached context (from previous turn's background fetch)
-    → inject into system prompt (user representation, AI representation, dialectic)
-    → LLM call
-    → response
-    → fire background fetch for next turn
-         → fetch context    ─┐
-         → fetch dialectic  ─┴→ cache for Turn N+1
+```mermaid
+flowchart TD
+    user["User message"] --> cache["Consume cached Honcho context<br/>from the previous turn"]
+    cache --> prompt["Inject user, AI, and dialectic context<br/>into the system prompt"]
+    prompt --> llm["LLM call"]
+    llm --> response["Assistant response"]
+    response --> fetch["Start background fetch for Turn N+1"]
+    fetch --> ctx["Fetch context"]
+    fetch --> dia["Fetch dialectic"]
+    ctx --> next["Cache for the next turn"]
+    dia --> next
 ```
 
 Turn 1 is a cold start (no cache). All subsequent turns consume cached results with zero HTTP latency on the response path. The system prompt on turn 1 uses only static context to preserve prefix cache hits at the LLM provider.
@@ -245,6 +246,25 @@ Dialectic queries scale reasoning effort with message complexity:
 ### Gateway Integration
 
 The gateway creates short-lived `AIAgent` instances per request. Honcho managers are owned at the gateway session layer (`_honcho_managers` dict) so they persist across requests within the same session and flush at real session boundaries (reset, resume, expiry, server stop).
+
+#### Session Isolation
+
+Each gateway session (e.g., a Telegram chat, a Discord channel) gets its own Honcho session context. The session key — derived from the platform and chat ID — is threaded through the entire tool dispatch chain so that Honcho tool calls always execute against the correct session, even when multiple users are messaging concurrently.
+
+This means:
+- **`honcho_profile`**, **`honcho_search`**, **`honcho_context`**, and **`honcho_conclude`** all resolve the correct session at call time, not at startup
+- Background memory flushes (triggered by `/reset`, `/resume`, or session expiry) preserve the original session key so they write to the correct Honcho session
+- Synthetic flush turns (where the agent saves memories before context is lost) skip Honcho sync to avoid polluting conversation history with internal bookkeeping
+
+#### Session Lifecycle
+
+| Event | What happens to Honcho |
+|-------|------------------------|
+| New message arrives | Agent inherits the gateway's Honcho manager + session key |
+| `/reset` | Memory flush fires with the old session key, then Honcho manager shuts down |
+| `/resume` | Current session is flushed, then the resumed session's Honcho context loads |
+| Session expiry | Automatic flush + shutdown after the configured idle timeout |
+| Gateway stop | All active Honcho managers are flushed and shut down gracefully |
 
 ## Tools
 

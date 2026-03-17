@@ -105,11 +105,24 @@ class TelegramAdapter(BasePlatformAdapter):
     
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    MEDIA_GROUP_WAIT_SECONDS = 0.8
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Buffer rapid/album photo updates so Telegram image bursts are handled
+        # as a single MessageEvent instead of self-interrupting multiple turns.
+        self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._media_group_events: Dict[str, MessageEvent] = {}
+        self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        # Buffer rapid text messages so Telegram client-side splits of long
+        # messages are aggregated into a single MessageEvent.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
 
@@ -194,8 +207,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_media_message
             ))
             
-            # Start polling in background
-            await self._app.initialize()
+            # Start polling — retry initialize() for transient TLS resets
+            try:
+                from telegram.error import NetworkError, TimedOut
+            except ImportError:
+                NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
+            _max_connect = 3
+            for _attempt in range(_max_connect):
+                try:
+                    await self._app.initialize()
+                    break
+                except (NetworkError, TimedOut, OSError) as init_err:
+                    if _attempt < _max_connect - 1:
+                        wait = 2 ** _attempt
+                        logger.warning(
+                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                            self.name, _attempt + 1, _max_connect, init_err, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
             await self._app.start()
             loop = asyncio.get_running_loop()
 
@@ -214,29 +245,13 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
             # Register bot commands so Telegram shows a hint menu when users type /
+            # List is derived from the central COMMAND_REGISTRY — adding a new
+            # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
+                from hermes_cli.commands import telegram_bot_commands
                 await self._bot.set_my_commands([
-                    BotCommand("new", "Start a new conversation"),
-                    BotCommand("reset", "Reset conversation history"),
-                    BotCommand("model", "Show or change the model"),
-                    BotCommand("reasoning", "Show or change reasoning effort"),
-                    BotCommand("personality", "Set a personality"),
-                    BotCommand("retry", "Retry your last message"),
-                    BotCommand("undo", "Remove the last exchange"),
-                    BotCommand("status", "Show session info"),
-                    BotCommand("stop", "Stop the running agent"),
-                    BotCommand("sethome", "Set this chat as the home channel"),
-                    BotCommand("compress", "Compress conversation context"),
-                    BotCommand("title", "Set or show the session title"),
-                    BotCommand("resume", "Resume a previously-named session"),
-                    BotCommand("usage", "Show token usage for this session"),
-                    BotCommand("provider", "Show available providers"),
-                    BotCommand("insights", "Show usage insights and analytics"),
-                    BotCommand("update", "Update Hermes to the latest version"),
-                    BotCommand("reload_mcp", "Reload MCP servers from config"),
-                    BotCommand("voice", "Toggle voice reply mode"),
-                    BotCommand("help", "Show available commands"),
+                    BotCommand(name, desc) for name, desc in telegram_bot_commands()
                 ])
             except Exception as e:
                 logger.warning(
@@ -257,15 +272,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     release_scoped_lock("telegram-bot-token", self._token_lock_identity)
                 except Exception:
                     pass
+            message = f"Telegram startup failed: {e}"
+            self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     
     async def disconnect(self) -> None:
-        """Stop polling and disconnect."""
+        """Stop polling, cancel pending album flushes, and disconnect."""
+        pending_media_group_tasks = list(self._media_group_tasks.values())
+        for task in pending_media_group_tasks:
+            task.cancel()
+        if pending_media_group_tasks:
+            await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
+        self._media_group_tasks.clear()
+        self._media_group_events.clear()
+
         if self._app:
             try:
-                await self._app.updater.stop()
-                await self._app.stop()
+                # Only stop the updater if it's running
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                if self._app.running:
+                    await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
@@ -275,13 +303,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 release_scoped_lock("telegram-bot-token", self._token_lock_identity)
             except Exception as e:
                 logger.warning("[%s] Error releasing Telegram token lock: %s", self.name, e, exc_info=True)
-        
+
+        for task in self._pending_photo_batch_tasks.values():
+            if task and not task.done():
+                task.cancel()
+        self._pending_photo_batch_tasks.clear()
+        self._pending_photo_batches.clear()
+
         self._mark_disconnected()
         self._app = None
         self._bot = None
         self._token_lock_identity = None
         logger.info("[%s] Disconnected from Telegram", self.name)
-    
+
     async def send(
         self,
         chat_id: str,
@@ -297,36 +331,59 @@ class TelegramAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if len(chunks) > 1:
+                # truncate_message appends a raw " (1/2)" suffix. Escape the
+                # MarkdownV2-special parentheses so Telegram doesn't reject the
+                # chunk and fall back to plain text.
+                chunks = [
+                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    for chunk in chunks
+                ]
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None
             
+            try:
+                from telegram.error import NetworkError as _NetErr
+            except ImportError:
+                _NetErr = OSError  # type: ignore[misc,assignment]
+
             for i, chunk in enumerate(chunks):
-                # Try Markdown first, fall back to plain text if it fails
-                try:
-                    msg = await self._bot.send_message(
-                        chat_id=int(chat_id),
-                        text=chunk,
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                        message_thread_id=int(thread_id) if thread_id else None,
-                    )
-                except Exception as md_error:
-                    # Markdown parsing failed, try plain text
-                    if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                        logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                        # Strip MDV2 escape backslashes so the user doesn't
-                        # see raw backslashes littered through the message.
-                        plain_chunk = _strip_mdv2(chunk)
-                        msg = await self._bot.send_message(
-                            chat_id=int(chat_id),
-                            text=plain_chunk,
-                            parse_mode=None,  # Plain text
-                            reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                            message_thread_id=int(thread_id) if thread_id else None,
-                        )
-                    else:
-                        raise  # Re-raise if not a parse error
+                msg = None
+                for _send_attempt in range(3):
+                    try:
+                        # Try Markdown first, fall back to plain text if it fails
+                        try:
+                            msg = await self._bot.send_message(
+                                chat_id=int(chat_id),
+                                text=chunk,
+                                parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                message_thread_id=int(thread_id) if thread_id else None,
+                            )
+                        except Exception as md_error:
+                            # Markdown parsing failed, try plain text
+                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                                plain_chunk = _strip_mdv2(chunk)
+                                msg = await self._bot.send_message(
+                                    chat_id=int(chat_id),
+                                    text=plain_chunk,
+                                    parse_mode=None,
+                                    reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                    message_thread_id=int(thread_id) if thread_id else None,
+                                )
+                            else:
+                                raise
+                        break  # success
+                    except _NetErr as send_err:
+                        if _send_attempt < 2:
+                            wait = 2 ** _send_attempt
+                            logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
+                                           self.name, _send_attempt + 1, wait, send_err)
+                            await asyncio.sleep(wait)
+                        else:
+                            raise
                 message_ids.append(str(msg.message_id))
             
             return SendResult(
@@ -357,7 +414,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
-            except Exception:
+            except Exception as fmt_err:
+                # "Message is not modified" is a no-op, not an error
+                if "not modified" in str(fmt_err).lower():
+                    return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -366,6 +426,46 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
+            err_str = str(e).lower()
+            # "Message is not modified" — content identical, treat as success
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            # Message too long — content exceeded 4096 chars (e.g. during
+            # streaming).  Truncate and succeed so the stream consumer can
+            # split the overflow into a new message instead of dying.
+            if "message_too_long" in err_str or "too long" in err_str:
+                truncated = content[: self.MAX_MESSAGE_LENGTH - 20] + "…"
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=truncated,
+                    )
+                except Exception:
+                    pass  # best-effort truncation
+                return SendResult(success=True, message_id=message_id)
+            # Flood control / RetryAfter — back off and retry once
+            retry_after = getattr(e, "retry_after", None)
+            if retry_after is not None or "retry after" in err_str:
+                wait = retry_after if retry_after else 1.0
+                logger.warning(
+                    "[%s] Telegram flood control, waiting %.1fs",
+                    self.name, wait,
+                )
+                await asyncio.sleep(wait)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=content,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_err:
+                    logger.error(
+                        "[%s] Edit retry failed after flood wait: %s",
+                        self.name, retry_err,
+                    )
+                    return SendResult(success=False, error=str(retry_err))
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
@@ -743,12 +843,17 @@ class TelegramAdapter(BasePlatformAdapter):
         return text
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages."""
+        """Handle incoming text messages.
+
+        Telegram clients split long messages into multiple updates.  Buffer
+        rapid successive text messages from the same user/chat and aggregate
+        them into a single MessageEvent before dispatching.
+        """
         if not update.message or not update.message.text:
             return
-        
+
         event = self._build_message_event(update.message, MessageType.TEXT)
-        await self.handle_message(event)
+        self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -792,6 +897,114 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION)
         event.text = "\n".join(parts)
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Telegram client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When Telegram splits a long user message into multiple updates,
+        they arrive within a few hundred milliseconds.  This method
+        concatenates them and waits for a short quiet period before
+        dispatching the combined message.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is None:
+            self._pending_text_batches[key] = event
+        else:
+            # Append text from the follow-up chunk
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        # Cancel any pending flush and restart the timer
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_seconds)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Telegram] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Photo batching
+    # ------------------------------------------------------------------
+
+    def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
+        """Return a batching key for Telegram photos/albums."""
+        from gateway.session import build_session_key
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            return f"{session_key}:album:{media_group_id}"
+        return f"{session_key}:photo-burst"
+
+    async def _flush_photo_batch(self, batch_key: str) -> None:
+        """Send a buffered photo burst/album as a single MessageEvent."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            event = self._pending_photo_batches.pop(batch_key, None)
+            if not event:
+                return
+            logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
+            await self.handle_message(event)
+        finally:
+            if self._pending_photo_batch_tasks.get(batch_key) is current_task:
+                self._pending_photo_batch_tasks.pop(batch_key, None)
+
+    def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
+        """Merge photo events into a pending batch and schedule flush."""
+        existing = self._pending_photo_batches.get(batch_key)
+        if existing is None:
+            self._pending_photo_batches[batch_key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                if not existing.text:
+                    existing.text = event.text
+                elif event.text not in existing.text:
+                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+
+        prior_task = self._pending_photo_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+
+        self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
@@ -844,14 +1057,22 @@ class TelegramAdapter(BasePlatformAdapter):
                         if file_obj.file_path.lower().endswith(candidate):
                             ext = candidate
                             break
-                # Save to cache and populate media_urls with the local path
+                # Save to local cache (for vision tool access)
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}"]
+                event.media_types = [f"image/{ext.lstrip('.')}" ]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
+                media_group_id = getattr(msg, "media_group_id", None)
+                if media_group_id:
+                    await self._queue_media_group_event(str(media_group_id), event)
+                else:
+                    batch_key = self._photo_batch_key(event, msg)
+                    self._enqueue_photo_event(batch_key, event)
+                return
+
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
-        
+
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
             try:
@@ -943,8 +1164,53 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
 
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            await self._queue_media_group_event(str(media_group_id), event)
+            return
+
         await self.handle_message(event)
     
+    async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
+        """Buffer Telegram media-group items so albums arrive as one logical event.
+
+        Telegram delivers albums as multiple updates with a shared media_group_id.
+        If we forward each item immediately, the gateway thinks the second image is a
+        new user message and interrupts the first. We debounce briefly and merge the
+        attachments into a single MessageEvent.
+        """
+        existing = self._media_group_events.get(media_group_id)
+        if existing is None:
+            self._media_group_events[media_group_id] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    if event.text not in existing.text.split("\n\n"):
+                        existing.text = f"{existing.text}\n\n{event.text}"
+                else:
+                    existing.text = event.text
+
+        prior_task = self._media_group_tasks.get(media_group_id)
+        if prior_task:
+            prior_task.cancel()
+
+        self._media_group_tasks[media_group_id] = asyncio.create_task(
+            self._flush_media_group_event(media_group_id)
+        )
+
+    async def _flush_media_group_event(self, media_group_id: str) -> None:
+        try:
+            await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
+            event = self._media_group_events.pop(media_group_id, None)
+            if event is not None:
+                await self.handle_message(event)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._media_group_tasks.pop(media_group_id, None)
+
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """
         Describe a Telegram sticker via vision analysis, with caching.
@@ -1034,11 +1300,20 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(message.message_thread_id) if message.message_thread_id else None,
         )
         
+        # Extract reply context if this message is a reply
+        reply_to_id = None
+        reply_to_text = None
+        if message.reply_to_message:
+            reply_to_id = str(message.reply_to_message.message_id)
+            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
             timestamp=message.date,
         )

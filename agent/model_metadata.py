@@ -40,6 +40,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "anthropic/claude-opus-4.6": 200000,
     "anthropic/claude-sonnet-4": 200000,
     "anthropic/claude-sonnet-4-20250514": 200000,
+    "anthropic/claude-sonnet-4.5": 200000,
+    "anthropic/claude-sonnet-4.6": 200000,
     "anthropic/claude-haiku-4.5": 200000,
     # Bare Anthropic model IDs (for native API provider)
     "claude-opus-4-6": 200000,
@@ -50,11 +52,18 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4-20250514": 200000,
     "claude-sonnet-4-20250514": 200000,
     "claude-haiku-4-5-20251001": 200000,
+    "openai/gpt-5": 128000,
+    "openai/gpt-4.1": 1047576,
+    "openai/gpt-4.1-mini": 1047576,
     "openai/gpt-4o": 128000,
     "openai/gpt-4-turbo": 128000,
     "openai/gpt-4o-mini": 128000,
+    "google/gemini-3-pro-preview": 1048576,
+    "google/gemini-3-flash": 1048576,
+    "google/gemini-2.5-flash": 1048576,
     "google/gemini-2.0-flash": 1048576,
     "google/gemini-2.5-pro": 1048576,
+    "deepseek/deepseek-v3.2": 65536,
     "meta-llama/llama-3.3-70b-instruct": 131072,
     "deepseek/deepseek-chat-v3": 65536,
     "qwen/qwen-2.5-72b-instruct": 32768,
@@ -71,6 +80,45 @@ DEFAULT_CONTEXT_LENGTHS = {
     "MiniMax-M2.5": 204800,
     "MiniMax-M2.5-highspeed": 204800,
     "MiniMax-M2.1": 204800,
+    # OpenCode Zen models
+    "gpt-5.4-pro": 128000,
+    "gpt-5.4": 128000,
+    "gpt-5.3-codex": 128000,
+    "gpt-5.3-codex-spark": 128000,
+    "gpt-5.2": 128000,
+    "gpt-5.2-codex": 128000,
+    "gpt-5.1": 128000,
+    "gpt-5.1-codex": 128000,
+    "gpt-5.1-codex-max": 128000,
+    "gpt-5.1-codex-mini": 128000,
+    "gpt-5": 128000,
+    "gpt-5-codex": 128000,
+    "gpt-5-nano": 128000,
+    # Bare model IDs without provider prefix (avoid duplicates with entries above)
+    "claude-opus-4-5": 200000,
+    "claude-opus-4-1": 200000,
+    "claude-sonnet-4-5": 200000,
+    "claude-sonnet-4": 200000,
+    "claude-haiku-4-5": 200000,
+    "claude-3-5-haiku": 200000,
+    "gemini-3.1-pro": 1048576,
+    "gemini-3-pro": 1048576,
+    "gemini-3-flash": 1048576,
+    "minimax-m2.5": 204800,
+    "minimax-m2.5-free": 204800,
+    "minimax-m2.1": 204800,
+    "glm-4.6": 202752,
+    "kimi-k2": 262144,
+    "qwen3-coder": 32768,
+    "big-pickle": 128000,
+    # Alibaba Cloud / DashScope Qwen models
+    "qwen3.5-plus": 131072,
+    "qwen3-max": 131072,
+    "qwen3-coder-plus": 131072,
+    "qwen3-coder-next": 131072,
+    "qwen-plus-latest": 131072,
+    "qwen3.5-flash": 131072,
+    "qwen-vl-max": 32768,
 }
 
 
@@ -213,8 +261,10 @@ def get_model_context_length(model: str, base_url: str = "") -> int:
     if model in metadata:
         return metadata[model].get("context_length", 128000)
 
-    # 3. Hardcoded defaults (fuzzy match)
-    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+    # 3. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
         if default_model in model or model in default_model:
             return length
 

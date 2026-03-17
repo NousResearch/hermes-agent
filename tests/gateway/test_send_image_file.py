@@ -199,6 +199,57 @@ class TestDiscordSendImageFile:
         assert result.message_id == "99"
         mock_channel.send.assert_awaited_once()
 
+    def test_send_document_uploads_file_attachment(self, adapter, tmp_path):
+        """send_document should upload a native Discord attachment."""
+        pdf = tmp_path / "sample.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 100
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+            result = _run(
+                adapter.send_document(
+                    chat_id="67890",
+                    file_path=str(pdf),
+                    file_name="renamed.pdf",
+                    metadata={"thread_id": "123"},
+                )
+            )
+
+        assert result.success
+        assert result.message_id == "100"
+        assert "file" in mock_channel.send.call_args.kwargs
+        assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
+
+    def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
+        """send_video should upload a native Discord attachment."""
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50)
+
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 101
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+            result = _run(
+                adapter.send_video(
+                    chat_id="67890",
+                    video_path=str(video),
+                    metadata={"thread_id": "123"},
+                )
+            )
+
+        assert result.success
+        assert result.message_id == "101"
+        assert "file" in mock_channel.send.call_args.kwargs
+        assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
+
     def test_returns_error_when_file_missing(self, adapter):
         result = _run(
             adapter.send_image_file(chat_id="67890", image_path="/nonexistent.png")

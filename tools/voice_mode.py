@@ -703,10 +703,11 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _load_stt_config, _HAS_FASTER_WHISPER
+    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled, _HAS_FASTER_WHISPER
     stt_config = _load_stt_config()
+    stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
-    stt_available = stt_provider != "none"
+    stt_available = stt_enabled and stt_provider != "none"
 
     missing: List[str] = []
     has_audio = _audio_available()
@@ -725,7 +726,9 @@ def check_voice_requirements() -> Dict[str, Any]:
     else:
         details_parts.append("Audio capture: MISSING (pip install sounddevice numpy)")
 
-    if stt_provider == "local":
+    if not stt_enabled:
+        details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")
+    elif stt_provider == "local":
         details_parts.append("STT provider: OK (local faster-whisper)")
     elif stt_provider == "groq":
         details_parts.append("STT provider: OK (Groq)")

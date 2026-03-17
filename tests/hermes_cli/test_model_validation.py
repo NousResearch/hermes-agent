@@ -7,6 +7,7 @@ from hermes_cli.models import (
     fetch_api_models,
     normalize_provider,
     parse_model_input,
+    probe_api_models,
     provider_label,
     provider_model_ids,
     validate_requested_model,
@@ -26,7 +27,15 @@ FAKE_API_MODELS = [
 
 def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
     """Shortcut: call validate_requested_model with mocked API."""
-    with patch("hermes_cli.models.fetch_api_models", return_value=api_models):
+    probe_payload = {
+        "models": api_models,
+        "probed_url": "http://localhost:11434/v1/models",
+        "resolved_base_url": kw.get("base_url", "") or "http://localhost:11434/v1",
+        "suggested_base_url": None,
+        "used_fallback": False,
+    }
+    with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+         patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
         return validate_requested_model(model, provider, **kw)
 
 
@@ -147,6 +156,33 @@ class TestFetchApiModels:
         with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
             assert fetch_api_models("key", "https://example.com/v1") is None
 
+    def test_probe_api_models_tries_v1_fallback(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "local-model"}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/v1/models"):
+                return _Resp()
+            raise Exception("404")
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe = probe_api_models("key", "http://localhost:8000")
+
+        assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
+        assert probe["models"] == ["local-model"]
+        assert probe["resolved_base_url"] == "http://localhost:8000/v1"
+        assert probe["used_fallback"] is True
+
 
 # -- validate — format checks -----------------------------------------------
 
@@ -191,6 +227,7 @@ class TestValidateApiFound:
         )
         assert result["accepted"] is True
         assert result["persist"] is True
+        assert result["recognized"] is True
 
 
 # -- validate — API not found ------------------------------------------------
@@ -232,3 +269,26 @@ class TestValidateApiFallback:
         result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
+
+    def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": None,
+                "probed_url": "http://localhost:8000/v1/models",
+                "resolved_base_url": "http://localhost:8000",
+                "suggested_base_url": "http://localhost:8000/v1",
+                "used_fallback": False,
+            },
+        ):
+            result = validate_requested_model(
+                "qwen3",
+                "custom",
+                api_key="local-key",
+                base_url="http://localhost:8000",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert "http://localhost:8000/v1/models" in result["message"]
+        assert "http://localhost:8000/v1" in result["message"]

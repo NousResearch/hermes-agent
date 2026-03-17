@@ -2,13 +2,7 @@
 
 The composable system is the core of visual complexity. It operates at three levels: pixel-level blend modes, multi-grid composition, and adaptive brightness management. This document covers all three, plus the masking/stencil system for spatial control.
 
-**Cross-references:**
-- Grid system, palettes, color (HSV + OKLAB): `architecture.md`
-- Effect building blocks (value fields, hue fields, particles): `effects.md`
-- Scene protocol, render_clip, SCENES table: `scenes.md`
-- Shader pipeline, feedback buffer: `shaders.md`
-- Complete scene examples with blend/mask usage: `examples.md`
-- Blend mode pitfalls (overlay crush, division by zero): `troubleshooting.md`
+> **See also:** architecture.md · effects.md · scenes.md · shaders.md · troubleshooting.md
 
 ## Pixel-Level Blend Modes
 

@@ -16,6 +16,8 @@ from cron.jobs import (
     get_job,
     list_jobs,
     update_job,
+    pause_job,
+    resume_job,
     remove_job,
     mark_job_run,
     get_due_jobs,
@@ -233,14 +235,18 @@ class TestUpdateJob:
         job = create_job(prompt="Daily report", schedule="every 1h")
         assert job["schedule"]["kind"] == "interval"
         assert job["schedule"]["minutes"] == 60
+        old_next_run = job["next_run_at"]
         new_schedule = parse_schedule("every 2h")
-        updated = update_job(job["id"], {"schedule": new_schedule})
+        updated = update_job(job["id"], {"schedule": new_schedule, "schedule_display": new_schedule["display"]})
         assert updated is not None
         assert updated["schedule"]["kind"] == "interval"
         assert updated["schedule"]["minutes"] == 120
+        assert updated["schedule_display"] == "every 120m"
+        assert updated["next_run_at"] != old_next_run
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["schedule"]["minutes"] == 120
+        assert fetched["schedule_display"] == "every 120m"
 
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
@@ -253,6 +259,26 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+
+class TestPauseResumeJob:
+    def test_pause_sets_state(self, tmp_cron_dir):
+        job = create_job(prompt="Pause me", schedule="every 1h")
+        paused = pause_job(job["id"], reason="user paused")
+        assert paused is not None
+        assert paused["enabled"] is False
+        assert paused["state"] == "paused"
+        assert paused["paused_reason"] == "user paused"
+
+    def test_resume_reenables_job(self, tmp_cron_dir):
+        job = create_job(prompt="Resume me", schedule="every 1h")
+        pause_job(job["id"], reason="user paused")
+        resumed = resume_job(job["id"])
+        assert resumed is not None
+        assert resumed["enabled"] is True
+        assert resumed["state"] == "scheduled"
+        assert resumed["paused_at"] is None
+        assert resumed["paused_reason"] is None
 
 
 class TestMarkJobRun:
@@ -278,16 +304,33 @@ class TestMarkJobRun:
 
 
 class TestGetDueJobs:
-    def test_past_due_returned(self, tmp_cron_dir):
+    def test_past_due_within_window_returned(self, tmp_cron_dir):
+        """Jobs less than 2 minutes late are still considered due (not stale)."""
         job = create_job(prompt="Due now", schedule="every 1h")
-        # Force next_run_at to the past
+        # Force next_run_at to just 1 minute ago (within the 2-min window)
         jobs = load_jobs()
-        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(seconds=60)).isoformat()
         save_jobs(jobs)
 
         due = get_due_jobs()
         assert len(due) == 1
         assert due[0]["id"] == job["id"]
+
+    def test_stale_past_due_skipped(self, tmp_cron_dir):
+        """Recurring jobs more than 2 minutes late are fast-forwarded, not fired."""
+        job = create_job(prompt="Stale", schedule="every 1h")
+        # Force next_run_at to 5 minutes ago (beyond the 2-min window)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+        assert len(due) == 0
+        # next_run_at should be fast-forwarded to the future
+        updated = get_job(job["id"])
+        from cron.jobs import _ensure_aware, _hermes_now
+        next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
+        assert next_dt > _hermes_now()
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

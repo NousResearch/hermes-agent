@@ -88,15 +88,8 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-```text
-╭─────────────────────────── Previous Conversation ────────────────────────────╮
-│   ● You: What is Python?                                                     │
-│   ◆ Hermes: Python is a high-level programming language.                     │
-│   ● You: How do I install it?                                                │
-│   ◆ Hermes: [3 tool calls: web_search, web_extract, terminal]                │
-│   ◆ Hermes: You can download Python from python.org...                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
+<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
 - Shows **user messages** (gold `●`) and **assistant responses** (green `◆`)
@@ -306,17 +299,32 @@ The agent is prompted to use session search automatically:
 
 On messaging platforms, sessions are keyed by a deterministic session key built from the message source:
 
-| Chat Type | Key Format | Example |
-|-----------|-----------|---------|
-| Telegram DM | `agent:main:telegram:dm` | One session per bot |
-| Discord DM | `agent:main:discord:dm` | One session per bot |
-| WhatsApp DM | `agent:main:whatsapp:dm:<chat_id>` | Per-user (multi-user) |
-| Group chat | `agent:main:<platform>:group:<chat_id>` | Per-group |
-| Channel | `agent:main:<platform>:channel:<chat_id>` | Per-channel |
+| Chat Type | Default Key Format | Behavior |
+|-----------|--------------------|----------|
+| Telegram DM | `agent:main:telegram:dm:<chat_id>` | One session per DM chat |
+| Discord DM | `agent:main:discord:dm:<chat_id>` | One session per DM chat |
+| WhatsApp DM | `agent:main:whatsapp:dm:<chat_id>` | One session per DM chat |
+| Group chat | `agent:main:<platform>:group:<chat_id>:<user_id>` | Per-user inside the group when the platform exposes a user ID |
+| Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>:<user_id>` | Per-user inside that thread/topic |
+| Channel | `agent:main:<platform>:channel:<chat_id>:<user_id>` | Per-user inside the channel when the platform exposes a user ID |
 
-:::info
-WhatsApp DMs include the chat ID in the session key because multiple users can DM the bot. Other platforms use a single DM session since the bot is configured per-user via allowlists.
-:::
+When Hermes cannot get a participant identifier for a shared chat, it falls back to one shared session for that room.
+
+### Shared vs Isolated Group Sessions
+
+By default, Hermes uses `group_sessions_per_user: true` in `config.yaml`. That means:
+
+- Alice and Bob can both talk to Hermes in the same Discord channel without sharing transcript history
+- one user's long tool-heavy task does not pollute another user's context window
+- interrupt handling also stays per-user because the running-agent key matches the isolated session key
+
+If you want one shared "room brain" instead, set:
+
+```yaml
+group_sessions_per_user: false
+```
+
+That reverts groups/channels to a single shared session per room, which preserves shared conversational context but also shares token costs, interrupt state, and context growth.
 
 ### Session Reset Policies
 

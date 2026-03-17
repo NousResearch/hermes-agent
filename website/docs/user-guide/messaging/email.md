@@ -80,7 +80,8 @@ EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 
 ```bash
 hermes gateway              # Run in foreground
-hermes gateway install      # Install as a system service
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 On startup, the adapter:
@@ -116,6 +117,18 @@ Replies are sent via SMTP with proper email threading:
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
+
+### Skipping Attachments
+
+To ignore all incoming attachments (for malware protection or bandwidth savings), add to your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    skip_attachments: true
+```
+
+When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
 ---
 

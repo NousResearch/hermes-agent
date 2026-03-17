@@ -1,11 +1,13 @@
 """Tests for tools/process_registry.py — ProcessRegistry query methods, pruning, checkpoint."""
 
 import json
+import os
 import time
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
@@ -214,6 +216,54 @@ class TestPruning:
 
 
 # =========================================================================
+# Spawn env sanitization
+# =========================================================================
+
+class TestSpawnEnvSanitization:
+    def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "USER": "tester",
+            "TELEGRAM_BOT_TOKEN": "bot-secret",
+            "FIRECRAWL_API_KEY": "fc-secret",
+        }, clear=True), \
+            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local(
+                "echo hello",
+                cwd="/tmp",
+                env_vars={
+                    "MY_CUSTOM_VAR": "keep-me",
+                    "TELEGRAM_BOT_TOKEN": "drop-me",
+                    f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN": "forced-bot-token",
+                },
+            )
+
+        env = captured["env"]
+        assert env["MY_CUSTOM_VAR"] == "keep-me"
+        assert env["TELEGRAM_BOT_TOKEN"] == "forced-bot-token"
+        assert "FIRECRAWL_API_KEY" not in env
+        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
+        assert env["PYTHONUNBUFFERED"] == "1"
+
+
+# =========================================================================
 # Checkpoint
 # =========================================================================
 
@@ -243,6 +293,61 @@ class TestCheckpoint:
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
+
+    def test_write_checkpoint_includes_watcher_metadata(self, registry, tmp_path):
+        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+            s = _make_session()
+            s.watcher_platform = "telegram"
+            s.watcher_chat_id = "999"
+            s.watcher_thread_id = "42"
+            s.watcher_interval = 60
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads((tmp_path / "procs.json").read_text())
+            assert len(data) == 1
+            assert data[0]["watcher_platform"] == "telegram"
+            assert data[0]["watcher_chat_id"] == "999"
+            assert data[0]["watcher_thread_id"] == "42"
+            assert data[0]["watcher_interval"] == 60
+
+    def test_recover_enqueues_watchers(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),  # current process — guaranteed alive
+            "task_id": "t1",
+            "session_key": "sk1",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_thread_id": "42",
+            "watcher_interval": 60,
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 1
+            w = registry.pending_watchers[0]
+            assert w["session_id"] == "proc_live"
+            assert w["platform"] == "telegram"
+            assert w["chat_id"] == "123"
+            assert w["thread_id"] == "42"
+            assert w["check_interval"] == 60
+
+    def test_recover_skips_watcher_when_no_interval(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "watcher_interval": 0,
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 0
 
 
 # =========================================================================

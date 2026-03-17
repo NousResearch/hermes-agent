@@ -483,6 +483,8 @@ install_system_packages() {
         elif command -v sudo &> /dev/null; then
             if [ "$IS_INTERACTIVE" = true ]; then
                 echo ""
+                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
+                log_info "Hermes Agent itself does not require or retain root access."
                 read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -496,8 +498,9 @@ install_system_packages() {
                 # Non-interactive (e.g. curl | bash) but a terminal is available.
                 # Read the prompt from /dev/tty (same approach the setup wizard uses).
                 echo ""
-                log_info "Installing ${description} requires sudo."
-                read -p "Install? [Y/n] " -n 1 -r < /dev/tty
+                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
+                log_info "Hermes Agent itself does not require or retain root access."
+                read -p "Install ${description}? [Y/n] " -n 1 -r < /dev/tty
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
                     if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
@@ -688,7 +691,9 @@ install_deps() {
                     sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                     log_success "Build tools installed"
                 else
-                    read -p "Install build tools (build-essential, python3-dev)? (requires sudo) [Y/n] " -n 1 -r < /dev/tty
+                    log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
+                    log_info "Hermes Agent itself does not require or retain root access."
+                    read -p "Install build tools? [Y/n] " -n 1 -r < /dev/tty
                     echo
                     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
@@ -908,6 +913,8 @@ install_node_deps() {
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
                 ;;
             *)
+                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
+                log_info "This is standard Playwright setup — Hermes itself does not require root access."
                 cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || true
                 ;;
         esac

@@ -426,14 +426,34 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
 def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     """Discover and load context files for the system prompt.
 
-    Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
+    Discovery: global AGENTS.md from HERMES_HOME, project-local AGENTS.md
+    (recursive), .cursorrules / .cursor/rules/*.mdc, and SOUL.md from
+    HERMES_HOME only. Each capped at 20,000 chars.
     """
     if cwd is None:
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
     sections = []
+
+    # Global AGENTS.md from HERMES_HOME
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading AGENTS.md/SOUL.md: %s", e)
+
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    global_agents_path = hermes_home / "AGENTS.md"
+    if global_agents_path.exists():
+        try:
+            content = global_agents_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, "~/.hermes/AGENTS.md")
+                content = _truncate_content(content, "~/.hermes/AGENTS.md")
+                sections.append(f"## ~/.hermes/AGENTS.md\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read global AGENTS.md from %s: %s", global_agents_path, e)
 
     # AGENTS.md (hierarchical, recursive)
     top_level_agents = None
@@ -518,13 +538,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         sections.append(hermes_md_content)
 
     # SOUL.md from HERMES_HOME only
-    try:
-        from hermes_cli.config import ensure_hermes_home
-        ensure_hermes_home()
-    except Exception as e:
-        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
-
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
         try:
             content = soul_path.read_text(encoding="utf-8").strip()

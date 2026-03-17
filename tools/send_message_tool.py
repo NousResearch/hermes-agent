@@ -308,9 +308,23 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
-    """Send via Telegram Bot API (one-shot, no polling needed)."""
+    """Send via Telegram Bot API (one-shot, no polling needed).
+
+    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
+    so that bold, links, and headers render correctly.
+    """
     try:
         from telegram import Bot
+        from telegram.constants import ParseMode
+
+        # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+        try:
+            from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2
+            _adapter = TelegramAdapter.__new__(TelegramAdapter)
+            formatted = _adapter.format_message(message)
+        except Exception:
+            # Fallback: send as-is if formatting unavailable
+            formatted = message
 
         bot = Bot(token=token)
         int_chat_id = int(chat_id)
@@ -322,10 +336,27 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
-        if message.strip():
-            last_msg = await bot.send_message(
-                chat_id=int_chat_id, text=message, **thread_kwargs
-            )
+        if formatted.strip():
+            try:
+                last_msg = await bot.send_message(
+                    chat_id=int_chat_id, text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2, **thread_kwargs
+                )
+            except Exception as md_error:
+                # MarkdownV2 failed, fall back to plain text
+                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                    logger.warning("MarkdownV2 parse failed in _send_telegram, falling back to plain text: %s", md_error)
+                    try:
+                        from gateway.platforms.telegram import _strip_mdv2
+                        plain = _strip_mdv2(formatted)
+                    except Exception:
+                        plain = message
+                    last_msg = await bot.send_message(
+                        chat_id=int_chat_id, text=plain,
+                        parse_mode=None, **thread_kwargs
+                    )
+                else:
+                    raise
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

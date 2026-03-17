@@ -136,11 +136,11 @@ Use the `conversation` parameter instead of tracking response IDs:
 
 The server automatically chains to the latest response in that conversation. Like the `/title` command for gateway sessions.
 
-### GET /v1/responses/{id}
+### GET /v1/responses/\{id\}
 
 Retrieve a previously stored response by ID.
 
-### DELETE /v1/responses/{id}
+### DELETE /v1/responses/\{id\}
 
 Delete a stored response.
 

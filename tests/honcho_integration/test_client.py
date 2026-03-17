@@ -63,11 +63,13 @@ class TestFromEnv:
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
-        config = HonchoClientConfig.from_global_config(
-            config_path=tmp_path / "nonexistent.json"
-        )
+        with patch.dict(os.environ, {}, clear=True):
+            config = HonchoClientConfig.from_global_config(
+                config_path=tmp_path / "nonexistent.json"
+            )
         # Should fall back to from_env
-        assert config.enabled is True or config.api_key is None  # depends on env
+        assert config.enabled is False
+        assert config.api_key is None
 
     def test_reads_full_config(self, tmp_path):
         config_file = tmp_path / "config.json"

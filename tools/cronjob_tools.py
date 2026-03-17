@@ -8,7 +8,6 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 import json
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -414,13 +413,10 @@ def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
 
-    Requires 'crontab' executable to be present in the system PATH.
+    Cron jobs are managed internally by Hermes (stored in ~/.hermes/cron/jobs.json
+    and executed by the gateway's scheduler). No system crontab is required.
     Available in interactive CLI mode and gateway/messaging platforms.
     """
-    # Ensure the system can actually install and manage cron entries.
-    if not shutil.which("crontab"):
-        return False
-
     return bool(
         os.getenv("HERMES_INTERACTIVE")
         or os.getenv("HERMES_GATEWAY_SESSION")

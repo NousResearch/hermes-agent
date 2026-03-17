@@ -62,19 +62,31 @@ class TestScanCronPrompt:
 
 
 class TestCronjobRequirements:
-    def test_requires_crontab_binary_even_in_interactive_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    def test_requires_interactive_mode(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: None)
 
         assert check_cronjob_requirements() is False
 
-    def test_accepts_interactive_mode_when_crontab_exists(self, monkeypatch):
+    def test_accepts_interactive_mode(self, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/crontab")
+
+        assert check_cronjob_requirements() is True
+
+    def test_accepts_gateway_session(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        assert check_cronjob_requirements() is True
+
+    def test_accepts_exec_ask(self, monkeypatch):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
 
         assert check_cronjob_requirements() is True
 

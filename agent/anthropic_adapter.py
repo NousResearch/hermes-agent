@@ -461,18 +461,23 @@ def run_hermes_oauth_login() -> Optional[str]:
     auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
 
     print()
-    print("Opening browser for Claude Pro/Max authorization...")
-    print(f"If the browser doesn't open, visit this URL:")
+    print("Authorize Hermes with your Claude Pro/Max subscription.")
+    print()
+    print("Open this link in your browser:")
+    print()
     print(f"  {auth_url}")
     print()
 
+    # Try to open browser automatically (works on desktop, silently fails on headless)
     try:
         webbrowser.open(auth_url)
     except Exception:
-        pass  # URL printed above as fallback
+        pass
 
+    print("After authorizing, you'll see a code. Paste it below.")
+    print()
     try:
-        auth_code = input("Paste the authorization code here: ").strip()
+        auth_code = input("Authorization code: ").strip()
     except (KeyboardInterrupt, EOFError):
         return None
 

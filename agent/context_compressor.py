@@ -17,6 +17,16 @@ from agent.model_metadata import (
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
+    "to save context space. The summary below describes work that was "
+    "already completed, and the current session state may still reflect "
+    "that work (for example, files may already be changed). Use the summary "
+    "and the current state to continue from where things left off, and "
+    "avoid repeating work:"
+)
+LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
 
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.
@@ -102,22 +112,22 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
+        prompt = f"""Create a concise handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
 
-Write from a neutral perspective describing:
+Describe:
 1. What actions were taken (tool calls, searches, file operations)
 2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
+3. Important decisions, constraints, or user preferences
+4. Relevant data, file names, outputs, or next steps needed to continue
 
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
+Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{self.summary_target_tokens} tokens.
 
 ---
 TURNS TO SUMMARIZE:
 {content_to_summarize}
 ---
 
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+Write only the summary body. Do not include any preamble or prefix; the system will add the handoff wrapper."""
 
         # Use the centralized LLM router — handles provider resolution,
         # auth, and fallback internally.
@@ -132,10 +142,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
-            summary = response.choices[0].message.content.strip()
-            if not summary.startswith("[CONTEXT SUMMARY]:"):
-                summary = "[CONTEXT SUMMARY]: " + summary
-            return summary
+            content = response.choices[0].message.content
+            # Handle cases where content is not a string (e.g., dict from llama.cpp)
+            if not isinstance(content, str):
+                content = str(content) if content else ""
+            summary = content.strip()
+            return self._with_summary_prefix(summary)
         except RuntimeError:
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary.")
@@ -143,6 +155,16 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         except Exception as e:
             logging.warning("Failed to generate context summary: %s", e)
             return None
+
+    @staticmethod
+    def _with_summary_prefix(summary: str) -> str:
+        """Normalize summary text to the current compaction handoff format."""
+        text = (summary or "").strip()
+        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
@@ -253,7 +275,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         n_messages = len(messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:
-                print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
+                logger.warning(
+                    "Cannot compress: only %d messages (need > %d)",
+                    n_messages,
+                    self.protect_first_n + self.protect_last_n + 1,
+                )
             return messages
 
         compress_start = self.protect_first_n
@@ -271,11 +297,23 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         if not self.quiet_mode:
-            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
-            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
-
-        if not self.quiet_mode:
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+            logger.info(
+                "Context compression triggered (%d tokens >= %d threshold)",
+                display_tokens,
+                self.threshold_tokens,
+            )
+            logger.info(
+                "Model context limit: %d tokens (%.0f%% = %d)",
+                self.context_length,
+                self.threshold_percent * 100,
+                self.threshold_tokens,
+            )
+            logger.info(
+                "Summarizing turns %d-%d (%d turns)",
+                compress_start + 1,
+                compress_end,
+                len(turns_to_summarize),
+            )
 
         summary = self._generate_summary(turns_to_summarize)
 
@@ -283,19 +321,47 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (
+                    (msg.get("content") or "")
+                    + "\n\n[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
+                )
             compressed.append(msg)
 
+        _merge_summary_into_tail = False
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
-            compressed.append({"role": summary_role, "content": summary})
+            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+            # Pick a role that avoids consecutive same-role with both neighbors.
+            # Priority: avoid colliding with head (already committed), then tail.
+            if last_head_role in ("assistant", "tool"):
+                summary_role = "user"
+            else:
+                summary_role = "assistant"
+            # If the chosen role collides with the tail AND flipping wouldn't
+            # collide with the head, flip it.
+            if summary_role == first_tail_role:
+                flipped = "assistant" if summary_role == "user" else "user"
+                if flipped != last_head_role:
+                    summary_role = flipped
+                else:
+                    # Both roles would create consecutive same-role messages
+                    # (e.g. head=assistant, tail=user — neither role works).
+                    # Merge the summary into the first tail message instead
+                    # of inserting a standalone message that breaks alternation.
+                    _merge_summary_into_tail = True
+            if not _merge_summary_into_tail:
+                compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
-                print("   ⚠️  No summary model available — middle turns dropped without summary")
+                logger.warning("No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
+            msg = messages[i].copy()
+            if _merge_summary_into_tail and i == compress_end:
+                original = msg.get("content") or ""
+                msg["content"] = summary + "\n\n" + original
+                _merge_summary_into_tail = False
+            compressed.append(msg)
 
         self.compression_count += 1
 
@@ -304,7 +370,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if not self.quiet_mode:
             new_estimate = estimate_messages_tokens_rough(compressed)
             saved_estimate = display_tokens - new_estimate
-            print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
-            print(f"   💡 Compression #{self.compression_count} complete")
+            logger.info(
+                "Compressed: %d -> %d messages (~%d tokens saved)",
+                n_messages,
+                len(compressed),
+                saved_estimate,
+            )
+            logger.info("Compression #%d complete", self.compression_count)
 
         return compressed

@@ -1194,6 +1194,7 @@ class GatewayRunner:
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1205,6 +1206,7 @@ class GatewayRunner:
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -3064,6 +3066,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "hermes-signal",
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
+                Platform.DINGTALK: "hermes-dingtalk",
             }
             platform_toolsets_config = {}
             try:
@@ -3085,6 +3088,7 @@ class GatewayRunner:
                 Platform.SIGNAL: "signal",
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
+                Platform.DINGTALK: "dingtalk",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -4082,6 +4086,7 @@ class GatewayRunner:
             Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
         }
 
         # Try to load platform_toolsets from config
@@ -4106,6 +4111,7 @@ class GatewayRunner:
             Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

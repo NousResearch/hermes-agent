@@ -350,11 +350,12 @@ class SessionDB:
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
-        cursor = self._conn.execute(
-            "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
-            (f"{escaped}%",),
-        )
-        matches = [row["id"] for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
+                (f"{escaped}%",),
+            )
+            matches = [row["id"] for row in cursor.fetchall()]
         if len(matches) == 1:
             return matches[0]
         return None

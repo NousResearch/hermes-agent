@@ -477,7 +477,12 @@ def run_hermes_oauth_login() -> Optional[str]:
     import time
     import webbrowser
 
+    import secrets as _secrets
     verifier, challenge = _generate_pkce()
+    # Use a separate random value for state (CSRF protection).
+    # The code_verifier is the PKCE secret and must NEVER appear in the URL
+    # (browser history, proxy logs, Referer headers would leak it).
+    oauth_state = _secrets.token_urlsafe(16)
 
     # Build authorization URL
     params = {
@@ -488,7 +493,7 @@ def run_hermes_oauth_login() -> Optional[str]:
         "scope": _OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     from urllib.parse import urlencode
     auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
@@ -615,7 +620,8 @@ def refresh_hermes_oauth_token() -> Optional[str]:
         return None
 
     try:
-        data = json.dumps({
+        import urllib.parse
+        data = urllib.parse.urlencode({
             "grant_type": "refresh_token",
             "refresh_token": creds["refreshToken"],
             "client_id": _OAUTH_CLIENT_ID,
@@ -625,7 +631,7 @@ def refresh_hermes_oauth_token() -> Optional[str]:
             _OAUTH_TOKEN_URL,
             data=data,
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
             },
             method="POST",
@@ -1056,8 +1062,9 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name — must match the (possibly prefixed) tool definition
+            tc_name = (_MCP_TOOL_PREFIX + tool_choice) if is_oauth and not tool_choice.startswith(_MCP_TOOL_PREFIX) else tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": tc_name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6 models use adaptive thinking + output_config.effort.

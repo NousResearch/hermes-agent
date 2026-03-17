@@ -969,3 +969,61 @@ class TestToolChoice:
             tool_choice="search",
         )
         assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
+
+
+# ---------------------------------------------------------------------------
+# Security bug regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestPKCESecurityBugs:
+    """PKCE OAuth flow must not leak code_verifier via URL state parameter."""
+
+    def test_auth_url_does_not_contain_verifier(self):
+        """The authorization URL must not contain the PKCE code_verifier.
+        The verifier is the PKCE secret — exposing it in the URL (via state param,
+        browser history, proxy logs) defeats PKCE entirely."""
+        import inspect
+        from agent.anthropic_adapter import run_hermes_oauth_login
+        source = inspect.getsource(run_hermes_oauth_login)
+        # The current code does "state": verifier — this is the bug
+        assert '"state": verifier' not in source, \
+            "PKCE code_verifier must not be used as OAuth state parameter — it leaks the secret in the URL"
+
+
+class TestRefreshContentType:
+    """Hermes OAuth refresh must use form-urlencoded per RFC 6749."""
+
+    def test_hermes_refresh_uses_form_urlencoded(self):
+        """refresh_hermes_oauth_token must use application/x-www-form-urlencoded, not JSON."""
+        import inspect
+        from agent.anthropic_adapter import refresh_hermes_oauth_token
+        source = inspect.getsource(refresh_hermes_oauth_token)
+        # RFC 6749 Section 4.1.3 requires form-urlencoded for token endpoint
+        assert "application/x-www-form-urlencoded" in source, \
+            "Token refresh must use application/x-www-form-urlencoded per OAuth RFC 6749"
+        assert "application/json" not in source, \
+            "Token refresh must NOT use application/json for the token endpoint"
+
+
+class TestToolChoiceOAuthPrefix:
+    """When is_oauth=True, tool_choice name must get mcp_ prefix like tools do."""
+
+    _DUMMY_TOOL = [{"type": "function", "function": {"name": "search", "description": "s", "parameters": {"type": "object", "properties": {}}}}]
+
+    def test_specific_tool_choice_gets_mcp_prefix_with_oauth(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._DUMMY_TOOL,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice="search",
+            is_oauth=True,
+        )
+        # Tools are prefixed with mcp_
+        tool_names = [t["name"] for t in kwargs["tools"]]
+        assert all(n.startswith("mcp_") for n in tool_names)
+        # tool_choice must also be prefixed to match
+        assert kwargs["tool_choice"]["name"] == "mcp_search", \
+            "tool_choice name must be mcp_-prefixed when is_oauth=True to match tool definitions"

@@ -60,6 +60,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
+    "kilocode": "google/gemini-3-flash-preview",
 }
 
 # OpenRouter app attribution headers

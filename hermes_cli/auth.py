@@ -174,10 +174,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "opencode-go": ProviderConfig(
         id="opencode-go",
         name="OpenCode Go",
-        auth_type="api_key",
+        auth_type="***",
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPENCODE_GO_API_KEY",),
+        api_key_env_vars=("OPEN...",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
+    ),
+    "kilocode": ProviderConfig(
+        id="kilocode",
+        name="Kilo Code",
+        auth_type="api_key",
+        inference_base_url="https://api.kilo.ai/api/gateway",
+        api_key_env_vars=("KILOCODE_API_KEY",),
+        base_url_env_var="KILOCODE_BASE_URL",
     ),
 }
 
@@ -559,6 +567,7 @@ def resolve_provider(
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
+        "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

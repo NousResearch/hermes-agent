@@ -398,6 +398,7 @@ Good first servers for most users:
 - GitHub
 - fetch / documentation MCP servers
 - one narrow internal API
+- [macos-mcp](./macos-automation) — if you are on macOS and want Hermes to control your desktop
 
 Not-great first servers:
 - giant business systems with lots of destructive actions and no filtering

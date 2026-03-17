@@ -1996,20 +1996,32 @@ def _update_via_zip(args):
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
     
-    # Reinstall Python dependencies
+    # Reinstall Python dependencies (try .[all] first for optional extras,
+    # fall back to . if extras fail — mirrors the install script behavior)
     print("→ Updating Python dependencies...")
     import subprocess
     uv_bin = shutil.which("uv")
     if uv_bin:
-        subprocess.run(
-            [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-            cwd=PROJECT_ROOT, check=True,
-            env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        )
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        try:
+            subprocess.run(
+                [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
+                cwd=PROJECT_ROOT, check=True, env=uv_env,
+            )
+        except subprocess.CalledProcessError:
+            print("  ⚠ Optional extras failed, installing base dependencies...")
+            subprocess.run(
+                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                cwd=PROJECT_ROOT, check=True, env=uv_env,
+            )
     else:
         venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-        if venv_pip.exists():
-            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+        try:
+            subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        except subprocess.CalledProcessError:
+            print("  ⚠ Optional extras failed, installing base dependencies...")
+            subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
     
     # Sync skills
     try:
@@ -2257,21 +2269,31 @@ def cmd_update(args):
         
         _invalidate_update_cache()
         
-        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
+        # Reinstall Python dependencies (try .[all] first for optional extras,
+        # fall back to . if extras fail — mirrors the install script behavior)
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True,
-                env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            )
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            try:
+                subprocess.run(
+                    [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
+                    cwd=PROJECT_ROOT, check=True, env=uv_env,
+                )
+            except subprocess.CalledProcessError:
+                print("  ⚠ Optional extras failed, installing base dependencies...")
+                subprocess.run(
+                    [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                    cwd=PROJECT_ROOT, check=True, env=uv_env,
+                )
         else:
             venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            if venv_pip.exists():
-                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            else:
-                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            try:
+                subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            except subprocess.CalledProcessError:
+                print("  ⚠ Optional extras failed, installing base dependencies...")
+                subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():

@@ -149,6 +149,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`) |
+| `WHATSAPP_REPLY_PREFIX` | Optional WhatsApp reply prefix. Supports `\n` escapes. Set to an empty value to disable the header entirely |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |

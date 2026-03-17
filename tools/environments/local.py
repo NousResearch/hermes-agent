@@ -99,6 +99,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "WHATSAPP_ENABLED",
         "WHATSAPP_MODE",
         "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_REPLY_PREFIX",
         "SIGNAL_HTTP_URL",
         "SIGNAL_ACCOUNT",
         "SIGNAL_ALLOWED_USERS",

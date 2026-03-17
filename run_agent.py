@@ -4884,6 +4884,7 @@ class AIAgent:
         codex_ack_continuations = 0
         length_continue_retries = 0
         truncated_response_prefix = ""
+        compression_attempts = 0
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -5029,7 +5030,6 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 3
-            compression_attempts = 0
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False

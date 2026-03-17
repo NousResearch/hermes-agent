@@ -123,9 +123,14 @@ class TestFirecrawlClientConfig:
 
 
 class TestBackendSelection:
-    """Test suite for _get_backend() backend selection logic."""
+    """Test suite for _get_backend() backend selection logic.
 
-    _ENV_KEYS = ("WEB_SEARCH_BACKEND", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")
+    The backend is configured via config.yaml (web.backend), set by
+    ``hermes tools``.  Falls back to key-based detection for legacy/manual
+    setups.
+    """
+
+    _ENV_KEYS = ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")
 
     def setup_method(self):
         for key in self._ENV_KEYS:
@@ -135,64 +140,61 @@ class TestBackendSelection:
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
 
-    # ── Explicit backend selection ────────────────────────────────────
+    # ── Config-based selection (web.backend in config.yaml) ───────────
 
-    def test_explicit_parallel(self):
-        """WEB_SEARCH_BACKEND=parallel → 'parallel' regardless of keys."""
-        with patch.dict(os.environ, {"WEB_SEARCH_BACKEND": "parallel"}):
-            from tools.web_tools import _get_backend
+    def test_config_parallel(self):
+        """web.backend=parallel in config → 'parallel' regardless of keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
             assert _get_backend() == "parallel"
 
-    def test_explicit_firecrawl(self):
-        """WEB_SEARCH_BACKEND=firecrawl → 'firecrawl' even if Parallel key set."""
-        with patch.dict(os.environ, {
-            "WEB_SEARCH_BACKEND": "firecrawl",
-            "PARALLEL_API_KEY": "test-key",
-        }):
-            from tools.web_tools import _get_backend
+    def test_config_firecrawl(self):
+        """web.backend=firecrawl in config → 'firecrawl' even if Parallel key set."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "firecrawl"
 
-    def test_explicit_case_insensitive(self):
-        """WEB_SEARCH_BACKEND=Parallel (mixed case) → 'parallel'."""
-        with patch.dict(os.environ, {"WEB_SEARCH_BACKEND": "Parallel"}):
-            from tools.web_tools import _get_backend
+    def test_config_case_insensitive(self):
+        """web.backend=Parallel (mixed case) → 'parallel'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Parallel"}):
             assert _get_backend() == "parallel"
 
-    # ── Fallback (no explicit WEB_SEARCH_BACKEND) ───────────────────
+    # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
         """Only PARALLEL_API_KEY set → 'parallel'."""
-        with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            from tools.web_tools import _get_backend
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
     def test_fallback_both_keys_defaults_to_firecrawl(self):
-        """Both keys set, no WEB_SEARCH_BACKEND → 'firecrawl' (backward compat)."""
-        with patch.dict(os.environ, {
-            "PARALLEL_API_KEY": "test-key",
-            "FIRECRAWL_API_KEY": "fc-test",
-        }):
-            from tools.web_tools import _get_backend
+        """Both keys set, no config → 'firecrawl' (backward compat)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_firecrawl_only_key(self):
         """Only FIRECRAWL_API_KEY set → 'firecrawl'."""
-        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
-            from tools.web_tools import _get_backend
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no WEB_SEARCH_BACKEND → 'firecrawl' (will fail at client init)."""
+        """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        assert _get_backend() == "firecrawl"
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            assert _get_backend() == "firecrawl"
 
-    def test_invalid_backend_falls_through_to_fallback(self):
-        """WEB_SEARCH_BACKEND=invalid → ignored, uses key-based fallback."""
-        with patch.dict(os.environ, {
-            "WEB_SEARCH_BACKEND": "tavily",
-            "PARALLEL_API_KEY": "test-key",
-        }):
-            from tools.web_tools import _get_backend
+    def test_invalid_config_falls_through_to_fallback(self):
+        """web.backend=invalid → ignored, uses key-based fallback."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
 

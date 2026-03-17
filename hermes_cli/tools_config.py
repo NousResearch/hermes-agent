@@ -629,8 +629,8 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         current = config.get("browser", {}).get("cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("web_backend"):
-        current = get_env_value("WEB_SEARCH_BACKEND")
-        return current and current.lower() == provider["web_backend"]
+        current = config.get("web", {}).get("backend")
+        return current == provider["web_backend"]
     return False
 
 
@@ -663,9 +663,9 @@ def _configure_provider(provider: dict, config: dict):
         else:
             config.get("browser", {}).pop("cloud_provider", None)
 
-    # Set web search backend if applicable
+    # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        save_env_value("WEB_SEARCH_BACKEND", provider["web_backend"])
+        config.setdefault("web", {})["backend"] = provider["web_backend"]
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if not env_vars:

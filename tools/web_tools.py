@@ -3,7 +3,7 @@
 Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
-Backend is selected during ``hermes tools`` setup (WEB_SEARCH_BACKEND env var).
+Backend is selected during ``hermes tools`` setup (web.backend in config.yaml).
 
 Available tools:
 - web_search_tool: Search the web for information
@@ -56,16 +56,25 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def _load_web_config() -> dict:
+    """Load the ``web:`` section from ~/.hermes/config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        return load_config().get("web", {})
+    except (ImportError, Exception):
+        return {}
+
+
 def _get_backend() -> str:
     """Determine which web backend to use.
 
-    Reads the explicit WEB_SEARCH_BACKEND env var set by ``hermes tools``.
+    Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    explicit = os.getenv("WEB_SEARCH_BACKEND", "").lower().strip()
-    if explicit in ("parallel", "firecrawl"):
-        return explicit
+    configured = _load_web_config().get("backend", "").lower().strip()
+    if configured in ("parallel", "firecrawl"):
+        return configured
     # Fallback for manual / legacy config — use whichever key is present.
     has_firecrawl = bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
     has_parallel = bool(os.getenv("PARALLEL_API_KEY"))

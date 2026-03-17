@@ -1383,13 +1383,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
         tree = self._client.tree
 
-        @tree.command(name="ask", description="Ask Hermes a question")
-        @discord.app_commands.describe(question="Your question for Hermes")
-        async def slash_ask(interaction: discord.Interaction, question: str):
-            await interaction.response.defer()
-            event = self._build_slash_event(interaction, question)
-            await self.handle_message(event)
-
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "New conversation started~")

@@ -342,7 +342,13 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
-        
+
+        # Track active fallback model/provider when primary is rate-limited.
+        # Set after an agent run where fallback was activated; cleared when
+        # the primary model succeeds again or the user switches via /model.
+        self._effective_model: Optional[str] = None
+        self._effective_provider: Optional[str] = None
+
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -2204,6 +2210,21 @@ class GatewayRunner:
             current_provider = "custom"
 
         if not args:
+            # If a fallback model is active, show it instead of config
+            if self._effective_model:
+                eff_provider = self._effective_provider or 'unknown'
+                eff_label = _PROVIDER_LABELS.get(eff_provider, eff_provider)
+                cfg_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+                lines = [
+                    f"🤖 **Active model:** `{self._effective_model}` (fallback)",
+                    f"**Provider:** {eff_label}",
+                    f"**Primary model** (`{current}` via {cfg_label}) is rate-limited.",
+                    "",
+                ]
+                lines.append("To change: `/model model-name`")
+                lines.append("Switch provider: `/model provider:model-name`")
+                return "\n".join(lines)
+
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
             lines = [
                 f"🤖 **Current model:** `{current}`",
@@ -2303,6 +2324,9 @@ class GatewayRunner:
             persist_note = "saved to config"
         else:
             persist_note = "this session only — will revert on restart"
+        # Clear fallback state since user explicitly chose a model
+        self._effective_model = None
+        self._effective_provider = None
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
@@ -4531,7 +4555,21 @@ class GatewayRunner:
             # Run in thread pool to not block
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, run_sync)
-            
+
+            # Track fallback model state: if the agent switched to a
+            # fallback model during this run, persist it so /model shows
+            # the actually-active model instead of the config default.
+            _agent = agent_holder[0]
+            if _agent is not None and hasattr(_agent, 'model'):
+                _cfg_model = _resolve_gateway_model()
+                if _agent.model != _cfg_model:
+                    self._effective_model = _agent.model
+                    self._effective_provider = getattr(_agent, 'provider', None)
+                else:
+                    # Primary model worked — clear any stale fallback state
+                    self._effective_model = None
+                    self._effective_provider = None
+
             # Check if we were interrupted and have a pending message
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)

@@ -62,6 +62,7 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup._setup_tts_provider", lambda config: None)
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
 
@@ -86,6 +87,8 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
             return 3  # Custom endpoint
         if question == "Configure vision:":
             return len(choices) - 1  # Skip
+        if question == "Select TTS provider:":
+            return len(choices) - 1  # Keep current
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
     def fake_prompt(message, current=None, **kwargs):
@@ -100,6 +103,7 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup._setup_tts_provider", lambda config: None)
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
@@ -155,6 +159,9 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tm
         if calls["count"] == 3:
             captured["model_choices"] = list(choices)
             return len(choices) - 1  # keep current model
+        if calls["count"] == 4:
+            assert question == "Select TTS provider:"
+            return len(choices) - 1  # Keep current
         raise AssertionError("Unexpected extra prompt_choice call")
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
@@ -172,7 +179,7 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tm
     assert captured["model_choices"] is not None
     assert captured["model_choices"][0] == "claude-opus-4-6"
     assert "anthropic/claude-opus-4.6 (recommended)" not in captured["model_choices"]
-    assert calls["count"] == 3
+    assert calls["count"] == 4  # provider, vision, model, TTS
 
 
 def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_path, monkeypatch):
@@ -191,6 +198,7 @@ def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_pa
         1,  # configure vision with OpenAI
         5,  # use default gpt-4o-mini vision model
         4,  # keep current Anthropic model
+        4,  # TTS: Keep current
     ])
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: next(picks))
@@ -229,7 +237,7 @@ def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
     }
     save_config(config)
 
-    picks = iter([1, 0])
+    picks = iter([1, 0, 4])  # provider, model; 4 = TTS Keep current
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: next(picks))
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)

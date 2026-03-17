@@ -294,3 +294,18 @@ def _print_migration_report(report: dict, dry_run: bool):
     elif migrated:
         print()
         print_success("Migration complete!")
+        # Warn if API keys were skipped (migrate_secrets not enabled)
+        skipped_keys = [
+            i for i in report.get("items", [])
+            if i.get("kind") == "provider-keys" and i.get("status") == "skipped"
+        ]
+        if skipped_keys:
+            print()
+            print(color("  ⚠ API keys were NOT migrated (secrets migration is disabled by default).", Colors.YELLOW))
+            print(color("  Your OPENROUTER_API_KEY and other provider keys must be added manually.", Colors.YELLOW))
+            print()
+            print_info("To migrate API keys, re-run with:")
+            print_info("  hermes claw migrate --migrate-secrets")
+            print()
+            print_info("Or add your key manually:")
+            print_info("  hermes config set OPENROUTER_API_KEY sk-or-v1-...")

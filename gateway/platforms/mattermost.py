@@ -222,6 +222,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
+        self._mark_connected()
         return True
 
     async def disconnect(self) -> None:

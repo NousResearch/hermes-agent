@@ -294,6 +294,7 @@ class MessageEvent:
     
     # Reply context
     reply_to_message_id: Optional[str] = None
+    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)

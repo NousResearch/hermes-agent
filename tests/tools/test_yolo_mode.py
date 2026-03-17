@@ -63,6 +63,7 @@ class TestYoloMode:
         dangerous_commands = [
             "rm -rf /",
             "chmod 777 /etc/passwd",
+            "bash -lc 'echo pwned'",
             "mkfs.ext4 /dev/sda1",
             "dd if=/dev/zero of=/dev/sda",
             "DROP TABLE users",

@@ -963,8 +963,12 @@ def convert_messages_to_anthropic(
                 elif isinstance(prev_blocks, str) and isinstance(curr_blocks, str):
                     fixed[-1]["content"] = prev_blocks + "\n" + curr_blocks
                 else:
-                    # Keep the later message
-                    fixed[-1] = m
+                    # Mixed types — normalize both to list and merge
+                    if isinstance(prev_blocks, str):
+                        prev_blocks = [{"type": "text", "text": prev_blocks}]
+                    if isinstance(curr_blocks, str):
+                        curr_blocks = [{"type": "text", "text": curr_blocks}]
+                    fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
             fixed.append(m)
     result = fixed

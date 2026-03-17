@@ -81,6 +81,17 @@ _DB_CONNSTR_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# Email addresses (conservative; avoids matching inside longer tokens)
+_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,63})(?![A-Za-z0-9._%+-])"
+)
+
+# IPv4 addresses (common in logs; avoids matching inside longer digit sequences)
+_IPV4_RE = re.compile(
+    r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)"
+)
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -146,6 +157,12 @@ def redact_sensitive_text(text: str) -> str:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # Email addresses
+    text = _EMAIL_RE.sub("[REDACTED EMAIL]", text)
+
+    # IPv4 addresses (common in logs, webhook payloads, etc.)
+    text = _IPV4_RE.sub("[REDACTED IP]", text)
 
     return text
 

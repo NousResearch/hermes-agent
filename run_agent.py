@@ -5654,6 +5654,22 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+
+                        # Audit log: successful API call
+                        try:
+                            from agent.audit import get_audit_logger
+                            get_audit_logger().log_api_call(
+                                model=self.model,
+                                provider=self.provider,
+                                status_code=200,
+                                duration_ms=api_duration * 1000 if api_duration else None,
+                                input_tokens=prompt_tokens,
+                                output_tokens=completion_tokens,
+                                session_id=self.session_id,
+                            )
+                        except Exception:
+                            pass
+
                         self.session_input_tokens += canonical_usage.input_tokens
                         self.session_output_tokens += canonical_usage.output_tokens
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
@@ -5806,6 +5822,31 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
                     self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True)
                     self._vprint(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+
+                    # Audit log: API error
+                    try:
+                        from agent.audit import get_audit_logger
+                        _req_id = getattr(api_error, "request_id", None)
+                        if not _req_id:
+                            # Try to extract from error body
+                            try:
+                                _req_id = getattr(api_error, "response", None)
+                                _req_id = _req_id.headers.get("x-request-id") if _req_id else None
+                            except Exception:
+                                pass
+                        get_audit_logger().log_api_error(
+                            model=self.model,
+                            provider=self.provider,
+                            status_code=getattr(api_error, "status_code", None),
+                            request_id=_req_id,
+                            error=str(api_error)[:500],
+                            error_type=error_type,
+                            retry_count=retry_count,
+                            duration_ms=elapsed_time * 1000,
+                            session_id=self.session_id,
+                        )
+                    except Exception:
+                        pass
                     
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:

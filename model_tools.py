@@ -24,6 +24,7 @@ import json
 import asyncio
 import os
 import logging
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -323,6 +324,8 @@ def handle_function_call(
         except Exception:
             pass
 
+        _tool_start = time.time()
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -343,17 +346,49 @@ def handle_function_call(
                 honcho_session_key=honcho_session_key,
             )
 
+        _tool_duration_ms = (time.time() - _tool_start) * 1000
+
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
         except Exception:
             pass
 
+        # Audit log: record successful tool call
+        try:
+            from agent.audit import get_audit_logger
+            get_audit_logger().log_tool_call(
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                duration_ms=_tool_duration_ms,
+                success=True,
+                session_id=task_id,
+            )
+        except Exception:
+            pass
+
         return result
 
     except Exception as e:
+        _tool_duration_ms = (time.time() - _tool_start) * 1000 if '_tool_start' in locals() else 0
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.error(error_msg)
+
+        # Audit log: record tool error
+        try:
+            from agent.audit import get_audit_logger
+            get_audit_logger().log_tool_error(
+                tool_name=function_name,
+                args=function_args,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_ms=_tool_duration_ms,
+                session_id=task_id,
+            )
+        except Exception:
+            pass
+
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 

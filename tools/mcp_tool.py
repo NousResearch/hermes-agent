@@ -1624,6 +1624,72 @@ def get_mcp_status() -> List[dict]:
     return result
 
 
+def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
+    """Temporarily connect to configured MCP servers and list their tools.
+
+    Designed for ``hermes tools`` interactive configuration — connects to each
+    enabled server, grabs tool names and descriptions, then disconnects.
+    Does NOT register tools in the Hermes registry.
+
+    Returns:
+        Dict mapping server name to list of (tool_name, description) tuples.
+        Servers that fail to connect are omitted from the result.
+    """
+    if not _MCP_AVAILABLE:
+        return {}
+
+    servers_config = _load_mcp_config()
+    if not servers_config:
+        return {}
+
+    enabled = {
+        k: v for k, v in servers_config.items()
+        if _parse_boolish(v.get("enabled", True), default=True)
+    }
+    if not enabled:
+        return {}
+
+    _ensure_mcp_loop()
+
+    result: Dict[str, List[tuple]] = {}
+    probed_servers: List[MCPServerTask] = []
+
+    async def _probe_all():
+        names = list(enabled.keys())
+        coros = []
+        for name, cfg in enabled.items():
+            ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
+
+        outcomes = await asyncio.gather(*coros, return_exceptions=True)
+
+        for name, outcome in zip(names, outcomes):
+            if isinstance(outcome, Exception):
+                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
+                continue
+            probed_servers.append(outcome)
+            tools = []
+            for t in outcome._tools:
+                desc = getattr(t, "description", "") or ""
+                tools.append((t.name, desc))
+            result[name] = tools
+
+        # Shut down all probed connections
+        await asyncio.gather(
+            *(s.shutdown() for s in probed_servers),
+            return_exceptions=True,
+        )
+
+    try:
+        _run_on_mcp_loop(_probe_all(), timeout=120)
+    except Exception as exc:
+        logger.debug("MCP probe failed: %s", exc)
+    finally:
+        _stop_mcp_loop()
+
+    return result
+
+
 def shutdown_mcp_servers():
     """Close all MCP server connections and stop the background loop.
 

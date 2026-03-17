@@ -6005,6 +6005,16 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        @kb.add('c-z')
+        def handle_ctrl_z(event):
+            """Handle Ctrl+Z - suspend process to background (Unix only)."""
+            import sys
+            if sys.platform == 'win32':
+                _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
+                event.app.invalidate()
+                return
+            event.app.suspend_to_background()
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.

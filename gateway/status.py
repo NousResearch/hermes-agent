@@ -195,8 +195,8 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload.setdefault("kind", _GATEWAY_KIND)
-    payload.setdefault("pid", os.getpid())
-    payload.setdefault("start_time", _get_process_start_time(os.getpid()))
+    payload["pid"] = os.getpid()
+    payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not None:

@@ -790,6 +790,7 @@ def cmd_model(args):
         "opencode-go": "OpenCode Go",
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
+        "xgate": "xgate",
         "alibaba": "Alibaba Cloud (DashScope)",
         "custom": "Custom endpoint",
     }
@@ -812,6 +813,7 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("xgate", "xgate (ai.xgate.run inference endpoint)"),
         ("kilocode", "Kilo Code (Kilo Gateway API)"),
         ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
@@ -889,7 +891,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "xgate", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -3107,7 +3109,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "xgate", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

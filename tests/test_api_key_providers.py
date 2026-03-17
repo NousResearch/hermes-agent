@@ -42,6 +42,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("xgate", "xgate", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
@@ -82,6 +83,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_xgate_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["xgate"]
+        assert pconfig.api_key_env_vars == ("XGATE_API_KEY",)
+        assert pconfig.base_url_env_var == "XGATE_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -94,6 +100,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
+        assert PROVIDER_REGISTRY["xgate"].inference_base_url == "https://ai.xgate.run/v1"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
 
@@ -171,6 +178,9 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_daydreams(self):
+        assert resolve_provider("daydreams") == "xgate"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -285,6 +295,14 @@ class TestApiKeyProviderStatus:
         assert status["logged_in"] is True
         assert status["key_source"] == "gh auth token"
         assert status["base_url"] == "https://api.githubcopilot.com"
+
+    def test_xgate_status_uses_env_key(self, monkeypatch):
+        monkeypatch.setenv("XGATE_API_KEY", "test-xgate-key")
+        monkeypatch.setenv("XGATE_BASE_URL", "https://ai.xgate.run/v1")
+        status = get_api_key_provider_status("xgate")
+        assert status["configured"] is True
+        assert status["key_source"] == "XGATE_API_KEY"
+        assert status["base_url"] == "https://ai.xgate.run/v1"
 
     def test_get_auth_status_dispatches_to_api_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")

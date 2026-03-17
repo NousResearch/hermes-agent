@@ -119,6 +119,7 @@ def show_status(args):
         "Kimi": "KIMI_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
+        "xgate": "XGATE_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
@@ -197,6 +198,7 @@ def show_status(args):
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),
         "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+        "xgate":            ("XGATE_API_KEY",),
     }
     for pname, env_vars in apikey_providers.items():
         key_val = ""

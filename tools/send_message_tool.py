@@ -355,20 +355,31 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.
+    so that bold, links, and headers render correctly.  If the message
+    already contains HTML tags, it is sent with ``parse_mode='HTML'``
+    instead, bypassing MarkdownV2 conversion.
     """
     try:
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Reuse the gateway adapter's format_message for markdown→MarkdownV2
-        try:
-            from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2
-            _adapter = TelegramAdapter.__new__(TelegramAdapter)
-            formatted = _adapter.format_message(message)
-        except Exception:
-            # Fallback: send as-is if formatting unavailable
+        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
+        # Inspired by github.com/ashaney — PR #1568.
+        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+
+        if _has_html:
             formatted = message
+            send_parse_mode = ParseMode.HTML
+        else:
+            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
+            try:
+                from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2
+                _adapter = TelegramAdapter.__new__(TelegramAdapter)
+                formatted = _adapter.format_message(message)
+            except Exception:
+                # Fallback: send as-is if formatting unavailable
+                formatted = message
+            send_parse_mode = ParseMode.MARKDOWN_V2
 
         bot = Bot(token=token)
         int_chat_id = int(chat_id)
@@ -384,16 +395,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await bot.send_message(
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2, **thread_kwargs
+                    parse_mode=send_parse_mode, **thread_kwargs
                 )
             except Exception as md_error:
-                # MarkdownV2 failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                    logger.warning("MarkdownV2 parse failed in _send_telegram, falling back to plain text: %s", md_error)
-                    try:
-                        from gateway.platforms.telegram import _strip_mdv2
-                        plain = _strip_mdv2(formatted)
-                    except Exception:
+                # Parse failed, fall back to plain text
+                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                    logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s", send_parse_mode, md_error)
+                    if not _has_html:
+                        try:
+                            from gateway.platforms.telegram import _strip_mdv2
+                            plain = _strip_mdv2(formatted)
+                        except Exception:
+                            plain = message
+                    else:
                         plain = message
                     last_msg = await bot.send_message(
                         chat_id=int_chat_id, text=plain,
@@ -565,50 +579,55 @@ async def _send_email(extra, chat_id, message):
         return {"error": f"Email send failed: {e}"}
 
 
-async def _send_sms(api_key, chat_id, message):
-    """Send via Telnyx SMS REST API (one-shot, no persistent connection needed)."""
+async def _send_sms(auth_token, chat_id, message):
+    """Send a single SMS via Twilio REST API.
+
+    Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
+    Chunking is handled by _send_to_platform() before this is called.
+    """
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    import base64
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    if not account_sid or not auth_token or not from_number:
+        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+
+    # Strip markdown — SMS renders it as literal characters
+    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"```[a-z]*\n?", "", message)
+    message = re.sub(r"`(.+?)`", r"\1", message)
+    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
+    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
+    message = re.sub(r"\n{3,}", "\n\n", message)
+    message = message.strip()
+
     try:
-        from_number = os.getenv("TELNYX_FROM_NUMBERS", "").split(",")[0].strip()
-        if not from_number:
-            return {"error": "TELNYX_FROM_NUMBERS not configured"}
-        if not api_key:
-            api_key = os.getenv("TELNYX_API_KEY", "")
-        if not api_key:
-            return {"error": "TELNYX_API_KEY not configured"}
+        creds = f"{account_sid}:{auth_token}"
+        encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+        headers = {"Authorization": f"Basic {encoded}"}
 
-        # Strip markdown for SMS
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
-        text = re.sub(r"\*(.+?)\*", r"\1", text, flags=re.DOTALL)
-        text = re.sub(r"```[a-z]*\n?", "", text)
-        text = re.sub(r"`(.+?)`", r"\1", text)
-        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-        text = text.strip()
-
-        # Chunk to 1600 chars
-        chunks = [text[i:i+1600] for i in range(0, len(text), 1600)] if len(text) > 1600 else [text]
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        message_ids = []
         async with aiohttp.ClientSession() as session:
-            for chunk in chunks:
-                payload = {"from": from_number, "to": chat_id, "text": chunk}
-                async with session.post(
-                    "https://api.telnyx.com/v2/messages",
-                    json=payload,
-                    headers=headers,
-                ) as resp:
-                    body = await resp.json()
-                    if resp.status >= 400:
-                        return {"error": f"Telnyx API error ({resp.status}): {body}"}
-                    message_ids.append(body.get("data", {}).get("id", ""))
-        return {"success": True, "platform": "sms", "chat_id": chat_id, "message_ids": message_ids}
+            form_data = aiohttp.FormData()
+            form_data.add_field("From", from_number)
+            form_data.add_field("To", chat_id)
+            form_data.add_field("Body", message)
+
+            async with session.post(url, data=form_data, headers=headers) as resp:
+                body = await resp.json()
+                if resp.status >= 400:
+                    error_msg = body.get("message", str(body))
+                    return {"error": f"Twilio API error ({resp.status}): {error_msg}"}
+                msg_sid = body.get("sid", "")
+                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
 

@@ -30,12 +30,14 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         parent._interrupt_requested = False
         parent._interrupt_message = None
         parent._active_children = []
+        parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True
 
         child = AIAgent.__new__(AIAgent)
         child._interrupt_requested = False
         child._interrupt_message = None
         child._active_children = []
+        child._active_children_lock = threading.Lock()
         child.quiet_mode = True
 
         parent._active_children.append(child)
@@ -60,6 +62,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child._interrupt_message = "msg"
         child.quiet_mode = True
         child._active_children = []
+        child._active_children_lock = threading.Lock()
 
         # Global is set
         set_interrupt(True)
@@ -78,6 +81,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child._interrupt_requested = False
         child._interrupt_message = None
         child._active_children = []
+        child._active_children_lock = threading.Lock()
         child.quiet_mode = True
         child.api_mode = "chat_completions"
         child.log_prefix = ""
@@ -119,12 +123,14 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         parent._interrupt_requested = False
         parent._interrupt_message = None
         parent._active_children = []
+        parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True
 
         child = AIAgent.__new__(AIAgent)
         child._interrupt_requested = False
         child._interrupt_message = None
         child._active_children = []
+        child._active_children_lock = threading.Lock()
         child.quiet_mode = True
 
         # Register child (simulating what _run_single_child does)

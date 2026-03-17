@@ -47,6 +47,28 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "no output" in args.lower()
 
+    def test_alias_command_routes_to_target(self):
+        """Alias quick commands rewrite to the target command."""
+        cli = self._make_cli({"shortcut": {"type": "alias", "target": "/help"}})
+        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
+            cli.process_command("/shortcut")
+            # Should recursively call process_command with /help
+            spy.assert_any_call("/help")
+
+    def test_alias_command_passes_args(self):
+        """Alias quick commands forward user arguments to the target."""
+        cli = self._make_cli({"sc": {"type": "alias", "target": "/context"}})
+        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
+            cli.process_command("/sc some args")
+            spy.assert_any_call("/context some args")
+
+    def test_alias_no_target_shows_error(self):
+        cli = self._make_cli({"broken": {"type": "alias", "target": ""}})
+        cli.process_command("/broken")
+        cli.console.print.assert_called_once()
+        args = cli.console.print.call_args[0][0]
+        assert "no target defined" in args.lower()
+
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
         cli.process_command("/bad")

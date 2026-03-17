@@ -39,6 +39,7 @@ custom OpenAI-compatible endpoint without touching the main model settings.
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -705,6 +706,8 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
 
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
+    global auxiliary_is_nous
+    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):
         client, model = try_fn()
@@ -1171,6 +1174,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 
 # Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
 _client_cache: Dict[tuple, tuple] = {}
+_client_cache_lock = threading.Lock()
 
 
 def _get_cached_client(
@@ -1182,9 +1186,11 @@ def _get_cached_client(
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider."""
     cache_key = (provider, async_mode, base_url or "", api_key or "")
-    if cache_key in _client_cache:
-        cached_client, cached_default = _client_cache[cache_key]
-        return cached_client, model or cached_default
+    with _client_cache_lock:
+        if cache_key in _client_cache:
+            cached_client, cached_default = _client_cache[cache_key]
+            return cached_client, model or cached_default
+    # Build outside the lock
     client, default_model = resolve_provider_client(
         provider,
         model,
@@ -1193,7 +1199,11 @@ def _get_cached_client(
         explicit_api_key=api_key,
     )
     if client is not None:
-        _client_cache[cache_key] = (client, default_model)
+        with _client_cache_lock:
+            if cache_key not in _client_cache:
+                _client_cache[cache_key] = (client, default_model)
+            else:
+                client, default_model = _client_cache[cache_key]
     return client, model or default_model
 
 

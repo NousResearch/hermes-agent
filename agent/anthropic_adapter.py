@@ -963,8 +963,12 @@ def convert_messages_to_anthropic(
                 elif isinstance(prev_blocks, str) and isinstance(curr_blocks, str):
                     fixed[-1]["content"] = prev_blocks + "\n" + curr_blocks
                 else:
-                    # Keep the later message
-                    fixed[-1] = m
+                    # Mixed types — normalize both to list and merge
+                    if isinstance(prev_blocks, str):
+                        prev_blocks = [{"type": "text", "text": prev_blocks}]
+                    if isinstance(curr_blocks, str):
+                        curr_blocks = [{"type": "text", "text": curr_blocks}]
+                    fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
             fixed.append(m)
     result = fixed
@@ -1049,7 +1053,8 @@ def build_anthropic_kwargs(
         elif tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
         elif tool_choice == "none":
-            pass  # Don't send tool_choice — Anthropic will use tools if needed
+            # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
+            kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
             # Specific tool name
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}

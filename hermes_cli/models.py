@@ -473,7 +473,7 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
             from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
             creds = resolve_nous_runtime_credentials()
             if creds:
-                live = fetch_nous_models(creds.get("api_key", ""), creds.get("base_url", ""))
+                live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
                 if live:
                     return live
         except Exception:

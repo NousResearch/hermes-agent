@@ -55,6 +55,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         parent._interrupt_requested = False
         parent._interrupt_message = None
         parent._active_children = []
+        parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True
         parent.model = "test/model"
         parent.base_url = "http://localhost:1"
@@ -103,19 +104,28 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                             return original_run(self_agent, *args, **kwargs)
 
                         with patch.object(AIAgent, 'run_conversation', patched_run):
+                            # Build a real child agent (AIAgent is NOT patched here,
+                            # only run_conversation and _build_system_prompt are)
+                            child = AIAgent(
+                                base_url="http://localhost:1",
+                                api_key="test-key",
+                                model="test/model",
+                                provider="test",
+                                api_mode="chat_completions",
+                                max_iterations=5,
+                                enabled_toolsets=["terminal"],
+                                quiet_mode=True,
+                                skip_context_files=True,
+                                skip_memory=True,
+                                platform="cli",
+                            )
+                            child._delegate_depth = 1
+                            parent._active_children.append(child)
                             result = _run_single_child(
                                 task_index=0,
                                 goal="Test task",
-                                context=None,
-                                toolsets=["terminal"],
-                                model="test/model",
-                                max_iterations=5,
+                                child=child,
                                 parent_agent=parent,
-                                task_count=1,
-                                override_provider="test",
-                                override_base_url="http://localhost:1",
-                                override_api_key="test",
-                                override_api_mode="chat_completions",
                             )
                             result_holder[0] = result
             except Exception as e:

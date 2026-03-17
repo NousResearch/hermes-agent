@@ -3,16 +3,16 @@
 Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
-Currently uses Firecrawl as the backend, and the interface makes it easy to swap
-providers without changing the function signatures.
+Backend is selected during ``hermes tools`` setup (web.backend in config.yaml).
 
 Available tools:
 - web_search_tool: Search the web for information
 - web_extract_tool: Extract content from specific web pages
-- web_crawl_tool: Crawl websites with specific instructions
+- web_crawl_tool: Crawl websites with specific instructions (Firecrawl only)
 
 Backend compatibility:
-- Firecrawl: https://docs.firecrawl.dev/introduction
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl)
+- Parallel: https://docs.parallel.ai (search, extract)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -46,11 +46,49 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
+import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Backend Selection ────────────────────────────────────────────────────────
+
+def _load_web_config() -> dict:
+    """Load the ``web:`` section from ~/.hermes/config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        return load_config().get("web", {})
+    except (ImportError, Exception):
+        return {}
+
+
+def _get_backend() -> str:
+    """Determine which web backend to use.
+
+    Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
+    Falls back to whichever API key is present for users who configured
+    keys manually without running setup.
+    """
+    configured = _load_web_config().get("backend", "").lower().strip()
+    if configured in ("parallel", "firecrawl", "tavily"):
+        return configured
+    # Fallback for manual / legacy config — use whichever key is present.
+    has_firecrawl = bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
+    has_parallel = bool(os.getenv("PARALLEL_API_KEY"))
+    has_tavily = bool(os.getenv("TAVILY_API_KEY"))
+    if has_tavily and not has_firecrawl and not has_parallel:
+        return "tavily"
+    if has_parallel and not has_firecrawl:
+        return "parallel"
+    # Default to firecrawl (backward compat, or when both are set)
+    return "firecrawl"
+
+
+# ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
 
@@ -79,6 +117,129 @@ def _get_firecrawl_client():
             kwargs["api_url"] = api_url
         _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
+
+
+# ─── Parallel Client ─────────────────────────────────────────────────────────
+
+_parallel_client = None
+_async_parallel_client = None
+
+def _get_parallel_client():
+    """Get or create the Parallel sync client (lazy initialization).
+
+    Requires PARALLEL_API_KEY environment variable.
+    """
+    from parallel import Parallel
+    global _parallel_client
+    if _parallel_client is None:
+        api_key = os.getenv("PARALLEL_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PARALLEL_API_KEY environment variable not set. "
+                "Get your API key at https://parallel.ai"
+            )
+        _parallel_client = Parallel(api_key=api_key)
+    return _parallel_client
+
+
+def _get_async_parallel_client():
+    """Get or create the Parallel async client (lazy initialization).
+
+    Requires PARALLEL_API_KEY environment variable.
+    """
+    from parallel import AsyncParallel
+    global _async_parallel_client
+    if _async_parallel_client is None:
+        api_key = os.getenv("PARALLEL_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PARALLEL_API_KEY environment variable not set. "
+                "Get your API key at https://parallel.ai"
+            )
+        _async_parallel_client = AsyncParallel(api_key=api_key)
+    return _async_parallel_client
+
+# ─── Tavily Client ───────────────────────────────────────────────────────────
+
+_TAVILY_BASE_URL = "https://api.tavily.com"
+
+
+def _tavily_request(endpoint: str, payload: dict) -> dict:
+    """Send a POST request to the Tavily API.
+
+    Auth is provided via ``api_key`` in the JSON body (no header-based auth).
+    Raises ``ValueError`` if ``TAVILY_API_KEY`` is not set.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "TAVILY_API_KEY environment variable not set. "
+            "Get your API key at https://app.tavily.com/home"
+        )
+    payload["api_key"] = api_key
+    url = f"{_TAVILY_BASE_URL}/{endpoint.lstrip('/')}"
+    logger.info("Tavily %s request to %s", endpoint, url)
+    response = httpx.post(url, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def _normalize_tavily_search_results(response: dict) -> dict:
+    """Normalize Tavily /search response to the standard web search format.
+
+    Tavily returns ``{results: [{title, url, content, score, ...}]}``.
+    We map to ``{success, data: {web: [{title, url, description, position}]}}``.
+    """
+    web_results = []
+    for i, result in enumerate(response.get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[Dict[str, Any]]:
+    """Normalize Tavily /extract or /crawl response to the standard document format.
+
+    Maps results to ``{url, title, content, raw_content, metadata}`` and
+    includes any ``failed_results`` / ``failed_urls`` as error entries.
+    """
+    documents: List[Dict[str, Any]] = []
+    for result in response.get("results", []):
+        url = result.get("url", fallback_url)
+        raw = result.get("raw_content", "") or result.get("content", "")
+        documents.append({
+            "url": url,
+            "title": result.get("title", ""),
+            "content": raw,
+            "raw_content": raw,
+            "metadata": {"sourceURL": url, "title": result.get("title", "")},
+        })
+    # Handle failed results
+    for fail in response.get("failed_results", []):
+        documents.append({
+            "url": fail.get("url", fallback_url),
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": fail.get("error", "extraction failed"),
+            "metadata": {"sourceURL": fail.get("url", fallback_url)},
+        })
+    for fail_url in response.get("failed_urls", []):
+        url_str = fail_url if isinstance(fail_url, str) else str(fail_url)
+        documents.append({
+            "url": url_str,
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": "extraction failed",
+            "metadata": {"sourceURL": url_str},
+        })
+    return documents
+
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
@@ -427,13 +588,89 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+# ─── Parallel Search & Extract Helpers ────────────────────────────────────────
+
+def _parallel_search(query: str, limit: int = 5) -> dict:
+    """Search using the Parallel SDK and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
+    if mode not in ("fast", "one-shot", "agentic"):
+        mode = "agentic"
+
+    logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
+    response = _get_parallel_client().beta.search(
+        search_queries=[query],
+        objective=query,
+        mode=mode,
+        max_results=min(limit, 20),
+    )
+
+    web_results = []
+    for i, result in enumerate(response.results or []):
+        excerpts = result.excerpts or []
+        web_results.append({
+            "url": result.url or "",
+            "title": result.title or "",
+            "description": " ".join(excerpts) if excerpts else "",
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the Parallel async SDK.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    logger.info("Parallel extract: %d URL(s)", len(urls))
+    response = await _get_async_parallel_client().beta.extract(
+        urls=urls,
+        full_content=True,
+    )
+
+    results = []
+    for result in response.results or []:
+        content = result.full_content or ""
+        if not content:
+            content = "\n\n".join(result.excerpts or [])
+        url = result.url or ""
+        title = result.title or ""
+        results.append({
+            "url": url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {"sourceURL": url, "title": title},
+        })
+
+    for error in response.errors or []:
+        results.append({
+            "url": error.url or "",
+            "title": "",
+            "content": "",
+            "error": error.content or error.error_type or "extraction failed",
+            "metadata": {"sourceURL": error.url or ""},
+        })
+
+    return results
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
-    
+
     This function provides a generic interface for web search that can work
-    with multiple backends. Currently uses Firecrawl.
-    
+    with multiple backends (Parallel or Firecrawl).
+
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
     
@@ -477,17 +714,44 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return json.dumps({"error": "Interrupted", "success": False})
 
+        # Dispatch to the configured backend
+        backend = _get_backend()
+        if backend == "parallel":
+            response_data = _parallel_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "tavily":
+            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
+            raw = _tavily_request("search", {
+                "query": query,
+                "max_results": min(limit, 20),
+                "include_raw_content": False,
+                "include_images": False,
+            })
+            response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
-        
+
         response = _get_firecrawl_client().search(
             query=query,
             limit=limit
         )
-        
+
         # The response is a SearchData object with web, news, and images attributes
         # When not scraping, the results are directly in these attributes
         web_results = []
-        
+
         # Check if response has web attribute (SearchData object)
         if hasattr(response, 'web'):
             # Response is a SearchData object with web attribute
@@ -595,100 +859,137 @@ async def web_extract_tool(
     
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
-        
-        # Determine requested formats for Firecrawl v2
-        formats: List[str] = []
-        if format == "markdown":
-            formats = ["markdown"]
-        elif format == "html":
-            formats = ["html"]
-        else:
-            # Default: request markdown for LLM-readiness and include html as backup
-            formats = ["markdown", "html"]
-        
-        # Always use individual scraping for simplicity and reliability
-        # Batch scraping adds complexity without much benefit for small numbers of URLs
-        results: List[Dict[str, Any]] = []
-        
-        from tools.interrupt import is_interrupted as _is_interrupted
-        for url in urls:
-            if _is_interrupted():
-                results.append({"url": url, "error": "Interrupted", "title": ""})
-                continue
 
-            try:
-                logger.info("Scraping: %s", url)
-                scrape_result = _get_firecrawl_client().scrape(
-                    url=url,
-                    formats=formats
-                )
-                
-                # Process the result - properly handle object serialization
-                metadata = {}
-                title = ""
-                content_markdown = None
-                content_html = None
-                
-                # Extract data from the scrape result
-                if hasattr(scrape_result, 'model_dump'):
-                    # Pydantic model - use model_dump to get dict
-                    result_dict = scrape_result.model_dump()
-                    content_markdown = result_dict.get('markdown')
-                    content_html = result_dict.get('html')
-                    metadata = result_dict.get('metadata', {})
-                elif hasattr(scrape_result, '__dict__'):
-                    # Regular object with attributes
-                    content_markdown = getattr(scrape_result, 'markdown', None)
-                    content_html = getattr(scrape_result, 'html', None)
-                    
-                    # Handle metadata - convert to dict if it's an object
-                    metadata_obj = getattr(scrape_result, 'metadata', {})
-                    if hasattr(metadata_obj, 'model_dump'):
-                        metadata = metadata_obj.model_dump()
-                    elif hasattr(metadata_obj, '__dict__'):
-                        metadata = metadata_obj.__dict__
-                    elif isinstance(metadata_obj, dict):
-                        metadata = metadata_obj
-                    else:
-                        metadata = {}
-                elif isinstance(scrape_result, dict):
-                    # Already a dictionary
-                    content_markdown = scrape_result.get('markdown')
-                    content_html = scrape_result.get('html')
-                    metadata = scrape_result.get('metadata', {})
-                
-                # Ensure metadata is a dict (not an object)
-                if not isinstance(metadata, dict):
-                    if hasattr(metadata, 'model_dump'):
-                        metadata = metadata.model_dump()
-                    elif hasattr(metadata, '__dict__'):
-                        metadata = metadata.__dict__
-                    else:
-                        metadata = {}
-                
-                # Get title from metadata
-                title = metadata.get("title", "")
-                
-                # Choose content based on requested format
-                chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-                
-                results.append({
-                    "url": metadata.get("sourceURL", url),
-                    "title": title,
-                    "content": chosen_content,
-                    "raw_content": chosen_content,
-                    "metadata": metadata  # Now guaranteed to be a dict
-                })
-                
-            except Exception as scrape_err:
-                logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                results.append({
-                    "url": url,
-                    "title": "",
-                    "content": "",
-                    "raw_content": "",
-                    "error": str(scrape_err)
-                })
+        # Dispatch to the configured backend
+        backend = _get_backend()
+
+        if backend == "parallel":
+            results = await _parallel_extract(urls)
+        elif backend == "tavily":
+            logger.info("Tavily extract: %d URL(s)", len(urls))
+            raw = _tavily_request("extract", {
+                "urls": urls,
+                "include_images": False,
+            })
+            results = _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
+        else:
+            # ── Firecrawl extraction ──
+            # Determine requested formats for Firecrawl v2
+            formats: List[str] = []
+            if format == "markdown":
+                formats = ["markdown"]
+            elif format == "html":
+                formats = ["html"]
+            else:
+                # Default: request markdown for LLM-readiness and include html as backup
+                formats = ["markdown", "html"]
+
+            # Always use individual scraping for simplicity and reliability
+            # Batch scraping adds complexity without much benefit for small numbers of URLs
+            results: List[Dict[str, Any]] = []
+
+            from tools.interrupt import is_interrupted as _is_interrupted
+            for url in urls:
+                if _is_interrupted():
+                    results.append({"url": url, "error": "Interrupted", "title": ""})
+                    continue
+
+                # Website policy check — block before fetching
+                blocked = check_website_access(url)
+                if blocked:
+                    logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+                    results.append({
+                        "url": url, "title": "", "content": "",
+                        "error": blocked["message"],
+                        "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                    })
+                    continue
+
+                try:
+                    logger.info("Scraping: %s", url)
+                    scrape_result = _get_firecrawl_client().scrape(
+                        url=url,
+                        formats=formats
+                    )
+
+                    # Process the result - properly handle object serialization
+                    metadata = {}
+                    title = ""
+                    content_markdown = None
+                    content_html = None
+
+                    # Extract data from the scrape result
+                    if hasattr(scrape_result, 'model_dump'):
+                        # Pydantic model - use model_dump to get dict
+                        result_dict = scrape_result.model_dump()
+                        content_markdown = result_dict.get('markdown')
+                        content_html = result_dict.get('html')
+                        metadata = result_dict.get('metadata', {})
+                    elif hasattr(scrape_result, '__dict__'):
+                        # Regular object with attributes
+                        content_markdown = getattr(scrape_result, 'markdown', None)
+                        content_html = getattr(scrape_result, 'html', None)
+
+                        # Handle metadata - convert to dict if it's an object
+                        metadata_obj = getattr(scrape_result, 'metadata', {})
+                        if hasattr(metadata_obj, 'model_dump'):
+                            metadata = metadata_obj.model_dump()
+                        elif hasattr(metadata_obj, '__dict__'):
+                            metadata = metadata_obj.__dict__
+                        elif isinstance(metadata_obj, dict):
+                            metadata = metadata_obj
+                        else:
+                            metadata = {}
+                    elif isinstance(scrape_result, dict):
+                        # Already a dictionary
+                        content_markdown = scrape_result.get('markdown')
+                        content_html = scrape_result.get('html')
+                        metadata = scrape_result.get('metadata', {})
+
+                    # Ensure metadata is a dict (not an object)
+                    if not isinstance(metadata, dict):
+                        if hasattr(metadata, 'model_dump'):
+                            metadata = metadata.model_dump()
+                        elif hasattr(metadata, '__dict__'):
+                            metadata = metadata.__dict__
+                        else:
+                            metadata = {}
+
+                    # Get title from metadata
+                    title = metadata.get("title", "")
+
+                    # Re-check final URL after redirect
+                    final_url = metadata.get("sourceURL", url)
+                    final_blocked = check_website_access(final_url)
+                    if final_blocked:
+                        logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                        results.append({
+                            "url": final_url, "title": title, "content": "", "raw_content": "",
+                            "error": final_blocked["message"],
+                            "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                        })
+                        continue
+
+                    # Choose content based on requested format
+                    chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+
+                    results.append({
+                        "url": final_url,
+                        "title": title,
+                        "content": chosen_content,
+                        "raw_content": chosen_content,
+                        "metadata": metadata  # Now guaranteed to be a dict
+                    })
+
+                except Exception as scrape_err:
+                    logger.debug("Scrape failed for %s: %s", url, scrape_err)
+                    results.append({
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": str(scrape_err)
+                    })
 
         response = {"results": results}
         
@@ -778,6 +1079,7 @@ async def web_extract_tool(
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
             }
             for r in response.get("results", [])
         ]
@@ -862,6 +1164,91 @@ async def web_crawl_tool(
     }
     
     try:
+        backend = _get_backend()
+
+        # Tavily supports crawl via its /crawl endpoint
+        if backend == "tavily":
+            # Ensure URL has protocol
+            if not url.startswith(('http://', 'https://')):
+                url = f'https://{url}'
+
+            # Website policy check
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+
+            from tools.interrupt import is_interrupted as _is_int
+            if _is_int():
+                return json.dumps({"error": "Interrupted", "success": False})
+
+            logger.info("Tavily crawl: %s", url)
+            payload: Dict[str, Any] = {
+                "url": url,
+                "limit": 20,
+                "extract_depth": depth,
+            }
+            if instructions:
+                payload["instructions"] = instructions
+            raw = _tavily_request("crawl", payload)
+            results = _normalize_tavily_documents(raw, fallback_url=url)
+
+            response = {"results": results}
+            # Fall through to the shared LLM processing and trimming below
+            # (skip the Firecrawl-specific crawl logic)
+            pages_crawled = len(response.get('results', []))
+            logger.info("Crawled %d pages", pages_crawled)
+            debug_call_data["pages_crawled"] = pages_crawled
+            debug_call_data["original_response_size"] = len(json.dumps(response))
+
+            # Process each result with LLM if enabled
+            if use_llm_processing:
+                logger.info("Processing crawled content with LLM (parallel)...")
+                debug_call_data["processing_applied"].append("llm_processing")
+
+                async def _process_tavily_crawl(result):
+                    page_url = result.get('url', 'Unknown URL')
+                    title = result.get('title', '')
+                    content = result.get('content', '')
+                    if not content:
+                        return result, None, "no_content"
+                    original_size = len(content)
+                    processed = await process_content_with_llm(content, page_url, title, model, min_length)
+                    if processed:
+                        result['raw_content'] = content
+                        result['content'] = processed
+                        metrics = {"url": page_url, "original_size": original_size, "processed_size": len(processed),
+                                   "compression_ratio": len(processed) / original_size if original_size else 1.0, "model_used": model}
+                        return result, metrics, "processed"
+                    metrics = {"url": page_url, "original_size": original_size, "processed_size": original_size,
+                               "compression_ratio": 1.0, "model_used": None, "reason": "content_too_short"}
+                    return result, metrics, "too_short"
+
+                tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
+                processed_results = await asyncio.gather(*tasks)
+                for result, metrics, status in processed_results:
+                    if status == "processed":
+                        debug_call_data["compression_metrics"].append(metrics)
+                        debug_call_data["pages_processed_with_llm"] += 1
+
+            trimmed_results = [{"url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {})} for r in response.get("results", [])]
+            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+            cleaned_result = clean_base64_images(result_json)
+            debug_call_data["final_response_size"] = len(cleaned_result)
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return cleaned_result
+
+        # web_crawl requires Firecrawl — Parallel has no crawl API
+        if not (os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL")):
+            return json.dumps({
+                "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, "
+                         "or use web_search + web_extract instead.",
+                "success": False,
+            }, ensure_ascii=False)
+
         # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
@@ -870,6 +1257,13 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
+        # Website policy check — block before crawling
+        blocked = check_website_access(url)
+        if blocked:
+            logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+            return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+
         # Use Firecrawl's v2 crawl functionality
         # Docs: https://docs.firecrawl.dev/features/crawl
         # The crawl() method automatically waits for completion and returns all data
@@ -975,6 +1369,17 @@ async def web_crawl_tool(
             page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
             title = metadata.get("title", "")
             
+            # Re-check crawled page URL against policy
+            page_blocked = check_website_access(page_url)
+            if page_blocked:
+                logger.info("Blocked crawled page %s by rule %s", page_blocked["host"], page_blocked["rule"])
+                pages.append({
+                    "url": page_url, "title": title, "content": "", "raw_content": "",
+                    "error": page_blocked["message"],
+                    "blocked_by_policy": {"host": page_blocked["host"], "rule": page_blocked["rule"], "source": page_blocked["source"]},
+                })
+                continue
+
             # Choose content (prefer markdown)
             content = content_markdown or content_html or ""
             
@@ -1070,9 +1475,11 @@ async def web_crawl_tool(
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
+                "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error")
+                "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
             }
             for r in response.get("results", [])
         ]
@@ -1106,11 +1513,21 @@ async def web_crawl_tool(
 def check_firecrawl_api_key() -> bool:
     """
     Check if the Firecrawl API key is available in environment variables.
-    
+
     Returns:
         bool: True if API key is set, False otherwise
     """
     return bool(os.getenv("FIRECRAWL_API_KEY"))
+
+
+def check_web_api_key() -> bool:
+    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
+    return bool(
+        os.getenv("PARALLEL_API_KEY")
+        or os.getenv("FIRECRAWL_API_KEY")
+        or os.getenv("FIRECRAWL_API_URL")
+        or os.getenv("TAVILY_API_KEY")
+    )
 
 
 def check_auxiliary_model() -> bool:
@@ -1139,26 +1556,32 @@ if __name__ == "__main__":
     print("=" * 40)
     
     # Check if API keys are available
-    firecrawl_available = check_firecrawl_api_key()
+    web_available = check_web_api_key()
     nous_available = check_auxiliary_model()
-    
-    if not firecrawl_available:
-        print("❌ FIRECRAWL_API_KEY environment variable not set")
-        print("Please set your API key: export FIRECRAWL_API_KEY='your-key-here'")
-        print("Get API key at: https://firecrawl.dev/")
+
+    if web_available:
+        backend = _get_backend()
+        print(f"✅ Web backend: {backend}")
+        if backend == "parallel":
+            print("   Using Parallel API (https://parallel.ai)")
+        elif backend == "tavily":
+            print("   Using Tavily API (https://tavily.com)")
+        else:
+            print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
-        print("✅ Firecrawl API key found")
-    
+        print("❌ No web search backend configured")
+        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
+
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")
         print("Set OPENROUTER_API_KEY, configure Nous Portal, or set OPENAI_BASE_URL + OPENAI_API_KEY")
         print("⚠️  Without an auxiliary model, LLM content processing will be disabled")
     else:
         print(f"✅ Auxiliary model available: {DEFAULT_SUMMARIZER_MODEL}")
-    
-    if not firecrawl_available:
+
+    if not web_available:
         exit(1)
-    
+
     print("🛠️  Web tools ready for use!")
     
     if nous_available:
@@ -1256,8 +1679,8 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
-    check_fn=check_firecrawl_api_key,
-    requires_env=["FIRECRAWL_API_KEY"],
+    check_fn=check_web_api_key,
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1266,8 +1689,8 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_firecrawl_api_key,
-    requires_env=["FIRECRAWL_API_KEY"],
+    check_fn=check_web_api_key,
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
 )

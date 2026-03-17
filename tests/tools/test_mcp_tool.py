@@ -2596,17 +2596,19 @@ class TestMCPSelectiveToolLoading:
 
         async def run():
             with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+                 patch.dict("tools.mcp_tool._servers", {}, clear=True), \
                  patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset"):
-                return await _discover_and_register_server(
+                registered = await _discover_and_register_server(
                     "ink_existing",
                     {"url": "https://mcp.example.com", "tools": {"include": ["create_service"]}},
                 )
+                return registered, _existing_tool_names()
 
         try:
-            registered = asyncio.run(run())
+            registered, existing = asyncio.run(run())
             assert registered == ["mcp_ink_existing_create_service"]
-            assert _existing_tool_names() == ["mcp_ink_existing_create_service"]
+            assert existing == ["mcp_ink_existing_create_service"]
         finally:
             _servers.pop("ink_existing", None)
 

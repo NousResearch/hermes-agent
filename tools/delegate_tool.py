@@ -185,6 +185,16 @@ def _run_single_child(
 
     child_start = time.monotonic()
 
+    # Preserve the parent's resolved tool names so delegation does not leak
+    # subagent tool resolution back into the main agent. Tests rely on
+    # _last_resolved_tool_names being restored even when a child fails.
+    try:
+        import model_tools  # Local import to avoid circular imports at module import time
+        _saved_tool_names = getattr(model_tools, "_last_resolved_tool_names", None)
+    except Exception:
+        model_tools = None  # type: ignore[assignment]
+        _saved_tool_names = None
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
@@ -365,6 +375,13 @@ def _run_single_child(
                 parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
+
+        # Restore parent's resolved tool names (best-effort)
+        try:
+            if model_tools is not None and _saved_tool_names is not None:
+                model_tools._last_resolved_tool_names = _saved_tool_names
+        except Exception:
+            pass
 
 
 def delegate_task(

@@ -318,6 +318,15 @@ def load_gateway_config() -> GatewayConfig:
                 else:
                     logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
 
+            # Bridge WhatsApp-specific settings (reply_prefix) from config.yaml
+            wa_cfg = yaml_cfg.get("whatsapp", {})
+            if isinstance(wa_cfg, dict):
+                reply_prefix = wa_cfg.get("reply_prefix")
+                if reply_prefix is not None:
+                    if Platform.WHATSAPP not in config.platforms:
+                        config.platforms[Platform.WHATSAPP] = PlatformConfig()
+                    config.platforms[Platform.WHATSAPP].extra["reply_prefix"] = reply_prefix
+
             # Bridge discord settings from config.yaml to env vars
             # (env vars take precedence — only set if not already defined)
             discord_cfg = yaml_cfg.get("discord", {})

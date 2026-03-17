@@ -662,17 +662,24 @@ class MatrixAdapter(BasePlatformAdapter):
             http_url = self._mxc_to_http(url)
 
         # Determine message type from event class.
-        media_type = "document"
+        # Use the MIME type from the event's content info when available,
+        # falling back to category-level MIME types for downstream matching
+        # (gateway/run.py checks startswith("image/"), startswith("audio/"), etc.)
+        content_info = getattr(event, "content", {}) if isinstance(getattr(event, "content", None), dict) else {}
+        event_mimetype = (content_info.get("info") or {}).get("mimetype", "")
+        media_type = "application/octet-stream"
         msg_type = MessageType.DOCUMENT
         if isinstance(event, nio.RoomMessageImage):
             msg_type = MessageType.PHOTO
-            media_type = "image"
+            media_type = event_mimetype or "image/png"
         elif isinstance(event, nio.RoomMessageAudio):
             msg_type = MessageType.AUDIO
-            media_type = "audio"
+            media_type = event_mimetype or "audio/ogg"
         elif isinstance(event, nio.RoomMessageVideo):
             msg_type = MessageType.VIDEO
-            media_type = "video"
+            media_type = event_mimetype or "video/mp4"
+        elif event_mimetype:
+            media_type = event_mimetype
 
         is_dm = self._dm_rooms.get(room.room_id, False)
         if not is_dm and room.member_count == 2:

@@ -5346,7 +5346,12 @@ class HermesCLI:
                                 pass
                             break
                     except queue.Empty:
-                        pass  # Queue empty or timeout, continue waiting
+                        # Force prompt_toolkit to flush any pending stdout
+                        # output from the agent thread.  Without this, the
+                        # StdoutProxy buffer only flushes on renderer passes
+                        # triggered by input events — on macOS this causes
+                        # the CLI to appear frozen until the user types. (#1624)
+                        self._invalidate(min_interval=0.15)
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)

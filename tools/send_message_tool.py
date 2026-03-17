@@ -125,6 +125,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "sms": Platform.SMS,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -334,6 +335,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.SMS:
+            result = await _send_sms(pconfig.api_key, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -560,6 +563,54 @@ async def _send_email(extra, chat_id, message):
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Email send failed: {e}"}
+
+
+async def _send_sms(api_key, chat_id, message):
+    """Send via Telnyx SMS REST API (one-shot, no persistent connection needed)."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        from_number = os.getenv("TELNYX_FROM_NUMBERS", "").split(",")[0].strip()
+        if not from_number:
+            return {"error": "TELNYX_FROM_NUMBERS not configured"}
+        if not api_key:
+            api_key = os.getenv("TELNYX_API_KEY", "")
+        if not api_key:
+            return {"error": "TELNYX_API_KEY not configured"}
+
+        # Strip markdown for SMS
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+        text = re.sub(r"\*(.+?)\*", r"\1", text, flags=re.DOTALL)
+        text = re.sub(r"```[a-z]*\n?", "", text)
+        text = re.sub(r"`(.+?)`", r"\1", text)
+        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+        text = text.strip()
+
+        # Chunk to 1600 chars
+        chunks = [text[i:i+1600] for i in range(0, len(text), 1600)] if len(text) > 1600 else [text]
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        message_ids = []
+        async with aiohttp.ClientSession() as session:
+            for chunk in chunks:
+                payload = {"from": from_number, "to": chat_id, "text": chunk}
+                async with session.post(
+                    "https://api.telnyx.com/v2/messages",
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    body = await resp.json()
+                    if resp.status >= 400:
+                        return {"error": f"Telnyx API error ({resp.status}): {body}"}
+                    message_ids.append(body.get("data", {}).get("id", ""))
+        return {"success": True, "platform": "sms", "chat_id": chat_id, "message_ids": message_ids}
+    except Exception as e:
+        return {"error": f"SMS send failed: {e}"}
 
 
 def _check_send_message():

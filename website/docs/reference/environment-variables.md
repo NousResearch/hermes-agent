@@ -14,6 +14,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `OPENROUTER_BASE_URL` | Override the OpenRouter-compatible base URL |
+| `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key ([ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)) |
+| `AI_GATEWAY_BASE_URL` | Override AI Gateway base URL (default: `https://ai-gateway.vercel.sh/v1`) |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |

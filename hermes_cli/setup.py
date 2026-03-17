@@ -59,6 +59,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "minimax": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "minimax-cn": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
 }
 
 
@@ -724,6 +725,7 @@ def setup_model_provider(config: dict):
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
+        "AI Gateway (Vercel — 200+ models, pay-per-use)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1232,7 +1234,39 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 9:  # AI Gateway
+        selected_provider = "ai-gateway"
+        print()
+        print_header("AI Gateway API Key")
+        pconfig = PROVIDER_REGISTRY["ai-gateway"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API key at: https://vercel.com/docs/ai-gateway")
+        print()
+
+        existing_key = get_env_value("AI_GATEWAY_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  AI Gateway API key", password=True)
+                if api_key:
+                    save_env_value("AI_GATEWAY_API_KEY", api_key)
+                    print_success("AI Gateway API key updated")
+        else:
+            api_key = prompt("  AI Gateway API key", password=True)
+            if api_key:
+                save_env_value("AI_GATEWAY_API_KEY", api_key)
+                print_success("AI Gateway API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
+        _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
+
+    # else: provider_idx == 10 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1269,6 +1303,7 @@ def setup_model_provider(config: dict):
             "minimax": "MiniMax",
             "minimax-cn": "MiniMax CN",
             "anthropic": "Anthropic",
+            "ai-gateway": "AI Gateway",
             "custom": "your custom endpoint",
         }
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
@@ -1402,7 +1437,7 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "ai-gateway"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,

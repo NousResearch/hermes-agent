@@ -3523,6 +3523,8 @@ class AIAgent:
         base_url = (self.base_url or "").lower()
         if "nousresearch" in base_url:
             return True
+        if "ai-gateway.vercel.sh" in base_url:
+            return True
         if "openrouter" not in base_url:
             return False
         if "api.mistral.ai" in base_url:

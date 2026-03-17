@@ -5836,7 +5836,13 @@ class AIAgent:
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
-                        self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
+                        if status_code == 429:
+                            self._vprint(
+                                f"{self.log_prefix}❌ Rate limit persisted after {max_retries} retries. Please try again later.",
+                                force=True,
+                            )
+                        else:
+                            self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
@@ -5870,10 +5876,11 @@ class AIAgent:
                     elif retry_count >= max_retries - 1:
                         self._vprint(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
                         self._vprint(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
-                    
+
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
                     sleep_end = time.time() + wait_time
+                    _last_countdown = -1
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
                             self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
@@ -5886,7 +5893,22 @@ class AIAgent:
                                 "completed": False,
                                 "interrupted": True,
                             }
+                        # Show countdown for rate limit waits > 5s
+                        if status_code == 429 and wait_time > 5:
+                            _remaining = int(sleep_end - time.time())
+                            if _remaining != _last_countdown and _remaining > 0:
+                                _last_countdown = _remaining
+                                _bar_len = 20
+                                _filled = int(_bar_len * (wait_time - _remaining) / wait_time)
+                                _bar = "█" * _filled + "░" * (_bar_len - _filled)
+                                self._vprint(
+                                    f"\r{self.log_prefix}⏱️  Retrying in {_remaining}s [{_bar}]",
+                                    force=True,
+                                )
                         time.sleep(0.2)  # Check interrupt every 200ms
+                    # After rate limit wait, print newline to clear countdown
+                    if status_code == 429 and wait_time > 5:
+                        self._vprint("", force=True)
             
             # If the API call was interrupted, skip response processing
             if interrupted:

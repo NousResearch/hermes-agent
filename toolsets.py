@@ -130,6 +130,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "messaging": {
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+        "tools": ["send_message"],
+        "includes": []
+    },
+    
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

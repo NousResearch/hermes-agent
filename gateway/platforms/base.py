@@ -727,7 +727,75 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
-    
+
+    @staticmethod
+    def extract_local_files(content: str) -> Tuple[List[str], str]:
+        """
+        Detect bare local file paths in response text for native media delivery.
+
+        Matches absolute paths (/...) and tilde paths (~/) ending in common
+        image or video extensions.  Validates each candidate with
+        ``os.path.isfile()`` to avoid false positives from URLs or
+        non-existent paths.
+
+        Paths inside fenced code blocks (``` ... ```) and inline code
+        (`...`) are ignored so that code samples are never mutilated.
+
+        Returns:
+            Tuple of (list of expanded file paths, cleaned text with the
+            raw path strings removed).
+        """
+        _LOCAL_MEDIA_EXTS = (
+            '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            '.mp4', '.mov', '.avi', '.mkv', '.webm',
+        )
+        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
+
+        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
+        #             and relative paths (./foo.png)
+        # (?:~/|/)    anchors to absolute or home-relative paths
+        path_re = re.compile(
+            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            re.IGNORECASE,
+        )
+
+        # Build spans covered by fenced code blocks and inline code
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
+        found: list = []  # (raw_match_text, expanded_path)
+        for match in path_re.finditer(content):
+            if _in_code(match.start()):
+                continue
+            raw = match.group(0)
+            expanded = os.path.expanduser(raw)
+            if os.path.isfile(expanded):
+                found.append((raw, expanded))
+
+        # Deduplicate by expanded path, preserving discovery order
+        seen: set = set()
+        unique: list = []
+        for raw, expanded in found:
+            if expanded not in seen:
+                seen.add(expanded)
+                unique.append((raw, expanded))
+
+        paths = [expanded for _, expanded in unique]
+
+        cleaned = content
+        if unique:
+            for raw, _exp in unique:
+                cleaned = cleaned.replace(raw, '')
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+        return paths, cleaned
+
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -842,6 +910,12 @@ class BasePlatformAdapter(ABC):
                 images, text_content = self.extract_images(response)
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+
+                # Auto-detect bare local file paths for native media delivery
+                # (helps small models that don't use MEDIA: syntax)
+                local_files, text_content = self.extract_local_files(text_content)
+                if local_files:
+                    logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Skipped when the chat has voice mode disabled (/voice off)
@@ -935,7 +1009,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 for media_path, is_voice in media_files:
@@ -972,7 +1046,34 @@ class BasePlatformAdapter(ABC):
                             print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
                     except Exception as media_err:
                         print(f"[{self.name}] Error sending media: {media_err}")
-            
+
+                # Send auto-detected local files as native attachments
+                for file_path in local_files:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        ext = Path(file_path).suffix.lower()
+                        if ext in _IMAGE_EXTS:
+                            await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                    except Exception as file_err:
+                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)

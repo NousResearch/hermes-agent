@@ -751,3 +751,33 @@ class TestReasoningEffortDefaults:
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+
+    def test_direct_openai_default_medium(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openrouter",
+            base_url="https://api.openai.com/v1",
+        )
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning_effort"] == "medium"
+        assert "extra_body" not in kwargs or "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_direct_openai_reasoning_disabled(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openrouter",
+            base_url="https://api.openai.com/v1",
+        )
+        agent.reasoning_config = {"enabled": False}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "reasoning_effort" not in kwargs
+
+    def test_direct_openai_reasoning_coerces_extended_levels(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openrouter",
+            base_url="https://api.openai.com/v1",
+        )
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning_effort"] == "high"

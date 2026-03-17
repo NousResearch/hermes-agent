@@ -1,74 +1,240 @@
 """Slash command definitions and autocomplete for the Hermes CLI.
 
-Contains the shared built-in ``COMMANDS`` dict and ``SlashCommandCompleter``.
-The completer can optionally include dynamic skill slash commands supplied by the
-interactive CLI.
+Central registry for all slash commands. Every consumer -- CLI help, gateway
+dispatch, Telegram BotCommands, Slack subcommand mapping, autocomplete --
+derives its data from ``COMMAND_REGISTRY``.
+
+To add a command: add a ``CommandDef`` entry to ``COMMAND_REGISTRY``.
+To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.completion import Completer, Completion
 
 
-# Commands organized by category for better help display
-COMMANDS_BY_CATEGORY = {
-    "Session": {
-        "/new": "Start a new session (fresh session ID + history)",
-        "/reset": "Start a new session (alias for /new)",
-        "/clear": "Clear screen and start a new session",
-        "/history": "Show conversation history",
-        "/save": "Save the current conversation",
-        "/retry": "Retry the last message (resend to agent)",
-        "/undo": "Remove the last user/assistant exchange",
-        "/title": "Set a title for the current session (usage: /title My Session Name)",
-        "/compress": "Manually compress conversation context (flush memories + summarize)",
-        "/rollback": "List or restore filesystem checkpoints (usage: /rollback [number])",
-        "/stop": "Kill all running background processes",
-        "/background": "Run a prompt in the background (usage: /background <prompt>)",
-        "/bg": "Run a prompt in the background (alias for /background)",
-    },
-    "Configuration": {
-        "/config": "Show current configuration",
-        "/model": "Show or change the current model",
-        "/provider": "Show available providers and current provider",
-        "/prompt": "View/set custom system prompt",
-        "/personality": "Set a predefined personality",
-        "/verbose": "Cycle tool progress display: off → new → all → verbose",
-        "/reasoning": "Manage reasoning effort and display (usage: /reasoning [level|show|hide])",
-        "/skin": "Show or change the display skin/theme",
-        "/voice": "Toggle voice mode (Ctrl+B to record). Usage: /voice [on|off|tts|status]",
-    },
-    "Tools & Skills": {
-        "/tools": "List available tools",
-        "/toolsets": "List available toolsets",
-        "/skills": "Search, install, inspect, or manage skills from online registries",
-        "/cron": "Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove)",
-        "/reload-mcp": "Reload MCP servers from config.yaml",
-        "/browser": "Connect browser tools to your live Chrome (usage: /browser connect|disconnect|status)",
-        "/plugins": "List installed plugins and their status",
-    },
-    "Info": {
-        "/help": "Show this help message",
-        "/usage": "Show token usage for the current session",
-        "/insights": "Show usage insights and analytics (last 30 days)",
-        "/platforms": "Show gateway/messaging platform status",
-        "/paste": "Check clipboard for an image and attach it",
-    },
-    "Exit": {
-        "/quit": "Exit the CLI (also: /exit, /q)",
-    },
-}
+# ---------------------------------------------------------------------------
+# CommandDef dataclass
+# ---------------------------------------------------------------------------
 
-# Flat dict for backwards compatibility and autocomplete
-COMMANDS = {}
-for category_commands in COMMANDS_BY_CATEGORY.values():
-    COMMANDS.update(category_commands)
+@dataclass(frozen=True)
+class CommandDef:
+    """Definition of a single slash command."""
 
+    name: str                          # canonical name without slash: "background"
+    description: str                   # human-readable description
+    category: str                      # "Session", "Configuration", etc.
+    aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
+    args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
+    cli_only: bool = False             # only available in CLI
+    gateway_only: bool = False         # only available in gateway/messaging
+
+
+# ---------------------------------------------------------------------------
+# Central registry -- single source of truth
+# ---------------------------------------------------------------------------
+
+COMMAND_REGISTRY: list[CommandDef] = [
+    # Session
+    CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
+               aliases=("reset",)),
+    CommandDef("clear", "Clear screen and start a new session", "Session",
+               cli_only=True),
+    CommandDef("history", "Show conversation history", "Session",
+               cli_only=True),
+    CommandDef("save", "Save the current conversation", "Session",
+               cli_only=True),
+    CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
+    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("title", "Set a title for the current session", "Session",
+               args_hint="[name]"),
+    CommandDef("compress", "Manually compress conversation context", "Session"),
+    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
+               args_hint="[number]"),
+    CommandDef("stop", "Kill all running background processes", "Session"),
+    CommandDef("background", "Run a prompt in the background", "Session",
+               aliases=("bg",), args_hint="<prompt>"),
+    CommandDef("status", "Show session info", "Session",
+               gateway_only=True),
+    CommandDef("sethome", "Set this chat as the home channel", "Session",
+               gateway_only=True, aliases=("set-home",)),
+    CommandDef("resume", "Resume a previously-named session", "Session",
+               args_hint="[name]"),
+
+    # Configuration
+    CommandDef("config", "Show current configuration", "Configuration",
+               cli_only=True),
+    CommandDef("model", "Show or change the current model", "Configuration",
+               args_hint="[name]"),
+    CommandDef("provider", "Show available providers and current provider",
+               "Configuration"),
+    CommandDef("prompt", "View/set custom system prompt", "Configuration",
+               cli_only=True, args_hint="[text]"),
+    CommandDef("personality", "Set a predefined personality", "Configuration",
+               args_hint="[name]"),
+    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
+               "Configuration", cli_only=True),
+    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
+               args_hint="[level|show|hide]"),
+    CommandDef("skin", "Show or change the display skin/theme", "Configuration",
+               cli_only=True, args_hint="[name]"),
+    CommandDef("voice", "Toggle voice mode", "Configuration",
+               args_hint="[on|off|tts|status]"),
+
+    # Tools & Skills
+    CommandDef("tools", "List available tools", "Tools & Skills",
+               cli_only=True),
+    CommandDef("toolsets", "List available toolsets", "Tools & Skills",
+               cli_only=True),
+    CommandDef("skills", "Search, install, inspect, or manage skills",
+               "Tools & Skills", cli_only=True),
+    CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
+               cli_only=True, args_hint="[subcommand]"),
+    CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
+               aliases=("reload_mcp",)),
+    CommandDef("plugins", "List installed plugins and their status",
+               "Tools & Skills", cli_only=True),
+
+    # Info
+    CommandDef("help", "Show available commands", "Info"),
+    CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("insights", "Show usage insights and analytics", "Info",
+               args_hint="[days]"),
+    CommandDef("platforms", "Show gateway/messaging platform status", "Info",
+               cli_only=True, aliases=("gateway",)),
+    CommandDef("paste", "Check clipboard for an image and attach it", "Info",
+               cli_only=True),
+    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
+               gateway_only=True),
+
+    # Exit
+    CommandDef("quit", "Exit the CLI", "Exit",
+               cli_only=True, aliases=("exit", "q")),
+]
+
+
+# ---------------------------------------------------------------------------
+# Derived lookups -- rebuilt once at import time
+# ---------------------------------------------------------------------------
+
+def _build_command_lookup() -> dict[str, CommandDef]:
+    """Map every name and alias to its CommandDef."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        lookup[cmd.name] = cmd
+        for alias in cmd.aliases:
+            lookup[alias] = cmd
+    return lookup
+
+
+_COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
+
+
+def resolve_command(name: str) -> CommandDef | None:
+    """Resolve a command name or alias to its CommandDef.
+
+    Accepts names with or without the leading slash.
+    """
+    return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+
+
+def _build_description(cmd: CommandDef) -> str:
+    """Build a CLI-facing description string including usage hint."""
+    if cmd.args_hint:
+        return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
+    return cmd.description
+
+
+# Backwards-compatible flat dict: "/command" -> description
+COMMANDS: dict[str, str] = {}
+for _cmd in COMMAND_REGISTRY:
+    if not _cmd.gateway_only:
+        COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
+        for _alias in _cmd.aliases:
+            COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+
+# Backwards-compatible categorized dict
+COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
+for _cmd in COMMAND_REGISTRY:
+    if not _cmd.gateway_only:
+        _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
+        _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
+        for _alias in _cmd.aliases:
+            _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+
+
+# ---------------------------------------------------------------------------
+# Gateway helpers
+# ---------------------------------------------------------------------------
+
+# Set of all command names + aliases recognized by the gateway
+GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
+    name
+    for cmd in COMMAND_REGISTRY
+    if not cmd.cli_only
+    for name in (cmd.name, *cmd.aliases)
+)
+
+
+def gateway_help_lines() -> list[str]:
+    """Generate gateway help text lines from the registry."""
+    lines: list[str] = []
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only:
+            continue
+        args = f" {cmd.args_hint}" if cmd.args_hint else ""
+        alias_parts: list[str] = []
+        for a in cmd.aliases:
+            # Skip internal aliases like reload_mcp (underscore variant)
+            if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
+                continue
+            alias_parts.append(f"`/{a}`")
+        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
+        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+    return lines
+
+
+def telegram_bot_commands() -> list[tuple[str, str]]:
+    """Return (command_name, description) pairs for Telegram setMyCommands.
+
+    Telegram command names cannot contain hyphens, so they are replaced with
+    underscores.  Aliases are skipped -- Telegram shows one menu entry per
+    canonical command.
+    """
+    result: list[tuple[str, str]] = []
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only:
+            continue
+        tg_name = cmd.name.replace("-", "_")
+        result.append((tg_name, cmd.description))
+    return result
+
+
+def slack_subcommand_map() -> dict[str, str]:
+    """Return subcommand -> /command mapping for Slack /hermes handler.
+
+    Maps both canonical names and aliases so /hermes bg do stuff works
+    the same as /hermes background do stuff.
+    """
+    mapping: dict[str, str] = {}
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only:
+            continue
+        mapping[cmd.name] = f"/{cmd.name}"
+        for alias in cmd.aliases:
+            mapping[alias] = f"/{alias}"
+    return mapping
+
+
+# ---------------------------------------------------------------------------
+# Autocomplete
+# ---------------------------------------------------------------------------
 
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands and optional skill commands."""

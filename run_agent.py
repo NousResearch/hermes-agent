@@ -5256,6 +5256,15 @@ class AIAgent:
                     if hasattr(response, 'usage') and response.usage:
                         if self.api_mode in ("codex_responses", "anthropic_messages"):
                             prompt_tokens = getattr(response.usage, 'input_tokens', 0) or 0
+                            if self.api_mode == "anthropic_messages":
+                                # Anthropic splits input into cache_read + cache_creation
+                                # + non-cached input_tokens. Without adding the cached
+                                # portions, the context bar shows only the tiny non-cached
+                                # portion (e.g. 3 tokens) instead of the real total (~18K).
+                                # Other providers (OpenAI/Codex) already include cached
+                                # tokens in their input_tokens/prompt_tokens field.
+                                prompt_tokens += getattr(response.usage, 'cache_read_input_tokens', 0) or 0
+                                prompt_tokens += getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
                             completion_tokens = getattr(response.usage, 'output_tokens', 0) or 0
                             total_tokens = (
                                 getattr(response.usage, 'total_tokens', None)

@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -22,6 +23,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
@@ -689,13 +692,30 @@ class SessionDB:
         ``NOT``) have special meaning.  Passing raw user input directly to
         MATCH can cause ``sqlite3.OperationalError``.
 
-        Strategy: strip characters that are only meaningful as FTS5 operators
-        and would otherwise cause syntax errors.  This preserves normal keyword
-        search while preventing crashes on inputs like ``C++``, ``"unterminated``,
-        or ``hello AND``.
+        Strategy: split query into balanced-quoted and unquoted segments.
+        Balanced quoted phrases (e.g. ``"exact phrase"``) are preserved for
+        FTS5 phrase search.  Unquoted segments are sanitized: FTS5 operators
+        are stripped, and inter-word hyphens are converted to spaces so that
+        terms like ``chat-send`` match content tokenized by unicode61.
         """
-        # Remove FTS5-special characters that are not useful in keyword search
-        sanitized = re.sub(r'[+{}()"^]', " ", query)
+        # Split into balanced-quoted vs unquoted segments
+        segments = re.split(r'("(?:[^"]*)")', query)
+
+        result_parts = []
+        for seg in segments:
+            if seg.startswith('"') and seg.endswith('"') and len(seg) >= 2:
+                # Balanced quoted phrase — preserve for FTS5 phrase search
+                result_parts.append(seg)
+            else:
+                # Unquoted text — full sanitization
+                part = seg
+                part = part.replace('"', ' ')           # strip unbalanced quotes
+                part = re.sub(r'[+{}()^]', " ", part)   # strip FTS5 operators
+                part = re.sub(r'(?<=\w)-(?=\w)', ' ', part)  # inter-word hyphens → space
+                result_parts.append(part)
+
+        sanitized = ''.join(result_parts)
+
         # Collapse repeated * (e.g. "***") into a single one, and remove
         # leading * (prefix-only matching requires at least one char before *)
         sanitized = re.sub(r"\*+", "*", sanitized)
@@ -729,6 +749,7 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        raw_query = query
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -777,6 +798,9 @@ class SessionDB:
                 cursor = self._conn.execute(sql, params)
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
+                logger.debug(
+                    "FTS5 query failed: raw=%r sanitized=%r", raw_query, query
+                )
                 return []
             matches = [dict(row) for row in cursor.fetchall()]
 

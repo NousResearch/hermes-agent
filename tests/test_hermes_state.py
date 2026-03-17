@@ -278,6 +278,68 @@ class TestFTS5Search:
         # Valid prefix kept
         assert s('deploy*') == 'deploy*'
 
+    def test_sanitize_preserves_balanced_quotes(self):
+        """Balanced quoted phrases must be preserved for FTS5 phrase search."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        assert s('"exact phrase"') == '"exact phrase"'
+        assert s('"deploy docker"') == '"deploy docker"'
+
+    def test_sanitize_replaces_inter_word_hyphens(self):
+        """Inter-word hyphens should become spaces so FTS5 matches tokenized content."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        assert s('chat-send') == 'chat send'
+        assert s('real-time-sync') == 'real time sync'
+
+    def test_sanitize_mixed_quoted_and_unquoted(self):
+        """Quoted phrases stay intact while unquoted hyphens are converted."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        result = s('find "chat-send" in logs')
+        assert '"chat-send"' in result
+        assert 'find' in result
+        assert 'logs' in result
+
+    def test_sanitize_leading_hyphen_untouched(self):
+        """A leading hyphen (no word char before) is not an inter-word hyphen."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # -test has no word character before the hyphen, so regex (?<=\w)- won't match
+        assert '-test' in s('-test')
+
+    def test_search_hyphenated_content(self, db):
+        """Searching for a hyphenated term should find messages containing it."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Run the chat-send command to send messages.")
+
+        results = db.search_messages("chat-send")
+        assert len(results) >= 1
+        snippets = [r.get("snippet", "") for r in results]
+        assert any("chat" in s.lower() for s in snippets)
+
+    def test_search_quoted_phrase(self, db):
+        """A balanced quoted query should perform FTS5 phrase search."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="We need to deploy docker containers today.")
+        db.append_message("s1", role="user", content="Docker is great for deploy tasks.")
+
+        # Phrase search: "deploy docker" should only match the first message
+        results = db.search_messages('"deploy docker"')
+        assert len(results) >= 1
+        snippets = [r.get("snippet", "") for r in results]
+        assert any("deploy docker" in s.lower() for s in snippets)
+
+    def test_search_quoted_hyphenated_phrase(self, db):
+        """Regression for #1770: quoted hyphenated term must reach FTS5 intact."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Use the chat-send command.")
+
+        results = db.search_messages('"chat-send"')
+        assert len(results) >= 1
+        snippets = [r.get("snippet", "") for r in results]
+        assert any("chat" in s.lower() for s in snippets)
+
 
 # =========================================================================
 # Session search and listing

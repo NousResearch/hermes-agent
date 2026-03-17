@@ -398,6 +398,24 @@ class TestSendToPlatformChunking:
 # ---------------------------------------------------------------------------
 
 
+class TestSendToPlatformWhatsapp:
+    def test_whatsapp_routes_via_local_bridge_sender(self):
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": "43121572348102@lid", "message_id": "abc123"})
+
+        with patch("tools.send_message_tool._send_whatsapp", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    "43121572348102@lid",
+                    "hello from hermes",
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with({"bridge_port": 3000}, "43121572348102@lid", "hello from hermes")
+
+
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""

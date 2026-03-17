@@ -873,6 +873,37 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        # Security: warn if skill is loaded from outside the trusted skills directory
+        try:
+            skill_md.resolve().relative_to(SKILLS_DIR.resolve())
+            _outside_skills_dir = False
+        except ValueError:
+            _outside_skills_dir = True
+
+        # Security: detect common prompt injection patterns
+        _INJECTION_PATTERNS = [
+            "ignore previous instructions",
+            "ignore all previous",
+            "you are now",
+            "disregard your",
+            "forget your instructions",
+            "new instructions:",
+            "system prompt:",
+            "<system>",
+            "]]>",
+        ]
+        _content_lower = content.lower()
+        _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
+
+        if _outside_skills_dir or _injection_detected:
+            _warnings = []
+            if _outside_skills_dir:
+                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
+            if _injection_detected:
+                _warnings.append("skill content contains patterns that may indicate prompt injection")
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+
         parsed_frontmatter: Dict[str, Any] = {}
         try:
             parsed_frontmatter, _ = _parse_frontmatter(content)

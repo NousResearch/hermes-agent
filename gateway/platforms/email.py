@@ -452,7 +452,7 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
         pass
 

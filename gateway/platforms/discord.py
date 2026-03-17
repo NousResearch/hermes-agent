@@ -1740,9 +1740,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
 
+            # Discord embed description limit is 4096; show full command up to that
+            max_desc = 4088
+            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
                 title="Command Approval Required",
-                description=f"```\n{command[:500]}\n```",
+                description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
             embed.set_footer(text=f"Approval ID: {approval_id}")

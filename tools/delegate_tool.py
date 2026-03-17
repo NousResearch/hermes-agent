@@ -171,6 +171,17 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
+    import model_tools  # ADD THIS
+
+    # FIX: Save parent's resolved tool names before subagent can clobber them.
+    # Note: This fix assumes delegation is sequential (not parallel/async).
+    # Parallel batch delegation runs subagents in threads but each thread
+    # gets its own _run_single_child call, so this works correctly.
+    _original_tool_names = None  # Guard against import failures
+    try:
+        _original_tool_names = model_tools._last_resolved_tool_names
+    except Exception:
+        pass  # model_tools may not be fully loaded yet
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -365,6 +376,11 @@ def _run_single_child(
         }
 
     finally:
+        # FIX: Restore parent's resolved tool names after subagent completes.
+        # Guard ensures we don't restore None if save failed above.
+        if _original_tool_names is not None:
+            model_tools._last_resolved_tool_names = _original_tool_names
+
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
             try:

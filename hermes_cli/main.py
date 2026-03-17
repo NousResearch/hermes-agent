@@ -2307,8 +2307,9 @@ def cmd_update(args):
         try:
             from gateway.status import get_running_pid, remove_pid_file
             from hermes_cli.gateway import (
-                get_service_name, get_launchd_plist_path, is_macos,
+                get_service_name, get_launchd_plist_path, is_macos, is_linux,
                 refresh_launchd_plist_if_needed,
+                _ensure_user_systemd_env, get_systemd_linger_status,
             )
             import signal as _signal
 
@@ -2318,6 +2319,7 @@ def cmd_update(args):
             has_launchd_service = False
 
             try:
+                _ensure_user_systemd_env()
                 check = subprocess.run(
                     ["systemctl", "--user", "is-active", _gw_service_name],
                     capture_output=True, text=True, timeout=5,
@@ -2366,7 +2368,20 @@ def cmd_update(args):
                         print("✓ Gateway restarted.")
                     else:
                         print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
-                        print("  Try manually: hermes gateway restart")
+                        # Check if linger is the issue
+                        if is_linux():
+                            linger_ok, _detail = get_systemd_linger_status()
+                            if linger_ok is not True:
+                                import getpass
+                                _username = getpass.getuser()
+                                print()
+                                print("  Linger must be enabled for the gateway user service to function.")
+                                print(f"  Run:  sudo loginctl enable-linger {_username}")
+                                print()
+                                print("  Then restart the gateway:")
+                                print("    hermes gateway restart")
+                            else:
+                                print("  Try manually: hermes gateway restart")
                 elif has_launchd_service:
                     # Refresh the plist first (picks up --replace and other
                     # changes from the update we just pulled).

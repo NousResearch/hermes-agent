@@ -150,7 +150,31 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
+def _ensure_user_systemd_env() -> None:
+    """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
+
+    On headless servers (SSH sessions), these env vars may be missing even when
+    the user's systemd instance is running (via linger).  Without them,
+    ``systemctl --user`` fails with "Failed to connect to bus: No medium found".
+    We detect the standard socket path and set the vars so all subsequent
+    subprocess calls inherit them.
+    """
+    uid = os.getuid()
+    if "XDG_RUNTIME_DIR" not in os.environ:
+        runtime_dir = f"/run/user/{uid}"
+        if Path(runtime_dir).exists():
+            os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+
+    if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+        bus_path = Path(xdg_runtime) / "bus"
+        if bus_path.exists():
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
 def _systemctl_cmd(system: bool = False) -> list[str]:
+    if not system:
+        _ensure_user_systemd_env()
     return ["systemctl"] if system else ["systemctl", "--user"]
 
 
@@ -1546,6 +1570,22 @@ def gateway_command(args):
                 pass
         
         if not service_available:
+            # systemd/launchd restart failed — check if linger is the issue
+            if is_linux():
+                linger_ok, _detail = get_systemd_linger_status()
+                if linger_ok is not True:
+                    import getpass
+                    _username = getpass.getuser()
+                    print()
+                    print("⚠ Cannot restart gateway as a service — linger is not enabled.")
+                    print("  The gateway user service requires linger to function on headless servers.")
+                    print()
+                    print(f"  Run:  sudo loginctl enable-linger {_username}")
+                    print()
+                    print("  Then restart the gateway:")
+                    print("    hermes gateway restart")
+                    return
+
             # Manual restart: kill existing processes
             killed = kill_gateway_processes()
             if killed:

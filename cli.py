@@ -3560,7 +3560,7 @@ class HermesCLI:
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
-        elif _base_word == "browser":
+        elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
             try:

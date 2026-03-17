@@ -37,6 +37,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 
+# Sentinel: when a cron agent has nothing new to report, it can start its
+# response with this marker to suppress delivery.  Output is still saved
+# locally for audit.
+SILENT_MARKER = "[SILENT]"
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
@@ -180,6 +185,17 @@ def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
+
+    # Always prepend [SILENT] guidance so the cron agent can suppress
+    # delivery when it has nothing new or noteworthy to report.
+    silent_hint = (
+        "[SYSTEM: If you have nothing new or noteworthy to report, respond "
+        "with exactly \"[SILENT]\" (optionally followed by a brief internal "
+        "note). This suppresses delivery to the user while still saving "
+        "output locally. Only use [SILENT] when there are genuinely no "
+        "changes worth reporting.]\n\n"
+    )
+    prompt = silent_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -480,9 +496,16 @@ def tick(verbose: bool = True) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
-                # Deliver the final response to the origin/target chat
+                # Deliver the final response to the origin/target chat.
+                # If the agent responded with [SILENT], skip delivery (but
+                # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                if deliver_content:
+                should_deliver = bool(deliver_content)
+                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+
+                if should_deliver:
                     try:
                         _deliver_result(job, deliver_content)
                     except Exception as de:

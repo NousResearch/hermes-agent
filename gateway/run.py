@@ -80,7 +80,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 # UUID action map for inline keyboard callbacks (chat_id, action_id) -> action dict
-_keyboard_actions: Dict[tuple[str, str], Dict] = {}
+_keyboard_actions: Dict[tuple[str, str, str], Dict] = {}
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -276,14 +276,14 @@ def _resolve_gateway_model() -> str:
 _MODELS_PER_PAGE = 8
 
 
-def _model_providers_keyboard(chat_id: str, current_model: str) -> tuple[str, List[List[Dict]]]:
+def _model_providers_keyboard(chat_id: str, user_id: str, current_model: str) -> tuple[str, List[List[Dict]]]:
     """Build provider selection keyboard."""
     from hermes_cli.models import providers
     rows: List[List[Dict]] = []
     pair: List[Dict] = []
     for prov in providers():
         action_id = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, action_id)] = {
+        _keyboard_actions[(chat_id, user_id, action_id)] = {
             "type": "model_provider", "provider": prov, "current_model": current_model
         }
         btn_label = f"* {prov}" if prov in current_model else prov
@@ -294,12 +294,12 @@ def _model_providers_keyboard(chat_id: str, current_model: str) -> tuple[str, Li
     if pair:
         rows.append(pair)
     cancel_id = uuid.uuid4().hex[:16]
-    _keyboard_actions[(chat_id, cancel_id)] = {"type": "model_cancel"}
+    _keyboard_actions[(chat_id, user_id, cancel_id)] = {"type": "model_cancel"}
     rows.append([{"text": "Cancel", "callback_data": cancel_id}])
     return f"Current: {current_model}\n\nSelect provider:", rows
 
 
-def _model_list_keyboard(chat_id: str, provider: str, current_model: str, page: int = 0) -> tuple[str, List[List[Dict]]]:
+def _model_list_keyboard(chat_id: str, user_id: str, provider: str, current_model: str, page: int = 0) -> tuple[str, List[List[Dict]]]:
     """Build paginated model list keyboard."""
     from hermes_cli.models import models_for_provider
     all_models = models_for_provider(provider)
@@ -311,7 +311,7 @@ def _model_list_keyboard(chat_id: str, provider: str, current_model: str, page: 
     pair: List[Dict] = []
     for mid in page_models:
         action_id = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, action_id)] = {"type": "model_select", "model_id": mid}
+        _keyboard_actions[(chat_id, user_id, action_id)] = {"type": "model_select", "model_id": mid}
         label = f"* {mid}" if mid == current_model else mid
         display = label[:30] + "…" if len(label) > 30 else label
         pair.append({"text": display, "callback_data": action_id})
@@ -323,16 +323,16 @@ def _model_list_keyboard(chat_id: str, provider: str, current_model: str, page: 
     nav: List[Dict] = []
     if page > 0:
         pid = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, pid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1}
+        _keyboard_actions[(chat_id, user_id, pid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1}
         nav.append({"text": "< Prev", "callback_data": pid})
     if (page + 1) * _MODELS_PER_PAGE < total:
         nid = uuid.uuid4().hex[:16]
-        _keyboard_actions[(chat_id, nid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1}
+        _keyboard_actions[(chat_id, user_id, nid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1}
         nav.append({"text": "Next >", "callback_data": nid})
     if nav:
         rows.append(nav)
     back_id = uuid.uuid4().hex[:16]
-    _keyboard_actions[(chat_id, back_id)] = {"type": "model_back", "current_model": current_model}
+    _keyboard_actions[(chat_id, user_id, back_id)] = {"type": "model_back", "current_model": current_model}
     rows.append([{"text": "<< Providers", "callback_data": back_id}])
     total_pages = max(1, (total + _MODELS_PER_PAGE - 1) // _MODELS_PER_PAGE)
     return f"Provider: {provider} ({total} models) — page {page+1}/{total_pages}\nCurrent: {current_model}", rows
@@ -1407,7 +1407,7 @@ class GatewayRunner:
         command = event.get_command()
 
         # Inline keyboard callback — text is a uuid hex with no "/" prefix
-        if not command and event.text and (event.source.chat_id, event.text.strip()) in _keyboard_actions:
+        if not command and event.text and (event.source.chat_id, event.source.user_id or "", event.text.strip()) in _keyboard_actions:
             return await self._handle_model_callback(event)
 
         # Emit command:* hook for any recognized slash command.
@@ -2388,7 +2388,7 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform) if source.platform else None
             if adapter and hasattr(adapter, "send_keyboard"):
                 try:
-                    text, rows = _model_providers_keyboard(source.chat_id, current)
+                    text, rows = _model_providers_keyboard(source.chat_id, source.user_id or "", current)
                     await adapter.send_keyboard(source.chat_id, text, rows)
                     return None
                 except Exception:
@@ -2501,7 +2501,8 @@ class GatewayRunner:
         """Handle inline keyboard callbacks for model selection."""
         import yaml
         chat_id = event.source.chat_id
-        action = _keyboard_actions.pop((chat_id, event.text.strip()), None)
+        user_id = event.source.user_id or ""
+        action = _keyboard_actions.pop((chat_id, user_id, event.text.strip()), None)
         if not action:
             return
         adapter = self.adapters.get(event.source.platform) if event.source.platform else None
@@ -2509,15 +2510,15 @@ class GatewayRunner:
 
         t = action.get("type")
         if t == "model_provider":
-            text, rows = _model_list_keyboard(chat_id, action["provider"], action["current_model"])
+            text, rows = _model_list_keyboard(chat_id, user_id, action["provider"], action["current_model"])
             if adapter:
                 await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
         elif t == "model_page":
-            text, rows = _model_list_keyboard(chat_id, action["provider"], action["current_model"], action["page"])
+            text, rows = _model_list_keyboard(chat_id, user_id, action["provider"], action["current_model"], action["page"])
             if adapter:
                 await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
         elif t == "model_back":
-            text, rows = _model_providers_keyboard(chat_id, action["current_model"])
+            text, rows = _model_providers_keyboard(chat_id, user_id, action["current_model"])
             if adapter:
                 await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
         elif t == "model_select":

@@ -3431,13 +3431,14 @@ class HermesCLI:
                 else:
                     _cprint("  Usage: /title <your session title>")
             else:
-                # Show current title if no argument given
+                # Show current title and session ID if no argument given
                 if self._session_db:
+                    _cprint(f"  Session ID: {self.session_id}")
                     session = self._session_db.get_session(self.session_id)
                     if session and session.get("title"):
-                        _cprint(f"  Session title: {session['title']}")
+                        _cprint(f"  Title: {session['title']}")
                     elif self._pending_title:
-                        _cprint(f"  Session title (pending): {self._pending_title}")
+                        _cprint(f"  Title (pending): {self._pending_title}")
                     else:
                         _cprint(f"  No title set. Usage: /title <your session title>")
                 else:
@@ -5387,6 +5388,20 @@ class HermesCLI:
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+
+            # Auto-generate session title after first exchange (non-blocking)
+            if response and result and not result.get("failed") and not result.get("partial"):
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    maybe_auto_title(
+                        self._session_db,
+                        self.session_id,
+                        message,
+                        response,
+                        self.conversation_history,
+                    )
+                except Exception:
+                    pass
 
             # Handle failed or partial results (e.g., non-retryable errors, rate limits,
             # truncated output, invalid tool calls). Both "failed" and "partial" with

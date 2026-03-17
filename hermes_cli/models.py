@@ -82,6 +82,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "x402": [],
 }
 
 _PROVIDER_LABELS = {
@@ -94,6 +95,7 @@ _PROVIDER_LABELS = {
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
+    "x402": "x402 Router",
     "custom": "Custom endpoint",
 }
 
@@ -142,7 +144,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek", "x402",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

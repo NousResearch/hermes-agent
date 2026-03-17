@@ -1385,6 +1385,110 @@ class TestNousCredentialRefresh:
         assert isinstance(agent.client, _RebuiltClient)
 
 
+class TestDynamicRequestHeaders:
+    def test_apply_request_headers_merges_resolved_headers(self, agent):
+        captured = {}
+
+        def _resolver(**kwargs):
+            captured.update(kwargs)
+            return {"PAYMENT-SIGNATURE": "sig-123"}
+
+        agent.request_headers_resolver = _resolver
+        merged = agent._apply_request_headers(
+            {"model": "test-model", "messages": [], "extra_headers": {"X-Test": "1"}}
+        )
+
+        assert merged["extra_headers"] == {
+            "X-Test": "1",
+            "PAYMENT-SIGNATURE": "sig-123",
+        }
+        assert captured["force_refresh"] is False
+
+    def test_run_conversation_retries_after_request_header_refresh(self, agent):
+        agent.provider = "x402"
+        agent.api_mode = "chat_completions"
+
+        resolver_calls = []
+        seen_headers = []
+
+        def _resolver(**kwargs):
+            resolver_calls.append(kwargs["force_refresh"])
+            return {
+                "PAYMENT-SIGNATURE": "sig-refresh" if kwargs["force_refresh"] else "sig-initial"
+            }
+
+        class _PaymentRequiredError(RuntimeError):
+            def __init__(self):
+                super().__init__("payment required")
+                self.status_code = 402
+
+        responses = [_PaymentRequiredError(), _mock_response(content="ok")]
+
+        def _fake_api_call(api_kwargs):
+            seen_headers.append(dict(api_kwargs.get("extra_headers") or {}))
+            nxt = responses.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        agent.request_headers_resolver = _resolver
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.sleep", return_value=None),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        assert seen_headers[0]["PAYMENT-SIGNATURE"] == "sig-initial"
+        assert seen_headers[1]["PAYMENT-SIGNATURE"] == "sig-refresh"
+        assert resolver_calls == [False, True]
+
+
+class TestTopLevelMessageResponseCoercion:
+    def test_coerces_anthropic_style_message_payload(self, agent):
+        response = SimpleNamespace(
+            model="claude-sonnet-4-6",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+            type="message",
+            role="assistant",
+            content=[{"type": "text", "text": "smoke ok"}],
+            choices=None,
+        )
+
+        coerced = agent._coerce_top_level_message_response(response)
+
+        assert coerced.choices[0].message.content == "smoke ok"
+        assert coerced.choices[0].finish_reason == "stop"
+
+    def test_tracks_input_output_tokens_for_top_level_message_payload(self, agent):
+        response = SimpleNamespace(
+            model="claude-sonnet-4-6",
+            usage=SimpleNamespace(input_tokens=3, output_tokens=5),
+            type="message",
+            role="assistant",
+            content=[{"type": "text", "text": "smoke ok"}],
+            choices=None,
+        )
+
+        with (
+            patch.object(agent, "_interruptible_api_call", return_value=response),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.sleep", return_value=None),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "smoke ok"
+        assert agent.session_prompt_tokens == 3
+        assert agent.session_completion_tokens == 5
+        assert agent.session_total_tokens == 8
+
+
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
 

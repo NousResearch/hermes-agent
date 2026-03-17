@@ -273,7 +273,7 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        return {
+        runtime = {
             "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
@@ -281,6 +281,10 @@ def resolve_runtime_provider(
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
+        if creds.get("request_headers_resolver") is not None:
+            runtime["request_headers_resolver"] = creds.get("request_headers_resolver")
+            runtime["request_headers_key"] = creds.get("request_headers_key", provider)
+        return runtime
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,

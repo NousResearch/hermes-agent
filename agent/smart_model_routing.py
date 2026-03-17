@@ -125,6 +125,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "base_url": primary.get("base_url"),
                 "provider": primary.get("provider"),
                 "api_mode": primary.get("api_mode"),
+                "request_headers_resolver": primary.get("request_headers_resolver"),
             },
             "label": None,
             "signature": (
@@ -156,6 +157,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "base_url": primary.get("base_url"),
                 "provider": primary.get("provider"),
                 "api_mode": primary.get("api_mode"),
+                "request_headers_resolver": primary.get("request_headers_resolver"),
             },
             "label": None,
             "signature": (
@@ -173,6 +175,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "base_url": runtime.get("base_url"),
             "provider": runtime.get("provider"),
             "api_mode": runtime.get("api_mode"),
+            "request_headers_resolver": runtime.get("request_headers_resolver"),
         },
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
         "signature": (

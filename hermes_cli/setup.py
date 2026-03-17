@@ -724,6 +724,7 @@ def setup_model_provider(config: dict):
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
+        "x402 Router (dynamic payment auth)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1232,7 +1233,63 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 9:  # x402 Router
+        selected_provider = "x402"
+        print()
+        print_header("x402 Router")
+        print_info("Hermes can talk to an OpenAI-compatible x402 router.")
+        print_info("Primary mode uses the Taskmarket wallet and does not ask for a private key.")
+        print_info("Hermes will reuse ~/.taskmarket/keystore.json or run `taskmarket init` for you.")
+        print_info("Hermes uses an upto permit cap for x402; the default cap is $2.")
+        print_info("Optional RPC/network overrides are available for Permit2/EIP-2612 flows.")
+        print()
+
+        current_base = get_env_value("X402_BASE_URL") or "https://ai.xgate.run/v1"
+        current_rpc = get_env_value("X402_RPC_URL") or ""
+        current_network = get_env_value("X402_NETWORK") or ""
+        current_permit_cap = get_env_value("X402_PERMIT_CAP_USDC") or "2"
+
+        base_url = prompt("  Router URL", current_base)
+        rpc_url = prompt("  RPC URL (optional)", current_rpc)
+        preferred_network = prompt("  Preferred network (optional)", current_network)
+        permit_cap = prompt("  Default permit cap in USDC", current_permit_cap)
+
+        from hermes_cli.taskmarket_wallet import (
+            ensure_taskmarket_wallet_initialized,
+            taskmarket_keystore_exists,
+        )
+
+        if not taskmarket_keystore_exists():
+            print_info("No Taskmarket wallet found. Running Taskmarket onboarding...")
+            try:
+                ensure_taskmarket_wallet_initialized()
+            except Exception as exc:
+                print_warning(f"Taskmarket onboarding failed: {exc}")
+                selected_provider = None
+        if selected_provider is not None:
+            if base_url:
+                save_env_value("X402_BASE_URL", base_url.rstrip("/"))
+            save_env_value("X402_RPC_URL", rpc_url)
+            save_env_value("X402_NETWORK", preferred_network)
+            save_env_value("X402_PERMIT_CAP_USDC", permit_cap)
+            if existing_custom:
+                save_env_value("OPENAI_BASE_URL", "")
+                save_env_value("OPENAI_API_KEY", "")
+            _update_config_for_provider("x402", (base_url or current_base).rstrip("/"))
+
+    # else: last index is "Keep current" when a provider already exists
+
+    # ── OpenRouter API Key for tools (if not already set) ──
+    # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
+    # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
+    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "x402") and not get_env_value("OPENROUTER_API_KEY"):
+        print()
+        print_header("OpenRouter API Key (for tools)")
+        print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
+        print_info("independently of your main inference provider.")
+        print_info("Get your API key at: https://openrouter.ai/keys")
+
+    # else: last index is "Keep current" when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1430,6 +1487,11 @@ def setup_model_provider(config: dict):
                 if custom:
                     _set_default_model(config, custom)
             # else: keep current
+        elif selected_provider == "x402":
+            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

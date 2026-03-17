@@ -768,6 +768,7 @@ def cmd_model(args):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "x402": "x402 Router",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -787,6 +788,7 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("x402", "x402 Router (OpenAI-compatible router with dynamic payment auth)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -855,6 +857,8 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "x402":
+        _model_flow_x402(config, current_model)
     elif selected_provider in ("zai", "minimax", "minimax-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1415,6 +1419,7 @@ _PROVIDER_MODELS = {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
+    "x402": [],
 }
 
 
@@ -1520,6 +1525,76 @@ def _model_flow_kimi(config, current_model=""):
         print(f"Default model set to: {selected} (via {endpoint_label})")
     else:
         print("No change.")
+
+
+def _model_flow_x402(config, current_model=""):
+    """x402 provider flow: ensure Taskmarket wallet, then prompt for model."""
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.taskmarket_wallet import (
+        ensure_taskmarket_wallet_initialized,
+        taskmarket_keystore_exists,
+    )
+
+    current_base = get_env_value("X402_BASE_URL") or os.getenv("X402_BASE_URL", "") or "https://ai.xgate.run/v1"
+    current_rpc = get_env_value("X402_RPC_URL") or os.getenv("X402_RPC_URL", "")
+    current_network = get_env_value("X402_NETWORK") or os.getenv("X402_NETWORK", "")
+    current_permit_cap = get_env_value("X402_PERMIT_CAP_USDC") or os.getenv("X402_PERMIT_CAP_USDC", "") or "2"
+
+    print("Configure x402 router access.")
+    print("Primary mode uses the Taskmarket wallet and does not ask for a private key.")
+    print("Hermes will reuse ~/.taskmarket/keystore.json or run `taskmarket init` for you.")
+    print("Hermes uses an upto permit cap for x402; the default cap is $2.")
+    print("Advanced fallback modes remain available via X402_PRIVATE_KEY, X402_AUTH_HELPER_CMD, or X402_PAYMENT_SIGNATURE.")
+    print()
+
+    try:
+        base_url = input(f"Router URL [{current_base}]: ").strip() or current_base
+        rpc_url = input(f"RPC URL [{current_rpc or 'auto'}]: ").strip()
+        preferred_network = input(f"Preferred network [{current_network or 'auto'}]: ").strip()
+        permit_cap = input(f"Default permit cap in USDC [{current_permit_cap}]: ").strip() or current_permit_cap
+        model_name = input(f"Model name [{current_model or 'required'}]: ").strip() or current_model
+    except (KeyboardInterrupt, EOFError):
+        print()
+        print("Cancelled.")
+        return
+
+    if not taskmarket_keystore_exists():
+        print("No Taskmarket wallet found. Running Taskmarket onboarding...")
+        try:
+            ensure_taskmarket_wallet_initialized()
+        except Exception as exc:
+            print(f"Taskmarket onboarding failed: {exc}")
+            return
+
+    if not model_name:
+        print("Model name is required.")
+        return
+
+    save_env_value("X402_BASE_URL", base_url.rstrip("/"))
+    save_env_value("X402_RPC_URL", rpc_url)
+    save_env_value("X402_NETWORK", preferred_network)
+    save_env_value("X402_PERMIT_CAP_USDC", permit_cap)
+
+    if get_env_value("OPENAI_BASE_URL"):
+        save_env_value("OPENAI_BASE_URL", "")
+        save_env_value("OPENAI_API_KEY", "")
+
+    _save_model_choice(model_name)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if isinstance(model, str):
+        model = {"default": model}
+    elif not isinstance(model, dict):
+        model = {}
+    model["provider"] = "x402"
+    model["base_url"] = base_url.rstrip("/")
+    cfg["model"] = model
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {model_name} (via x402 Router)")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -2578,7 +2653,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "x402"],
         default=None,
         help="Inference provider (default: auto)"
     )

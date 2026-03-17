@@ -37,6 +37,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("x402", "x402 Router", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -65,6 +66,15 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_x402_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["x402"]
+        assert pconfig.api_key_env_vars == (
+            "X402_PRIVATE_KEY",
+            "X402_AUTH_HELPER_CMD",
+            "X402_PAYMENT_SIGNATURE",
+        )
+        assert pconfig.base_url_env_var == "X402_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
@@ -87,6 +97,9 @@ PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "X402_BASE_URL", "X402_PRIVATE_KEY", "X402_AUTH_HELPER_CMD", "X402_PAYMENT_SIGNATURE",
+    "X402_PAYMENT_HEADER", "X402_API_KEY", "X402_RPC_URL", "X402_NETWORK",
+    "X402_PERMIT_CAP_USDC", "X402_TASKMARKET_KEYSTORE_PATH", "X402_HELPER_TIMEOUT_SECONDS",
     "OPENAI_BASE_URL",
 )
 
@@ -111,6 +124,9 @@ class TestResolveProvider:
 
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
+
+    def test_explicit_x402(self):
+        assert resolve_provider("x402") == "x402"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
@@ -163,6 +179,10 @@ class TestResolveProvider:
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
 
+    def test_auto_detects_x402_private_key(self, monkeypatch):
+        monkeypatch.setenv("X402_PRIVATE_KEY", "0x" + "11" * 32)
+        assert resolve_provider("auto") == "x402"
+
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -212,6 +232,21 @@ class TestApiKeyProviderStatus:
         status = get_api_key_provider_status("nous")
         assert status["configured"] is False
 
+    def test_x402_private_key_counts_as_configured(self, monkeypatch):
+        monkeypatch.setenv("X402_PRIVATE_KEY", "0x" + "11" * 32)
+        monkeypatch.setenv("X402_BASE_URL", "https://router.example/v1")
+        status = get_api_key_provider_status("x402")
+        assert status["configured"] is True
+        assert status["key_source"] == "X402_PRIVATE_KEY"
+        assert status["base_url"] == "https://router.example/v1"
+        assert status["payment_header"] == "PAYMENT-SIGNATURE"
+
+    def test_x402_taskmarket_keystore_counts_as_configured(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.taskmarket_wallet.taskmarket_keystore_exists", lambda: True)
+        status = get_api_key_provider_status("x402")
+        assert status["configured"] is True
+        assert status["key_source"] == "taskmarket-keystore"
+
 
 # =============================================================================
 # Credential Resolution tests
@@ -258,6 +293,40 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
         assert creds["source"] == "default"
+
+    def test_resolve_x402_with_private_key(self, monkeypatch):
+        monkeypatch.setenv("X402_PRIVATE_KEY", "0x" + "11" * 32)
+        monkeypatch.setenv("X402_BASE_URL", "https://router.example/v1")
+        monkeypatch.setattr(
+            "hermes_cli.x402_auth.create_x402_request_headers_resolver",
+            lambda **kwargs: (lambda **resolver_kwargs: {"PAYMENT-SIGNATURE": "sig"}),
+        )
+        creds = resolve_api_key_provider_credentials("x402")
+        assert creds["provider"] == "x402"
+        assert creds["api_key"] == "x402-placeholder"
+        assert creds["base_url"] == "https://router.example/v1"
+        assert creds["source"] == "X402_PRIVATE_KEY"
+        assert callable(creds["request_headers_resolver"])
+        assert creds["request_headers_key"] == "pk:auto|default|https://router.example/v1"
+
+    def test_resolve_x402_with_taskmarket_keystore(self, monkeypatch):
+        monkeypatch.setenv("X402_BASE_URL", "https://router.example/v1")
+        monkeypatch.setattr(
+            "hermes_cli.taskmarket_wallet.load_taskmarket_private_key",
+            lambda: "0x" + "22" * 32,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.x402_auth.create_x402_request_headers_resolver",
+            lambda **kwargs: (lambda **resolver_kwargs: {"PAYMENT-SIGNATURE": "sig"}),
+        )
+        creds = resolve_api_key_provider_credentials("x402")
+        assert creds["source"] == "taskmarket-keystore"
+        assert creds["request_headers_key"] == "taskmarket:auto|default|https://router.example/v1"
+
+    def test_resolve_x402_requires_auth_source(self, monkeypatch):
+        monkeypatch.setenv("X402_TASKMARKET_KEYSTORE_PATH", "/tmp/nonexistent-taskmarket-keystore.json")
+        with pytest.raises(AuthError):
+            resolve_api_key_provider_credentials("x402")
 
     def test_resolve_invalid_provider_raises(self):
         with pytest.raises(AuthError):
@@ -316,6 +385,22 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
 
+    def test_runtime_x402_includes_request_header_hook(self, monkeypatch):
+        monkeypatch.setenv("X402_PRIVATE_KEY", "0x" + "11" * 32)
+        monkeypatch.setenv("X402_BASE_URL", "https://router.example/v1")
+        monkeypatch.setattr(
+            "hermes_cli.x402_auth.create_x402_request_headers_resolver",
+            lambda **kwargs: (lambda **resolver_kwargs: {"PAYMENT-SIGNATURE": "sig"}),
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="x402")
+        assert result["provider"] == "x402"
+        assert result["api_mode"] == "chat_completions"
+        assert result["base_url"] == "https://router.example/v1"
+        assert result["api_key"] == "x402-placeholder"
+        assert callable(result["request_headers_resolver"])
+        assert result["request_headers_key"] == "pk:auto|default|https://router.example/v1"
+
 
 # =============================================================================
 # _has_any_provider_configured tests
@@ -336,6 +421,16 @@ class TestHasAnyProviderConfigured:
     def test_minimax_key_counts(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_module
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_x402_helper_counts(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+        monkeypatch.setenv("X402_PRIVATE_KEY", "0x" + "11" * 32)
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")

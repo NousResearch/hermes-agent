@@ -23,6 +23,9 @@ dependencies = [
   "requests",
   "jinja2",
   "pydantic>=2.0",
+  "x402>=2.3.0",
+  "eth-account",
+  "web3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit",
   # Tools

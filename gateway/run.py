@@ -250,6 +250,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "request_headers_resolver": runtime.get("request_headers_resolver"),
     }
 
 

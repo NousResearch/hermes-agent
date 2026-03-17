@@ -342,6 +342,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 "base_url": runtime.get("base_url"),
                 "provider": runtime.get("provider"),
                 "api_mode": runtime.get("api_mode"),
+                "request_headers_resolver": runtime.get("request_headers_resolver"),
             },
         )
 
@@ -351,6 +352,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             base_url=turn_route["runtime"].get("base_url"),
             provider=turn_route["runtime"].get("provider"),
             api_mode=turn_route["runtime"].get("api_mode"),
+            request_headers_resolver=turn_route["runtime"].get("request_headers_resolver"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

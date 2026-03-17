@@ -119,6 +119,7 @@ def show_status(args):
         "Kimi": "KIMI_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
+        "x402 PK": "X402_PRIVATE_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
@@ -196,8 +197,20 @@ def show_status(args):
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),
         "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+        "x402 Router":      ("X402_PRIVATE_KEY", "X402_AUTH_HELPER_CMD", "X402_PAYMENT_SIGNATURE"),
     }
     for pname, env_vars in apikey_providers.items():
+        if pname == "x402 Router":
+            try:
+                from hermes_cli.auth import get_api_key_provider_status
+
+                x402_status = get_api_key_provider_status("x402")
+                configured = bool(x402_status.get("configured"))
+                label = "configured" if configured else "not configured (run: hermes model)"
+                print(f"  {pname:<16} {check_mark(configured)} {label}")
+                continue
+            except Exception:
+                pass
         key_val = ""
         for ev in env_vars:
             key_val = get_env_value(ev) or ""

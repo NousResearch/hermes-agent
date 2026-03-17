@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import shlex
 import stat
 import base64
 import hashlib
@@ -69,6 +70,9 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_X402_BASE_URL = "https://ai.xgate.run/v1"
+DEFAULT_X402_PAYMENT_HEADER = "PAYMENT-SIGNATURE"
+DEFAULT_X402_HELPER_TIMEOUT_SECONDS = 20.0
 
 
 # =============================================================================
@@ -155,6 +159,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "x402": ProviderConfig(
+        id="x402",
+        name="x402 Router",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_X402_BASE_URL,
+        api_key_env_vars=("X402_PRIVATE_KEY", "X402_AUTH_HELPER_CMD", "X402_PAYMENT_SIGNATURE"),
+        base_url_env_var="X402_BASE_URL",
+        extra={
+            "payment_header_env_var": "X402_PAYMENT_HEADER",
+            "placeholder_api_key_env_var": "X402_API_KEY",
+        },
+    ),
 }
 
 
@@ -180,6 +196,134 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     if api_key.startswith("sk-kimi-"):
         return KIMI_CODE_BASE_URL
     return default_url
+
+
+def _resolve_x402_base_url(env_override: str, default_url: str) -> str:
+    if env_override:
+        return env_override.rstrip("/")
+    return default_url.rstrip("/")
+
+
+def normalize_private_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("0X"):
+        cleaned = "0x" + cleaned[2:]
+    if not cleaned.startswith("0x"):
+        cleaned = "0x" + cleaned
+    if len(cleaned) != 66:
+        return None
+    try:
+        int(cleaned[2:], 16)
+    except ValueError:
+        return None
+    return cleaned
+
+
+def _make_x402_request_headers_resolver(
+    *,
+    base_url: str,
+    helper_cmd: str,
+    static_signature: str,
+    payment_header: str,
+):
+    helper_cmd = helper_cmd.strip()
+    static_signature = static_signature.strip()
+    payment_header = (payment_header or DEFAULT_X402_PAYMENT_HEADER).strip() or DEFAULT_X402_PAYMENT_HEADER
+    resolved_base_url = base_url.rstrip("/")
+
+    def _resolver(
+        *,
+        force_refresh: bool = False,
+        api_kwargs: Optional[Dict[str, Any]] = None,
+        error: Optional[Exception] = None,
+    ) -> Dict[str, str]:
+        if helper_cmd:
+            payload: Dict[str, Any] = {
+                "provider": "x402",
+                "base_url": resolved_base_url,
+                "payment_header": payment_header,
+                "force_refresh": bool(force_refresh),
+            }
+            if isinstance(api_kwargs, dict):
+                payload["request"] = {
+                    "model": api_kwargs.get("model"),
+                    "messages": len(api_kwargs.get("messages") or []),
+                }
+            if error is not None:
+                payload["error"] = {
+                    "type": type(error).__name__,
+                    "message": str(error),
+                    "status_code": getattr(error, "status_code", None),
+                }
+
+            try:
+                result = subprocess.run(
+                    shlex.split(helper_cmd),
+                    input=json.dumps(payload),
+                    capture_output=True,
+                    text=True,
+                    timeout=float(os.getenv("X402_HELPER_TIMEOUT_SECONDS", str(DEFAULT_X402_HELPER_TIMEOUT_SECONDS))),
+                    check=False,
+                )
+            except Exception as exc:
+                raise AuthError(
+                    f"x402 auth helper failed to run: {exc}",
+                    provider="x402",
+                    code="x402_helper_failed",
+                ) from exc
+
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                raise AuthError(
+                    f"x402 auth helper exited with status {result.returncode}: {stderr or 'no stderr'}",
+                    provider="x402",
+                    code="x402_helper_failed",
+                )
+
+            try:
+                payload_out = json.loads((result.stdout or "").strip() or "{}")
+            except Exception as exc:
+                raise AuthError(
+                    "x402 auth helper returned invalid JSON.",
+                    provider="x402",
+                    code="x402_helper_invalid_json",
+                ) from exc
+
+            headers_obj = payload_out.get("headers", payload_out)
+            if not isinstance(headers_obj, dict):
+                raise AuthError(
+                    "x402 auth helper response must be a JSON object or {'headers': {...}}.",
+                    provider="x402",
+                    code="x402_helper_invalid_shape",
+                )
+
+            headers = {
+                str(k): str(v)
+                for k, v in headers_obj.items()
+                if isinstance(k, str) and v is not None and str(v).strip()
+            }
+            if not headers:
+                raise AuthError(
+                    "x402 auth helper returned no headers.",
+                    provider="x402",
+                    code="x402_helper_empty_headers",
+                )
+            return headers
+
+        if static_signature:
+            return {payment_header: static_signature}
+
+        raise AuthError(
+            "x402 requires X402_AUTH_HELPER_CMD or X402_PAYMENT_SIGNATURE.",
+            provider="x402",
+            code="x402_auth_missing",
+        )
+
+    return _resolver
 
 
 # =============================================================================
@@ -1446,6 +1590,45 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
+    if provider_id == "x402":
+        payment_header_env = str(pconfig.extra.get("payment_header_env_var") or "").strip()
+        payment_header = os.getenv(payment_header_env, "").strip() or DEFAULT_X402_PAYMENT_HEADER
+        base_url = _resolve_x402_base_url(env_url, pconfig.inference_base_url)
+        private_key = os.getenv("X402_PRIVATE_KEY", "").strip()
+        helper_cmd = os.getenv("X402_AUTH_HELPER_CMD", "").strip()
+        static_signature = os.getenv("X402_PAYMENT_SIGNATURE", "").strip()
+        taskmarket_available = False
+        if not private_key:
+            try:
+                from hermes_cli.taskmarket_wallet import taskmarket_keystore_exists
+
+                taskmarket_available = taskmarket_keystore_exists()
+            except Exception:
+                taskmarket_available = False
+        normalized_private_key = normalize_private_key(private_key)
+        configured = bool(normalized_private_key) or taskmarket_available or bool(helper_cmd or static_signature)
+        if normalized_private_key:
+            key_source = "X402_PRIVATE_KEY"
+        elif taskmarket_available:
+            key_source = "taskmarket-keystore"
+        elif helper_cmd:
+            key_source = "X402_AUTH_HELPER_CMD"
+        elif static_signature:
+            key_source = "X402_PAYMENT_SIGNATURE"
+        else:
+            key_source = ""
+        return {
+            "configured": configured,
+            "provider": provider_id,
+            "name": pconfig.name,
+            "key_source": key_source,
+            "base_url": base_url,
+            "logged_in": configured,
+            "payment_header": payment_header,
+            "auth_helper": helper_cmd,
+            "uses_private_key": bool(normalized_private_key),
+            "uses_taskmarket_keystore": taskmarket_available,
+        }
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
@@ -1503,6 +1686,77 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
+    if provider_id == "x402":
+        payment_header_env = str(pconfig.extra.get("payment_header_env_var") or "").strip()
+        payment_header = os.getenv(payment_header_env, "").strip() or DEFAULT_X402_PAYMENT_HEADER
+        private_key = normalize_private_key(os.getenv("X402_PRIVATE_KEY", "").strip())
+        helper_cmd = os.getenv("X402_AUTH_HELPER_CMD", "").strip()
+        static_signature = os.getenv("X402_PAYMENT_SIGNATURE", "").strip()
+        taskmarket_private_key = None
+        if not private_key:
+            try:
+                from hermes_cli.taskmarket_wallet import load_taskmarket_private_key
+
+                taskmarket_private_key = normalize_private_key(load_taskmarket_private_key())
+            except Exception:
+                taskmarket_private_key = None
+        effective_private_key = private_key or taskmarket_private_key
+        if effective_private_key:
+            from hermes_cli.x402_auth import create_x402_request_headers_resolver
+
+            preferred_network = os.getenv("X402_NETWORK", "").strip() or None
+            rpc_url = os.getenv("X402_RPC_URL", "").strip() or None
+            base_url = _resolve_x402_base_url(env_url, pconfig.inference_base_url)
+            permit_cap_units = None
+            permit_cap_usdc = os.getenv("X402_PERMIT_CAP_USDC", "").strip()
+            if permit_cap_usdc:
+                try:
+                    permit_cap_units = str(int(float(permit_cap_usdc) * 1_000_000))
+                except ValueError:
+                    permit_cap_units = None
+            return {
+                "provider": provider_id,
+                "api_key": os.getenv(str(pconfig.extra.get("placeholder_api_key_env_var") or "").strip(), "").strip() or "x402-placeholder",
+                "base_url": base_url,
+                "source": "X402_PRIVATE_KEY" if private_key else "taskmarket-keystore",
+                "request_headers_resolver": create_x402_request_headers_resolver(
+                    private_key=effective_private_key,
+                    base_url=base_url,
+                    preferred_network=preferred_network,
+                    rpc_url=rpc_url,
+                    permit_cap_units=permit_cap_units,
+                ),
+                "request_headers_key": f"{'pk' if private_key else 'taskmarket'}:{preferred_network or 'auto'}|{rpc_url or 'default'}|{base_url}",
+            }
+        if not helper_cmd and not static_signature:
+            raise AuthError(
+                "x402 is not configured. Set X402_PRIVATE_KEY, run `taskmarket init`, X402_AUTH_HELPER_CMD, or X402_PAYMENT_SIGNATURE.",
+                provider="x402",
+                code="x402_auth_missing",
+            )
+        placeholder_env = str(pconfig.extra.get("placeholder_api_key_env_var") or "").strip()
+        placeholder_key = os.getenv(placeholder_env, "").strip() if placeholder_env else ""
+        base_url = _resolve_x402_base_url(env_url, pconfig.inference_base_url)
+        request_headers_key = (
+            f"helper:{helper_cmd}|{base_url}"
+            if helper_cmd
+            else f"static:{payment_header}|{base_url}"
+            if static_signature
+            else ""
+        )
+        return {
+            "provider": provider_id,
+            "api_key": placeholder_key or "x402-placeholder",
+            "base_url": base_url,
+            "source": "X402_AUTH_HELPER_CMD" if helper_cmd else "X402_PAYMENT_SIGNATURE" if static_signature else "default",
+            "request_headers_resolver": _make_x402_request_headers_resolver(
+                base_url=base_url,
+                helper_cmd=helper_cmd,
+                static_signature=static_signature,
+                payment_header=payment_header,
+            ),
+            "request_headers_key": request_headers_key,
+        }
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:

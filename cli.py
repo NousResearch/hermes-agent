@@ -1010,7 +1010,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn", "x402")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
@@ -1067,6 +1067,8 @@ class HermesCLI:
             or "auto"
         )
         self._provider_source: Optional[str] = None
+        self._request_headers_resolver = None
+        self._request_headers_key: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
         self.base_url = (
@@ -1701,6 +1703,8 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        request_headers_resolver = runtime.get("request_headers_resolver")
+        request_headers_key = runtime.get("request_headers_key")
         if not isinstance(api_key, str) or not api_key:
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
@@ -1713,9 +1717,12 @@ class HermesCLI:
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
         )
+        request_headers_changed = request_headers_key != self._request_headers_key
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self._provider_source = runtime.get("source")
+        self._request_headers_resolver = request_headers_resolver
+        self._request_headers_key = request_headers_key
         self.api_key = api_key
         self.base_url = base_url
 
@@ -1725,7 +1732,7 @@ class HermesCLI:
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (credentials_changed or routing_changed or request_headers_changed or model_changed) and self.agent is not None:
             self.agent = None
             self._active_agent_route_signature = None
 
@@ -1744,6 +1751,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "request_headers_resolver": self._request_headers_resolver,
             },
         )
 
@@ -1812,6 +1820,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "request_headers_resolver": self._request_headers_resolver,
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -1820,6 +1829,7 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                request_headers_resolver=runtime.get("request_headers_resolver"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -3690,6 +3700,7 @@ class HermesCLI:
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
                     api_mode=turn_route["runtime"].get("api_mode"),
+                    request_headers_resolver=turn_route["runtime"].get("request_headers_resolver"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -6716,7 +6727,7 @@ def main(
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn", "x402")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)

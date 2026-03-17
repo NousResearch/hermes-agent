@@ -208,6 +208,11 @@ def _run_single_child(
         effective_base_url = override_base_url or parent_agent.base_url
         effective_api_key = override_api_key or parent_api_key
         effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+        effective_request_headers_resolver = (
+            None
+            if any([override_provider, override_base_url, override_api_key, override_api_mode])
+            else getattr(parent_agent, "request_headers_resolver", None)
+        )
 
         child = AIAgent(
             base_url=effective_base_url,
@@ -215,6 +220,7 @@ def _run_single_child(
             model=effective_model,
             provider=effective_provider,
             api_mode=effective_api_mode,
+            request_headers_resolver=effective_request_headers_resolver,
             max_iterations=max_iterations,
             max_tokens=getattr(parent_agent, "max_tokens", None),
             reasoning_config=getattr(parent_agent, "reasoning_config", None),
@@ -587,6 +593,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "request_headers_resolver": None,
         }
 
     # Provider is configured — resolve full credentials
@@ -614,6 +621,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "request_headers_resolver": runtime.get("request_headers_resolver"),
     }
 
 

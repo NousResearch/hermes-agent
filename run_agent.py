@@ -39,7 +39,7 @@ import threading
 import weakref
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -273,6 +273,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        request_headers_resolver: Optional[Callable[..., Dict[str, str]]] = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -321,6 +322,9 @@ class AIAgent:
             api_key (str): API key for authentication (optional, uses env var if not provided)
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
+            request_headers_resolver (callable): Optional callback invoked before each API request.
+                Should return a dict of headers to merge into the request, and may accept
+                keyword args: force_refresh, api_kwargs, error.
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 90)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
@@ -378,6 +382,8 @@ class AIAgent:
         self.base_url = base_url or OPENROUTER_BASE_URL
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or "openrouter"
+        self.request_headers_resolver = request_headers_resolver
+        self._pending_request_headers: Optional[Dict[str, str]] = None
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1343,6 +1349,63 @@ class AIAgent:
             return "***"
         return f"{key[:8]}...{key[-4:]}"
 
+    def _resolve_request_headers(
+        self,
+        *,
+        force_refresh: bool = False,
+        api_kwargs: Optional[Dict[str, Any]] = None,
+        error: Optional[Exception] = None,
+    ) -> Dict[str, str]:
+        if not callable(self.request_headers_resolver):
+            return {}
+        headers = self.request_headers_resolver(
+            force_refresh=force_refresh,
+            api_kwargs=api_kwargs,
+            error=error,
+        )
+        if not isinstance(headers, dict):
+            raise RuntimeError(f"Provider '{self.provider}' request header resolver returned a non-dict value.")
+        return {
+            str(k): str(v)
+            for k, v in headers.items()
+            if isinstance(k, str) and v is not None and str(v).strip()
+        }
+
+    def _apply_request_headers(self, api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        headers = self._pending_request_headers
+        self._pending_request_headers = None
+        if headers is None:
+            headers = self._resolve_request_headers(api_kwargs=api_kwargs)
+        if not headers:
+            return api_kwargs
+
+        merged = dict(api_kwargs)
+        extra_headers = dict(merged.get("extra_headers") or {})
+        extra_headers.update(headers)
+        merged["extra_headers"] = extra_headers
+        return merged
+
+    def _prime_request_headers_refresh(
+        self,
+        *,
+        api_kwargs: Optional[Dict[str, Any]] = None,
+        error: Optional[Exception] = None,
+    ) -> bool:
+        try:
+            headers = self._resolve_request_headers(
+                force_refresh=True,
+                api_kwargs=api_kwargs,
+                error=error,
+            )
+        except Exception as exc:
+            logger.debug("Dynamic request header refresh failed for %s: %s", self.provider, exc)
+            return False
+
+        if not headers:
+            return False
+        self._pending_request_headers = headers
+        return True
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
@@ -1361,6 +1424,11 @@ class AIAgent:
             body = copy.deepcopy(api_kwargs)
             body.pop("timeout", None)
             body = {k: v for k, v in body.items() if v is not None}
+            if isinstance(body.get("extra_headers"), dict):
+                body["extra_headers"] = {
+                    str(k): "***"
+                    for k in body["extra_headers"].keys()
+                }
 
             api_key = None
             try:
@@ -3180,6 +3248,8 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self.request_headers_resolver = None
+            self._pending_request_headers = None
             self._fallback_activated = True
 
             if fb_api_mode == "anthropic_messages":
@@ -3668,6 +3738,55 @@ class AIAgent:
             for tc in tool_calls
         ]
         return api_msg
+
+    def _coerce_top_level_message_response(self, response: Any) -> Any:
+        """Normalize Anthropic-style top-level message payloads into choices[0].message.
+
+        Some OpenAI-compatible gateways return:
+          {type: "message", role: "assistant", content: [{type: "text", text: "..."}]}
+        instead of a Chat Completions envelope with ``choices``.
+        """
+        if response is None:
+            return response
+        if getattr(response, "choices", None):
+            return response
+
+        content = getattr(response, "content", None)
+        role = getattr(response, "role", None)
+        if role != "assistant" or not isinstance(content, list):
+            return response
+
+        text_parts = []
+        tool_calls = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "text" and item.get("text"):
+                text_parts.append(str(item["text"]))
+            elif item_type == "tool_use":
+                tool_calls.append(
+                    SimpleNamespace(
+                        id=item.get("id") or f"toolu_{uuid.uuid4().hex[:8]}",
+                        type="function",
+                        function=SimpleNamespace(
+                            name=item.get("name", ""),
+                            arguments=json.dumps(item.get("input", {})),
+                        ),
+                    )
+                )
+
+        finish_reason = "tool_calls" if tool_calls else "stop"
+        message = SimpleNamespace(
+            content="".join(text_parts),
+            tool_calls=tool_calls or None,
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+            model=getattr(response, "model", None),
+            usage=getattr(response, "usage", None),
+            raw_response=response,
+        )
 
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
@@ -5000,6 +5119,7 @@ class AIAgent:
             nous_auth_retry_attempted = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
+            request_header_retry_attempted = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -5009,6 +5129,7 @@ class AIAgent:
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+                    api_kwargs = self._apply_request_headers(api_kwargs)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -5029,6 +5150,7 @@ class AIAgent:
                         )
                     else:
                         response = self._interruptible_api_call(api_kwargs)
+                        response = self._coerce_top_level_message_response(response)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -5262,9 +5384,18 @@ class AIAgent:
                                 or (prompt_tokens + completion_tokens)
                             )
                         else:
-                            prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
-                            completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-                            total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
+                            prompt_tokens = getattr(response.usage, 'prompt_tokens', None)
+                            completion_tokens = getattr(response.usage, 'completion_tokens', None)
+                            if prompt_tokens is None:
+                                prompt_tokens = getattr(response.usage, 'input_tokens', 0)
+                            if completion_tokens is None:
+                                completion_tokens = getattr(response.usage, 'output_tokens', 0)
+                            prompt_tokens = prompt_tokens or 0
+                            completion_tokens = completion_tokens or 0
+                            total_tokens = (
+                                getattr(response.usage, 'total_tokens', None)
+                                or (prompt_tokens + completion_tokens)
+                            )
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
@@ -5387,6 +5518,16 @@ class AIAgent:
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                         print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_TOKEN \"\"")
                         print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_API_KEY \"\"")
+                    if (
+                        self.api_mode == "chat_completions"
+                        and status_code in {401, 402}
+                        and not request_header_retry_attempted
+                        and callable(self.request_headers_resolver)
+                    ):
+                        request_header_retry_attempted = True
+                        if self._prime_request_headers_refresh(api_kwargs=api_kwargs, error=api_error):
+                            print(f"{self.log_prefix}🔐 Refreshed dynamic request headers after {status_code}. Retrying request...")
+                            continue
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time

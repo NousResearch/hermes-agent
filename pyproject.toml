@@ -16,6 +16,7 @@ dependencies = [
   "anthropic>=0.39.0",
   "python-dotenv",
   "fire",
+  "fastapi>=0.115",
   "httpx",
   "rich",
   "tenacity",
@@ -23,6 +24,7 @@ dependencies = [
   "requests",
   "jinja2",
   "pydantic>=2.0",
+  "uvicorn>=0.30",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit",
   # Tools
@@ -91,7 +93,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "mini_swe_runner", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration", "acp_adapter"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration", "acp_adapter", "mynah_runtime"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

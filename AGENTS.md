@@ -77,6 +77,25 @@ run_agent.py, cli.py, batch_runner.py, environments/
 
 ---
 
+## MYNAH Runtime Service
+
+The MYNAH integration uses a narrow HTTP runtime surface in:
+
+- `mynah_runtime/service.py`
+- `mynah_runtime/__main__.py`
+
+This service should stay intentionally small:
+
+- `GET /healthz`
+- `POST /runtime/turn`
+
+Rules for this surface:
+
+- Reuse `AIAgent` rather than creating a second agent loop.
+- Respect `MYNAH_PRODUCTION_MODE` and `MYNAH_RUNTIME_TOOLSET`.
+- Do not expose generic Hermes CLI or gateway features through this service.
+- Keep the service focused on one turn in and one normalized response out.
+
 ## AIAgent Class (run_agent.py)
 
 ```python

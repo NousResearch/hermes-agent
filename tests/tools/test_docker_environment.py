@@ -1,9 +1,19 @@
 import logging
 import subprocess
+import sys
 
 import pytest
 
 from tools.environments import docker as docker_env
+
+
+def _has_minisweagent():
+    """Check if minisweagent submodule is available."""
+    try:
+        import minisweagent  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def _make_dummy_env(**kwargs):
@@ -89,6 +99,9 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
 
 def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     """When host_cwd is provided, it should be auto-mounted to /workspace."""
+    if not _has_minisweagent():
+        pytest.skip("minisweagent not installed (git submodule update --init)")
+
     import os
 
     # Create a temp directory to simulate user's project directory
@@ -140,6 +153,9 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
 
 def test_auto_mount_disabled_via_env(monkeypatch, tmp_path):
     """Auto-mount should be disabled when TERMINAL_DOCKER_NO_AUTO_MOUNT is set."""
+    if not _has_minisweagent():
+        pytest.skip("minisweagent not installed (git submodule update --init)")
+
     import os
 
     project_dir = tmp_path / "my-project"
@@ -185,6 +201,9 @@ def test_auto_mount_disabled_via_env(monkeypatch, tmp_path):
 
 def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path):
     """Auto-mount should be skipped if /workspace is already mounted via user volumes."""
+    if not _has_minisweagent():
+        pytest.skip("minisweagent not installed (git submodule update --init)")
+
     import os
 
     project_dir = tmp_path / "my-project"

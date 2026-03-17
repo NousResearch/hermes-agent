@@ -5553,7 +5553,13 @@ class AIAgent:
                     # are programming bugs, not transient failures.
                     _RETRYABLE_STATUS_CODES = {413, 429, 529}
                     is_local_validation_error = isinstance(api_error, (ValueError, TypeError))
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES
+                    # Detect generic 400s from Anthropic OAuth (transient server-side failures).
+                    # Real invalid_request_error responses include a descriptive message;
+                    # transient ones contain only "Error" or are empty. (ref: issue #1608)
+                    _err_body = getattr(api_error, "body", None) or {}
+                    _err_message = (_err_body.get("error", {}).get("message", "") if isinstance(_err_body, dict) else "")
+                    _is_generic_400 = (status_code == 400 and _err_message.strip().lower() in ("error", ""))
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES and not _is_generic_400
                     is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',

@@ -210,15 +210,25 @@ auxiliary:
     model: ""
 ```
 
-Or via environment variables:
+Every task above follows the same **provider / model / base_url** pattern. Context compression uses its own top-level block:
 
-```bash
-AUXILIARY_VISION_PROVIDER=openrouter
-AUXILIARY_VISION_MODEL=openai/gpt-4o
-AUXILIARY_WEB_EXTRACT_PROVIDER=nous
-CONTEXT_COMPRESSION_PROVIDER=main
-CONTEXT_COMPRESSION_MODEL=google/gemini-3-flash-preview
+```yaml
+compression:
+  summary_provider: main                             # Same provider options as auxiliary tasks
+  summary_model: google/gemini-3-flash-preview
+  summary_base_url: null                             # Custom OpenAI-compatible endpoint
 ```
+
+And the fallback model uses:
+
+```yaml
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # base_url: http://localhost:8000/v1               # Optional custom endpoint
+```
+
+All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
 ### Provider Options for Auxiliary Tasks
 

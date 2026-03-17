@@ -49,7 +49,7 @@ from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
-from tools.website_policy import WebsitePolicyError, check_website_access
+from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -618,11 +618,7 @@ async def web_extract_tool(
                 continue
 
             # Website policy check — block before fetching
-            try:
-                blocked = check_website_access(url)
-            except WebsitePolicyError as policy_err:
-                results.append({"url": url, "title": "", "content": "", "error": f"Website policy error: {policy_err}"})
-                continue
+            blocked = check_website_access(url)
             if blocked:
                 logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
                 results.append({
@@ -687,10 +683,7 @@ async def web_extract_tool(
                 
                 # Re-check final URL after redirect
                 final_url = metadata.get("sourceURL", url)
-                try:
-                    final_blocked = check_website_access(final_url)
-                except WebsitePolicyError:
-                    final_blocked = None
+                final_blocked = check_website_access(final_url)
                 if final_blocked:
                     logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
                     results.append({
@@ -903,10 +896,7 @@ async def web_crawl_tool(
         logger.info("Crawling %s%s", url, instructions_text)
         
         # Website policy check — block before crawling
-        try:
-            blocked = check_website_access(url)
-        except WebsitePolicyError as policy_err:
-            return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": f"Website policy error: {policy_err}"}]}, ensure_ascii=False)
+        blocked = check_website_access(url)
         if blocked:
             logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
             return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
@@ -1018,10 +1008,7 @@ async def web_crawl_tool(
             title = metadata.get("title", "")
             
             # Re-check crawled page URL against policy
-            try:
-                page_blocked = check_website_access(page_url)
-            except WebsitePolicyError:
-                page_blocked = None
+            page_blocked = check_website_access(page_url)
             if page_blocked:
                 logger.info("Blocked crawled page %s by rule %s", page_blocked["host"], page_blocked["rule"])
                 pages.append({

@@ -105,10 +105,11 @@ def _get_firecrawl_client():
         api_key = os.getenv("FIRECRAWL_API_KEY")
         api_url = os.getenv("FIRECRAWL_API_URL")
         if not api_key and not api_url:
+            logger.error("Firecrawl client initialization failed: missing configuration.")
             raise ValueError(
-                "FIRECRAWL_API_KEY environment variable not set. "
-                "Set it for cloud Firecrawl, or set FIRECRAWL_API_URL "
-                "to use a self-hosted instance."
+                "Firecrawl client not configured. "
+                "Set FIRECRAWL_API_KEY (cloud) or FIRECRAWL_API_URL (self-hosted). "
+                "This tool requires Firecrawl to be available."
             )
         kwargs = {}
         if api_key:
@@ -117,7 +118,6 @@ def _get_firecrawl_client():
             kwargs["api_url"] = api_url
         _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
-
 
 # ─── Parallel Client ─────────────────────────────────────────────────────────
 

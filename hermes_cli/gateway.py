@@ -1124,6 +1124,24 @@ _PLATFORMS = [
              "help": "Phone number to deliver cron job results and notifications to."},
         ],
     },
+    {
+        "key": "dingtalk",
+        "label": "DingTalk",
+        "emoji": "💬",
+        "token_var": "DINGTALK_CLIENT_ID",
+        "setup_instructions": [
+            "1. Go to https://open-dev.dingtalk.com → Create Application",
+            "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
+            "3. Enable 'Stream Mode' under the bot settings",
+            "4. Add the bot to a group chat or message it directly",
+        ],
+        "vars": [
+            {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
+             "help": "The AppKey from your DingTalk application credentials."},
+            {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
+             "help": "The AppSecret from your DingTalk application credentials."},
+        ],
+    },
 ]
 
 

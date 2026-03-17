@@ -738,6 +738,7 @@ def setup_model_provider(config: dict):
         "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
+        "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
         "OpenCode Go (open models, $10/month subscription)",
     ]
@@ -1313,7 +1314,39 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # OpenCode Zen
+    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+        selected_provider = "alibaba"
+        print()
+        print_header("Alibaba Cloud / DashScope API Key")
+        pconfig = PROVIDER_REGISTRY["alibaba"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API key at: https://modelstudio.console.alibabacloud.com/")
+        print()
+
+        existing_key = get_env_value("DASHSCOPE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                new_key = prompt("  DashScope API key", password=True)
+                if new_key:
+                    save_env_value("DASHSCOPE_API_KEY", new_key)
+                    print_success("DashScope API key updated")
+        else:
+            new_key = prompt("  DashScope API key", password=True)
+            if new_key:
+                save_env_value("DASHSCOPE_API_KEY", new_key)
+                print_success("DashScope API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
+        _set_model_provider(config, "alibaba", pconfig.inference_base_url)
+
+    elif provider_idx == 12:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1346,7 +1379,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 12:  # OpenCode Go
+    elif provider_idx == 13:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1379,7 +1412,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 13 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 14 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:

@@ -25,6 +25,18 @@ from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Env var names written to .env that aren't in OPTIONAL_ENV_VARS
+# (managed by setup/provider flows directly).
+_EXTRA_ENV_KEYS = frozenset({
+    "OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "AUXILIARY_VISION_MODEL",
+    "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
+    "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
+    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+    "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "WHATSAPP_MODE", "WHATSAPP_ENABLED",
+})
 
 import yaml
 
@@ -765,6 +777,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         Dict with migration results: {"env_added": [...], "config_added": [...], "warnings": [...]}
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
+
+    # ── Always: sanitize .env (split concatenated keys, drop *** placeholders) ──
+    try:
+        fixes = sanitize_env_file()
+        if fixes and not quiet:
+            print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
+    except Exception:
+        pass  # best-effort; don't block migration on sanitize failure
     
     # Check config version
     current_ver, latest_ver = check_config_version()
@@ -1121,6 +1141,108 @@ def load_env() -> Dict[str, str]:
     return env_vars
 
 
+def _sanitize_env_lines(lines: list) -> list:
+    """Fix corrupted .env lines before writing.
+
+    Handles two known corruption patterns:
+    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
+       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
+    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+
+    Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
+    split on real Hermes env var names, avoiding false positives from values
+    that happen to contain uppercase text with ``=``.
+    """
+    # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
+    # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+
+    sanitized: list[str] = []
+    for line in lines:
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+
+        # Preserve blank lines and comments
+        if not stripped or stripped.startswith("#"):
+            sanitized.append(raw + "\n")
+            continue
+
+        # Drop stale *** placeholder entries
+        if "=" in stripped:
+            _k, _, _v = stripped.partition("=")
+            if _v.strip().strip("'\"") == "***":
+                continue
+
+        # Detect concatenated KEY=VALUE pairs on one line.
+        # Search for known KEY= patterns at any position in the line.
+        split_positions = []
+        for key_name in known_keys:
+            needle = key_name + "="
+            idx = stripped.find(needle)
+            while idx >= 0:
+                split_positions.append(idx)
+                idx = stripped.find(needle, idx + len(needle))
+
+        if len(split_positions) > 1:
+            split_positions.sort()
+            # Deduplicate (shouldn't happen, but be safe)
+            split_positions = sorted(set(split_positions))
+            for i, pos in enumerate(split_positions):
+                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
+                part = stripped[pos:end].strip()
+                if part:
+                    sanitized.append(part + "\n")
+        else:
+            sanitized.append(stripped + "\n")
+
+    return sanitized
+
+
+def sanitize_env_file() -> int:
+    """Read, sanitize, and rewrite ~/.hermes/.env in place.
+
+    Returns the number of lines that were fixed (concatenation splits +
+    placeholder removals).  Returns 0 when no changes are needed.
+    """
+    env_path = get_env_path()
+    if not env_path.exists():
+        return 0
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        original_lines = f.readlines()
+
+    sanitized = _sanitize_env_lines(original_lines)
+
+    if sanitized == original_lines:
+        return 0
+
+    # Count fixes: difference in line count (from splits) + removed lines
+    fixes = abs(len(sanitized) - len(original_lines))
+    if fixes == 0:
+        # Lines changed content (e.g. *** removal) even if count is same
+        fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
+        fixes += abs(len(sanitized) - len(original_lines))
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
+    try:
+        with os.fdopen(fd, "w", **write_kw) as f:
+            f.writelines(sanitized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(env_path)
+    return fixes
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if not _ENV_VAR_NAME_RE.match(key):
@@ -1138,6 +1260,8 @@ def save_env_value(key: str, value: str):
     if env_path.exists():
         with open(env_path, **read_kw) as f:
             lines = f.readlines()
+        # Sanitize on every read: split concatenated keys, drop stale placeholders
+        lines = _sanitize_env_lines(lines)
     
     # Find and update or append
     found = False

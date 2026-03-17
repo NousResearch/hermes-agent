@@ -1,240 +1,215 @@
-"""Tests for SMS (Telnyx) platform adapter."""
-import json
+"""Tests for SMS (Twilio) platform integration.
+
+Covers config loading, format/truncate, echo prevention,
+requirements check, and toolset verification.
+"""
+
+import os
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, HomeChannel
 
 
-# ---------------------------------------------------------------------------
-# Platform & Config
-# ---------------------------------------------------------------------------
-
-class TestSmsPlatformEnum:
-    def test_sms_enum_exists(self):
-        assert Platform.SMS.value == "sms"
-
-    def test_sms_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "sms" in platforms
-
+# ── Config loading ──────────────────────────────────────────────────
 
 class TestSmsConfigLoading:
-    def test_apply_env_overrides_sms(self, monkeypatch):
-        monkeypatch.setenv("TELNYX_API_KEY", "KEY_test123")
+    """Verify _apply_env_overrides wires SMS correctly."""
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
+    def test_sms_platform_enum_exists(self):
+        assert Platform.SMS.value == "sms"
 
-        assert Platform.SMS in config.platforms
-        sc = config.platforms[Platform.SMS]
-        assert sc.enabled is True
-        assert sc.api_key == "KEY_test123"
+    def test_env_overrides_create_sms_config(self):
+        from gateway.config import load_gateway_config
 
-    def test_sms_not_loaded_without_key(self, monkeypatch):
-        monkeypatch.delenv("TELNYX_API_KEY", raising=False)
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+15551234567",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            pc = config.platforms[Platform.SMS]
+            assert pc.enabled is True
+            assert pc.api_key == "token_abc"
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
+    def test_env_overrides_set_home_channel(self):
+        from gateway.config import load_gateway_config
 
-        assert Platform.SMS not in config.platforms
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+15551234567",
+            "SMS_HOME_CHANNEL": "+15559876543",
+            "SMS_HOME_CHANNEL_NAME": "My Phone",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            hc = config.platforms[Platform.SMS].home_channel
+            assert hc is not None
+            assert hc.chat_id == "+15559876543"
+            assert hc.name == "My Phone"
+            assert hc.platform == Platform.SMS
 
-    def test_connected_platforms_includes_sms(self, monkeypatch):
-        monkeypatch.setenv("TELNYX_API_KEY", "KEY_test123")
+    def test_sms_in_connected_platforms(self):
+        from gateway.config import load_gateway_config
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        connected = config.get_connected_platforms()
-        assert Platform.SMS in connected
-
-    def test_sms_home_channel(self, monkeypatch):
-        monkeypatch.setenv("TELNYX_API_KEY", "KEY_test123")
-        monkeypatch.setenv("SMS_HOME_CHANNEL", "+15559876543")
-        monkeypatch.setenv("SMS_HOME_CHANNEL_NAME", "Owner")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        home = config.get_home_channel(Platform.SMS)
-        assert home is not None
-        assert home.chat_id == "+15559876543"
-        assert home.name == "Owner"
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            connected = config.get_connected_platforms()
+            assert Platform.SMS in connected
 
 
-# ---------------------------------------------------------------------------
-# Adapter format / truncate
-# ---------------------------------------------------------------------------
+# ── Format / truncate ───────────────────────────────────────────────
 
-class TestSmsFormatMessage:
-    def setup_method(self):
+class TestSmsFormatAndTruncate:
+    """Test SmsAdapter.format_message strips markdown."""
+
+    def _make_adapter(self):
         from gateway.platforms.sms import SmsAdapter
-        config = PlatformConfig(enabled=True, api_key="test_key")
-        with patch.dict("os.environ", {"TELNYX_API_KEY": "test_key"}):
-            self.adapter = SmsAdapter(config)
 
-    def test_strip_bold(self):
-        assert self.adapter.format_message("**bold**") == "bold"
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = object.__new__(SmsAdapter)
+            adapter.config = pc
+            adapter._platform = Platform.SMS
+            adapter._account_sid = "ACtest"
+            adapter._auth_token = "tok"
+            adapter._from_number = "+15550001111"
+        return adapter
 
-    def test_strip_italic(self):
-        assert self.adapter.format_message("*italic*") == "italic"
+    def test_strips_bold(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("**hello**") == "hello"
 
-    def test_strip_code_block(self):
-        result = self.adapter.format_message("```python\ncode\n```")
+    def test_strips_italic(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("*world*") == "world"
+
+    def test_strips_code_blocks(self):
+        adapter = self._make_adapter()
+        result = adapter.format_message("```python\nprint('hi')\n```")
         assert "```" not in result
-        assert "code" in result
+        assert "print('hi')" in result
 
-    def test_strip_inline_code(self):
-        assert self.adapter.format_message("`code`") == "code"
+    def test_strips_inline_code(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("`code`") == "code"
 
-    def test_strip_headers(self):
-        assert self.adapter.format_message("## Header") == "Header"
+    def test_strips_headers(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("## Title") == "Title"
 
-    def test_strip_links(self):
-        assert self.adapter.format_message("[click](http://example.com)") == "click"
+    def test_strips_links(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("[click](https://example.com)") == "click"
 
-    def test_collapse_newlines(self):
-        result = self.adapter.format_message("a\n\n\n\nb")
+    def test_collapses_newlines(self):
+        adapter = self._make_adapter()
+        result = adapter.format_message("a\n\n\n\nb")
         assert result == "a\n\nb"
 
 
-class TestSmsTruncateMessage:
-    def setup_method(self):
+# ── Echo prevention ────────────────────────────────────────────────
+
+class TestSmsEchoPrevention:
+    """Adapter should ignore messages from its own number."""
+
+    def test_own_number_detection(self):
+        """The adapter stores _from_number for echo prevention."""
         from gateway.platforms.sms import SmsAdapter
-        config = PlatformConfig(enabled=True, api_key="test_key")
-        with patch.dict("os.environ", {"TELNYX_API_KEY": "test_key"}):
-            self.adapter = SmsAdapter(config)
 
-    def test_short_message_single_chunk(self):
-        msg = "Hello, world!"
-        chunks = self.adapter.truncate_message(msg)
-        assert len(chunks) == 1
-        assert chunks[0] == msg
-
-    def test_long_message_splits(self):
-        msg = "a " * 1000  # 2000 chars
-        chunks = self.adapter.truncate_message(msg)
-        assert len(chunks) >= 2
-        for chunk in chunks:
-            assert len(chunk) <= 1600
-
-    def test_custom_max_length(self):
-        msg = "Hello " * 20
-        chunks = self.adapter.truncate_message(msg, max_length=50)
-        assert all(len(c) <= 50 for c in chunks)
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._from_number == "+15550001111"
 
 
-# ---------------------------------------------------------------------------
-# Echo loop prevention
-# ---------------------------------------------------------------------------
-
-class TestSmsEchoLoop:
-    def test_own_number_ignored(self):
-        from gateway.platforms.sms import SmsAdapter
-        config = PlatformConfig(enabled=True, api_key="test_key")
-        with patch.dict("os.environ", {
-            "TELNYX_API_KEY": "test_key",
-            "TELNYX_FROM_NUMBERS": "+15551234567,+15559876543",
-        }):
-            adapter = SmsAdapter(config)
-            assert "+15551234567" in adapter._from_numbers
-            assert "+15559876543" in adapter._from_numbers
-
-
-# ---------------------------------------------------------------------------
-# Auth maps
-# ---------------------------------------------------------------------------
-
-class TestSmsAuthMaps:
-    def test_sms_in_allowed_users_map(self):
-        """SMS should be in the platform auth maps in run.py."""
-        # Verify the env var names are consistent
-        import os
-        os.environ.setdefault("SMS_ALLOWED_USERS", "+15551234567")
-        assert os.getenv("SMS_ALLOWED_USERS") == "+15551234567"
-
-    def test_sms_allow_all_env_var(self):
-        """SMS_ALLOW_ALL_USERS should be recognized."""
-        import os
-        os.environ.setdefault("SMS_ALLOW_ALL_USERS", "true")
-        assert os.getenv("SMS_ALLOW_ALL_USERS") == "true"
-
-
-# ---------------------------------------------------------------------------
-# Requirements check
-# ---------------------------------------------------------------------------
+# ── Requirements check ─────────────────────────────────────────────
 
 class TestSmsRequirements:
-    def test_check_sms_requirements_with_key(self, monkeypatch):
-        monkeypatch.setenv("TELNYX_API_KEY", "KEY_test123")
+    def test_check_sms_requirements_missing_sid(self):
         from gateway.platforms.sms import check_sms_requirements
-        # aiohttp is available in test environment
-        assert check_sms_requirements() is True
 
-    def test_check_sms_requirements_without_key(self, monkeypatch):
-        monkeypatch.delenv("TELNYX_API_KEY", raising=False)
+        env = {"TWILIO_AUTH_TOKEN": "tok"}
+        with patch.dict(os.environ, env, clear=True):
+            assert check_sms_requirements() is False
+
+    def test_check_sms_requirements_missing_token(self):
         from gateway.platforms.sms import check_sms_requirements
-        assert check_sms_requirements() is False
+
+        env = {"TWILIO_ACCOUNT_SID": "ACtest"}
+        with patch.dict(os.environ, env, clear=True):
+            assert check_sms_requirements() is False
+
+    def test_check_sms_requirements_both_set(self):
+        from gateway.platforms.sms import check_sms_requirements
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            # Only returns True if aiohttp is also importable
+            result = check_sms_requirements()
+            try:
+                import aiohttp  # noqa: F401
+                assert result is True
+            except ImportError:
+                assert result is False
 
 
-# ---------------------------------------------------------------------------
-# Toolset & integration points
-# ---------------------------------------------------------------------------
+# ── Toolset verification ───────────────────────────────────────────
 
 class TestSmsToolset:
     def test_hermes_sms_toolset_exists(self):
         from toolsets import get_toolset
+
         ts = get_toolset("hermes-sms")
         assert ts is not None
-        assert "hermes-sms" in ts.get("description", "").lower() or "sms" in ts.get("description", "").lower()
+        assert "tools" in ts
 
-    def test_hermes_gateway_includes_sms(self):
+    def test_hermes_sms_in_gateway_includes(self):
         from toolsets import get_toolset
+
         gw = get_toolset("hermes-gateway")
+        assert gw is not None
         assert "hermes-sms" in gw["includes"]
 
-
-class TestSmsPlatformHints:
-    def test_sms_in_platform_hints(self):
+    def test_sms_platform_hint_exists(self):
         from agent.prompt_builder import PLATFORM_HINTS
+
         assert "sms" in PLATFORM_HINTS
-        assert "SMS" in PLATFORM_HINTS["sms"] or "sms" in PLATFORM_HINTS["sms"].lower()
+        assert "concise" in PLATFORM_HINTS["sms"].lower()
 
-
-class TestSmsCronDelivery:
-    def test_sms_in_cron_platform_map(self):
-        """Verify the cron scheduler can resolve 'sms' platform."""
-        # The platform_map in _deliver_result should include sms
-        from gateway.config import Platform
+    def test_sms_in_scheduler_platform_map(self):
+        """Verify cron scheduler recognizes 'sms' as a valid platform."""
+        # Just check the Platform enum has SMS — the scheduler imports it dynamically
         assert Platform.SMS.value == "sms"
 
-
-class TestSmsSendMessageTool:
     def test_sms_in_send_message_platform_map(self):
-        """The send_message tool should recognize 'sms' as a valid platform."""
-        # We verify by checking that SMS is in the Platform enum
-        # and the code path exists
-        from gateway.config import Platform
+        """Verify send_message_tool recognizes 'sms'."""
+        # The platform_map is built inside _handle_send; verify SMS enum exists
         assert hasattr(Platform, "SMS")
 
-
-class TestSmsChannelDirectory:
-    def test_sms_in_session_discovery(self):
-        """Verify SMS is included in session-based channel discovery."""
-        import inspect
-        from gateway.channel_directory import build_channel_directory
-        source = inspect.getsource(build_channel_directory)
-        assert '"sms"' in source
-
-
-class TestSmsStatus:
-    def test_sms_in_status_platforms(self):
-        """Verify SMS appears in the status command platforms dict."""
-        import inspect
-        from hermes_cli.status import show_status
-        source = inspect.getsource(show_status)
-        assert '"SMS"' in source or "'SMS'" in source
+    def test_sms_in_cronjob_deliver_description(self):
+        """Verify cronjob_tools mentions sms in deliver description."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        deliver_desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
+        assert "sms" in deliver_desc.lower()

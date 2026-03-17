@@ -266,8 +266,10 @@ def get_model_context_length(model: str, base_url: str = "") -> int:
     if model in metadata:
         return metadata[model].get("context_length", 128000)
 
-    # 3. Hardcoded defaults (fuzzy match)
-    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+    # 3. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
         if default_model in model or model in default_model:
             return length
 

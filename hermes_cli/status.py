@@ -120,6 +120,7 @@ def show_status(args):
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
+        "Tavily": "TAVILY_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
@@ -252,7 +253,7 @@ def show_status(args):
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-        "SMS": ("TELNYX_API_KEY", "SMS_HOME_CHANNEL"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

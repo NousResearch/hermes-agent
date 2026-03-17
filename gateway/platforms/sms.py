@@ -1,19 +1,27 @@
-"""SMS (Telnyx) platform adapter.
+"""SMS (Twilio) platform adapter.
 
-Connects to the Telnyx REST API for outbound SMS and runs an aiohttp
+Connects to the Twilio REST API for outbound SMS and runs an aiohttp
 webhook server to receive inbound messages.
 
-Requires:
-  - aiohttp installed: pip install 'hermes-agent[sms]'
-  - TELNYX_API_KEY environment variable set
-  - TELNYX_FROM_NUMBERS: comma-separated E.164 numbers (e.g. +15551234567)
+Shares credentials with the optional telephony skill — same env vars:
+  - TWILIO_ACCOUNT_SID
+  - TWILIO_AUTH_TOKEN
+  - TWILIO_PHONE_NUMBER  (E.164 from-number, e.g. +15551234567)
+
+Gateway-specific env vars:
+  - SMS_WEBHOOK_PORT     (default 8080)
+  - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
+  - SMS_ALLOW_ALL_USERS  (true/false)
+  - SMS_HOME_CHANNEL     (phone number for cron delivery)
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
@@ -26,7 +34,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-TELNYX_BASE = "https://api.telnyx.com/v2"
+TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
 
@@ -35,17 +43,12 @@ _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
 
 
 def _redact_phone(phone: str) -> str:
-    """Redact a phone number for logging: +15551234567 -> +155****4567."""
+    """Redact a phone number for logging: +15551234567 -> +1555***4567."""
     if not phone:
         return "<none>"
     if len(phone) <= 8:
-        return phone[:2] + "****" + phone[-2:] if len(phone) > 4 else "****"
-    return phone[:4] + "****" + phone[-4:]
-
-
-def _parse_comma_list(value: str) -> List[str]:
-    """Split a comma-separated string into a list, stripping whitespace."""
-    return [v.strip() for v in value.split(",") if v.strip()]
+        return phone[:2] + "***" + phone[-2:] if len(phone) > 4 else "****"
+    return phone[:5] + "***" + phone[-4:]
 
 
 def check_sms_requirements() -> bool:
@@ -54,31 +57,34 @@ def check_sms_requirements() -> bool:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
-    return bool(os.getenv("TELNYX_API_KEY"))
+    return bool(os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"))
 
 
 class SmsAdapter(BasePlatformAdapter):
     """
-    Telnyx SMS <-> Hermes gateway adapter.
+    Twilio SMS <-> Hermes gateway adapter.
 
     Each inbound phone number gets its own Hermes session (multi-tenant).
-    Tracks which owned number received each user's message to reply from
-    the same number.
+    Replies are always sent from the configured TWILIO_PHONE_NUMBER.
     """
+
+    MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
-        self._api_key: str = os.environ["TELNYX_API_KEY"]
+        self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
+        self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+        self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
-        # Set of owned numbers
-        self._from_numbers: set = set(
-            _parse_comma_list(os.getenv("TELNYX_FROM_NUMBERS", ""))
-        )
-        # Runtime map: user phone -> which owned number to reply from
-        self._reply_from: Dict[str, str] = {}
         self._runner = None
+
+    def _basic_auth_header(self) -> str:
+        """Build HTTP Basic auth header value for Twilio."""
+        creds = f"{self._account_sid}:{self._auth_token}"
+        encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
+        return f"Basic {encoded}"
 
     # ------------------------------------------------------------------
     # Required abstract methods
@@ -88,8 +94,12 @@ class SmsAdapter(BasePlatformAdapter):
         import aiohttp
         from aiohttp import web
 
+        if not self._from_number:
+            logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
+            return False
+
         app = web.Application()
-        app.router.add_post("/webhooks/telnyx", self._handle_webhook)
+        app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
         self._runner = web.AppRunner(app)
@@ -98,11 +108,10 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._running = True
 
-        from_display = ", ".join(_redact_phone(n) for n in self._from_numbers) or "(none)"
         logger.info(
-            "[sms] Webhook server listening on port %d, from numbers: %s",
+            "[sms] Twilio webhook server listening on port %d, from: %s",
             self._webhook_port,
-            from_display,
+            _redact_phone(self._from_number),
         )
         return True
 
@@ -122,40 +131,41 @@ class SmsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         import aiohttp
 
-        from_number = self._get_reply_from(chat_id, metadata)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted)
         last_result = SendResult(success=True)
 
+        url = f"{TWILIO_API_BASE}/{self._account_sid}/Messages.json"
+        headers = {
+            "Authorization": self._basic_auth_header(),
+        }
+
         async with aiohttp.ClientSession() as session:
-            for i, chunk in enumerate(chunks):
-                payload = {"from": from_number, "to": chat_id, "text": chunk}
-                headers = {
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                }
+            for chunk in chunks:
+                form_data = aiohttp.FormData()
+                form_data.add_field("From", self._from_number)
+                form_data.add_field("To", chat_id)
+                form_data.add_field("Body", chunk)
+
                 try:
-                    async with session.post(
-                        f"{TELNYX_BASE}/messages",
-                        json=payload,
-                        headers=headers,
-                    ) as resp:
+                    async with session.post(url, data=form_data, headers=headers) as resp:
                         body = await resp.json()
                         if resp.status >= 400:
+                            error_msg = body.get("message", str(body))
                             logger.error(
-                                "[sms] send failed %s: %s %s",
+                                "[sms] send failed to %s: %s %s",
                                 _redact_phone(chat_id),
                                 resp.status,
-                                body,
+                                error_msg,
                             )
                             return SendResult(
                                 success=False,
-                                error=f"Telnyx {resp.status}: {body}",
+                                error=f"Twilio {resp.status}: {error_msg}",
                             )
-                        msg_id = body.get("data", {}).get("id", "")
-                        last_result = SendResult(success=True, message_id=msg_id)
+                        msg_sid = body.get("sid", "")
+                        last_result = SendResult(success=True, message_id=msg_sid)
                 except Exception as e:
-                    logger.error("[sms] send error %s: %s", _redact_phone(chat_id), e)
+                    logger.error("[sms] send error to %s: %s", _redact_phone(chat_id), e)
                     return SendResult(success=False, error=str(e))
 
         return last_result
@@ -168,7 +178,7 @@ class SmsAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def format_message(self, content: str) -> str:
-        """Strip markdown -- SMS renders it as literal characters."""
+        """Strip markdown — SMS renders it as literal characters."""
         content = re.sub(r"\*\*(.+?)\*\*", r"\1", content, flags=re.DOTALL)
         content = re.sub(r"\*(.+?)\*", r"\1", content, flags=re.DOTALL)
         content = re.sub(r"__(.+?)__", r"\1", content, flags=re.DOTALL)
@@ -180,28 +190,8 @@ class SmsAdapter(BasePlatformAdapter):
         content = re.sub(r"\n{3,}", "\n\n", content)
         return content.strip()
 
-    def truncate_message(
-        self, content: str, max_length: int = MAX_SMS_LENGTH
-    ) -> List[str]:
-        """Split into <=1600-char chunks (10 SMS segments)."""
-        if len(content) <= max_length:
-            return [content]
-        chunks: List[str] = []
-        while content:
-            if len(content) <= max_length:
-                chunks.append(content)
-                break
-            split_at = content.rfind("\n", 0, max_length)
-            if split_at < max_length // 2:
-                split_at = content.rfind(" ", 0, max_length)
-            if split_at < 1:
-                split_at = max_length
-            chunks.append(content[:split_at].strip())
-            content = content[split_at:].strip()
-        return chunks
-
     # ------------------------------------------------------------------
-    # Telnyx webhook handler
+    # Twilio webhook handler
     # ------------------------------------------------------------------
 
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
@@ -209,32 +199,35 @@ class SmsAdapter(BasePlatformAdapter):
 
         try:
             raw = await request.read()
-            body = json.loads(raw.decode("utf-8"))
+            # Twilio sends form-encoded data, not JSON
+            form = urllib.parse.parse_qs(raw.decode("utf-8"))
         except Exception as e:
             logger.error("[sms] webhook parse error: %s", e)
-            return web.json_response({"error": "invalid json"}, status=400)
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=400,
+            )
 
-        # Only handle inbound messages
-        if body.get("data", {}).get("event_type") != "message.received":
-            return web.json_response({"received": True})
-
-        payload = body["data"]["payload"]
-        from_number: str = payload.get("from", {}).get("phone_number", "")
-        to_list = payload.get("to", [])
-        to_number: str = to_list[0].get("phone_number", "") if to_list else ""
-        text: str = payload.get("text", "").strip()
+        # Extract fields (parse_qs returns lists)
+        from_number = (form.get("From", [""]))[0].strip()
+        to_number = (form.get("To", [""]))[0].strip()
+        text = (form.get("Body", [""]))[0].strip()
+        message_sid = (form.get("MessageSid", [""]))[0].strip()
 
         if not from_number or not text:
-            return web.json_response({"received": True})
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+            )
 
-        # Ignore messages sent FROM one of our own numbers (echo loop prevention)
-        if from_number in self._from_numbers:
+        # Ignore messages from our own number (echo prevention)
+        if from_number == self._from_number:
             logger.debug("[sms] ignoring echo from own number %s", _redact_phone(from_number))
-            return web.json_response({"received": True})
-
-        # Remember which owned number received this user's message
-        if to_number and to_number in self._from_numbers:
-            self._reply_from[from_number] = to_number
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+            )
 
         logger.info(
             "[sms] inbound from %s -> %s: %s",
@@ -254,29 +247,15 @@ class SmsAdapter(BasePlatformAdapter):
             text=text,
             message_type=MessageType.TEXT,
             source=source,
-            raw_message=body,
-            message_id=payload.get("id"),
+            raw_message=form,
+            message_id=message_sid,
         )
 
-        # Non-blocking: Telnyx expects a fast 200
+        # Non-blocking: Twilio expects a fast response
         asyncio.create_task(self.handle_message(event))
-        return web.json_response({"received": True})
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _get_reply_from(
-        self, user_phone: str, metadata: Optional[Dict] = None
-    ) -> str:
-        """Determine which owned number to send from."""
-        if metadata and "from_number" in metadata:
-            return metadata["from_number"]
-        if user_phone in self._reply_from:
-            return self._reply_from[user_phone]
-        if self._from_numbers:
-            return next(iter(self._from_numbers))
-        raise RuntimeError(
-            "No FROM number configured (TELNYX_FROM_NUMBERS) and no prior "
-            "reply_from mapping for this user"
+        # Return empty TwiML — we send replies via the REST API, not inline TwiML
+        return web.Response(
+            text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            content_type="application/xml",
         )

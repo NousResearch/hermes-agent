@@ -5,6 +5,7 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import copy
 import json
 import logging
 import tempfile
@@ -167,6 +168,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         try:
             # Parse and validate
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+            # Make naive timestamps timezone-aware at parse time so the stored
+            # value doesn't depend on the system timezone matching at check time.
+            if dt.tzinfo is None:
+                dt = dt.astimezone()  # Interpret as local timezone
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -539,8 +544,8 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
     now = _hermes_now()
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
-    raw_jobs = load_jobs()  # For saving updates
+    raw_jobs = load_jobs()
+    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False
 

@@ -151,19 +151,29 @@ TOOL_CATEGORIES = {
     "web": {
         "name": "Web Search & Extract",
         "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need Firecrawl.",
+        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
         "providers": [
             {
                 "name": "Firecrawl Cloud",
-                "tag": "Recommended - hosted service",
+                "tag": "Hosted service - search, extract, and crawl",
+                "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
             },
             {
+                "name": "Parallel",
+                "tag": "AI-native search and extract",
+                "web_backend": "parallel",
+                "env_vars": [
+                    {"key": "PARALLEL_API_KEY", "prompt": "Parallel API key", "url": "https://parallel.ai"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "tag": "Free - run your own instance",
+                "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
@@ -618,6 +628,9 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if "browser_provider" in provider:
         current = config.get("browser", {}).get("cloud_provider")
         return provider["browser_provider"] == current
+    if provider.get("web_backend"):
+        current = config.get("web", {}).get("backend")
+        return current == provider["web_backend"]
     return False
 
 
@@ -649,6 +662,11 @@ def _configure_provider(provider: dict, config: dict):
             _print_success(f"  Browser cloud provider set to: {bp}")
         else:
             config.get("browser", {}).pop("cloud_provider", None)
+
+    # Set web search backend in config if applicable
+    if provider.get("web_backend"):
+        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")

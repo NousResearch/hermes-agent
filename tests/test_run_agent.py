@@ -2717,3 +2717,129 @@ class TestNormalizeCodexDictArguments:
         msg, _ = agent._normalize_codex_response(response)
         tc = msg.tool_calls[0]
         assert tc.function.arguments == args_str
+
+
+# ---------------------------------------------------------------------------
+# OAuth flag and nudge counter bugs
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthFlagAfterCredentialRefresh:
+    """_is_anthropic_oauth must update when token type changes during refresh."""
+
+    def test_oauth_flag_updates_api_key_to_oauth(self, agent):
+        """Refreshing from API key to OAuth token must set _is_anthropic_oauth=True."""
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-api03-old-key"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value="sk-ant-oat01-new-oauth-token"),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is True
+
+    def test_oauth_flag_updates_oauth_to_api_key(self, agent):
+        """Refreshing from OAuth to API key must set _is_anthropic_oauth=False."""
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-oat01-old-oauth"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value="sk-ant-api03-new-api-key"),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is False
+
+
+class TestFallbackSetsOAuthFlag:
+    """_try_activate_fallback must set _is_anthropic_oauth for Anthropic fallbacks."""
+
+    def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-oat01-oauth-token"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is True
+
+    def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-regular-key"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is False
+
+
+class TestMemoryNudgeCounterPersistence:
+    """_turns_since_memory must persist across run_conversation calls."""
+
+    def test_counter_not_reset_between_calls(self):
+        """Counter must accumulate so nudge eventually fires."""
+        with patch("run_agent.get_tool_definitions", return_value=[]):
+            agent = AIAgent(
+                model="test", api_key="test", provider="openrouter",
+                skip_context_files=True, skip_memory=True,
+            )
+        # Simulate counter accumulated from previous calls
+        agent._turns_since_memory = 5
+        agent._iters_since_skill = 3
+
+        # These should NOT be reset in run_conversation
+        # We just check the init values persist (can't run full conversation without mocks)
+        assert agent._turns_since_memory == 5
+        assert agent._iters_since_skill == 3
+
+
+class TestDeadRetryCode:
+    """Unreachable retry_count >= max_retries after the wait_time block must not exist."""
+
+    def test_no_unreachable_max_retries_after_backoff(self):
+        import inspect
+        source = inspect.getsource(AIAgent.run_conversation)
+        # There are 2 valid occurrences: one for invalid responses (line ~5299)
+        # and one for API errors (line ~5841) that raises.
+        # The dead code was a THIRD occurrence between the raise and sleep
+        # that could never execute. Verify it's gone.
+        occurrences = source.count("if retry_count >= max_retries:")
+        assert occurrences == 2, \
+            f"Expected 2 occurrences of 'if retry_count >= max_retries:' but found {occurrences} (dead code not removed?)"

@@ -778,13 +778,41 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # ── Always: sanitize .env (split concatenated keys, drop *** placeholders) ──
+    # ── Always: sanitize .env (split concatenated keys) ──
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
             print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
+
+    # ── Always: clear stale ANTHROPIC_TOKEN when better credentials exist ──
+    # Old setups left ANTHROPIC_TOKEN with an outdated value that shadows
+    # Claude Code auto-discovery (CLAUDE_CODE_OAUTH_TOKEN) or a direct
+    # ANTHROPIC_API_KEY.
+    try:
+        old_token = get_env_value("ANTHROPIC_TOKEN")
+        if old_token:
+            has_api_key = bool(get_env_value("ANTHROPIC_API_KEY"))
+            has_claude_code = False
+            try:
+                from agent.anthropic_adapter import (
+                    read_claude_code_credentials,
+                    is_claude_code_token_valid,
+                )
+                cc_creds = read_claude_code_credentials()
+                has_claude_code = bool(
+                    cc_creds and is_claude_code_token_valid(cc_creds)
+                )
+            except Exception:
+                pass
+            if has_api_key or has_claude_code:
+                save_env_value("ANTHROPIC_TOKEN", "")
+                if not quiet:
+                    source = "ANTHROPIC_API_KEY" if has_api_key else "Claude Code credentials"
+                    print(f"  ✓ Cleared stale ANTHROPIC_TOKEN (using {source} instead)")
+    except Exception:
+        pass
     
     # Check config version
     current_ver, latest_ver = check_config_version()
@@ -1166,12 +1194,6 @@ def _sanitize_env_lines(lines: list) -> list:
         if not stripped or stripped.startswith("#"):
             sanitized.append(raw + "\n")
             continue
-
-        # Drop stale *** placeholder entries
-        if "=" in stripped:
-            _k, _, _v = stripped.partition("=")
-            if _v.strip().strip("'\"") == "***":
-                continue
 
         # Detect concatenated KEY=VALUE pairs on one line.
         # Search for known KEY= patterns at any position in the line.

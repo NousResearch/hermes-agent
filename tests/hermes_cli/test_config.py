@@ -12,6 +12,7 @@ from hermes_cli.config import (
     ensure_hermes_home,
     load_config,
     load_env,
+    migrate_config,
     save_config,
     save_env_value,
     save_env_value_secure,
@@ -219,25 +220,6 @@ class TestSanitizeEnvLines:
             "OPENAI_BASE_URL=https://api.openai.com/v1\n",
         ]
 
-    def test_drops_stale_placeholder(self):
-        """KEY=*** entries are removed."""
-        lines = [
-            "OPENROUTER_API_KEY=sk-or-real\n",
-            "ANTHROPIC_TOKEN=***\n",
-            "FAL_KEY=fal-real\n",
-        ]
-        result = _sanitize_env_lines(lines)
-        assert result == [
-            "OPENROUTER_API_KEY=sk-or-real\n",
-            "FAL_KEY=fal-real\n",
-        ]
-
-    def test_drops_quoted_placeholder(self):
-        """KEY='***' and KEY=\"***\" are also removed."""
-        lines = ['ANTHROPIC_TOKEN="***"\n', "OTHER_KEY='***'\n"]
-        result = _sanitize_env_lines(lines)
-        assert result == []
-
     def test_preserves_clean_file(self):
         """A well-formed .env file passes through unchanged (modulo trailing newlines)."""
         lines = [
@@ -296,19 +278,18 @@ class TestSanitizeEnvLines:
         env_file = tmp_path / ".env"
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\n"
-            "STALE_KEY=***\n"
+            "FAL_KEY=existing\n"
         )
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            save_env_value("NEW_KEY", "new-value")
+            save_env_value("MESSAGING_CWD", "/tmp")
 
             content = env_file.read_text()
             lines = content.strip().split("\n")
 
-            # Corrupted line should be split, placeholder removed, new key added
+            # Corrupted line should be split, new key added
             assert "ANTHROPIC_API_KEY=sk-ant" in lines
             assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
-            assert "NEW_KEY=new-value" in lines
-            assert "STALE_KEY=***" not in content
+            assert "MESSAGING_CWD=/tmp" in lines
 
     def test_sanitize_env_file_returns_fix_count(self, tmp_path):
         """sanitize_env_file reports how many entries were fixed."""
@@ -316,7 +297,6 @@ class TestSanitizeEnvLines:
         env_file.write_text(
             "FAL_KEY=good\n"
             "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
-            "STALE=***\n"
         )
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
@@ -324,7 +304,6 @@ class TestSanitizeEnvLines:
 
             # Verify file is now clean
             content = env_file.read_text()
-            assert "STALE=***" not in content
             assert "OPENROUTER_API_KEY=val\n" in content
             assert "FIRECRAWL_API_KEY=val2\n" in content
 
@@ -335,3 +314,66 @@ class TestSanitizeEnvLines:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
             assert fixes == 0
+
+
+class TestStaleAnthropicTokenMigration:
+    """Test that migrate_config clears stale ANTHROPIC_TOKEN."""
+
+    def test_clears_stale_token_when_api_key_exists(self, tmp_path):
+        """ANTHROPIC_TOKEN cleared when ANTHROPIC_API_KEY is also set."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-real-key\n"
+            "ANTHROPIC_TOKEN=old-stale-token\n"
+        )
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_API_KEY": "sk-ant-real-key",
+            "ANTHROPIC_TOKEN": "old-stale-token",
+        }):
+            migrate_config(interactive=False, quiet=True)
+
+            env = load_env()
+            assert env.get("ANTHROPIC_TOKEN") == ""
+            assert env.get("ANTHROPIC_API_KEY") == "sk-ant-real-key"
+
+    def test_clears_stale_token_when_claude_code_available(self, tmp_path):
+        """ANTHROPIC_TOKEN cleared when Claude Code credentials exist."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_TOKEN=old-stale-token\n")
+
+        fake_creds = {"accessToken": "valid-token", "expiresAt": 0}
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_TOKEN": "old-stale-token",
+        }):
+            with patch(
+                "agent.anthropic_adapter.read_claude_code_credentials",
+                return_value=fake_creds,
+            ), patch(
+                "agent.anthropic_adapter.is_claude_code_token_valid",
+                return_value=True,
+            ):
+                migrate_config(interactive=False, quiet=True)
+
+            env = load_env()
+            assert env.get("ANTHROPIC_TOKEN") == ""
+
+    def test_preserves_token_when_no_alternative(self, tmp_path):
+        """ANTHROPIC_TOKEN kept when no API key or Claude Code creds exist."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_TOKEN=only-auth-method\n")
+
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_TOKEN": "only-auth-method",
+        }):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            with patch(
+                "agent.anthropic_adapter.read_claude_code_credentials",
+                return_value=None,
+            ):
+                migrate_config(interactive=False, quiet=True)
+
+            env = load_env()
+            assert env.get("ANTHROPIC_TOKEN") == "only-auth-method"

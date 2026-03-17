@@ -800,22 +800,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message:
             return
 
-        # For the first version, we'll use a standard model list. 
-        # In the future, this can be fetched from the core ProviderRegistry.
-        models = ["gpt-4o", "claude-3-5-sonnet", "hermes-3-llama-3.1-405b", "liquid-lfm-40b"]
-        
-        keyboard = []
-        for model in models:
-            # callback_data is what we receive back when the user clicks the button
-            keyboard.append([InlineKeyboardButton(model, callback_data=f"set_model:{model}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "*Select a model from the list below:*",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+        try:
+            from hermes_cli.models import provider_model_ids
+            
+            models = provider_model_ids(None)
+            models_to_show = models[:10]
+            
+            if not models_to_show:
+                await update.message.reply_text("_No models available._", parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            keyboard = []
+            for model_id in models_to_show:
+                # Both button label and callback_data now use the model ID string
+                keyboard.append([InlineKeyboardButton(model_id, callback_data=f"set_model:{model_id}")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "*Select a model from the list:*",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        except Exception as e:
+            logger.error(f"Error in /models command: {e}")
+            await update.message.reply_text("❌ Failed to fetch models. Try /model manually.")
 
     async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle button clicks from the /models interactive menu."""

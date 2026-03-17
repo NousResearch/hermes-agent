@@ -209,7 +209,8 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
             # Agent settings -- TB2 tasks are complex, need many turns
             max_agent_turns=60,
-            max_token_length=***
+            # Match other terminal-focused eval envs (enough for long commands + tool output)
+            max_token_length=16000,
             agent_temperature=0.6,
             system_prompt=None,
 
@@ -245,7 +246,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 base_url="https://openrouter.ai/api/v1",
                 model_name="anthropic/claude-sonnet-4",
                 server_type="openai",
-                api_key=os.get...EY", ""),
+                api_key=os.getenv("OPENROUTER_API_KEY", ""),
                 health_check=False,
             )
         ]
@@ -512,4 +513,78 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 )
                 reward = 0.0
             else:
-                # Run tests in a thread so the blocking ctx.terminal() calls
+                # Run tests in the SAME sandbox the model used (same task_id)
+                ctx = ToolContext(task_id)
+                try:
+                    test_cmd = (
+                        "bash -lc \""
+                        "set -euo pipefail; "
+                        "cd /app 2>/dev/null || cd /workspace 2>/dev/null || cd /; "
+                        "if [ -f test.sh ]; then bash test.sh; "
+                        "elif [ -f ./tests/test.sh ]; then bash ./tests/test.sh; "
+                        "else echo 'test.sh not found' >&2; exit 2; "
+                        "fi\""
+                    )
+                    test_res = ctx.terminal(test_cmd, timeout=self.config.test_timeout)
+
+                    # Canonical TB2 contract: verifier writes pass/fail to this file
+                    reward_file = ctx.terminal(
+                        "bash -lc \"cat /logs/verifier/reward.txt 2>/dev/null || true\"",
+                        timeout=10,
+                    )
+                    reward_text = str(reward_file.get("output", "")).strip().lower()
+
+                    passed = False
+                    if reward_text:
+                        passed = reward_text.startswith("1") or "pass" in reward_text or "true" in reward_text
+                    else:
+                        # Fallback: treat test command success as pass if reward file is missing
+                        passed = int(test_res.get("exit_code", -1)) == 0
+
+                    reward = 1.0 if passed else 0.0
+                finally:
+                    # Ensure the per-task sandbox is cleaned up even if verification fails
+                    try:
+                        ctx.cleanup()
+                    except Exception:
+                        pass
+
+            # --- 6. Return result ---
+            duration = time.time() - task_start
+            passed = bool(reward == 1.0)
+            result_dict: Dict[str, Any] = {
+                "passed": passed,
+                "reward": reward,
+                "task_name": task_name,
+                "category": category,
+                "task_id": task_id,
+                "turns_used": getattr(result, "turns_used", None),
+                "duration_s": duration,
+            }
+
+            return result_dict
+
+        except Exception as e:
+            logger.exception("Task %s: rollout_and_score_eval failed: %s", task_name, e)
+            return {
+                "passed": False,
+                "reward": 0.0,
+                "task_name": task_name,
+                "category": category,
+                "task_id": task_id,
+                "error": f"{type(e).__name__}: {e}",
+            }
+        finally:
+            try:
+                clear_task_env_overrides(task_id)
+            except Exception:
+                pass
+            try:
+                cleanup_vm(task_id)
+            except Exception:
+                pass
+            if task_dir is not None:
+                try:
+                    shutil.rmtree(task_dir, ignore_errors=True)
+                except Exception:
+                    pass

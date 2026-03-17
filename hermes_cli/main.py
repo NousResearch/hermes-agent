@@ -2428,25 +2428,38 @@ def cmd_audit(args):
 
     elif action == "problems":
         hours = getattr(args, "hours", 24) or 24
-        events = audit.query(errors_only=True, last_hours=hours, limit=100)
-        if not events:
-            print(f"No problems in the last {hours} hours.")
-            return
 
-        from datetime import datetime
-        print(f"\n  Problems (last {hours}h)")
-        print(f"  {'=' * 40}")
-        for ev in events:
-            ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%m-%d %H:%M:%S")
-            etype = ev["event_type"]
-            err_type = ev.get("error_type") or ""
-            err_msg = ev.get("error_message") or ""
-            tool = ev.get("tool_name") or ""
-            status = f"HTTP {ev['status_code']}" if ev.get("status_code") else ""
-            print(f"  {ts}  {etype} {tool} {status}")
-            if err_type:
-                print(f"           {err_type}: {err_msg[:100]}")
-        print()
+        # Pattern-based problem detection
+        detected = audit.detect_problems(last_hours=hours)
+        if detected:
+            print(f"\n  Detected Problems (last {hours}h)")
+            print(f"  {'=' * 40}")
+            severity_icon = {"critical": "!!!", "error": " ! ", "warning": " ~ ", "info": "   "}
+            for p in detected:
+                icon = severity_icon.get(p["severity"], "   ")
+                print(f"  [{icon}] {p['message']}")
+            print()
+
+        # Raw error events
+        events = audit.query(errors_only=True, last_hours=hours, limit=100)
+        if events:
+            from datetime import datetime
+            print(f"  Error Events:")
+            print(f"  {'-' * 40}")
+            for ev in events:
+                ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%m-%d %H:%M:%S")
+                etype = ev["event_type"]
+                err_type = ev.get("error_type") or ""
+                err_msg = ev.get("error_message") or ""
+                tool = ev.get("tool_name") or ""
+                status = f"HTTP {ev['status_code']}" if ev.get("status_code") else ""
+                print(f"  {ts}  {etype} {tool} {status}")
+                if err_type:
+                    print(f"           {err_type}: {err_msg[:100]}")
+            print()
+
+        if not detected and not events:
+            print(f"No problems in the last {hours} hours.")
 
 
 def cmd_uninstall(args):

@@ -390,6 +390,137 @@ class AuditLogger:
             logger.debug("Audit summary failed: %s", e)
             return {}
 
+    def detect_problems(self, last_hours: float = 24) -> List[Dict]:
+        """Analyze recent events and detect patterns that indicate problems.
+
+        Returns a list of problem dicts with: type, severity, message, evidence.
+        """
+        if not self._conn:
+            return []
+        problems = []
+        since = time.time() - (last_hours * 3600)
+
+        try:
+            with self._lock:
+                cur = self._conn.execute
+
+                # 1. Repeated API errors (same error_type 3+ times)
+                repeated_errors = cur(
+                    "SELECT error_type, status_code, COUNT(*) as cnt "
+                    "FROM events WHERE timestamp > ? AND event_type = 'api_error' "
+                    "AND error_type IS NOT NULL "
+                    "GROUP BY error_type, status_code HAVING cnt >= 3 "
+                    "ORDER BY cnt DESC",
+                    (since,)
+                ).fetchall()
+                for err_type, status, count in repeated_errors:
+                    problems.append({
+                        "type": "repeated_api_error",
+                        "severity": "error",
+                        "message": f"{err_type} (HTTP {status}) occurred {count} times",
+                        "evidence": {"error_type": err_type, "status_code": status, "count": count},
+                    })
+
+                # 2. High API error rate (>25% of API calls failed)
+                api_total = cur(
+                    "SELECT COUNT(*) FROM events WHERE timestamp > ? "
+                    "AND event_type IN ('api_call', 'api_error')",
+                    (since,)
+                ).fetchone()[0]
+                api_errors = cur(
+                    "SELECT COUNT(*) FROM events WHERE timestamp > ? AND event_type = 'api_error'",
+                    (since,)
+                ).fetchone()[0]
+                if api_total >= 4 and api_errors / api_total > 0.25:
+                    problems.append({
+                        "type": "high_api_error_rate",
+                        "severity": "warning",
+                        "message": f"API error rate {api_errors}/{api_total} ({api_errors/api_total*100:.0f}%)",
+                        "evidence": {"total": api_total, "errors": api_errors},
+                    })
+
+                # 3. Slow tool calls (avg > 10s for any tool)
+                slow_tools = cur(
+                    "SELECT tool_name, AVG(duration_ms) as avg_ms, COUNT(*) as cnt "
+                    "FROM events WHERE timestamp > ? AND event_type = 'tool_call' "
+                    "AND duration_ms IS NOT NULL AND tool_name IS NOT NULL "
+                    "GROUP BY tool_name HAVING avg_ms > 10000 AND cnt >= 2",
+                    (since,)
+                ).fetchall()
+                for tool, avg_ms, count in slow_tools:
+                    problems.append({
+                        "type": "slow_tool",
+                        "severity": "warning",
+                        "message": f"{tool} averaging {avg_ms/1000:.1f}s over {count} calls",
+                        "evidence": {"tool": tool, "avg_ms": round(avg_ms, 1), "count": count},
+                    })
+
+                # 4. Tool failures (same tool failing 3+ times)
+                failing_tools = cur(
+                    "SELECT tool_name, COUNT(*) as cnt "
+                    "FROM events WHERE timestamp > ? AND event_type = 'tool_error' "
+                    "AND tool_name IS NOT NULL "
+                    "GROUP BY tool_name HAVING cnt >= 3",
+                    (since,)
+                ).fetchall()
+                for tool, count in failing_tools:
+                    problems.append({
+                        "type": "repeated_tool_failure",
+                        "severity": "error",
+                        "message": f"{tool} failed {count} times",
+                        "evidence": {"tool": tool, "count": count},
+                    })
+
+                # 5. Security: denied commands
+                denied = cur(
+                    "SELECT COUNT(*) FROM events WHERE timestamp > ? "
+                    "AND event_type = 'approval_result' AND severity = 'warning'",
+                    (since,)
+                ).fetchone()[0]
+                if denied >= 3:
+                    problems.append({
+                        "type": "frequent_denials",
+                        "severity": "warning",
+                        "message": f"{denied} commands denied by approval system",
+                        "evidence": {"denied_count": denied},
+                    })
+
+                # 6. Rate limiting detected (429 errors)
+                rate_limits = cur(
+                    "SELECT COUNT(*) FROM events WHERE timestamp > ? "
+                    "AND event_type = 'api_error' AND status_code = 429",
+                    (since,)
+                ).fetchone()[0]
+                if rate_limits >= 2:
+                    problems.append({
+                        "type": "rate_limited",
+                        "severity": "warning",
+                        "message": f"Rate limited {rate_limits} times — consider reducing request frequency",
+                        "evidence": {"count": rate_limits},
+                    })
+
+                # 7. Auth failures (401 errors)
+                auth_fails = cur(
+                    "SELECT COUNT(*) FROM events WHERE timestamp > ? "
+                    "AND event_type IN ('api_error', 'auth_failure') AND status_code = 401",
+                    (since,)
+                ).fetchone()[0]
+                if auth_fails >= 1:
+                    problems.append({
+                        "type": "auth_failure",
+                        "severity": "error",
+                        "message": f"{auth_fails} authentication failure(s) — check API key or OAuth credentials",
+                        "evidence": {"count": auth_fails},
+                    })
+
+        except Exception as e:
+            logger.debug("Problem detection failed: %s", e)
+
+        # Sort by severity (critical > error > warning > info)
+        severity_order = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+        problems.sort(key=lambda p: severity_order.get(p["severity"], 9))
+        return problems
+
     def close(self):
         self._closed = True
         if self._conn:

@@ -164,6 +164,67 @@ class TestAuditLoggerSummary:
         assert summary["errors"] == 0
 
 
+class TestProblemDetection:
+
+    def test_detects_repeated_api_errors(self, audit_db):
+        for _ in range(5):
+            audit_db.log_api_error(status_code=500, error="down", error_type="ServerError")
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "repeated_api_error" in types
+
+    def test_detects_high_error_rate(self, audit_db):
+        audit_db.log_api_call(model="m")
+        for _ in range(3):
+            audit_db.log_api_error(status_code=500, error="fail", error_type="Err")
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "high_api_error_rate" in types
+
+    def test_detects_rate_limiting(self, audit_db):
+        for _ in range(3):
+            audit_db.log_api_error(status_code=429, error="rate limited")
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "rate_limited" in types
+
+    def test_detects_auth_failure(self, audit_db):
+        audit_db.log_api_error(status_code=401, error="unauthorized")
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "auth_failure" in types
+
+    def test_detects_slow_tools(self, audit_db):
+        for _ in range(3):
+            audit_db.log_tool_call(tool_name="web_search", duration_ms=15000)
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "slow_tool" in types
+
+    def test_detects_repeated_tool_failure(self, audit_db):
+        for _ in range(4):
+            audit_db.log_tool_error(tool_name="terminal", error="timeout")
+        problems = audit_db.detect_problems(last_hours=1)
+        types = [p["type"] for p in problems]
+        assert "repeated_tool_failure" in types
+
+    def test_no_problems_when_healthy(self, audit_db):
+        for _ in range(10):
+            audit_db.log_tool_call(tool_name="read_file", duration_ms=50, success=True)
+            audit_db.log_api_call(model="m", status_code=200)
+        problems = audit_db.detect_problems(last_hours=1)
+        assert len(problems) == 0
+
+    def test_problems_sorted_by_severity(self, audit_db):
+        audit_db.log_api_error(status_code=401, error="auth")  # error
+        for _ in range(3):
+            audit_db.log_api_error(status_code=429, error="rate")  # warning
+        problems = audit_db.detect_problems(last_hours=1)
+        if len(problems) >= 2:
+            severities = [p["severity"] for p in problems]
+            assert severities.index("error") < severities.index("warning")
+
+
 class TestAuditLoggerResilience:
 
     def test_closed_logger_does_not_crash(self, audit_db):

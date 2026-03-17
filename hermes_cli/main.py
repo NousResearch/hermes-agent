@@ -139,6 +139,18 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
+
+    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
+    # These are used by resolve_anthropic_token() at runtime but were missing
+    # from this startup gate check.
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        creds = read_claude_code_credentials()
+        if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+            return True
+    except Exception:
+        pass
+
     return False
 
 

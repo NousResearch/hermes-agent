@@ -1285,45 +1285,47 @@ class GatewayRunner:
         # Check for commands
         command = event.get_command()
         
-        # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "status", "stop", "model", "reasoning",
-                          "personality", "plan", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider", "rollback",
-                          "background", "bg", "reasoning", "voice"}
-        if command and command in _known_commands:
+        # Emit command:* hook for any recognized slash command.
+        # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
+        # in hermes_cli/commands.py — no hardcoded set to maintain here.
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
+        if command and command in GATEWAY_KNOWN_COMMANDS:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "command": command,
                 "args": event.get_command_args().strip(),
             })
-        
-        if command in ["new", "reset"]:
+
+        # Resolve aliases to canonical name so dispatch only checks canonicals.
+        _cmd_def = _resolve_cmd(command) if command else None
+        canonical = _cmd_def.name if _cmd_def else command
+
+        if canonical == "new":
             return await self._handle_reset_command(event)
         
-        if command == "help":
+        if canonical == "help":
             return await self._handle_help_command(event)
         
-        if command == "status":
+        if canonical == "status":
             return await self._handle_status_command(event)
         
-        if command == "stop":
+        if canonical == "stop":
             return await self._handle_stop_command(event)
         
-        if command == "model":
+        if canonical == "model":
             return await self._handle_model_command(event)
 
-        if command == "reasoning":
+        if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
-        if command == "provider":
+        if canonical == "provider":
             return await self._handle_provider_command(event)
         
-        if command == "personality":
+        if canonical == "personality":
             return await self._handle_personality_command(event)
 
-        if command == "plan":
+        if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
 
@@ -1340,51 +1342,48 @@ class GatewayRunner:
                 )
                 if not event.text:
                     return "Failed to load the bundled /plan skill."
-                command = None
+                canonical = None
             except Exception as e:
                 logger.exception("Failed to prepare /plan command")
                 return f"Failed to enter plan mode: {e}"
         
-        if command == "retry":
+        if canonical == "retry":
             return await self._handle_retry_command(event)
         
-        if command == "undo":
+        if canonical == "undo":
             return await self._handle_undo_command(event)
         
-        if command in ["sethome", "set-home"]:
+        if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
-        if command == "compress":
+        if canonical == "compress":
             return await self._handle_compress_command(event)
 
-        if command == "usage":
+        if canonical == "usage":
             return await self._handle_usage_command(event)
 
-        if command == "insights":
+        if canonical == "insights":
             return await self._handle_insights_command(event)
 
-        if command in ("reload-mcp", "reload_mcp"):
+        if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
-        if command == "update":
+        if canonical == "update":
             return await self._handle_update_command(event)
 
-        if command == "title":
+        if canonical == "title":
             return await self._handle_title_command(event)
 
-        if command == "resume":
+        if canonical == "resume":
             return await self._handle_resume_command(event)
 
-        if command == "rollback":
+        if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
-        if command == "background":
+        if canonical == "background":
             return await self._handle_background_command(event)
 
-        if command == "reasoning":
-            return await self._handle_reasoning_command(event)
-
-        if command == "voice":
+        if canonical == "voice":
             return await self._handle_voice_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -2093,30 +2092,10 @@ class GatewayRunner:
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
+        from hermes_cli.commands import gateway_help_lines
         lines = [
             "📖 **Hermes Commands**\n",
-            "`/new` — Start a new conversation",
-            "`/reset` — Reset conversation history",
-            "`/status` — Show session info",
-            "`/stop` — Interrupt the running agent",
-            "`/model [provider:model]` — Show/change model (or switch provider)",
-            "`/provider` — Show available providers and auth status",
-            "`/personality [name]` — Set a personality",
-            "`/retry` — Retry your last message",
-            "`/undo` — Remove the last exchange",
-            "`/sethome` — Set this chat as the home channel",
-            "`/compress` — Compress conversation context",
-            "`/title [name]` — Set or show the session title",
-            "`/resume [name]` — Resume a previously-named session",
-            "`/usage` — Show token usage for this session",
-            "`/insights [days]` — Show usage insights and analytics",
-            "`/reasoning [level|show|hide]` — Set reasoning effort or toggle display",
-            "`/rollback [number]` — List or restore filesystem checkpoints",
-            "`/background <prompt>` — Run a prompt in a separate background session",
-            "`/voice [on|off|tts|status]` — Toggle voice reply mode",
-            "`/reload-mcp` — Reload MCP servers from config",
-            "`/update` — Update Hermes Agent to the latest version",
-            "`/help` — Show this message",
+            *gateway_help_lines(),
         ]
         try:
             from agent.skill_commands import get_skill_commands

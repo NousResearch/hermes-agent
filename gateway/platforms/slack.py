@@ -789,24 +789,11 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
 
-        # Map subcommands to gateway commands
-        subcommand_map = {
-            "new": "/reset", "reset": "/reset",
-            "status": "/status", "stop": "/stop",
-            "help": "/help",
-            "model": "/model", "personality": "/personality",
-            "retry": "/retry", "undo": "/undo",
-            "compact": "/compress", "compress": "/compress",
-            "resume": "/resume",
-            "background": "/background",
-            "bg": "/bg",
-            "usage": "/usage",
-            "insights": "/insights",
-            "title": "/title",
-            "reasoning": "/reasoning",
-            "provider": "/provider",
-            "rollback": "/rollback",
-        }
+        # Map subcommands to gateway commands — derived from central registry.
+        # Also keep "compact" as a Slack-specific alias for /compress.
+        from hermes_cli.commands import slack_subcommand_map
+        subcommand_map = slack_subcommand_map()
+        subcommand_map["compact"] = "/compress"
         first_word = text.split()[0] if text else ""
         if first_word in subcommand_map:
             # Preserve arguments after the subcommand

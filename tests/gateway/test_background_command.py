@@ -272,18 +272,14 @@ class TestBackgroundInHelp:
         assert "/background" in result
 
     def test_background_is_known_command(self):
-        """The /background command is in the _known_commands set."""
-        from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"background"' in source
+        """The /background command is in GATEWAY_KNOWN_COMMANDS."""
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "background" in GATEWAY_KNOWN_COMMANDS
 
     def test_bg_alias_is_known_command(self):
-        """The /bg alias is in the _known_commands set."""
-        from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"bg"' in source
+        """The /bg alias is in GATEWAY_KNOWN_COMMANDS."""
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "bg" in GATEWAY_KNOWN_COMMANDS
 
 
 # ---------------------------------------------------------------------------

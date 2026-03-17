@@ -3266,18 +3266,25 @@ class HermesCLI:
         # Lowercase only for dispatch matching; preserve original case for arguments
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
+
+        # Resolve aliases via central registry so adding an alias is a one-line
+        # change in hermes_cli/commands.py instead of touching every dispatch site.
+        from hermes_cli.commands import resolve_command as _resolve_cmd
+        _base_word = cmd_lower.split()[0].lstrip("/")
+        _cmd_def = _resolve_cmd(_base_word)
+        canonical = _cmd_def.name if _cmd_def else _base_word
         
-        if cmd_lower in ("/quit", "/exit", "/q"):
+        if canonical in ("quit", "exit", "q"):
             return False
-        elif cmd_lower == "/help":
+        elif canonical == "help":
             self.show_help()
-        elif cmd_lower == "/tools":
+        elif canonical == "tools":
             self.show_tools()
-        elif cmd_lower == "/toolsets":
+        elif canonical == "toolsets":
             self.show_toolsets()
-        elif cmd_lower == "/config":
+        elif canonical == "config":
             self.show_config()
-        elif cmd_lower == "/clear":
+        elif canonical == "clear":
             self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
@@ -3318,9 +3325,9 @@ class HermesCLI:
             else:
                 self.show_banner()
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
-        elif cmd_lower == "/history":
+        elif canonical == "history":
             self.show_history()
-        elif cmd_lower.startswith("/title"):
+        elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 raw_title = parts[1].strip()
@@ -3391,9 +3398,9 @@ class HermesCLI:
                         _cprint(f"  No title set. Usage: /title <your session title>")
                 else:
                     _cprint("  Session database not available.")
-        elif cmd_lower in ("/reset", "/new"):
+        elif canonical == "new":
             self.new_session()
-        elif cmd_lower.startswith("/model"):
+        elif canonical == "model":
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
@@ -3480,50 +3487,50 @@ class HermesCLI:
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
             else:
                 self._show_model_and_providers()
-        elif cmd_lower == "/provider":
+        elif canonical == "provider":
             self._show_model_and_providers()
-        elif cmd_lower.startswith("/prompt"):
+        elif canonical == "prompt":
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
-        elif cmd_lower.startswith("/personality"):
+        elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
-        elif cmd_lower == "/plan" or cmd_lower.startswith("/plan "):
+        elif canonical == "plan":
             self._handle_plan_command(cmd_original)
-        elif cmd_lower == "/retry":
+        elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
-        elif cmd_lower == "/undo":
+        elif canonical == "undo":
             self.undo_last()
-        elif cmd_lower == "/save":
+        elif canonical == "save":
             self.save_conversation()
-        elif cmd_lower.startswith("/cron"):
+        elif canonical == "cron":
             self._handle_cron_command(cmd_original)
-        elif cmd_lower.startswith("/skills"):
+        elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
-        elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
+        elif canonical == "platforms":
             self._show_gateway_status()
-        elif cmd_lower == "/verbose":
+        elif canonical == "verbose":
             self._toggle_verbose()
-        elif cmd_lower.startswith("/reasoning"):
+        elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
-        elif cmd_lower == "/compress":
+        elif canonical == "compress":
             self._manual_compress()
-        elif cmd_lower == "/usage":
+        elif canonical == "usage":
             self._show_usage()
-        elif cmd_lower.startswith("/insights"):
+        elif canonical == "insights":
             self._show_insights(cmd_original)
-        elif cmd_lower == "/paste":
+        elif canonical == "paste":
             self._handle_paste_command()
-        elif cmd_lower == "/reload-mcp":
+        elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
-        elif cmd_lower.startswith("/browser"):
+        elif _base_word == "browser":
             self._handle_browser_command(cmd_original)
-        elif cmd_lower == "/plugins":
+        elif canonical == "plugins":
             try:
                 from hermes_cli.plugins import get_plugin_manager
                 mgr = get_plugin_manager()
@@ -3544,15 +3551,15 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
-        elif cmd_lower.startswith("/rollback"):
+        elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
-        elif cmd_lower == "/stop":
+        elif canonical == "stop":
             self._handle_stop_command()
-        elif cmd_lower.startswith("/background") or cmd_lower.startswith("/bg"):
+        elif canonical == "background":
             self._handle_background_command(cmd_original)
-        elif cmd_lower.startswith("/skin"):
+        elif canonical == "skin":
             self._handle_skin_command(cmd_original)
-        elif cmd_lower.startswith("/voice"):
+        elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)

@@ -35,7 +35,9 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("process_command called too many times")
             return original(self_inner, cmd)
 
-        with patch.object(type(cli_obj), 'process_command', counting_process_command):
+        # Mock show_config since the test is about recursion, not config display
+        with patch.object(type(cli_obj), 'process_command', counting_process_command), \
+             patch.object(cli_obj, 'show_config'):
             try:
                 cli_obj.process_command("/con set key value")
             except RecursionError:
@@ -57,7 +59,9 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("Infinite recursion detected")
             return original_pc(self_inner, cmd)
 
-        with patch.object(HermesCLI, 'process_command', guarded):
+        # Mock show_config since the test is about recursion, not config display
+        with patch.object(HermesCLI, 'process_command', guarded), \
+             patch.object(cli_obj, 'show_config'):
             try:
                 cli_obj.process_command("/config set key value")
             except RecursionError:

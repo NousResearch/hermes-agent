@@ -101,7 +101,7 @@ def _discover_tools():
         try:
             importlib.import_module(mod_name)
         except Exception as e:
-            logger.debug("Could not import %s: %s", mod_name, e)
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
 
 
 _discover_tools()
@@ -149,7 +149,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
         "browser_press", "browser_close", "browser_get_images",
-        "browser_vision"
+        "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
     "rl_tools": [

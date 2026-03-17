@@ -132,6 +132,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "sms": Platform.SMS,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
@@ -315,6 +316,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
+        smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -331,12 +333,25 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        from agent.smart_model_routing import resolve_turn_route
+        turn_route = resolve_turn_route(
+            prompt,
+            smart_routing,
+            {
+                "model": model,
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+            },
+        )
+
         agent = AIAgent(
-            model=model,
-            api_key=runtime.get("api_key"),
-            base_url=runtime.get("base_url"),
-            provider=runtime.get("provider"),
-            api_mode=runtime.get("api_mode"),
+            model=turn_route["model"],
+            api_key=turn_route["runtime"].get("api_key"),
+            base_url=turn_route["runtime"].get("base_url"),
+            provider=turn_route["runtime"].get("provider"),
+            api_mode=turn_route["runtime"].get("api_mode"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

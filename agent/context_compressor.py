@@ -313,7 +313,19 @@ Write only the summary body. Do not include any preamble or prefix; the system w
 
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+            # Pick a role that avoids consecutive same-role with both neighbors.
+            # Priority: avoid colliding with head (already committed), then tail.
+            if last_head_role in ("assistant", "tool"):
+                summary_role = "user"
+            else:
+                summary_role = "assistant"
+            # If the chosen role collides with the tail AND flipping wouldn't
+            # collide with the head, flip it.
+            if summary_role == first_tail_role:
+                flipped = "assistant" if summary_role == "user" else "user"
+                if flipped != last_head_role:
+                    summary_role = flipped
             compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:

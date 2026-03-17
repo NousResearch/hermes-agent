@@ -52,6 +52,20 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# Smart Model Routing (optional)
+# =============================================================================
+# Use a cheaper model for short/simple turns while keeping your main model for
+# more complex requests. Disabled by default.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openrouter
+#     model: google/gemini-2.5-flash
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple
@@ -109,6 +123,12 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # Optional: explicitly forward selected env vars into Docker.
+#   # These values come from your current shell first, then ~/.hermes/.env.
+#   # Warning: anything forwarded here is visible to commands run in the container.
+#   docker_forward_env:
+#     - "GITHUB_TOKEN"
+#     - "NPM_TOKEN"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -340,6 +360,19 @@ session_reset:
 # room from sharing context, interrupts, and token costs. Set false only if you
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gateway Streaming
+# ─────────────────────────────────────────────────────────────────────────────
+# Stream tokens to messaging platforms in real-time. The bot sends a message
+# on first token, then progressively edits it as more tokens arrive.
+# Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+streaming:
+  enabled: false
+  # transport: edit           # "edit" = progressive editMessageText
+  # edit_interval: 0.3        # seconds between message edits
+  # buffer_threshold: 40      # chars before forcing an edit flush
+  # cursor: " ▉"              # cursor shown during streaming
 
 # =============================================================================
 # Skills Configuration
@@ -701,6 +734,12 @@ display:
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
   show_reasoning: false
+
+  # Stream tokens to the terminal as they arrive instead of waiting for the
+  # full response. The response box opens on first token and text appears
+  # line-by-line. Tool calls are still captured silently.
+  # Disabled by default — enable to try the streaming UX.
+  streaming: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

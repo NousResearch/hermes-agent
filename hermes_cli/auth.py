@@ -139,6 +139,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.anthropic.com",
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
+    "alibaba": ProviderConfig(
+        id="alibaba",
+        name="Alibaba Cloud (DashScope)",
+        auth_type="api_key",
+        inference_base_url="https://dashscope-intl.aliyuncs.com/apps/anthropic",
+        api_key_env_vars=("DASHSCOPE_API_KEY",),
+        base_url_env_var="DASHSCOPE_BASE_URL",
+    ),
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
         name="MiniMax (China)",
@@ -154,6 +162,38 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.deepseek.com/v1",
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
+    ),
+    "ai-gateway": ProviderConfig(
+        id="ai-gateway",
+        name="AI Gateway",
+        auth_type="api_key",
+        inference_base_url="https://ai-gateway.vercel.sh/v1",
+        api_key_env_vars=("AI_GATEWAY_API_KEY",),
+        base_url_env_var="AI_GATEWAY_BASE_URL",
+    ),
+    "opencode-zen": ProviderConfig(
+        id="opencode-zen",
+        name="OpenCode Zen",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        api_key_env_vars=("OPENCODE_ZEN_API_KEY",),
+        base_url_env_var="OPENCODE_ZEN_BASE_URL",
+    ),
+    "opencode-go": ProviderConfig(
+        id="opencode-go",
+        name="OpenCode Go",
+        auth_type="***",
+        inference_base_url="https://opencode.ai/zen/go/v1",
+        api_key_env_vars=("OPEN...",),
+        base_url_env_var="OPENCODE_GO_BASE_URL",
+    ),
+    "kilocode": ProviderConfig(
+        id="kilocode",
+        name="Kilo Code",
+        auth_type="api_key",
+        inference_base_url="https://api.kilo.ai/api/gateway",
+        api_key_env_vars=("KILOCODE_API_KEY",),
+        base_url_env_var="KILOCODE_BASE_URL",
     ),
 }
 
@@ -532,6 +572,10 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
+        "opencode": "opencode-zen", "zen": "opencode-zen",
+        "go": "opencode-go", "opencode-go-sub": "opencode-go",
+        "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

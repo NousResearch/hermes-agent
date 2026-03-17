@@ -28,22 +28,10 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
         "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
-        "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
-    # Compression bridge
-    compression_cfg = config_dict.get("compression", {})
-    if compression_cfg and isinstance(compression_cfg, dict):
-        compression_env_map = {
-            "enabled": "CONTEXT_COMPRESSION_ENABLED",
-            "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
-            "summary_model": "CONTEXT_COMPRESSION_MODEL",
-            "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
-        }
-        for cfg_key, env_var in compression_env_map.items():
-            if cfg_key in compression_cfg:
-                os.environ[env_var] = str(compression_cfg[cfg_key])
+    # Compression config is read directly from config.yaml — no env var bridging.
 
     # Auxiliary bridge
     auxiliary_cfg = config_dict.get("auxiliary", {})
@@ -134,17 +122,6 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_VISION_API_KEY") == "local-key"
         assert os.environ.get("AUXILIARY_VISION_MODEL") == "qwen2.5-vl"
 
-    def test_compression_provider_bridged(self, monkeypatch):
-        config = {
-            "compression": {
-                "summary_provider": "nous",
-                "summary_model": "gemini-3-flash",
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("CONTEXT_COMPRESSION_PROVIDER") == "nous"
-        assert os.environ.get("CONTEXT_COMPRESSION_MODEL") == "gemini-3-flash"
-
     def test_empty_values_not_bridged(self, monkeypatch):
         config = {
             "auxiliary": {
@@ -186,18 +163,12 @@ class TestAuxiliaryConfigBridge:
 
     def test_all_tasks_with_overrides(self, monkeypatch):
         config = {
-            "compression": {
-                "summary_provider": "main",
-                "summary_model": "local-model",
-            },
             "auxiliary": {
                 "vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
                 "web_extract": {"provider": "nous", "model": "gemini-3-flash"},
             }
         }
         _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("CONTEXT_COMPRESSION_PROVIDER") == "main"
-        assert os.environ.get("CONTEXT_COMPRESSION_MODEL") == "local-model"
         assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
         assert os.environ.get("AUXILIARY_VISION_MODEL") == "google/gemini-2.5-flash"
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
@@ -240,12 +211,12 @@ class TestGatewayBridgeCodeParity:
         assert "AUXILIARY_WEB_EXTRACT_BASE_URL" in content
         assert "AUXILIARY_WEB_EXTRACT_API_KEY" in content
 
-    def test_gateway_has_compression_provider(self):
-        """Gateway must bridge compression.summary_provider."""
+    def test_gateway_no_compression_env_bridge(self):
+        """Gateway should NOT bridge compression config to env vars (config-only)."""
         gateway_path = Path(__file__).parent.parent / "gateway" / "run.py"
         content = gateway_path.read_text()
-        assert "summary_provider" in content
-        assert "CONTEXT_COMPRESSION_PROVIDER" in content
+        assert "CONTEXT_COMPRESSION_PROVIDER" not in content
+        assert "CONTEXT_COMPRESSION_MODEL" not in content
 
 
 # ── Vision model override tests ──────────────────────────────────────────────
@@ -307,6 +278,12 @@ class TestDefaultConfigShape:
         compression = DEFAULT_CONFIG["compression"]
         assert "summary_provider" in compression
         assert compression["summary_provider"] == "auto"
+
+    def test_compression_base_url_default(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        compression = DEFAULT_CONFIG["compression"]
+        assert "summary_base_url" in compression
+        assert compression["summary_base_url"] is None
 
 
 # ── CLI defaults parity ─────────────────────────────────────────────────────

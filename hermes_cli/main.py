@@ -139,6 +139,18 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
+
+    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
+    # These are used by resolve_anthropic_token() at runtime but were missing
+    # from this startup gate check.
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+        creds = read_claude_code_credentials()
+        if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+            return True
+    except Exception:
+        pass
+
     return False
 
 
@@ -768,6 +780,11 @@ def cmd_model(args):
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
+        "opencode-zen": "OpenCode Zen",
+        "opencode-go": "OpenCode Go",
+        "ai-gateway": "AI Gateway",
+        "kilocode": "Kilo Code",
+        "alibaba": "Alibaba Cloud (DashScope)",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -787,6 +804,11 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
+        ("kilocode", "Kilo Code (Kilo Gateway API)"),
+        ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
+        ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
+        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
+        ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -855,7 +877,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1415,6 +1437,13 @@ _PROVIDER_MODELS = {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
+    "kilocode": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ],
 }
 
 
@@ -1967,20 +1996,32 @@ def _update_via_zip(args):
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
     
-    # Reinstall Python dependencies
+    # Reinstall Python dependencies (try .[all] first for optional extras,
+    # fall back to . if extras fail — mirrors the install script behavior)
     print("→ Updating Python dependencies...")
     import subprocess
     uv_bin = shutil.which("uv")
     if uv_bin:
-        subprocess.run(
-            [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-            cwd=PROJECT_ROOT, check=True,
-            env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        )
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        try:
+            subprocess.run(
+                [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
+                cwd=PROJECT_ROOT, check=True, env=uv_env,
+            )
+        except subprocess.CalledProcessError:
+            print("  ⚠ Optional extras failed, installing base dependencies...")
+            subprocess.run(
+                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                cwd=PROJECT_ROOT, check=True, env=uv_env,
+            )
     else:
         venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-        if venv_pip.exists():
-            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+        try:
+            subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        except subprocess.CalledProcessError:
+            print("  ⚠ Optional extras failed, installing base dependencies...")
+            subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
     
     # Sync skills
     try:
@@ -2122,7 +2163,17 @@ def _restore_stashed_changes(
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True
 
-
+def _invalidate_update_cache():
+    """Delete the update-check cache so ``hermes --version`` doesn't
+    report a stale "commits behind" count after a successful update."""
+    try:
+        cache_file = Path(os.getenv(
+            "HERMES_HOME", Path.home() / ".hermes"
+        )) / ".update_check"
+        if cache_file.exists():
+            cache_file.unlink()
+    except Exception:
+        pass
 
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
@@ -2195,6 +2246,7 @@ def cmd_update(args):
         commit_count = int(result.stdout.strip())
         
         if commit_count == 0:
+            _invalidate_update_cache()
             print("✓ Already up to date!")
             return
         
@@ -2215,21 +2267,33 @@ def cmd_update(args):
                     prompt_user=prompt_for_restore,
                 )
         
-        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
+        _invalidate_update_cache()
+        
+        # Reinstall Python dependencies (try .[all] first for optional extras,
+        # fall back to . if extras fail — mirrors the install script behavior)
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True,
-                env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            )
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            try:
+                subprocess.run(
+                    [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
+                    cwd=PROJECT_ROOT, check=True, env=uv_env,
+                )
+            except subprocess.CalledProcessError:
+                print("  ⚠ Optional extras failed, installing base dependencies...")
+                subprocess.run(
+                    [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                    cwd=PROJECT_ROOT, check=True, env=uv_env,
+                )
         else:
             venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            if venv_pip.exists():
-                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            else:
-                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            try:
+                subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            except subprocess.CalledProcessError:
+                print("  ⚠ Optional extras failed, installing base dependencies...")
+                subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():
@@ -2306,14 +2370,20 @@ def cmd_update(args):
         # installation's gateway — safe with multiple installations.
         try:
             from gateway.status import get_running_pid, remove_pid_file
-            from hermes_cli.gateway import get_service_name
+            from hermes_cli.gateway import (
+                get_service_name, get_launchd_plist_path, is_macos, is_linux,
+                refresh_launchd_plist_if_needed,
+                _ensure_user_systemd_env, get_systemd_linger_status,
+            )
             import signal as _signal
 
             _gw_service_name = get_service_name()
             existing_pid = get_running_pid()
             has_systemd_service = False
+            has_launchd_service = False
 
             try:
+                _ensure_user_systemd_env()
                 check = subprocess.run(
                     ["systemctl", "--user", "is-active", _gw_service_name],
                     capture_output=True, text=True, timeout=5,
@@ -2322,23 +2392,36 @@ def cmd_update(args):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-            if existing_pid or has_systemd_service:
+            # Check for macOS launchd service
+            if is_macos():
+                try:
+                    plist_path = get_launchd_plist_path()
+                    if plist_path.exists():
+                        check = subprocess.run(
+                            ["launchctl", "list", "ai.hermes.gateway"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        has_launchd_service = check.returncode == 0
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+            if existing_pid or has_systemd_service or has_launchd_service:
                 print()
 
-                # Kill the PID-file-tracked process (may be manual or systemd)
-                if existing_pid:
-                    try:
-                        os.kill(existing_pid, _signal.SIGTERM)
-                        print(f"→ Stopped gateway process (PID {existing_pid})")
-                    except ProcessLookupError:
-                        pass  # Already gone
-                    except PermissionError:
-                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
-                    remove_pid_file()
-
-                # Restart the systemd service (starts a fresh process)
+                # When a service manager is handling the gateway, let it
+                # manage the lifecycle — don't manually SIGTERM the PID
+                # (launchd KeepAlive would respawn immediately, causing races).
                 if has_systemd_service:
                     import time as _time
+                    if existing_pid:
+                        try:
+                            os.kill(existing_pid, _signal.SIGTERM)
+                            print(f"→ Stopped gateway process (PID {existing_pid})")
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                        remove_pid_file()
                     _time.sleep(1)  # Brief pause for port/socket release
                     print("→ Restarting gateway service...")
                     restart = subprocess.run(
@@ -2349,8 +2432,50 @@ def cmd_update(args):
                         print("✓ Gateway restarted.")
                     else:
                         print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        # Check if linger is the issue
+                        if is_linux():
+                            linger_ok, _detail = get_systemd_linger_status()
+                            if linger_ok is not True:
+                                import getpass
+                                _username = getpass.getuser()
+                                print()
+                                print("  Linger must be enabled for the gateway user service to function.")
+                                print(f"  Run:  sudo loginctl enable-linger {_username}")
+                                print()
+                                print("  Then restart the gateway:")
+                                print("    hermes gateway restart")
+                            else:
+                                print("  Try manually: hermes gateway restart")
+                elif has_launchd_service:
+                    # Refresh the plist first (picks up --replace and other
+                    # changes from the update we just pulled).
+                    refresh_launchd_plist_if_needed()
+                    # Explicit stop+start — don't rely on KeepAlive respawn
+                    # after a manual SIGTERM, which would race with the
+                    # PID file cleanup.
+                    print("→ Restarting gateway service...")
+                    stop = subprocess.run(
+                        ["launchctl", "stop", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    start = subprocess.run(
+                        ["launchctl", "start", "ai.hermes.gateway"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if start.returncode == 0:
+                        print("✓ Gateway restarted via launchd.")
+                    else:
+                        print(f"⚠ Gateway restart failed: {start.stderr.strip()}")
                         print("  Try manually: hermes gateway restart")
                 elif existing_pid:
+                    try:
+                        os.kill(existing_pid, _signal.SIGTERM)
+                        print(f"→ Stopped gateway process (PID {existing_pid})")
+                    except ProcessLookupError:
+                        pass  # Already gone
+                    except PermissionError:
+                        print(f"⚠ Permission denied killing gateway PID {existing_pid}")
+                    remove_pid_file()
                     print("  ℹ️  Gateway was running manually (not as a service).")
                     print("  Restart it with: hermes gateway run")
         except Exception as e:
@@ -2517,7 +2642,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -2917,7 +3042,8 @@ For more help on a command:
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument("identifier", help="Skill identifier (e.g. openai/skills/skill-creator)")
     skills_install.add_argument("--category", default="", help="Category folder to install into")
-    skills_install.add_argument("--force", "--yes", "-y", dest="force", action="store_true", help="Install despite blocked scan verdict")
+    skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
+    skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
 
     skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
@@ -3066,17 +3192,66 @@ For more help on a command:
     tools_parser = subparsers.add_parser(
         "tools",
         help="Configure which tools are enabled per platform",
-        description="Interactive tool configuration — enable/disable tools for CLI, Telegram, Discord, etc."
+        description=(
+            "Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
+            "Built-in toolsets use plain names (e.g. web, memory).\n"
+            "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
+            "Run 'hermes tools' with no subcommand for the interactive configuration UI."
+        ),
     )
     tools_parser.add_argument(
         "--summary",
         action="store_true",
         help="Print a summary of enabled tools per platform and exit"
     )
+    tools_sub = tools_parser.add_subparsers(dest="tools_action")
+
+    # hermes tools list [--platform cli]
+    tools_list_p = tools_sub.add_parser(
+        "list",
+        help="Show all tools and their enabled/disabled status",
+    )
+    tools_list_p.add_argument(
+        "--platform", default="cli",
+        help="Platform to show (default: cli)",
+    )
+
+    # hermes tools disable <name...> [--platform cli]
+    tools_disable_p = tools_sub.add_parser(
+        "disable",
+        help="Disable toolsets or MCP tools",
+    )
+    tools_disable_p.add_argument(
+        "names", nargs="+", metavar="NAME",
+        help="Toolset name (e.g. web) or MCP tool in server:tool form",
+    )
+    tools_disable_p.add_argument(
+        "--platform", default="cli",
+        help="Platform to apply to (default: cli)",
+    )
+
+    # hermes tools enable <name...> [--platform cli]
+    tools_enable_p = tools_sub.add_parser(
+        "enable",
+        help="Enable toolsets or MCP tools",
+    )
+    tools_enable_p.add_argument(
+        "names", nargs="+", metavar="NAME",
+        help="Toolset name or MCP tool in server:tool form",
+    )
+    tools_enable_p.add_argument(
+        "--platform", default="cli",
+        help="Platform to apply to (default: cli)",
+    )
 
     def cmd_tools(args):
-        from hermes_cli.tools_config import tools_command
-        tools_command(args)
+        action = getattr(args, "tools_action", None)
+        if action in ("list", "disable", "enable"):
+            from hermes_cli.tools_config import tools_disable_enable_command
+            tools_disable_enable_command(args)
+        else:
+            from hermes_cli.tools_config import tools_command
+            tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
     # =========================================================================

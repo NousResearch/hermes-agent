@@ -1,4 +1,5 @@
 import logging
+from io import StringIO
 import subprocess
 import sys
 import types
@@ -15,6 +16,9 @@ def _install_fake_minisweagent(monkeypatch, captured_run_args):
 
         def __init__(self, **kwargs):
             captured_run_args.extend(kwargs.get("run_args", []))
+
+        def cleanup(self):
+            pass
 
     minisweagent_mod = types.ModuleType("minisweagent")
     environments_mod = types.ModuleType("minisweagent.environments")
@@ -211,3 +215,120 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
+
+def test_non_persistent_cleanup_removes_container(monkeypatch):
+    """When container_persistent=false, cleanup() must run docker rm -f so the container is removed (Fixes #1679)."""
+    run_calls = []
+
+    def _run(cmd, **kwargs):
+        run_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if cmd and getattr(cmd[0], "__str__", None) and "docker" in str(cmd[0]):
+            if len(cmd) >= 2 and cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="abc123container\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(docker_env.subprocess, "Popen", lambda *a, **k: type("P", (), {"poll": lambda: None, "wait": lambda **kw: None, "returncode": 0, "stdout": iter([]), "stdin": None})())
+
+    captured_run_args = []
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
+
+    env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
+    assert env._container_id
+    container_id = env._container_id
+
+    env.cleanup()
+
+    rm_calls = [c for c in run_calls if isinstance(c[0], list) and len(c[0]) >= 4 and c[0][1:4] == ["rm", "-f", container_id]]
+    assert len(rm_calls) >= 1, "cleanup() should run docker rm -f <container_id> when container_persistent=false"
+
+
+class _FakePopen:
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.kwargs = kwargs
+        self.stdout = StringIO("")
+        self.stdin = None
+        self.returncode = 0
+
+    def poll(self):
+        return self.returncode
+
+
+def _make_execute_only_env(forward_env=None):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env.cwd = "/root"
+    env.timeout = 60
+    env._forward_env = forward_env or []
+    env._prepare_command = lambda command: (command, None)
+    env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
+    env._inner = type("Inner", (), {
+        "container_id": "test-container",
+        "config": type("Cfg", (), {"executable": "/usr/bin/docker", "env": {}})(),
+    })()
+    return env
+
+
+def test_execute_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
+    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    result = env.execute("echo hi")
+
+    assert result["returncode"] == 0
+    assert "GITHUB_TOKEN=value_from_dotenv" in popen_calls[0]
+
+
+def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
+    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "value_from_shell")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    env.execute("echo hi")
+
+    assert "GITHUB_TOKEN=value_from_shell" in popen_calls[0]
+    assert "GITHUB_TOKEN=value_from_dotenv" not in popen_calls[0]
+
+
+def test_non_persistent_cleanup_removes_container(monkeypatch):
+    """When container_persistent=false, cleanup() must run docker rm -f so the container is removed (Fixes #1679)."""
+    run_calls = []
+
+    def _run(cmd, **kwargs):
+        run_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if cmd and getattr(cmd[0], '__str__', None) and 'docker' in str(cmd[0]):
+            if len(cmd) >= 2 and cmd[1] == 'run':
+                return subprocess.CompletedProcess(cmd, 0, stdout="abc123container\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
+
+    monkeypatch.setattr(docker_env, 'find_docker', lambda: '/usr/bin/docker')
+    monkeypatch.setattr(docker_env.subprocess, 'run', _run)
+    monkeypatch.setattr(docker_env.subprocess, 'Popen', lambda *a, **k: type('P', (), {'poll': lambda: None, 'wait': lambda **kw: None, 'returncode': 0, 'stdout': iter([]), 'stdin': None})())
+
+    captured_run_args = []
+    _install_fake_minisweagent(monkeypatch, captured_run_args)
+
+    env = _make_dummy_env(persistent_filesystem=False, task_id='ephemeral-task')
+    assert env._container_id
+    container_id = env._container_id
+
+    env.cleanup()
+
+    rm_calls = [c for c in run_calls if isinstance(c[0], list) and len(c[0]) >= 4 and c[0][1:4] == ['rm', '-f', container_id]]
+    assert len(rm_calls) >= 1, 'cleanup() should run docker rm -f <container_id> when container_persistent=false'

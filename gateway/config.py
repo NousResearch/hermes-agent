@@ -40,8 +40,12 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    MATTERMOST = "mattermost"
+    MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
+    SMS = "sms"
+    DINGTALK = "dingtalk"
 
 
 @dataclass
@@ -147,6 +151,37 @@ class PlatformConfig:
 
 
 @dataclass
+class StreamingConfig:
+    """Configuration for real-time token streaming to messaging platforms."""
+    enabled: bool = False
+    transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
+    edit_interval: float = 0.3    # Seconds between message edits
+    buffer_threshold: int = 40    # Chars before forcing an edit
+    cursor: str = " ▉"           # Cursor shown during streaming
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "transport": self.transport,
+            "edit_interval": self.edit_interval,
+            "buffer_threshold": self.buffer_threshold,
+            "cursor": self.cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=data.get("enabled", False),
+            transport=data.get("transport", "edit"),
+            edit_interval=float(data.get("edit_interval", 0.3)),
+            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            cursor=data.get("cursor", " ▉"),
+        )
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -179,6 +214,9 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
 
+    # Streaming configuration
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -196,6 +234,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
+                connected.append(platform)
+            # SMS uses api_key (Twilio auth token) — SID checked via env
+            elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
         return connected
     
@@ -244,6 +285,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
+            "streaming": self.streaming.to_dict(),
         }
     
     @classmethod
@@ -297,6 +339,7 @@ class GatewayConfig:
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
 
@@ -401,6 +444,8 @@ def load_gateway_config() -> GatewayConfig:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.MATTERMOST: "MATTERMOST_TOKEN",
+        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -494,6 +539,53 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # Mattermost
+    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    if mattermost_token:
+        mattermost_url = os.getenv("MATTERMOST_URL", "")
+        if not mattermost_url:
+            logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
+        if Platform.MATTERMOST not in config.platforms:
+            config.platforms[Platform.MATTERMOST] = PlatformConfig()
+        config.platforms[Platform.MATTERMOST].enabled = True
+        config.platforms[Platform.MATTERMOST].token = mattermost_token
+        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+        if mattermost_home:
+            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+                platform=Platform.MATTERMOST,
+                chat_id=mattermost_home,
+                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Matrix
+    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
+    if matrix_token or os.getenv("MATRIX_PASSWORD"):
+        if not matrix_homeserver:
+            logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
+        if Platform.MATRIX not in config.platforms:
+            config.platforms[Platform.MATRIX] = PlatformConfig()
+        config.platforms[Platform.MATRIX].enabled = True
+        if matrix_token:
+            config.platforms[Platform.MATRIX].token = matrix_token
+        config.platforms[Platform.MATRIX].extra["homeserver"] = matrix_homeserver
+        matrix_user = os.getenv("MATRIX_USER_ID", "")
+        if matrix_user:
+            config.platforms[Platform.MATRIX].extra["user_id"] = matrix_user
+        matrix_password = os.getenv("MATRIX_PASSWORD", "")
+        if matrix_password:
+            config.platforms[Platform.MATRIX].extra["password"] = matrix_password
+        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
+        matrix_home = os.getenv("MATRIX_HOME_ROOM")
+        if matrix_home:
+            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+                platform=Platform.MATRIX,
+                chat_id=matrix_home,
+                name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
+            )
+
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
     if hass_token:
@@ -525,6 +617,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.EMAIL,
                 chat_id=email_home,
                 name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+            )
+
+    # SMS (Twilio)
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    if twilio_sid:
+        if Platform.SMS not in config.platforms:
+            config.platforms[Platform.SMS] = PlatformConfig()
+        config.platforms[Platform.SMS].enabled = True
+        config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
+        sms_home = os.getenv("SMS_HOME_CHANNEL")
+        if sms_home:
+            config.platforms[Platform.SMS].home_channel = HomeChannel(
+                platform=Platform.SMS,
+                chat_id=sms_home,
+                name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

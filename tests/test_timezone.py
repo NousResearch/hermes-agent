@@ -241,7 +241,7 @@ class TestCronTimezone:
         job = create_job(prompt="Test job", schedule="every 1h")
         jobs = load_jobs()
         # Force a naive (no timezone) past timestamp
-        naive_past = (datetime.now() - timedelta(minutes=5)).isoformat()
+        naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)
 
@@ -318,7 +318,7 @@ class TestCronTimezone:
 
         # Simulate a naive timestamp that was written by datetime.now() on a
         # system running in UTC+5:30 — 5 minutes in the past (local time)
-        naive_past = (datetime.now() - timedelta(minutes=5)).isoformat()
+        naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)
 
@@ -347,7 +347,7 @@ class TestCronTimezone:
         jobs = load_jobs()
 
         # Force a naive past timestamp (system-local wall time, 10 min ago)
-        naive_past = (datetime.now() - timedelta(minutes=10)).isoformat()
+        naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)
 

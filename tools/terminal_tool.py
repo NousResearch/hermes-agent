@@ -505,6 +505,7 @@ def _get_env_config() -> Dict[str, Any]:
     return {
         "env_type": env_type,
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
@@ -562,6 +563,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
+    docker_forward_env = cc.get("docker_forward_env", [])
 
     if env_type == "local":
         lc = local_config or {}
@@ -576,6 +578,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             volumes=volumes,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
+            forward_env=docker_forward_env,
         )
     
     elif env_type == "singularity":
@@ -1079,13 +1082,23 @@ def terminal_tool(
                         result_data["check_interval_note"] = (
                             f"Requested {check_interval}s raised to minimum 30s"
                         )
+                    watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
+                    watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+
+                    # Store on session for checkpoint persistence
+                    proc_session.watcher_platform = watcher_platform
+                    proc_session.watcher_chat_id = watcher_chat_id
+                    proc_session.watcher_thread_id = watcher_thread_id
+                    proc_session.watcher_interval = effective_interval
+
                     process_registry.pending_watchers.append({
                         "session_id": proc_session.id,
                         "check_interval": effective_interval,
                         "session_key": session_key,
-                        "platform": os.getenv("HERMES_SESSION_PLATFORM", ""),
-                        "chat_id": os.getenv("HERMES_SESSION_CHAT_ID", ""),
-                        "thread_id": os.getenv("HERMES_SESSION_THREAD_ID", ""),
+                        "platform": watcher_platform,
+                        "chat_id": watcher_chat_id,
+                        "thread_id": watcher_thread_id,
                     })
 
                 return json.dumps(result_data, ensure_ascii=False)

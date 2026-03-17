@@ -47,6 +47,28 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "no output" in args.lower()
 
+    def test_alias_command_routes_to_target(self):
+        """Alias quick commands rewrite to the target command."""
+        cli = self._make_cli({"shortcut": {"type": "alias", "target": "/help"}})
+        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
+            cli.process_command("/shortcut")
+            # Should recursively call process_command with /help
+            spy.assert_any_call("/help")
+
+    def test_alias_command_passes_args(self):
+        """Alias quick commands forward user arguments to the target."""
+        cli = self._make_cli({"sc": {"type": "alias", "target": "/context"}})
+        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
+            cli.process_command("/sc some args")
+            spy.assert_any_call("/context some args")
+
+    def test_alias_no_target_shows_error(self):
+        cli = self._make_cli({"broken": {"type": "alias", "target": ""}})
+        cli.process_command("/broken")
+        cli.console.print.assert_called_once()
+        args = cli.console.print.call_args[0][0]
+        assert "no target defined" in args.lower()
+
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
         cli.process_command("/bad")
@@ -72,10 +94,11 @@ class TestCLIQuickCommands:
 
     def test_unknown_command_still_shows_error(self):
         cli = self._make_cli({})
-        cli.process_command("/nonexistent")
-        cli.console.print.assert_called()
-        args = cli.console.print.call_args_list[0][0][0]
-        assert "unknown command" in args.lower()
+        with patch("cli._cprint") as mock_cprint:
+            cli.process_command("/nonexistent")
+            mock_cprint.assert_called()
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+            assert "unknown command" in printed.lower()
 
     def test_timeout_shows_error(self):
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})

@@ -1,20 +1,22 @@
-"""Tests for shared slash command definitions and autocomplete."""
+"""Tests for the central command registry and autocomplete."""
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMANDS, SlashCommandCompleter
-
-
-# All commands that must be present in the shared COMMANDS dict.
-EXPECTED_COMMANDS = {
-    "/help", "/tools", "/toolsets", "/model", "/provider", "/prompt",
-    "/personality", "/clear", "/history", "/new", "/reset", "/retry",
-    "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
-    "/verbose", "/reasoning", "/compress", "/title", "/usage", "/insights", "/paste",
-    "/reload-mcp", "/rollback", "/stop", "/background", "/skin", "/voice", "/browser", "/quit",
-    "/plugins",
-}
+from hermes_cli.commands import (
+    COMMAND_REGISTRY,
+    COMMANDS,
+    COMMANDS_BY_CATEGORY,
+    CommandDef,
+    GATEWAY_KNOWN_COMMANDS,
+    SUBCOMMANDS,
+    SlashCommandAutoSuggest,
+    SlashCommandCompleter,
+    gateway_help_lines,
+    resolve_command,
+    slack_subcommand_map,
+    telegram_bot_commands,
+)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -26,20 +28,199 @@ def _completions(completer: SlashCommandCompleter, text: str):
     )
 
 
-class TestCommands:
-    def test_shared_commands_include_cli_specific_entries(self):
-        """Entries that previously only existed in cli.py are now in the shared dict."""
-        assert COMMANDS["/paste"] == "Check clipboard for an image and attach it"
-        assert COMMANDS["/reload-mcp"] == "Reload MCP servers from config.yaml"
+# ---------------------------------------------------------------------------
+# CommandDef registry tests
+# ---------------------------------------------------------------------------
 
-    def test_all_expected_commands_present(self):
-        """Regression guard — every known command must appear in the shared dict."""
-        assert set(COMMANDS.keys()) == EXPECTED_COMMANDS
+class TestCommandRegistry:
+    def test_registry_is_nonempty(self):
+        assert len(COMMAND_REGISTRY) > 30
+
+    def test_every_entry_is_commanddef(self):
+        for entry in COMMAND_REGISTRY:
+            assert isinstance(entry, CommandDef), f"Unexpected type: {type(entry)}"
+
+    def test_no_duplicate_canonical_names(self):
+        names = [cmd.name for cmd in COMMAND_REGISTRY]
+        assert len(names) == len(set(names)), f"Duplicate names: {[n for n in names if names.count(n) > 1]}"
+
+    def test_no_alias_collides_with_canonical_name(self):
+        """An alias must not shadow another command's canonical name."""
+        canonical_names = {cmd.name for cmd in COMMAND_REGISTRY}
+        for cmd in COMMAND_REGISTRY:
+            for alias in cmd.aliases:
+                if alias in canonical_names:
+                    # reset -> new is intentional (reset IS an alias for new)
+                    target = next(c for c in COMMAND_REGISTRY if c.name == alias)
+                    # This should only happen if the alias points to the same entry
+                    assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
+                        f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
+
+    def test_every_entry_has_valid_category(self):
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        for cmd in COMMAND_REGISTRY:
+            assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
+
+    def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
+        for cmd in COMMAND_REGISTRY:
+            assert not (cmd.cli_only and cmd.gateway_only), \
+                f"{cmd.name} cannot be both cli_only and gateway_only"
+
+
+# ---------------------------------------------------------------------------
+# resolve_command tests
+# ---------------------------------------------------------------------------
+
+class TestResolveCommand:
+    def test_canonical_name_resolves(self):
+        assert resolve_command("help").name == "help"
+        assert resolve_command("background").name == "background"
+
+    def test_alias_resolves_to_canonical(self):
+        assert resolve_command("bg").name == "background"
+        assert resolve_command("reset").name == "new"
+        assert resolve_command("q").name == "quit"
+        assert resolve_command("exit").name == "quit"
+        assert resolve_command("gateway").name == "platforms"
+        assert resolve_command("set-home").name == "sethome"
+        assert resolve_command("reload_mcp").name == "reload-mcp"
+
+    def test_leading_slash_stripped(self):
+        assert resolve_command("/help").name == "help"
+        assert resolve_command("/bg").name == "background"
+
+    def test_unknown_returns_none(self):
+        assert resolve_command("nonexistent") is None
+        assert resolve_command("") is None
+
+
+# ---------------------------------------------------------------------------
+# Derived dicts (backwards compat)
+# ---------------------------------------------------------------------------
+
+class TestDerivedDicts:
+    def test_commands_dict_excludes_gateway_only(self):
+        """gateway_only commands should NOT appear in the CLI COMMANDS dict."""
+        for cmd in COMMAND_REGISTRY:
+            if cmd.gateway_only:
+                assert f"/{cmd.name}" not in COMMANDS, \
+                    f"gateway_only command /{cmd.name} should not be in COMMANDS"
+
+    def test_commands_dict_includes_all_cli_commands(self):
+        for cmd in COMMAND_REGISTRY:
+            if not cmd.gateway_only:
+                assert f"/{cmd.name}" in COMMANDS, \
+                    f"/{cmd.name} missing from COMMANDS dict"
+
+    def test_commands_dict_includes_aliases(self):
+        assert "/bg" in COMMANDS
+        assert "/reset" in COMMANDS
+        assert "/q" in COMMANDS
+        assert "/exit" in COMMANDS
+        assert "/reload_mcp" in COMMANDS
+        assert "/gateway" in COMMANDS
+
+    def test_commands_by_category_covers_all_categories(self):
+        registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
+        assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories
 
     def test_every_command_has_nonempty_description(self):
         for cmd, desc in COMMANDS.items():
             assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
 
+
+# ---------------------------------------------------------------------------
+# Gateway helpers
+# ---------------------------------------------------------------------------
+
+class TestGatewayKnownCommands:
+    def test_excludes_cli_only(self):
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only:
+                assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
+                    f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
+
+    def test_includes_gateway_commands(self):
+        for cmd in COMMAND_REGISTRY:
+            if not cmd.cli_only:
+                assert cmd.name in GATEWAY_KNOWN_COMMANDS
+                for alias in cmd.aliases:
+                    assert alias in GATEWAY_KNOWN_COMMANDS
+
+    def test_bg_alias_in_gateway(self):
+        assert "bg" in GATEWAY_KNOWN_COMMANDS
+        assert "background" in GATEWAY_KNOWN_COMMANDS
+
+    def test_is_frozenset(self):
+        assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
+
+
+class TestGatewayHelpLines:
+    def test_returns_nonempty_list(self):
+        lines = gateway_help_lines()
+        assert len(lines) > 10
+
+    def test_excludes_cli_only_commands(self):
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only:
+                assert f"`/{cmd.name}" not in joined, \
+                    f"cli_only command /{cmd.name} should not be in gateway help"
+
+    def test_includes_alias_note_for_bg(self):
+        lines = gateway_help_lines()
+        bg_line = [l for l in lines if "/background" in l]
+        assert len(bg_line) == 1
+        assert "/bg" in bg_line[0]
+
+
+class TestTelegramBotCommands:
+    def test_returns_list_of_tuples(self):
+        cmds = telegram_bot_commands()
+        assert len(cmds) > 10
+        for name, desc in cmds:
+            assert isinstance(name, str)
+            assert isinstance(desc, str)
+
+    def test_no_hyphens_in_command_names(self):
+        """Telegram does not support hyphens in command names."""
+        for name, _ in telegram_bot_commands():
+            assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
+
+    def test_excludes_cli_only(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only:
+                tg_name = cmd.name.replace("-", "_")
+                assert tg_name not in names
+
+
+class TestSlackSubcommandMap:
+    def test_returns_dict(self):
+        mapping = slack_subcommand_map()
+        assert isinstance(mapping, dict)
+        assert len(mapping) > 10
+
+    def test_values_are_slash_prefixed(self):
+        for key, val in slack_subcommand_map().items():
+            assert val.startswith("/"), f"Slack mapping for '{key}' should start with /"
+
+    def test_includes_aliases(self):
+        mapping = slack_subcommand_map()
+        assert "bg" in mapping
+        assert "reset" in mapping
+
+    def test_excludes_cli_only(self):
+        mapping = slack_subcommand_map()
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only:
+                assert cmd.name not in mapping
+
+
+# ---------------------------------------------------------------------------
+# Autocomplete (SlashCommandCompleter)
+# ---------------------------------------------------------------------------
 
 class TestSlashCommandCompleter:
     # -- basic prefix completion -----------------------------------------
@@ -55,7 +236,7 @@ class TestSlashCommandCompleter:
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
         assert len(completions) == 1
-        assert completions[0].display_meta_text == "Show this help message"
+        assert completions[0].display_meta_text == "Show available commands"
 
     # -- exact-match trailing space --------------------------------------
 
@@ -144,3 +325,182 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/no-desc")
         assert len(completions) == 1
         assert "Skill command" in completions[0].display_meta_text
+
+
+# ── SUBCOMMANDS extraction ──────────────────────────────────────────────
+
+
+class TestSubcommands:
+    def test_explicit_subcommands_extracted(self):
+        """Commands with explicit subcommands on CommandDef are extracted."""
+        assert "/prompt" in SUBCOMMANDS
+        assert "clear" in SUBCOMMANDS["/prompt"]
+
+    def test_reasoning_has_subcommands(self):
+        assert "/reasoning" in SUBCOMMANDS
+        subs = SUBCOMMANDS["/reasoning"]
+        assert "high" in subs
+        assert "show" in subs
+        assert "hide" in subs
+
+    def test_voice_has_subcommands(self):
+        assert "/voice" in SUBCOMMANDS
+        assert "on" in SUBCOMMANDS["/voice"]
+        assert "off" in SUBCOMMANDS["/voice"]
+
+    def test_cron_has_subcommands(self):
+        assert "/cron" in SUBCOMMANDS
+        assert "list" in SUBCOMMANDS["/cron"]
+        assert "add" in SUBCOMMANDS["/cron"]
+
+    def test_commands_without_subcommands_not_in_dict(self):
+        """Plain commands should not appear in SUBCOMMANDS."""
+        assert "/help" not in SUBCOMMANDS
+        assert "/quit" not in SUBCOMMANDS
+        assert "/clear" not in SUBCOMMANDS
+
+
+# ── Subcommand tab completion ───────────────────────────────────────────
+
+
+class TestSubcommandCompletion:
+    def test_subcommand_completion_after_space(self):
+        """Typing '/reasoning ' then Tab should show subcommands."""
+        completions = _completions(SlashCommandCompleter(), "/reasoning ")
+        texts = {c.text for c in completions}
+        assert "high" in texts
+        assert "show" in texts
+
+    def test_subcommand_prefix_filters(self):
+        """Typing '/reasoning sh' should only show 'show'."""
+        completions = _completions(SlashCommandCompleter(), "/reasoning sh")
+        texts = {c.text for c in completions}
+        assert texts == {"show"}
+
+    def test_subcommand_exact_match_suppressed(self):
+        """Typing the full subcommand shouldn't re-suggest it."""
+        completions = _completions(SlashCommandCompleter(), "/reasoning show")
+        texts = {c.text for c in completions}
+        assert "show" not in texts
+
+    def test_no_subcommands_for_plain_command(self):
+        """Commands without subcommands yield nothing after space."""
+        completions = _completions(SlashCommandCompleter(), "/help ")
+        assert completions == []
+
+
+# ── Two-stage /model completion ─────────────────────────────────────────
+
+
+def _model_completer() -> SlashCommandCompleter:
+    """Build a completer with mock model/provider info."""
+    return SlashCommandCompleter(
+        model_completer_provider=lambda: {
+            "current_provider": "openrouter",
+            "providers": {
+                "anthropic": "Anthropic",
+                "openrouter": "OpenRouter",
+                "nous": "Nous Research",
+            },
+            "models_for": lambda p: {
+                "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250414"],
+                "openrouter": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro"],
+                "nous": ["hermes-3-llama-3.1-405b"],
+            }.get(p, []),
+        }
+    )
+
+
+class TestModelCompletion:
+    def test_stage1_shows_providers(self):
+        completions = _completions(_model_completer(), "/model ")
+        texts = {c.text for c in completions}
+        assert "anthropic:" in texts
+        assert "openrouter:" in texts
+        assert "nous:" in texts
+
+    def test_stage1_current_provider_last(self):
+        completions = _completions(_model_completer(), "/model ")
+        texts = [c.text for c in completions]
+        assert texts[-1] == "openrouter:"
+
+    def test_stage1_current_provider_labeled(self):
+        completions = _completions(_model_completer(), "/model ")
+        for c in completions:
+            if c.text == "openrouter:":
+                assert "current" in c.display_meta_text.lower()
+                break
+        else:
+            raise AssertionError("openrouter: not found in completions")
+
+    def test_stage1_prefix_filters(self):
+        completions = _completions(_model_completer(), "/model an")
+        texts = {c.text for c in completions}
+        assert texts == {"anthropic:"}
+
+    def test_stage2_shows_models(self):
+        completions = _completions(_model_completer(), "/model anthropic:")
+        texts = {c.text for c in completions}
+        assert "anthropic:claude-sonnet-4-20250514" in texts
+        assert "anthropic:claude-opus-4-20250414" in texts
+
+    def test_stage2_prefix_filters_models(self):
+        completions = _completions(_model_completer(), "/model anthropic:claude-s")
+        texts = {c.text for c in completions}
+        assert "anthropic:claude-sonnet-4-20250514" in texts
+        assert "anthropic:claude-opus-4-20250414" not in texts
+
+    def test_stage2_no_model_provider_returns_empty(self):
+        completions = _completions(SlashCommandCompleter(), "/model ")
+        assert completions == []
+
+
+# ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
+
+
+def _suggestion(text: str, completer=None) -> str | None:
+    """Get ghost text suggestion for given input."""
+    suggest = SlashCommandAutoSuggest(completer=completer)
+    doc = Document(text=text)
+
+    class FakeBuffer:
+        pass
+
+    result = suggest.get_suggestion(FakeBuffer(), doc)
+    return result.text if result else None
+
+
+class TestGhostText:
+    def test_command_name_suggestion(self):
+        """/he → 'lp'"""
+        assert _suggestion("/he") == "lp"
+
+    def test_command_name_suggestion_reasoning(self):
+        """/rea → 'soning'"""
+        assert _suggestion("/rea") == "soning"
+
+    def test_no_suggestion_for_complete_command(self):
+        assert _suggestion("/help") is None
+
+    def test_subcommand_suggestion(self):
+        """/reasoning h → 'igh'"""
+        assert _suggestion("/reasoning h") == "igh"
+
+    def test_subcommand_suggestion_show(self):
+        """/reasoning sh → 'ow'"""
+        assert _suggestion("/reasoning sh") == "ow"
+
+    def test_no_suggestion_for_non_slash(self):
+        assert _suggestion("hello") is None
+
+    def test_model_stage1_ghost_text(self):
+        """/model a → 'nthropic:'"""
+        completer = _model_completer()
+        assert _suggestion("/model a", completer=completer) == "nthropic:"
+
+    def test_model_stage2_ghost_text(self):
+        """/model anthropic:cl → rest of first matching model"""
+        completer = _model_completer()
+        s = _suggestion("/model anthropic:cl", completer=completer)
+        assert s is not None
+        assert s.startswith("aude-")

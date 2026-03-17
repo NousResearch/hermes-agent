@@ -220,6 +220,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
+        self._mark_connected()
         return True
 
     async def disconnect(self) -> None:

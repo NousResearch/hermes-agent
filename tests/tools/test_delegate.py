@@ -12,6 +12,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 import json
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +45,7 @@ def _make_mock_parent(depth=0):
     parent._session_db = None
     parent._delegate_depth = depth
     parent._active_children = []
+    parent._active_children_lock = threading.Lock()
     return parent
 
 
@@ -722,7 +724,12 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        # Patch _build_child_agent since credentials are now passed there
+        # (agents are built in the main thread before being handed to workers)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
@@ -731,7 +738,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
             delegate_task(tasks=tasks, parent_agent=parent)
 
-            for call in mock_run.call_args_list:
+            self.assertEqual(mock_build.call_count, 2)
+            for call in mock_build.call_args_list:
                 self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
                 self.assertEqual(call.kwargs.get("override_provider"), "openrouter")
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")

@@ -24,6 +24,7 @@ def main() -> int:
     parent._interrupt_requested = False
     parent._interrupt_message = None
     parent._active_children = []
+    parent._active_children_lock = threading.Lock()
     parent.quiet_mode = True
     parent.model = "test/model"
     parent.base_url = "http://localhost:1"

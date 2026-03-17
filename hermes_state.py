@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -104,6 +105,7 @@ class SessionDB:
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -173,9 +175,10 @@ class SessionDB:
 
     def close(self):
         """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
 
     # =========================================================================
     # Session lifecycle
@@ -192,61 +195,66 @@ class SessionDB:
         parent_session_id: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
-        self._conn.execute(
-            """INSERT INTO sessions (id, source, user_id, model, model_config,
-               system_prompt, parent_session_id, started_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                session_id,
-                source,
-                user_id,
-                model,
-                json.dumps(model_config) if model_config else None,
-                system_prompt,
-                parent_session_id,
-                time.time(),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO sessions (id, source, user_id, model, model_config,
+                   system_prompt, parent_session_id, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    source,
+                    user_id,
+                    model,
+                    json.dumps(model_config) if model_config else None,
+                    system_prompt,
+                    parent_session_id,
+                    time.time(),
+                ),
+            )
+            self._conn.commit()
         return session_id
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended."""
-        self._conn.execute(
-            "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
-            (time.time(), end_reason, session_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+                (time.time(), end_reason, session_id),
+            )
+            self._conn.commit()
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
-        self._conn.execute(
-            "UPDATE sessions SET system_prompt = ? WHERE id = ?",
-            (system_prompt, session_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET system_prompt = ? WHERE id = ?",
+                (system_prompt, session_id),
+            )
+            self._conn.commit()
 
     def update_token_counts(
         self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
         model: str = None,
     ) -> None:
         """Increment token counters and backfill model if not already set."""
-        self._conn.execute(
-            """UPDATE sessions SET
-               input_tokens = input_tokens + ?,
-               output_tokens = output_tokens + ?,
-               model = COALESCE(model, ?)
-               WHERE id = ?""",
-            (input_tokens, output_tokens, model, session_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE sessions SET
+                   input_tokens = input_tokens + ?,
+                   output_tokens = output_tokens + ?,
+                   model = COALESCE(model, ?)
+                   WHERE id = ?""",
+                (input_tokens, output_tokens, model, session_id),
+            )
+            self._conn.commit()
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        cursor = self._conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
         return dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
@@ -331,38 +339,42 @@ class SessionDB:
         Empty/whitespace-only strings are normalized to None (clearing the title).
         """
         title = self.sanitize_title(title)
-        if title:
-            # Check uniqueness (allow the same session to keep its own title)
+        with self._lock:
+            if title:
+                # Check uniqueness (allow the same session to keep its own title)
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                    (title, session_id),
+                )
+                conflict = cursor.fetchone()
+                if conflict:
+                    raise ValueError(
+                        f"Title '{title}' is already in use by session {conflict['id']}"
+                    )
             cursor = self._conn.execute(
-                "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                "UPDATE sessions SET title = ? WHERE id = ?",
                 (title, session_id),
             )
-            conflict = cursor.fetchone()
-            if conflict:
-                raise ValueError(
-                    f"Title '{title}' is already in use by session {conflict['id']}"
-                )
-        cursor = self._conn.execute(
-            "UPDATE sessions SET title = ? WHERE id = ?",
-            (title, session_id),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+            self._conn.commit()
+            rowcount = cursor.rowcount
+        return rowcount > 0
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
-        cursor = self._conn.execute(
-            "SELECT title FROM sessions WHERE id = ?", (session_id,)
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT title FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
         return row["title"] if row else None
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
-        cursor = self._conn.execute(
-            "SELECT * FROM sessions WHERE title = ?", (title,)
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE title = ?", (title,)
+            )
+            row = cursor.fetchone()
         return dict(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
@@ -379,12 +391,13 @@ class SessionDB:
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        cursor = self._conn.execute(
-            "SELECT id, title, started_at FROM sessions "
-            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
-            (f"{escaped} #%",),
-        )
-        numbered = cursor.fetchall()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, title, started_at FROM sessions "
+                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+                (f"{escaped} #%",),
+            )
+            numbered = cursor.fetchall()
 
         if numbered:
             # Return the most recent numbered variant
@@ -409,11 +422,12 @@ class SessionDB:
         # Find all existing numbered variants
         # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
         escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        cursor = self._conn.execute(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-            (base, f"{escaped} #%"),
-        )
-        existing = [row["title"] for row in cursor.fetchall()]
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+                (base, f"{escaped} #%"),
+            )
+            existing = [row["title"] for row in cursor.fetchall()]
 
         if not existing:
             return base  # No conflict, use the base name as-is
@@ -461,9 +475,11 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
         params = (source, limit, offset) if source else (limit, offset)
-        cursor = self._conn.execute(query, params)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            rows = cursor.fetchall()
         sessions = []
-        for row in cursor.fetchall():
+        for row in rows:
             s = dict(row)
             # Build the preview from the raw substring
             raw = s.pop("_preview_raw", "").strip()
@@ -497,52 +513,54 @@ class SessionDB:
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
         """
-        cursor = self._conn.execute(
-            """INSERT INTO messages (session_id, role, content, tool_call_id,
-               tool_calls, tool_name, timestamp, token_count, finish_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                session_id,
-                role,
-                content,
-                tool_call_id,
-                json.dumps(tool_calls) if tool_calls else None,
-                tool_name,
-                time.time(),
-                token_count,
-                finish_reason,
-            ),
-        )
-        msg_id = cursor.lastrowid
-
-        # Update counters
-        # Count actual tool calls from the tool_calls list (not from tool responses).
-        # A single assistant message can contain multiple parallel tool calls.
-        num_tool_calls = 0
-        if tool_calls is not None:
-            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
-        if num_tool_calls > 0:
-            self._conn.execute(
-                """UPDATE sessions SET message_count = message_count + 1,
-                   tool_call_count = tool_call_count + ? WHERE id = ?""",
-                (num_tool_calls, session_id),
+        with self._lock:
+            cursor = self._conn.execute(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, timestamp, token_count, finish_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    role,
+                    content,
+                    tool_call_id,
+                    json.dumps(tool_calls) if tool_calls else None,
+                    tool_name,
+                    time.time(),
+                    token_count,
+                    finish_reason,
+                ),
             )
-        else:
-            self._conn.execute(
-                "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
-                (session_id,),
-            )
+            msg_id = cursor.lastrowid
 
-        self._conn.commit()
+            # Update counters
+            # Count actual tool calls from the tool_calls list (not from tool responses).
+            # A single assistant message can contain multiple parallel tool calls.
+            num_tool_calls = 0
+            if tool_calls is not None:
+                num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+            if num_tool_calls > 0:
+                self._conn.execute(
+                    """UPDATE sessions SET message_count = message_count + 1,
+                       tool_call_count = tool_call_count + ? WHERE id = ?""",
+                    (num_tool_calls, session_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                    (session_id,),
+                )
+
+            self._conn.commit()
         return msg_id
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
-        cursor = self._conn.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-            (session_id,),
-        )
-        rows = cursor.fetchall()
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
         result = []
         for row in rows:
             msg = dict(row)
@@ -559,13 +577,15 @@ class SessionDB:
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
         """
-        cursor = self._conn.execute(
-            "SELECT role, content, tool_call_id, tool_calls, tool_name "
-            "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-            (session_id,),
-        )
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT role, content, tool_call_id, tool_calls, tool_name "
+                "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
         messages = []
-        for row in cursor.fetchall():
+        for row in rows:
             msg = {"role": row["role"], "content": row["content"]}
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
@@ -675,31 +695,33 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
 
-        try:
-            cursor = self._conn.execute(sql, params)
-        except sqlite3.OperationalError:
-            # FTS5 query syntax error despite sanitization — return empty
-            return []
-        matches = [dict(row) for row in cursor.fetchall()]
-
-        # Add surrounding context (1 message before + after each match)
-        for match in matches:
+        with self._lock:
             try:
-                ctx_cursor = self._conn.execute(
-                    """SELECT role, content FROM messages
-                       WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
-                       ORDER BY id""",
-                    (match["session_id"], match["id"], match["id"]),
-                )
-                context_msgs = [
-                    {"role": r["role"], "content": (r["content"] or "")[:200]}
-                    for r in ctx_cursor.fetchall()
-                ]
-                match["context"] = context_msgs
-            except Exception:
-                match["context"] = []
+                cursor = self._conn.execute(sql, params)
+            except sqlite3.OperationalError:
+                # FTS5 query syntax error despite sanitization — return empty
+                return []
+            matches = [dict(row) for row in cursor.fetchall()]
 
-            # Remove full content from result (snippet is enough, saves tokens)
+            # Add surrounding context (1 message before + after each match)
+            for match in matches:
+                try:
+                    ctx_cursor = self._conn.execute(
+                        """SELECT role, content FROM messages
+                           WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
+                           ORDER BY id""",
+                        (match["session_id"], match["id"], match["id"]),
+                    )
+                    context_msgs = [
+                        {"role": r["role"], "content": (r["content"] or "")[:200]}
+                        for r in ctx_cursor.fetchall()
+                    ]
+                    match["context"] = context_msgs
+                except Exception:
+                    match["context"] = []
+
+        # Remove full content from result (snippet is enough, saves tokens)
+        for match in matches:
             match.pop("content", None)
 
         return matches

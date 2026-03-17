@@ -128,6 +128,9 @@ class TestProviderEnvBlocklist:
             "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
             "GATEWAY_ALLOWED_USERS": "alice,bob",
+            "MODAL_TOKEN_ID": "modal-id",
+            "MODAL_TOKEN_SECRET": "modal-secret",
+            "DAYTONA_API_KEY": "daytona-key",
         }
         result_env = _run_with_env(extra_os_env=leaked_vars)
 
@@ -280,5 +283,8 @@ class TestBlocklistCoverage:
             "GITHUB_APP_ID",
             "GITHUB_APP_PRIVATE_KEY_PATH",
             "GITHUB_APP_INSTALLATION_ID",
+            "MODAL_TOKEN_ID",
+            "MODAL_TOKEN_SECRET",
+            "DAYTONA_API_KEY",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)

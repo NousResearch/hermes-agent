@@ -240,29 +240,13 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
             # Register bot commands so Telegram shows a hint menu when users type /
+            # List is derived from the central COMMAND_REGISTRY — adding a new
+            # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
+                from hermes_cli.commands import telegram_bot_commands
                 await self._bot.set_my_commands([
-                    BotCommand("new", "Start a new conversation"),
-                    BotCommand("reset", "Reset conversation history"),
-                    BotCommand("model", "Show or change the model"),
-                    BotCommand("reasoning", "Show or change reasoning effort"),
-                    BotCommand("personality", "Set a personality"),
-                    BotCommand("retry", "Retry your last message"),
-                    BotCommand("undo", "Remove the last exchange"),
-                    BotCommand("status", "Show session info"),
-                    BotCommand("stop", "Stop the running agent"),
-                    BotCommand("sethome", "Set this chat as the home channel"),
-                    BotCommand("compress", "Compress conversation context"),
-                    BotCommand("title", "Set or show the session title"),
-                    BotCommand("resume", "Resume a previously-named session"),
-                    BotCommand("usage", "Show token usage for this session"),
-                    BotCommand("provider", "Show available providers"),
-                    BotCommand("insights", "Show usage insights and analytics"),
-                    BotCommand("update", "Update Hermes to the latest version"),
-                    BotCommand("reload_mcp", "Reload MCP servers from config"),
-                    BotCommand("voice", "Toggle voice reply mode"),
-                    BotCommand("help", "Show available commands"),
+                    BotCommand(name, desc) for name, desc in telegram_bot_commands()
                 ])
             except Exception as e:
                 logger.warning(

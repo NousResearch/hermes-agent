@@ -562,6 +562,12 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     scope_flag = " --system" if system else ""
 
     if unit_path.exists() and not force:
+        if not systemd_unit_is_current(system=system):
+            print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
+            refresh_systemd_unit_if_needed(system=system)
+            subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True)
+            print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
+            return
         print(f"Service already installed at: {unit_path}")
         print("Use --force to reinstall")
         return
@@ -787,6 +793,11 @@ def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
     
     if plist_path.exists() and not force:
+        if not launchd_plist_is_current():
+            print(f"↻ Repairing outdated launchd service at: {plist_path}")
+            refresh_launchd_plist_if_needed()
+            print("✓ Service definition updated")
+            return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
         return
@@ -816,7 +827,15 @@ def launchd_uninstall():
 
 def launchd_start():
     refresh_launchd_plist_if_needed()
-    subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+    plist_path = get_launchd_plist_path()
+    try:
+        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+    except subprocess.CalledProcessError as e:
+        if e.returncode != 3 or not plist_path.exists():
+            raise
+        print("↻ launchd job was unloaded; reloading service definition")
+        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
     print("✓ Service started")
 
 def launchd_stop():
@@ -824,22 +843,36 @@ def launchd_stop():
     print("✓ Service stopped")
 
 def launchd_restart():
-    refresh_launchd_plist_if_needed()
-    launchd_stop()
+    try:
+        launchd_stop()
+    except subprocess.CalledProcessError as e:
+        if e.returncode != 3:
+            raise
+        print("↻ launchd job was unloaded; skipping stop")
     launchd_start()
 
 def launchd_status(deep: bool = False):
+    plist_path = get_launchd_plist_path()
     result = subprocess.run(
         ["launchctl", "list", "ai.hermes.gateway"],
         capture_output=True,
         text=True
     )
+
+    print(f"Launchd plist: {plist_path}")
+    if launchd_plist_is_current():
+        print("✓ Service definition matches the current Hermes install")
+    else:
+        print("⚠ Service definition is stale relative to the current Hermes install")
+        print("  Run: hermes gateway start")
     
     if result.returncode == 0:
         print("✓ Gateway service is loaded")
         print(result.stdout)
     else:
         print("✗ Gateway service is not loaded")
+        print("  Service definition exists locally but launchd has not loaded it.")
+        print("  Run: hermes gateway start")
     
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
@@ -1555,14 +1588,17 @@ def gateway_command(args):
         # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, 'system', False)
+        service_configured = False
         
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+            service_configured = True
             try:
                 systemd_restart(system=system)
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
         elif is_macos() and get_launchd_plist_path().exists():
+            service_configured = True
             try:
                 launchd_restart()
                 service_available = True
@@ -1585,6 +1621,13 @@ def gateway_command(args):
                     print("  Then restart the gateway:")
                     print("    hermes gateway restart")
                     return
+
+            if service_configured:
+                print()
+                print("✗ Gateway service restart failed.")
+                print("  The service definition exists, but the service manager did not recover it.")
+                print("  Fix the service, then retry: hermes gateway start")
+                sys.exit(1)
 
             # Manual restart: kill existing processes
             killed = kill_gateway_processes()

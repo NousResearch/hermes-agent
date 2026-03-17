@@ -33,6 +33,12 @@ function getArg(name, defaultVal) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : defaultVal;
 }
 
+const WHATSAPP_DEBUG =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_DEBUG === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const PAIR_ONLY = args.includes('--pair-only');
@@ -46,6 +52,10 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+
+// Track recently sent message IDs to prevent echo-back loops with media
+const recentlySentIds = new Set();
+const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
@@ -103,12 +113,24 @@ async function startSocket() {
   });
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return;
+    // In self-chat mode, your own messages commonly arrive as 'append' rather
+    // than 'notify'. Accept both and filter agent echo-backs below.
+    if (type !== 'notify' && type !== 'append') return;
 
     for (const msg of messages) {
       if (!msg.message) continue;
 
       const chatId = msg.key.remoteJid;
+      if (WHATSAPP_DEBUG) {
+        try {
+          console.log(JSON.stringify({
+            event: 'upsert', type,
+            fromMe: !!msg.key.fromMe, chatId,
+            senderId: msg.key.participant || chatId,
+            messageKeys: Object.keys(msg.message || {}),
+          }));
+        } catch {}
+      }
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
@@ -123,9 +145,13 @@ async function startSocket() {
         }
 
         // Self-chat mode: only allow messages in the user's own self-chat
+        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
+        // AND classic format: 34652029134@s.whatsapp.net
+        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
         const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
         const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = myNumber && chatNumber === myNumber;
+        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
         if (!isSelfChat) continue;
       }
 
@@ -161,8 +187,25 @@ async function startSocket() {
         mediaType = 'document';
       }
 
+      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
+      if (msg.key.fromMe && (body.startsWith('⚕ *Hermes Agent*') || recentlySentIds.has(msg.key.id))) {
+        if (WHATSAPP_DEBUG) {
+          try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
+        }
+        continue;
+      }
+
       // Skip empty messages
-      if (!body && !hasMedia) continue;
+      if (!body && !hasMedia) {
+        if (WHATSAPP_DEBUG) {
+          try { 
+            console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
+          } catch (err) {
+            console.error('Failed to log empty message event:', err);
+          }
+        }
+        continue;
+      }
 
       const event = {
         messageId: msg.key.id,
@@ -212,6 +255,15 @@ app.post('/send', async (req, res) => {
     // own messages (especially in self-chat / "Message Yourself").
     const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
     const sent = await sock.sendMessage(chatId, { text: prefixed });
+
+    // Track sent message ID to prevent echo-back loops
+    if (sent?.key?.id) {
+      recentlySentIds.add(sent.key.id);
+      if (recentlySentIds.size > MAX_RECENT_IDS) {
+        recentlySentIds.delete(recentlySentIds.values().next().value);
+      }
+    }
+
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -303,6 +355,15 @@ app.post('/send-media', async (req, res) => {
     }
 
     const sent = await sock.sendMessage(chatId, msgPayload);
+
+    // Track sent message ID to prevent echo-back loops
+    if (sent?.key?.id) {
+      recentlySentIds.add(sent.key.id);
+      if (recentlySentIds.size > MAX_RECENT_IDS) {
+        recentlySentIds.delete(recentlySentIds.values().next().value);
+      }
+    }
+
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });

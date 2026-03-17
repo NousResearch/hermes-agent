@@ -46,6 +46,7 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
+import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
@@ -73,11 +74,14 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("parallel", "firecrawl"):
+    if configured in ("parallel", "firecrawl", "tavily"):
         return configured
     # Fallback for manual / legacy config — use whichever key is present.
     has_firecrawl = bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
     has_parallel = bool(os.getenv("PARALLEL_API_KEY"))
+    has_tavily = bool(os.getenv("TAVILY_API_KEY"))
+    if has_tavily and not has_firecrawl and not has_parallel:
+        return "tavily"
     if has_parallel and not has_firecrawl:
         return "parallel"
     # Default to firecrawl (backward compat, or when both are set)
@@ -154,6 +158,88 @@ def _get_async_parallel_client():
             )
         _async_parallel_client = AsyncParallel(api_key=api_key)
     return _async_parallel_client
+
+# ─── Tavily Client ───────────────────────────────────────────────────────────
+
+_TAVILY_BASE_URL = "https://api.tavily.com"
+
+
+def _tavily_request(endpoint: str, payload: dict) -> dict:
+    """Send a POST request to the Tavily API.
+
+    Auth is provided via ``api_key`` in the JSON body (no header-based auth).
+    Raises ``ValueError`` if ``TAVILY_API_KEY`` is not set.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "TAVILY_API_KEY environment variable not set. "
+            "Get your API key at https://app.tavily.com/home"
+        )
+    payload["api_key"] = api_key
+    url = f"{_TAVILY_BASE_URL}/{endpoint.lstrip('/')}"
+    logger.info("Tavily %s request to %s", endpoint, url)
+    response = httpx.post(url, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def _normalize_tavily_search_results(response: dict) -> dict:
+    """Normalize Tavily /search response to the standard web search format.
+
+    Tavily returns ``{results: [{title, url, content, score, ...}]}``.
+    We map to ``{success, data: {web: [{title, url, description, position}]}}``.
+    """
+    web_results = []
+    for i, result in enumerate(response.get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[Dict[str, Any]]:
+    """Normalize Tavily /extract or /crawl response to the standard document format.
+
+    Maps results to ``{url, title, content, raw_content, metadata}`` and
+    includes any ``failed_results`` / ``failed_urls`` as error entries.
+    """
+    documents: List[Dict[str, Any]] = []
+    for result in response.get("results", []):
+        url = result.get("url", fallback_url)
+        raw = result.get("raw_content", "") or result.get("content", "")
+        documents.append({
+            "url": url,
+            "title": result.get("title", ""),
+            "content": raw,
+            "raw_content": raw,
+            "metadata": {"sourceURL": url, "title": result.get("title", "")},
+        })
+    # Handle failed results
+    for fail in response.get("failed_results", []):
+        documents.append({
+            "url": fail.get("url", fallback_url),
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": fail.get("error", "extraction failed"),
+            "metadata": {"sourceURL": fail.get("url", fallback_url)},
+        })
+    for fail_url in response.get("failed_urls", []):
+        url_str = fail_url if isinstance(fail_url, str) else str(fail_url)
+        documents.append({
+            "url": url_str,
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": "extraction failed",
+            "metadata": {"sourceURL": url_str},
+        })
+    return documents
+
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
@@ -639,6 +725,22 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "tavily":
+            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
+            raw = _tavily_request("search", {
+                "query": query,
+                "max_results": min(limit, 20),
+                "include_raw_content": False,
+                "include_images": False,
+            })
+            response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -763,6 +865,13 @@ async def web_extract_tool(
 
         if backend == "parallel":
             results = await _parallel_extract(urls)
+        elif backend == "tavily":
+            logger.info("Tavily extract: %d URL(s)", len(urls))
+            raw = _tavily_request("extract", {
+                "urls": urls,
+                "include_images": False,
+            })
+            results = _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
         else:
             # ── Firecrawl extraction ──
             # Determine requested formats for Firecrawl v2
@@ -1055,6 +1164,83 @@ async def web_crawl_tool(
     }
     
     try:
+        backend = _get_backend()
+
+        # Tavily supports crawl via its /crawl endpoint
+        if backend == "tavily":
+            # Ensure URL has protocol
+            if not url.startswith(('http://', 'https://')):
+                url = f'https://{url}'
+
+            # Website policy check
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+
+            from tools.interrupt import is_interrupted as _is_int
+            if _is_int():
+                return json.dumps({"error": "Interrupted", "success": False})
+
+            logger.info("Tavily crawl: %s", url)
+            payload: Dict[str, Any] = {
+                "url": url,
+                "limit": 20,
+                "extract_depth": depth,
+            }
+            if instructions:
+                payload["instructions"] = instructions
+            raw = _tavily_request("crawl", payload)
+            results = _normalize_tavily_documents(raw, fallback_url=url)
+
+            response = {"results": results}
+            # Fall through to the shared LLM processing and trimming below
+            # (skip the Firecrawl-specific crawl logic)
+            pages_crawled = len(response.get('results', []))
+            logger.info("Crawled %d pages", pages_crawled)
+            debug_call_data["pages_crawled"] = pages_crawled
+            debug_call_data["original_response_size"] = len(json.dumps(response))
+
+            # Process each result with LLM if enabled
+            if use_llm_processing:
+                logger.info("Processing crawled content with LLM (parallel)...")
+                debug_call_data["processing_applied"].append("llm_processing")
+
+                async def _process_tavily_crawl(result):
+                    page_url = result.get('url', 'Unknown URL')
+                    title = result.get('title', '')
+                    content = result.get('content', '')
+                    if not content:
+                        return result, None, "no_content"
+                    original_size = len(content)
+                    processed = await process_content_with_llm(content, page_url, title, model, min_length)
+                    if processed:
+                        result['raw_content'] = content
+                        result['content'] = processed
+                        metrics = {"url": page_url, "original_size": original_size, "processed_size": len(processed),
+                                   "compression_ratio": len(processed) / original_size if original_size else 1.0, "model_used": model}
+                        return result, metrics, "processed"
+                    metrics = {"url": page_url, "original_size": original_size, "processed_size": original_size,
+                               "compression_ratio": 1.0, "model_used": None, "reason": "content_too_short"}
+                    return result, metrics, "too_short"
+
+                tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
+                processed_results = await asyncio.gather(*tasks)
+                for result, metrics, status in processed_results:
+                    if status == "processed":
+                        debug_call_data["compression_metrics"].append(metrics)
+                        debug_call_data["pages_processed_with_llm"] += 1
+
+            trimmed_results = [{"url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {})} for r in response.get("results", [])]
+            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+            cleaned_result = clean_base64_images(result_json)
+            debug_call_data["final_response_size"] = len(cleaned_result)
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return cleaned_result
+
         # web_crawl requires Firecrawl — Parallel has no crawl API
         if not (os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL")):
             return json.dumps({
@@ -1335,11 +1521,12 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check if any web backend API key is available (Parallel or Firecrawl)."""
+    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
     return bool(
         os.getenv("PARALLEL_API_KEY")
         or os.getenv("FIRECRAWL_API_KEY")
         or os.getenv("FIRECRAWL_API_URL")
+        or os.getenv("TAVILY_API_KEY")
     )
 
 
@@ -1377,11 +1564,13 @@ if __name__ == "__main__":
         print(f"✅ Web backend: {backend}")
         if backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
+        elif backend == "tavily":
+            print("   Using Tavily API (https://tavily.com)")
         else:
             print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
         print("❌ No web search backend configured")
-        print("Set PARALLEL_API_KEY (https://parallel.ai) or FIRECRAWL_API_KEY (https://firecrawl.dev)")
+        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")
@@ -1491,7 +1680,7 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1501,7 +1690,7 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
 )

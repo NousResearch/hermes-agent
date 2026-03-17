@@ -343,7 +343,7 @@ class AuditLogger:
             conditions.append("timestamp > ?")
             params.append(time.time() - (last_hours * 3600))
         if errors_only:
-            conditions.append("success = 0 OR severity IN ('error', 'critical')")
+            conditions.append("(success = 0 OR severity IN ('error', 'critical') OR event_type IN ('api_error', 'tool_error'))")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         sql = f"SELECT * FROM events {where} ORDER BY timestamp DESC LIMIT ?"
@@ -439,9 +439,16 @@ class AuditLogger:
             return {}
 
     def search(self, query: str, limit: int = 50) -> List[Dict]:
-        """Full-text search across error messages, tool names, and context."""
+        """Full-text search across error messages, tool names, and context.
+
+        Tries FTS5 first, falls back to LIKE if FTS returns no results
+        (e.g. events inserted before FTS triggers were created).
+        """
         if not self._conn or not query:
             return []
+
+        # Try FTS first
+        results = []
         try:
             with self._lock:
                 cursor = self._conn.execute(
@@ -450,21 +457,28 @@ class AuditLogger:
                     (query, limit),
                 )
                 columns = [d[0] for d in cursor.description]
+                results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception:
+            pass
+
+        if results:
+            return results
+
+        # Fallback: LIKE search on error_message, tool_name, context
+        try:
+            with self._lock:
+                like_pat = f"%{query}%"
+                cursor = self._conn.execute(
+                    "SELECT * FROM events WHERE error_message LIKE ? "
+                    "OR tool_name LIKE ? OR context LIKE ? "
+                    "OR provider LIKE ? OR model LIKE ? OR event_type LIKE ? "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (like_pat, like_pat, like_pat, like_pat, like_pat, like_pat, limit),
+                )
+                columns = [d[0] for d in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
-        except Exception as e:
-            logger.debug("Audit search failed (FTS may not be available): %s", e)
-            # Fallback: LIKE search on error_message
-            try:
-                with self._lock:
-                    cursor = self._conn.execute(
-                        "SELECT * FROM events WHERE error_message LIKE ? OR tool_name LIKE ? "
-                        "ORDER BY timestamp DESC LIMIT ?",
-                        (f"%{query}%", f"%{query}%", limit),
-                    )
-                    columns = [d[0] for d in cursor.description]
-                    return [dict(zip(columns, row)) for row in cursor.fetchall()]
-            except Exception:
-                return []
+        except Exception:
+            return []
 
     def detect_problems(self, last_hours: float = 24) -> List[Dict]:
         """Analyze recent events and detect patterns that indicate problems.

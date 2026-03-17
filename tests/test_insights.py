@@ -159,9 +159,9 @@ class TestPricing:
 
 class TestHasKnownPricing:
     def test_known_commercial_model(self):
-        assert _has_known_pricing("gpt-5", provider="openai") is True
+        assert _has_known_pricing("gpt-4o", provider="openai") is True
         assert _has_known_pricing("anthropic/claude-sonnet-4-20250514") is True
-        assert _has_known_pricing("openai/gpt-5.4") is True
+        assert _has_known_pricing("gpt-4.1", provider="openai") is True
 
     def test_unknown_custom_model(self):
         assert _has_known_pricing("FP16_Hermes_4.5") is False
@@ -187,7 +187,7 @@ class TestEstimateCost:
         assert cost == pytest.approx(18.0, abs=0.01)
 
     def test_zero_tokens(self):
-        cost, status = _estimate_cost("gpt-5", 0, 0, provider="openai")
+        cost, status = _estimate_cost("gpt-4o", 0, 0, provider="openai")
         assert status == "estimated"
         assert cost == 0.0
 

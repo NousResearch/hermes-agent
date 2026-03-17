@@ -217,7 +217,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": False,
-            "show_cost": False,
+
             "skin": "default",
             "theme_mode": "auto",
         },
@@ -1039,8 +1039,7 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # show_cost: display $ cost in the status bar (off by default)
-        self.show_cost = CLI_CONFIG["display"].get("show_cost", False)
+
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
@@ -1273,9 +1272,6 @@ class HermesCLI:
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
-            "session_cost": 0.0,
-            "cost_status": "unknown",
-            "cost_source": "none",
             "compressions": 0,
         }
 
@@ -1291,20 +1287,6 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
-        cost_result = estimate_usage_cost(
-            model_name,
-            CanonicalUsage(
-                input_tokens=snapshot["session_input_tokens"],
-                output_tokens=snapshot["session_output_tokens"],
-                cache_read_tokens=snapshot["session_cache_read_tokens"],
-                cache_write_tokens=snapshot["session_cache_write_tokens"],
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
-        snapshot["session_cost"] = float(cost_result.amount_usd or 0)
-        snapshot["cost_status"] = cost_result.status
-        snapshot["cost_source"] = cost_result.source
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1325,26 +1307,11 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
-            show_cost = getattr(self, "show_cost", False)
-
-            if show_cost:
-                if snapshot["cost_status"] == "actual":
-                    cost_label = f"${snapshot['session_cost']:.2f}"
-                elif snapshot["cost_status"] == "estimated":
-                    cost_label = f"~${snapshot['session_cost']:.2f}"
-                elif snapshot["cost_status"] == "included":
-                    cost_label = "included"
-                else:
-                    cost_label = "cost n/a"
-            else:
-                cost_label = None
 
             if width < 52:
                 return f"⚕ {snapshot['model_short']} · {duration_label}"
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
-                if cost_label:
-                    parts.append(cost_label)
                 parts.append(duration_label)
                 return " · ".join(parts)
 
@@ -1356,8 +1323,6 @@ class HermesCLI:
                 context_label = "ctx --"
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            if cost_label:
-                parts.append(cost_label)
             parts.append(duration_label)
             return " │ ".join(parts)
         except Exception:
@@ -1368,19 +1333,6 @@ class HermesCLI:
             snapshot = self._get_status_bar_snapshot()
             width = shutil.get_terminal_size((80, 24)).columns
             duration_label = snapshot["duration"]
-            show_cost = getattr(self, "show_cost", False)
-
-            if show_cost:
-                if snapshot["cost_status"] == "actual":
-                    cost_label = f"${snapshot['session_cost']:.2f}"
-                elif snapshot["cost_status"] == "estimated":
-                    cost_label = f"~${snapshot['session_cost']:.2f}"
-                elif snapshot["cost_status"] == "included":
-                    cost_label = "included"
-                else:
-                    cost_label = "cost n/a"
-            else:
-                cost_label = None
 
             if width < 52:
                 return [
@@ -1400,11 +1352,6 @@ class HermesCLI:
                     ("class:status-bar-dim", " · "),
                     (self._status_bar_context_style(percent), percent_label),
                 ]
-                if cost_label:
-                    frags.extend([
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", cost_label),
-                    ])
                 frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -1430,11 +1377,6 @@ class HermesCLI:
                 ("class:status-bar-dim", " "),
                 (bar_style, percent_label),
             ]
-            if cost_label:
-                frags.extend([
-                    ("class:status-bar-dim", " │ "),
-                    ("class:status-bar-dim", cost_label),
-                ])
             frags.extend([
                 ("class:status-bar-dim", " │ "),
                 ("class:status-bar-dim", duration_label),

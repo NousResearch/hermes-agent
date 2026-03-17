@@ -79,62 +79,8 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 
 # Official docs snapshot entries. Models whose published pricing and cache
-# semantics are stable enough to encode exactly. Entries without confirmed
-# public pricing are marked "forward-looking" — they carry projected prices
-# based on provider patterns and should be updated when official pricing
-# is announced.
+# semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
-    # --- Forward-looking: claude-opus-4.6/claude-sonnet-4.6 are projected
-    #     model names. Pricing extrapolated from opus-4/sonnet-4 patterns.
-    #     Update when Anthropic announces official pricing.
-    (
-        "anthropic",
-        "claude-opus-4.6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="forward-looking",
-        source_url="(projected from claude-opus-4 pricing patterns)",
-        pricing_version="anthropic-forward-looking-2026-03-16",
-    ),
-    (
-        "anthropic",
-        "claude-opus-4-6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="forward-looking",
-        source_url="(projected from claude-opus-4 pricing patterns)",
-        pricing_version="anthropic-forward-looking-2026-03-16",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4.6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="forward-looking",
-        source_url="(projected from claude-sonnet-4 pricing patterns)",
-        pricing_version="anthropic-forward-looking-2026-03-16",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4-6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="forward-looking",
-        source_url="(projected from claude-sonnet-4 pricing patterns)",
-        pricing_version="anthropic-forward-looking-2026-03-16",
-    ),
     (
         "anthropic",
         "claude-opus-4-20250514",
@@ -215,30 +161,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
-    # --- Forward-looking: gpt-5/gpt-5.4 projected from gpt-4o pricing scale.
-    #     Update when OpenAI announces official pricing.
-    (
-        "openai",
-        "gpt-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.25"),
-        output_cost_per_million=Decimal("10.00"),
-        cache_read_cost_per_million=Decimal("0.125"),
-        source="forward-looking",
-        source_url="(projected from gpt-4o pricing scale)",
-        pricing_version="openai-forward-looking-2026-03-16",
-    ),
-    (
-        "openai",
-        "gpt-5.4",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.50"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.25"),
-        source="forward-looking",
-        source_url="(projected from gpt-4o pricing scale)",
-        pricing_version="openai-forward-looking-2026-03-16",
-    ),
     (
         "openai",
         "o3",
@@ -260,18 +182,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
-    ),
-    # --- Forward-looking: o4-mini pricing projected from o3-mini patterns.
-    (
-        "openai",
-        "o4-mini",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.10"),
-        output_cost_per_million=Decimal("4.40"),
-        cache_read_cost_per_million=Decimal("0.275"),
-        source="forward-looking",
-        source_url="(projected from o3-mini pricing)",
-        pricing_version="openai-forward-looking-2026-03-16",
     ),
     # Anthropic older models (pre-4.6 generation)
     (

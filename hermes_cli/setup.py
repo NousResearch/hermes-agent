@@ -1867,8 +1867,9 @@ def _configure_windows_sandbox_backend(config: dict):
         print_success("Windows sandbox helper binaries are already present in the Hermes bin directory.")
     else:
         print_warning("Windows sandbox helper binaries are not present in the Hermes bin directory yet.")
-        print_info("Run scripts/install.ps1 to provision the wrapper and setup helper into the Hermes bin directory.")
+        print_info("Run scripts/install.ps1 to build hermes-windows-sandbox-wrapper.exe from the vendored source and install codex-windows-sandbox-setup.exe into the Hermes bin directory.")
 
+    print_info("Rust/Cargo are required to build the wrapper during provisioning; they are not required to run an already provisioned wrapper.")
     print()
     print_info("After provisioning, run the Windows sandbox setup flow before executing commands.")
 

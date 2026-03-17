@@ -99,6 +99,9 @@ terminal:
 # -----------------------------------------------------------------------------
 # OPTION 2: Windows Sandbox (Windows 11 only)
 # Commands run in a native Windows sandbox through Hermes-managed helper binaries
+# install.ps1 builds hermes-windows-sandbox-wrapper.exe from vendored source and installs codex-windows-sandbox-setup.exe
+# Rust/Cargo are required to build the wrapper during provisioning
+# Rust/Cargo are not required to run an already provisioned wrapper
 # Great for: PowerShell/cmd workflows, MSI installers, registry/.NET/SDK tooling
 # -----------------------------------------------------------------------------
 # terminal:

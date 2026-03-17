@@ -1,0 +1,16 @@
+[package]
+name = "hermes-windows-sandbox-wrapper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.37", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+which = "7.0.3"
+
+[target.'cfg(windows)'.dependencies]
+codex-windows-sandbox = { git = "https://github.com/openai/codex", rev = "49edf311ac3ae84659b0ec5eacd5e471c881eee8", package = "codex-windows-sandbox" }
+

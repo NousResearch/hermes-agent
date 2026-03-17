@@ -30,10 +30,8 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 $NodeVersion = "22"
-$WindowsSandboxWrapperReleaseRepo = "PerceivingAI/hermes-windows-sandbox-wrapper"
-$WindowsSandboxWrapperReleaseTag = "v0.1.0"
 $WindowsSandboxWrapperAssetName = "hermes-windows-sandbox-wrapper.exe"
-$WindowsSandboxWrapperSha256 = "99739298ceabf47548bc7578514893f6f2d28344db320db14e0a522ade6af997"
+$WindowsSandboxWrapperManifestRelativePath = "native\windows-sandbox-wrapper\Cargo.toml"
 $CodexWindowsSandboxReleaseTag = "rust-v0.114.0"
 $CodexWindowsSandboxSetupAssetX64 = "codex-windows-sandbox-setup-x86_64-pc-windows-msvc.exe"
 $CodexWindowsSandboxSetupSha256X64 = "1c3ab364f833166464d9d36cc1892ccd95db9ff9d72d85fa547bc5a40722ddcc"
@@ -442,58 +440,99 @@ function Invoke-DownloadWithSha256 {
     }
 }
 
+function Get-CargoCommand {
+    if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        return (Get-Command cargo).Source
+    }
+
+    $cargoPath = "$env:USERPROFILE\.cargo\bin\cargo.exe"
+    if (Test-Path $cargoPath) {
+        return $cargoPath
+    }
+
+    return $null
+}
+
 function Install-WindowsSandboxHelpers {
     $binDir = "$HermesHome\bin"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
     $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    $wrapperUrl = "https://github.com/$WindowsSandboxWrapperReleaseRepo/releases/download/$WindowsSandboxWrapperReleaseTag/$WindowsSandboxWrapperAssetName"
-    $wrapperTarget = Join-Path $binDir $WindowsSandboxWrapperAssetName
-
     switch ($osArch.ToString()) {
         "X64" {
             $setupAsset = $CodexWindowsSandboxSetupAssetX64
             $setupSha256 = $CodexWindowsSandboxSetupSha256X64
         }
         "Arm64" {
-            Write-Warn "Windows Sandbox wrapper provisioning is not available yet for ARM64 because the wrapper release does not publish an ARM64 artifact."
+            Write-Warn "Windows Sandbox backend provisioning is currently available only on x64 Windows hosts."
             return $false
         }
         default {
-            Write-Warn "Windows Sandbox wrapper provisioning is not available for architecture: $osArch"
+            Write-Warn "Windows Sandbox backend provisioning is not available for architecture: $osArch"
             return $false
         }
     }
 
+    $wrapperTarget = Join-Path $binDir $WindowsSandboxWrapperAssetName
+    $wrapperManifest = Join-Path $InstallDir $WindowsSandboxWrapperManifestRelativePath
+    $wrapperProjectDir = Split-Path -Parent $wrapperManifest
+    $builtWrapper = Join-Path $wrapperProjectDir "target\release\$WindowsSandboxWrapperAssetName"
+
     $setupUrl = "https://github.com/openai/codex/releases/download/$CodexWindowsSandboxReleaseTag/$setupAsset"
     $setupTarget = Join-Path $binDir "codex-windows-sandbox-setup.exe"
-
-    $tmpWrapper = Join-Path $env:TEMP $WindowsSandboxWrapperAssetName
     $tmpSetup = Join-Path $env:TEMP $setupAsset
 
+    $wrapperReady = $false
+    $setupReady = $false
+
     try {
-        if (Test-Sha256 -Path $wrapperTarget -ExpectedSha256 $WindowsSandboxWrapperSha256) {
-            Write-Success "Windows sandbox wrapper already present"
+        if (-not (Test-Path $wrapperManifest)) {
+            if (Test-Path $wrapperTarget) {
+                Write-Warn "Windows Sandbox wrapper source not found at $wrapperManifest. Keeping existing wrapper at $wrapperTarget."
+                $wrapperReady = $true
+            } else {
+                Write-Warn "Windows Sandbox wrapper source not found at $wrapperManifest"
+            }
         } else {
-            Invoke-DownloadWithSha256 -Url $wrapperUrl -Destination $tmpWrapper -ExpectedSha256 $WindowsSandboxWrapperSha256 -Label $WindowsSandboxWrapperAssetName
-            Copy-Item -Force $tmpWrapper $wrapperTarget
-            Write-Success "Installed $WindowsSandboxWrapperAssetName"
+            $cargoCmd = Get-CargoCommand
+            if (-not $cargoCmd) {
+                if (Test-Path $wrapperTarget) {
+                    Write-Warn "Rust/Cargo not found. Keeping existing Windows Sandbox wrapper at $wrapperTarget. Rust/Cargo are required to rebuild the wrapper from source."
+                    $wrapperReady = $true
+                } else {
+                    Write-Warn "Rust/Cargo not found. Windows Sandbox wrapper provisioning skipped. Rust/Cargo are required to build hermes-windows-sandbox-wrapper.exe from source."
+                }
+            } else {
+                Write-Info "Building hermes-windows-sandbox-wrapper.exe from source..."
+                & $cargoCmd build --release --locked --manifest-path $wrapperManifest
+                if ($LASTEXITCODE -ne 0) {
+                    throw "cargo build failed for hermes-windows-sandbox-wrapper.exe"
+                }
+                if (-not (Test-Path $builtWrapper)) {
+                    throw "Built wrapper not found at $builtWrapper"
+                }
+
+                Copy-Item -Force $builtWrapper $wrapperTarget
+                Write-Success "Installed hermes-windows-sandbox-wrapper.exe"
+                $wrapperReady = $true
+            }
         }
 
         if (Test-Sha256 -Path $setupTarget -ExpectedSha256 $setupSha256) {
             Write-Success "Windows sandbox setup helper already present"
+            $setupReady = $true
         } else {
             Invoke-DownloadWithSha256 -Url $setupUrl -Destination $tmpSetup -ExpectedSha256 $setupSha256 -Label $setupAsset
             Copy-Item -Force $tmpSetup $setupTarget
             Write-Success "Installed codex-windows-sandbox-setup.exe"
+            $setupReady = $true
         }
 
-        return $true
+        return ($wrapperReady -and $setupReady)
     } catch {
         Write-Warn "Windows Sandbox helper provisioning failed: $_"
         return $false
     } finally {
-        Remove-Item -Force $tmpWrapper -ErrorAction SilentlyContinue
         Remove-Item -Force $tmpSetup -ErrorAction SilentlyContinue
     }
 }

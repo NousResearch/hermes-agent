@@ -172,6 +172,8 @@ def test_check_windows_sandbox_backend_reports_missing_wrapper(monkeypatch, tmp_
     assert "Windows Sandbox Backend" in out
     assert "windows-sandbox wrapper" in out
     assert any("hermes-windows-sandbox-wrapper.exe" in issue for issue in issues)
+    assert any("scripts/install.ps1" in issue for issue in issues)
+    assert any("Rust/Cargo" in issue for issue in issues)
 
 
 def test_check_windows_sandbox_backend_reports_setup_required(monkeypatch, tmp_path, capsys):

@@ -232,7 +232,7 @@ def _check_windows_sandbox_backend(issues: list[str]) -> None:
     if wrapper is None:
         check_fail("windows-sandbox wrapper", "(not found)")
         issues.append(
-            f"Install hermes-windows-sandbox-wrapper.exe under {get_hermes_bin_dir()} or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
+            f"Run scripts/install.ps1 to build hermes-windows-sandbox-wrapper.exe from source and install it under {get_hermes_bin_dir()}; Rust/Cargo are required to build the wrapper, or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
         )
         return
     check_ok("windows-sandbox wrapper", f"({wrapper})")
@@ -241,7 +241,7 @@ def _check_windows_sandbox_backend(issues: list[str]) -> None:
     if helper is None:
         check_fail("windows-sandbox setup helper", "(not found)")
         issues.append(
-            f"Install codex-windows-sandbox-setup.exe under {get_hermes_bin_dir()} or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
+            f"Run scripts/install.ps1 to install codex-windows-sandbox-setup.exe under {get_hermes_bin_dir()} or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
         )
         return
     check_ok("windows-sandbox setup helper", f"({helper})")

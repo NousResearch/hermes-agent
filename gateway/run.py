@@ -1247,6 +1247,80 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
+
+    async def _prepare_event_for_control_flow(self, event: MessageEvent) -> MessageEvent:
+        """Normalize voice/audio inputs before interrupt and command parsing.
+
+        If a voice/audio message has no explicit text, promote the transcript into
+        ``event.text`` so it behaves like a normal text message in gateway control
+        flows. Preserve STT metadata separately so downstream code can still see
+        that the content originated from transcription.
+        """
+        if not event.media_urls or not getattr(self.config, "stt_enabled", True):
+            return event
+
+        audio_paths = []
+        for i, path in enumerate(event.media_urls):
+            mtype = event.media_types[i] if i < len(event.media_types) else ""
+            is_audio = (
+                mtype.startswith("audio/")
+                or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
+            )
+            if is_audio:
+                audio_paths.append(path)
+
+        if not audio_paths:
+            return event
+
+        from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
+
+        transcript_parts = []
+        backend = ""
+        stt_model = get_stt_model_from_config()
+        for path in audio_paths:
+            try:
+                result = await asyncio.to_thread(transcribe_audio, path, model=stt_model)
+            except Exception as e:
+                logger.error("Transcription preprocessing error: %s", e, exc_info=True)
+                continue
+            if result.get("success") and result.get("transcript"):
+                transcript_parts.append(str(result["transcript"]).strip())
+                if not backend:
+                    backend = str(result.get("provider") or result.get("backend") or "").strip()
+            else:
+                logger.warning("Audio transcription preprocessing failed: %s", result.get("error", "unknown error"))
+
+        transcript_text = "\n\n".join(part for part in transcript_parts if part).strip()
+        if not transcript_text:
+            return event
+
+        event.transcription_text = transcript_text
+        event.transcription_backend = backend or None
+        event.transcription_origin = "voice" if event.message_type == MessageType.VOICE else "audio"
+
+        if not (event.text or "").strip():
+            event.text = transcript_text
+        return event
+
+    def _build_agent_message_text(self, event: MessageEvent) -> str:
+        """Build the agent input while preserving voice/STT provenance.
+
+        Keep the main user text natural. Add a compact note about transcription
+        uncertainty instead of a narrated wrapper around the transcript.
+        """
+        explicit_text = (event.text or "").strip()
+        transcript_text = (getattr(event, "transcription_text", None) or "").strip()
+        origin = (getattr(event, "transcription_origin", None) or "voice").strip()
+
+        if not transcript_text:
+            return explicit_text
+
+        note = f"[Source note: transcribed from a {origin} message; minor transcription errors are possible.]"
+        if explicit_text and explicit_text == transcript_text:
+            return f"{explicit_text}\n\n{note}"
+        if explicit_text:
+            return f"{explicit_text}\n\n[Transcript]\n{transcript_text}\n\n{note}"
+        return f"{transcript_text}\n\n{note}"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1291,6 +1365,9 @@ class GatewayRunner:
                             "Please try again later!"
                         )
             return None
+
+        # Normalize voice/audio into text before any pre-agent control flow.
+        event = await self._prepare_event_for_control_flow(event)
         
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -1836,7 +1913,7 @@ class GatewayRunner:
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = event.text or ""
+        message_text = self._build_agent_message_text(event)
         if event.media_urls:
             image_paths = []
             for i, path in enumerate(event.media_urls):
@@ -1853,24 +1930,6 @@ class GatewayRunner:
                     message_text, image_paths
                 )
         
-        # -----------------------------------------------------------------
-        # Auto-transcribe voice/audio messages sent by the user
-        # -----------------------------------------------------------------
-        if event.media_urls:
-            audio_paths = []
-            for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                is_audio = (
-                    mtype.startswith("audio/")
-                    or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
-                )
-                if is_audio:
-                    audio_paths.append(path)
-            if audio_paths:
-                message_text = await self._enrich_message_with_transcription(
-                    message_text, audio_paths
-                )
-
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------

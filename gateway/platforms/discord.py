@@ -1364,16 +1364,17 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         interaction: discord.Interaction,
         command_text: str,
-        followup_msg: str = "Done~",
+        followup_msg: str | None = None,
     ) -> None:
         """Common handler for simple slash commands that dispatch a command string."""
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
-        try:
-            await interaction.followup.send(followup_msg, ephemeral=True)
-        except Exception as e:
-            logger.debug("Discord followup failed: %s", e)
+        if followup_msg:
+            try:
+                await interaction.followup.send(followup_msg, ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -1381,19 +1382,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
-
-        @tree.command(name="ask", description="Ask Hermes a question")
-        @discord.app_commands.describe(question="Your question for Hermes")
-        async def slash_ask(interaction: discord.Interaction, question: str):
-            await interaction.response.defer()
-            event = self._build_slash_event(interaction, question)
-            await self.handle_message(event)
-            # The response is sent via the normal send() flow
-            # Send a followup to close the interaction if needed
-            try:
-                await interaction.followup.send("Processing complete~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -1414,10 +1402,6 @@ class DiscordAdapter(BasePlatformAdapter):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/reasoning {effort}".strip())
             await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
@@ -1493,10 +1477,6 @@ class DiscordAdapter(BasePlatformAdapter):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/voice {mode}".strip())
             await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):

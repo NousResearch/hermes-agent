@@ -104,6 +104,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
+    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+               cli_only=True, args_hint="[connect|disconnect|status]",
+               subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 

@@ -26,6 +26,20 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_ai_gateway(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-ai-gw-key")
+
+    resolved = rp.resolve_runtime_provider(requested="ai-gateway")
+
+    assert resolved["provider"] == "ai-gateway"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
+    assert resolved["api_key"] == "test-ai-gw-key"
+    assert resolved["requested_provider"] == "ai-gateway"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

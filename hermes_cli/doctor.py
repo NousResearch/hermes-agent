@@ -570,6 +570,7 @@ def run_doctor(args):
         # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+        ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""

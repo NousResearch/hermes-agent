@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
@@ -82,6 +83,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "ai-gateway": [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5",
+        "openai/gpt-4.1",
+        "openai/gpt-4.1-mini",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-v3.2",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -94,6 +109,7 @@ _PROVIDER_LABELS = {
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
+    "ai-gateway": "AI Gateway",
     "custom": "Custom endpoint",
 }
 
@@ -109,6 +125,9 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
+    "aigateway": "ai-gateway",
+    "vercel": "ai-gateway",
+    "vercel-ai-gateway": "ai-gateway",
 }
 
 
@@ -142,7 +161,8 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
+        "ai-gateway", "deepseek",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -372,6 +392,10 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         live = _fetch_anthropic_models()
         if live:
             return live
+    if normalized == "ai-gateway":
+        live = _fetch_ai_gateway_models()
+        if live:
+            return live
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 
@@ -473,6 +497,33 @@ def probe_api_models(
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
     }
+
+
+def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available language models with tool-use from AI Gateway."""
+    api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
+    if not base_url:
+        from hermes_constants import AI_GATEWAY_BASE_URL
+        base_url = AI_GATEWAY_BASE_URL
+
+    url = base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return [
+                m["id"]
+                for m in data.get("data", [])
+                if m.get("id")
+                and m.get("type") == "language"
+                and "tool-use" in (m.get("tags") or [])
+            ]
+    except Exception:
+        return None
 
 
 def fetch_api_models(

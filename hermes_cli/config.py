@@ -256,7 +256,10 @@ DEFAULT_CONFIG = {
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
         "neutts": {
-            "voice": "",  # NeuTTS voice profile name (empty = use default)
+            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
+            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
+            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
+            "device": "cpu",  # cpu, cuda, or mps
         },
     },
     

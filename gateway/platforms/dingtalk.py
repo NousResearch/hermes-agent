@@ -60,7 +60,7 @@ def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured."""
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
         return False
-    if not os.getenv("DINGTALK_CLIENT_ID") and not os.getenv("DINGTALK_CLIENT_SECRET"):
+    if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
 

@@ -17,6 +17,7 @@ pydantic>=2.0
 PyJWT[crypto]
 
 # Web tools
+exa-py>=2.9.0
 firecrawl-py
 parallel-web>=0.4.2
 

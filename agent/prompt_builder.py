@@ -426,9 +426,9 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
 def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     """Discover and load context files for the system prompt.
 
-    Discovery: global AGENTS.md from HERMES_HOME, project-local AGENTS.md
-    (recursive), .cursorrules / .cursor/rules/*.mdc, and SOUL.md from
-    HERMES_HOME only. Each capped at 20,000 chars.
+    Discovery: optional user-authored AGENTS.md from HERMES_HOME,
+    project-local AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
+    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -436,7 +436,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Global AGENTS.md from HERMES_HOME
+    # Optional user-authored global AGENTS.md from HERMES_HOME
     try:
         from hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()

@@ -1182,7 +1182,8 @@ class BasePlatformAdapter(ABC):
         """
         return content
     
-    def truncate_message(self, content: str, max_length: int = 4096) -> List[str]:
+    @staticmethod
+    def truncate_message(content: str, max_length: int = 4096) -> List[str]:
         """
         Split a long message into chunks, preserving code block boundaries.
 

@@ -468,7 +468,7 @@ from hermes_cli.banner import (
     VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
     build_welcome_banner,
 )
-from hermes_cli.commands import COMMANDS, SlashCommandCompleter
+from hermes_cli.commands import COMMANDS, SlashCommandCompleter, SlashCommandAutoSuggest
 from hermes_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
@@ -3618,18 +3618,18 @@ class HermesCLI:
                     full_name = matches[0]
                     if full_name == typed_base:
                         # Already an exact token — no expansion possible; fall through
-                        self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                        self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                        _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+                        _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
                     else:
                         remainder = cmd_original.strip()[len(typed_base):]
                         full_cmd = full_name + remainder
                         return self.process_command(full_cmd)
                 elif len(matches) > 1:
-                    self.console.print(f"[bold yellow]Ambiguous command: {cmd_lower}[/]")
-                    self.console.print(f"[dim]Did you mean: {', '.join(sorted(matches))}?[/]")
+                    _cprint(f"{_GOLD}Ambiguous command: {cmd_lower}{_RST}")
+                    _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
                 else:
-                    self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                    self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                    _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+                    _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
         
         return True
     
@@ -5746,6 +5746,34 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add('tab', eager=True)
+        def handle_tab(event):
+            """Tab: accept completion and re-trigger if we just completed a provider.
+
+            After accepting a provider like 'anthropic:', the completion menu
+            closes and complete_while_typing doesn't fire (no keystroke).
+            This binding re-triggers completions so stage-2 models appear
+            immediately.
+            """
+            buf = event.current_buffer
+            if buf.complete_state:
+                completion = buf.complete_state.current_completion
+                if completion is None:
+                    # Menu open but nothing selected — select first then grab it
+                    buf.go_to_completion(0)
+                    completion = buf.complete_state and buf.complete_state.current_completion
+                if completion is None:
+                    return
+                # Accept the selected completion
+                buf.apply_completion(completion)
+                # If text now looks like "/model provider:", re-trigger completions
+                text = buf.document.text_before_cursor
+                if text.startswith("/model ") and text.endswith(":"):
+                    buf.start_completion()
+            else:
+                # No menu open — start completions from scratch
+                buf.start_completion()
+
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
@@ -6012,6 +6040,39 @@ class HermesCLI:
             return cli_ref._get_tui_prompt_fragments()
 
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+
+        def _get_model_completer_info() -> dict:
+            """Return provider/model info for /model autocomplete."""
+            try:
+                from hermes_cli.models import (
+                    _PROVIDER_LABELS, _PROVIDER_MODELS, normalize_provider,
+                    provider_model_ids,
+                )
+                current = getattr(cli_ref, "provider", None) or getattr(cli_ref, "requested_provider", "openrouter")
+                current = normalize_provider(current)
+
+                # Provider map: id -> label (only providers with known models)
+                providers = {}
+                for pid, plabel in _PROVIDER_LABELS.items():
+                    providers[pid] = plabel
+
+                def models_for(provider_name: str) -> list[str]:
+                    norm = normalize_provider(provider_name)
+                    return provider_model_ids(norm)
+
+                return {
+                    "current_provider": current,
+                    "providers": providers,
+                    "models_for": models_for,
+                }
+            except Exception:
+                return {}
+
+        _completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: _skill_commands,
+            model_completer_provider=_get_model_completer_info,
+        )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -6020,8 +6081,12 @@ class HermesCLI:
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
-            completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
+            completer=_completer,
             complete_while_typing=True,
+            auto_suggest=SlashCommandAutoSuggest(
+                history_suggest=AutoSuggestFromHistory(),
+                completer=_completer,
+            ),
         )
 
         # Dynamic height: accounts for both explicit newlines AND visual

@@ -485,6 +485,38 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "OPENCODE_ZEN_API_KEY": {
+        "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
+        "prompt": "OpenCode Zen API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_ZEN_BASE_URL": {
+        "description": "OpenCode Zen base URL override",
+        "prompt": "OpenCode Zen base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_GO_API_KEY": {
+        "description": "OpenCode Go API key ($10/month subscription for open models)",
+        "prompt": "OpenCode Go API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_GO_BASE_URL": {
+        "description": "OpenCode Go base URL override",
+        "prompt": "OpenCode Go base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "FIRECRAWL_API_KEY": {

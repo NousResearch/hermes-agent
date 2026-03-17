@@ -726,6 +726,8 @@ def setup_model_provider(config: dict):
         "MiniMax China (mainland China endpoint)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
+        "OpenCode Zen (35+ curated models, pay-as-you-go)",
+        "OpenCode Go (open models, $10/month subscription)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1266,7 +1268,73 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    # else: provider_idx == 10 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 10:  # OpenCode Zen
+        selected_provider = "opencode-zen"
+        print()
+        print_header("OpenCode Zen API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-zen"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://opencode.ai/auth")
+        print()
+
+        existing_key = get_env_value("OPENCODE_ZEN_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt_text("OpenCode Zen API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_ZEN_API_KEY", api_key)
+                    print_success("OpenCode Zen API key updated")
+        else:
+            api_key = prompt_text("OpenCode Zen API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_ZEN_API_KEY", api_key)
+                print_success("OpenCode Zen API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 11:  # OpenCode Go
+        selected_provider = "opencode-go"
+        print()
+        print_header("OpenCode Go API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-go"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://opencode.ai/auth")
+        print()
+
+        existing_key = get_env_value("OPENCODE_GO_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt_text("OpenCode Go API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_GO_API_KEY", api_key)
+                    print_success("OpenCode Go API key updated")
+        else:
+            api_key = prompt_text("OpenCode Go API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_GO_API_KEY", api_key)
+                print_success("OpenCode Go API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 12 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:

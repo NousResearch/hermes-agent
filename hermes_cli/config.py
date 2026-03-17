@@ -259,6 +259,7 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+            "base_url": "",
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)

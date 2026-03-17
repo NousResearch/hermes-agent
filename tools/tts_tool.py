@@ -73,6 +73,7 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
+DEFAULT_OPENAI_BASE_URL = os.getenv("TTS_OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
@@ -233,10 +234,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         Path to the saved audio file.
     """
     api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-    if not api_key:
+    if not api_key and DEFAULT_OPENAI_BASE_URL.startswith("https://api.openai.com"):
         raise ValueError("VOICE_TOOLS_OPENAI_KEY not set. Get one at https://platform.openai.com/api-keys")
 
     oai_config = tts_config.get("openai", {})
+    base_url = oai_config.get("base_url") or DEFAULT_OPENAI_BASE_URL
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
 
@@ -247,7 +249,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         response_format = "mp3"
 
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
     response = client.audio.speech.create(
         model=model,
         voice=voice,

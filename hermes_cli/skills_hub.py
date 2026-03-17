@@ -304,7 +304,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
-               console: Optional[Console] = None) -> None:
+               console: Optional[Console] = None, skip_confirm: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill."""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -378,7 +378,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
     # Confirm with user — show appropriate warning based on source
-    if not force:
+    # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
+    if not force and not skip_confirm:
         c.print()
         if bundle.source == "official":
             c.print(Panel(
@@ -598,20 +599,23 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
         c.print()
 
 
-def do_uninstall(name: str, console: Optional[Console] = None) -> None:
+def do_uninstall(name: str, console: Optional[Console] = None,
+                 skip_confirm: bool = False) -> None:
     """Remove a hub-installed skill with confirmation."""
     from tools.skills_hub import uninstall_skill
 
     c = console or _console
 
-    c.print(f"\n[bold]Uninstall '{name}'?[/]")
-    try:
-        answer = input("Confirm [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = "n"
-    if answer not in ("y", "yes"):
-        c.print("[dim]Cancelled.[/]\n")
-        return
+    # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
+    if not skip_confirm:
+        c.print(f"\n[bold]Uninstall '{name}'?[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in ("y", "yes"):
+            c.print("[dim]Cancelled.[/]\n")
+            return
 
     success, msg = uninstall_skill(name)
     if success:
@@ -923,7 +927,8 @@ def skills_command(args) -> None:
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
-        do_install(args.identifier, category=args.category, force=args.force)
+        do_install(args.identifier, category=args.category, force=args.force,
+                   skip_confirm=getattr(args, "yes", False))
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1054,11 +1059,15 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         identifier = args[0]
         category = ""
-        force = any(flag in args for flag in ("--force", "--yes", "-y"))
+        # --yes / -y bypasses confirmation prompt (needed in TUI mode)
+        # --force handles reinstall override
+        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
+        force = "--force" in args
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
                 category = args[i + 1]
-        do_install(identifier, category=category, force=force, console=c)
+        do_install(identifier, category=category, force=force,
+                   skip_confirm=skip_confirm, console=c)
 
     elif action == "inspect":
         if not args:
@@ -1088,9 +1097,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "uninstall":
         if not args:
-            c.print("[bold red]Usage:[/] /skills uninstall <name>\n")
+            c.print("[bold red]Usage:[/] /skills uninstall <name> [--yes]\n")
             return
-        do_uninstall(args[0], console=c)
+        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
+        do_uninstall(args[0], console=c, skip_confirm=skip_confirm)
 
     elif action == "publish":
         if not args:

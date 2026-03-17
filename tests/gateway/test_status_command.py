@@ -128,6 +128,13 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
         session_entry.session_key,
         input_tokens=120,
         output_tokens=45,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
         last_prompt_tokens=80,
         model="openai/test-model",
+        estimated_cost_usd=None,
+        cost_status=None,
+        cost_source=None,
+        provider=None,
+        base_url=None,
     )

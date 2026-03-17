@@ -5841,7 +5841,17 @@ class AIAgent:
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    # Use longer wait for rate limits (429), respecting Retry-After header
+                    _retry_after = None
+                    if status_code == 429:
+                        _retry_after_raw = getattr(getattr(api_error, "response", None), "headers", {})
+                        if hasattr(_retry_after_raw, "get"):
+                            _retry_after = _retry_after_raw.get("retry-after") or _retry_after_raw.get("Retry-After")
+                        try:
+                            _retry_after = int(_retry_after) if _retry_after else None
+                        except (TypeError, ValueError):
+                            _retry_after = None
+                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
@@ -5850,7 +5860,14 @@ class AIAgent:
                         self._client_log_context(),
                         api_error,
                     )
-                    if retry_count >= max_retries:
+                    # Show user-friendly message for rate limits
+                    if status_code == 429:
+                        self._vprint(
+                            f"{self.log_prefix}⏱️  Rate limit reached. Waiting {wait_time}s before retry "
+                            f"(attempt {retry_count + 1}/{max_retries})...",
+                            force=True,
+                        )
+                    elif retry_count >= max_retries - 1:
                         self._vprint(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
                         self._vprint(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
                     

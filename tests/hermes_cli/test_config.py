@@ -319,8 +319,16 @@ class TestSanitizeEnvLines:
 class TestStaleAnthropicTokenMigration:
     """Test that migrate_config clears stale ANTHROPIC_TOKEN."""
 
+    def _write_config_version(self, tmp_path, version):
+        """Write a config.yaml with a specific _config_version."""
+        config_path = tmp_path / "config.yaml"
+        import yaml
+        config = {"_config_version": version}
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
     def test_clears_stale_token_when_api_key_exists(self, tmp_path):
         """ANTHROPIC_TOKEN cleared when ANTHROPIC_API_KEY is also set."""
+        self._write_config_version(tmp_path, 8)
         env_file = tmp_path / ".env"
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-ant-real-key\n"
@@ -339,6 +347,7 @@ class TestStaleAnthropicTokenMigration:
 
     def test_clears_stale_token_when_claude_code_available(self, tmp_path):
         """ANTHROPIC_TOKEN cleared when Claude Code credentials exist."""
+        self._write_config_version(tmp_path, 8)
         env_file = tmp_path / ".env"
         env_file.write_text("ANTHROPIC_TOKEN=old-stale-token\n")
 
@@ -361,6 +370,7 @@ class TestStaleAnthropicTokenMigration:
 
     def test_preserves_token_when_no_alternative(self, tmp_path):
         """ANTHROPIC_TOKEN kept when no API key or Claude Code creds exist."""
+        self._write_config_version(tmp_path, 8)
         env_file = tmp_path / ".env"
         env_file.write_text("ANTHROPIC_TOKEN=only-auth-method\n")
 
@@ -377,3 +387,21 @@ class TestStaleAnthropicTokenMigration:
 
             env = load_env()
             assert env.get("ANTHROPIC_TOKEN") == "only-auth-method"
+
+    def test_skips_on_version_9_or_later(self, tmp_path):
+        """Migration doesn't fire when already at config version 9+."""
+        self._write_config_version(tmp_path, 9)
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-real-key\n"
+            "ANTHROPIC_TOKEN=should-stay\n"
+        )
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_API_KEY": "sk-ant-real-key",
+            "ANTHROPIC_TOKEN": "should-stay",
+        }):
+            migrate_config(interactive=False, quiet=True)
+
+            env = load_env()
+            assert env.get("ANTHROPIC_TOKEN") == "should-stay"

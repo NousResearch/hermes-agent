@@ -349,7 +349,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 8,
+    "_config_version": 9,
 }
 
 # =============================================================================
@@ -786,34 +786,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
 
-    # ── Always: clear stale ANTHROPIC_TOKEN when better credentials exist ──
-    # Old setups left ANTHROPIC_TOKEN with an outdated value that shadows
-    # Claude Code auto-discovery (CLAUDE_CODE_OAUTH_TOKEN) or a direct
-    # ANTHROPIC_API_KEY.
-    try:
-        old_token = get_env_value("ANTHROPIC_TOKEN")
-        if old_token:
-            has_api_key = bool(get_env_value("ANTHROPIC_API_KEY"))
-            has_claude_code = False
-            try:
-                from agent.anthropic_adapter import (
-                    read_claude_code_credentials,
-                    is_claude_code_token_valid,
-                )
-                cc_creds = read_claude_code_credentials()
-                has_claude_code = bool(
-                    cc_creds and is_claude_code_token_valid(cc_creds)
-                )
-            except Exception:
-                pass
-            if has_api_key or has_claude_code:
-                save_env_value("ANTHROPIC_TOKEN", "")
-                if not quiet:
-                    source = "ANTHROPIC_API_KEY" if has_api_key else "Claude Code credentials"
-                    print(f"  ✓ Cleared stale ANTHROPIC_TOKEN (using {source} instead)")
-    except Exception:
-        pass
-    
     # Check config version
     current_ver, latest_ver = check_config_version()
     
@@ -855,6 +827,32 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+
+    # ── Version 8 → 9: clear stale ANTHROPIC_TOKEN when better creds exist ──
+    if current_ver < 9:
+        try:
+            old_token = get_env_value("ANTHROPIC_TOKEN")
+            if old_token:
+                has_api_key = bool(get_env_value("ANTHROPIC_API_KEY"))
+                has_claude_code = False
+                try:
+                    from agent.anthropic_adapter import (
+                        read_claude_code_credentials,
+                        is_claude_code_token_valid,
+                    )
+                    cc_creds = read_claude_code_credentials()
+                    has_claude_code = bool(
+                        cc_creds and is_claude_code_token_valid(cc_creds)
+                    )
+                except Exception:
+                    pass
+                if has_api_key or has_claude_code:
+                    save_env_value("ANTHROPIC_TOKEN", "")
+                    if not quiet:
+                        source = "ANTHROPIC_API_KEY" if has_api_key else "Claude Code credentials"
+                        print(f"  ✓ Cleared stale ANTHROPIC_TOKEN (using {source} instead)")
+        except Exception:
+            pass
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

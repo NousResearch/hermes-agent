@@ -161,6 +161,11 @@ PLATFORM_HINTS = {
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
     ),
+    "sms": (
+        "You are communicating via SMS. Keep responses concise and use plain text "
+        "only — no markdown, no formatting. SMS messages are limited to ~1600 "
+        "characters, so be brief and direct."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

@@ -56,6 +56,7 @@ pty = [
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+sms = ["aiohttp>=3.9.0"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
@@ -78,6 +79,7 @@ all = [
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
+  "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[voice]",
 ]

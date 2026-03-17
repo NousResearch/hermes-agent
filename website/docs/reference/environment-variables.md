@@ -152,6 +152,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `SIGNAL_HOME_CHANNEL_NAME` | Display name for the Signal home channel |
 | `SIGNAL_IGNORE_STORIES` | Ignore Signal stories/status updates |
 | `SIGNAL_ALLOW_ALL_USERS` | Allow all Signal users without an allowlist |
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID (shared with telephony skill) |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token (shared with telephony skill) |
+| `TWILIO_PHONE_NUMBER` | Twilio phone number in E.164 format (shared with telephony skill) |
+| `SMS_WEBHOOK_PORT` | Webhook listener port for inbound SMS (default: `8080`) |
+| `SMS_ALLOWED_USERS` | Comma-separated E.164 phone numbers allowed to chat |
+| `SMS_ALLOW_ALL_USERS` | Allow all SMS senders without an allowlist |
+| `SMS_HOME_CHANNEL` | Phone number for cron job / notification delivery |
+| `SMS_HOME_CHANNEL_NAME` | Display name for the SMS home channel |
 | `EMAIL_ADDRESS` | Email address for the Email gateway adapter |
 | `EMAIL_PASSWORD` | Password or app password for the email account |
 | `EMAIL_IMAP_HOST` | IMAP hostname for the email adapter |

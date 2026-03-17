@@ -125,6 +125,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "sms": Platform.SMS,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -334,6 +335,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.SMS:
+            result = await _send_sms(pconfig.api_key, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -560,6 +563,59 @@ async def _send_email(extra, chat_id, message):
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"Email send failed: {e}"}
+
+
+async def _send_sms(auth_token, chat_id, message):
+    """Send a single SMS via Twilio REST API.
+
+    Uses HTTP Basic auth (Account SID : Auth Token) and form-encoded POST.
+    Chunking is handled by _send_to_platform() before this is called.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    import base64
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    if not account_sid or not auth_token or not from_number:
+        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+
+    # Strip markdown — SMS renders it as literal characters
+    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"```[a-z]*\n?", "", message)
+    message = re.sub(r"`(.+?)`", r"\1", message)
+    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
+    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
+    message = re.sub(r"\n{3,}", "\n\n", message)
+    message = message.strip()
+
+    try:
+        creds = f"{account_sid}:{auth_token}"
+        encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+        headers = {"Authorization": f"Basic {encoded}"}
+
+        async with aiohttp.ClientSession() as session:
+            form_data = aiohttp.FormData()
+            form_data.add_field("From", from_number)
+            form_data.add_field("To", chat_id)
+            form_data.add_field("Body", message)
+
+            async with session.post(url, data=form_data, headers=headers) as resp:
+                body = await resp.json()
+                if resp.status >= 400:
+                    error_msg = body.get("message", str(body))
+                    return {"error": f"Twilio API error ({resp.status}): {error_msg}"}
+                msg_sid = body.get("sid", "")
+                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
+    except Exception as e:
+        return {"error": f"SMS send failed: {e}"}
 
 
 def _check_send_message():

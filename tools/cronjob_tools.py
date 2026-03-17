@@ -372,7 +372,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, signal, or platform:chat_id"
+                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id"
             },
             "model": {
                 "type": "string",

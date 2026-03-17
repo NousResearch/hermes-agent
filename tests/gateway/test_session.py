@@ -336,6 +336,56 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestLoadTranscriptCorruptLines:
+    """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
+    skipped instead of crashing the entire transcript load.  GH-1193."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_corrupt_line_skipped(self, store, tmp_path):
+        session_id = "corrupt_test"
+        transcript_path = store.get_transcript_path(session_id)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "w") as f:
+            f.write('{"role": "user", "content": "hello"}\n')
+            f.write('{"role": "assistant", "content": "hi th')  # truncated
+            f.write("\n")
+            f.write('{"role": "user", "content": "goodbye"}\n')
+
+        messages = store.load_transcript(session_id)
+        assert len(messages) == 2
+        assert messages[0]["content"] == "hello"
+        assert messages[1]["content"] == "goodbye"
+
+    def test_all_lines_corrupt_returns_empty(self, store, tmp_path):
+        session_id = "all_corrupt"
+        transcript_path = store.get_transcript_path(session_id)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "w") as f:
+            f.write("not json at all\n")
+            f.write("{truncated\n")
+
+        messages = store.load_transcript(session_id)
+        assert messages == []
+
+    def test_valid_transcript_unaffected(self, store, tmp_path):
+        session_id = "valid_test"
+        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
+        store.append_to_transcript(session_id, {"role": "assistant", "content": "b"})
+
+        messages = store.load_transcript(session_id)
+        assert len(messages) == 2
+        assert messages[0]["content"] == "a"
+        assert messages[1]["content"] == "b"
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

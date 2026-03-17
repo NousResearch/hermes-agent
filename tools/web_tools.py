@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def _has_env(name: str) -> bool:
+    val = os.getenv(name)
+    return bool(val and val.strip())
+
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
@@ -64,7 +68,6 @@ def _load_web_config() -> dict:
         return load_config().get("web", {})
     except (ImportError, Exception):
         return {}
-
 
 def _get_backend() -> str:
     """Determine which web backend to use.
@@ -76,17 +79,19 @@ def _get_backend() -> str:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in ("parallel", "firecrawl", "tavily"):
         return configured
+
     # Fallback for manual / legacy config — use whichever key is present.
-    has_firecrawl = bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
-    has_parallel = bool(os.getenv("PARALLEL_API_KEY"))
-    has_tavily = bool(os.getenv("TAVILY_API_KEY"))
+    has_firecrawl = _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")
+    has_parallel = _has_env("PARALLEL_API_KEY")
+    has_tavily = _has_env("TAVILY_API_KEY")
+
     if has_tavily and not has_firecrawl and not has_parallel:
         return "tavily"
     if has_parallel and not has_firecrawl:
         return "parallel"
+
     # Default to firecrawl (backward compat, or when both are set)
     return "firecrawl"
-
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 

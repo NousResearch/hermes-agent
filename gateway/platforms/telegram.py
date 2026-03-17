@@ -16,9 +16,10 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
+        CallbackQueryHandler,
         CommandHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
@@ -206,7 +207,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
-            
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -1317,3 +1319,67 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             timestamp=message.date,
         )
+
+    async def send_keyboard(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: List[List[Dict]],
+        message_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send or edit a message with inline keyboard buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])
+                 for btn in row]
+                for row in buttons
+            ]) if buttons else None
+            if message_id:
+                msg = await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=None,
+                )
+            else:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_callback_query(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle inline keyboard button callbacks."""
+        query = update.callback_query
+        if not query or not self._message_handler:
+            return
+        await query.answer()
+
+        chat = query.message.chat
+        user = query.from_user
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=chat.title or getattr(chat, "full_name", None),
+            chat_type="dm" if chat.type == "private" else "group",
+            user_id=str(user.id) if user else None,
+            user_name=user.full_name if user else None,
+        )
+        event = MessageEvent(
+            text=query.data or "",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=query,
+            message_id=str(query.message.message_id) if query.message else None,
+        )
+        await self._message_handler(event)

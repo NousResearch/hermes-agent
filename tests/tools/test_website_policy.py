@@ -426,6 +426,8 @@ async def test_web_extract_blocks_redirected_final_url(monkeypatch):
 async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
 
+    # web_crawl_tool checks for Firecrawl env before website policy
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
     monkeypatch.setattr(
         web_tools,
         "check_website_access",
@@ -452,6 +454,9 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
 @pytest.mark.asyncio
 async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
+
+    # web_crawl_tool checks for Firecrawl env before website policy
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
     def fake_check(url):
         if url == "https://allowed.test":

@@ -92,8 +92,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
     # Tools & Skills
-    CommandDef("tools", "List available tools", "Tools & Skills",
-               cli_only=True),
+    CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
+               args_hint="[list|disable|enable] [name...]", cli_only=True),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",

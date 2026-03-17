@@ -493,14 +493,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
-    "ANTHROPIC_BASE_URL": {
-        "description": "Custom Anthropic-compatible API base URL (e.g. Alibaba Cloud DashScope)",
-        "prompt": "Anthropic Base URL",
-        "url": "",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key for Qwen models",
         "prompt": "DashScope API Key",

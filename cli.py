@@ -3618,18 +3618,18 @@ class HermesCLI:
                     full_name = matches[0]
                     if full_name == typed_base:
                         # Already an exact token — no expansion possible; fall through
-                        _cprint(f"\033[1;31mUnknown command: {cmd_lower}\033[0m")
-                        _cprint(f"\033[2mType /help for available commands\033[0m")
+                        _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+                        _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
                     else:
                         remainder = cmd_original.strip()[len(typed_base):]
                         full_cmd = full_name + remainder
                         return self.process_command(full_cmd)
                 elif len(matches) > 1:
-                    _cprint(f"\033[1;33mAmbiguous command: {cmd_lower}\033[0m")
-                    _cprint(f"\033[2mDid you mean: {', '.join(sorted(matches))}?\033[0m")
+                    _cprint(f"{_GOLD}Ambiguous command: {cmd_lower}{_RST}")
+                    _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
                 else:
-                    _cprint(f"\033[1;31mUnknown command: {cmd_lower}\033[0m")
-                    _cprint(f"\033[2mType /help for available commands\033[0m")
+                    _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+                    _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
         
         return True
     

@@ -72,15 +72,17 @@ class TestSlashCommandPrefixMatching:
     def test_ambiguous_prefix_shows_suggestions(self):
         """/re matches multiple commands — should show ambiguous message."""
         cli_obj = _make_cli()
-        cli_obj.process_command("/re")
-        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj.process_command("/re")
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         assert "Ambiguous" in printed or "Did you mean" in printed
 
     def test_unknown_command_shows_error(self):
         """/xyz should show unknown command error."""
         cli_obj = _make_cli()
-        cli_obj.process_command("/xyz")
-        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj.process_command("/xyz")
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         assert "Unknown command" in printed
 
     def test_exact_command_still_works(self):

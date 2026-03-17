@@ -2481,7 +2481,69 @@ class HermesCLI:
         
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
         print()
-    
+
+    def _handle_tools_command(self, cmd: str):
+        """Handle /tools [list|disable|enable] slash commands.
+
+        /tools (no args) shows the tool list.
+        /tools list shows enabled/disabled status per toolset.
+        /tools disable/enable saves the change to config and resets
+        the session so the new tool set takes effect cleanly (no
+        prompt-cache breakage mid-conversation).
+        """
+        import shlex
+        from argparse import Namespace
+        from hermes_cli.tools_config import tools_disable_enable_command
+
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = cmd.split()
+
+        subcommand = parts[1] if len(parts) > 1 else ""
+        if subcommand not in ("list", "disable", "enable"):
+            self.show_tools()
+            return
+
+        if subcommand == "list":
+            tools_disable_enable_command(
+                Namespace(tools_action="list", platform="cli"))
+            return
+
+        names = parts[2:]
+        if not names:
+            print(f"(._.) Usage: /tools {subcommand} <name> [name ...]")
+            print(f"  Built-in toolset:  /tools {subcommand} web")
+            print(f"  MCP tool:          /tools {subcommand} github:create_issue")
+            return
+
+        # Confirm session reset before applying
+        verb = "Disable" if subcommand == "disable" else "Enable"
+        label = ", ".join(names)
+        _cprint(f"{_GOLD}{verb} {label}?{_RST}")
+        _cprint(f"{_DIM}This will save to config and reset your session so the "
+                f"change takes effect cleanly.{_RST}")
+        try:
+            answer = input("  Continue? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            _cprint(f"{_DIM}Cancelled.{_RST}")
+            return
+
+        if answer not in ("y", "yes"):
+            _cprint(f"{_DIM}Cancelled.{_RST}")
+            return
+
+        tools_disable_enable_command(
+            Namespace(tools_action=subcommand, names=names, platform="cli"))
+
+        # Reset session so the new tool config is picked up from a clean state
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import load_config
+        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+        self.new_session()
+        _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
+
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
@@ -3279,7 +3341,7 @@ class HermesCLI:
         elif canonical == "help":
             self.show_help()
         elif canonical == "tools":
-            self.show_tools()
+            self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
             self.show_toolsets()
         elif canonical == "config":
@@ -3610,6 +3672,18 @@ class HermesCLI:
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(_skill_commands)
                 matches = [c for c in all_known if c.startswith(typed_base)]
+                if len(matches) > 1:
+                    # Prefer an exact match (typed the full command name)
+                    exact = [c for c in matches if c == typed_base]
+                    if len(exact) == 1:
+                        matches = exact
+                    else:
+                        # Prefer the unique shortest match:
+                        # /qui → /quit (5) wins over /quint-pipeline (15)
+                        min_len = min(len(c) for c in matches)
+                        shortest = [c for c in matches if len(c) == min_len]
+                        if len(shortest) == 1:
+                            matches = shortest
                 if len(matches) == 1:
                     # Expand the prefix to the full command name, preserving arguments.
                     # Guard against redispatching the same token to avoid infinite

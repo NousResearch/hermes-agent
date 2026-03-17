@@ -385,75 +385,47 @@ class TestPatternKeyUniqueness:
             assert is_approved("legacy-find", key_delete) is True
 
 
-class TestViewFullCommand:
-    """Tests for the 'view full command' option in prompt_dangerous_approval."""
+class TestFullCommandAlwaysShown:
+    """The full command is always shown in the approval prompt (no truncation).
 
-    def test_view_then_once_fallback(self):
-        """Pressing 'v' shows the full command, then 'o' approves once."""
+    Previously there was a [v]iew full option for long commands. Now the full
+    command is always displayed. These tests verify the basic approval flow
+    still works with long commands. (#1553)
+    """
+
+    def test_once_with_long_command(self):
+        """Pressing 'o' approves once even for very long commands."""
         long_cmd = "rm -rf " + "a" * 200
-        inputs = iter(["v", "o"])
-        with mock_patch("builtins.input", side_effect=inputs):
-            result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        assert result == "once"
-
-    def test_view_then_deny_fallback(self):
-        """Pressing 'v' shows the full command, then 'd' denies."""
-        long_cmd = "rm -rf " + "b" * 200
-        inputs = iter(["v", "d"])
-        with mock_patch("builtins.input", side_effect=inputs):
-            result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        assert result == "deny"
-
-    def test_view_then_session_fallback(self):
-        """Pressing 'v' shows the full command, then 's' approves for session."""
-        long_cmd = "rm -rf " + "c" * 200
-        inputs = iter(["v", "s"])
-        with mock_patch("builtins.input", side_effect=inputs):
-            result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        assert result == "session"
-
-    def test_view_then_always_fallback(self):
-        """Pressing 'v' shows the full command, then 'a' approves always."""
-        long_cmd = "rm -rf " + "d" * 200
-        inputs = iter(["v", "a"])
-        with mock_patch("builtins.input", side_effect=inputs):
-            result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        assert result == "always"
-
-    def test_view_then_session_when_permanent_hidden(self):
-        """The view-full flow still works when allow_permanent=False."""
-        long_cmd = "rm -rf " + "d" * 200
-        inputs = iter(["v", "s"])
-        with mock_patch("builtins.input", side_effect=inputs):
-            result = prompt_dangerous_approval(
-                long_cmd,
-                "recursive delete",
-                allow_permanent=False,
-            )
-        assert result == "session"
-
-    def test_view_not_shown_for_short_command(self):
-        """Short commands don't offer the view option; 'v' falls through to deny."""
-        short_cmd = "rm -rf /tmp"
-        with mock_patch("builtins.input", return_value="v"):
-            result = prompt_dangerous_approval(short_cmd, "recursive delete")
-        # 'v' is not a valid choice for short commands, should deny
-        assert result == "deny"
-
-    def test_once_without_view(self):
-        """Directly pressing 'o' without viewing still works."""
-        long_cmd = "rm -rf " + "e" * 200
         with mock_patch("builtins.input", return_value="o"):
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
         assert result == "once"
 
-    def test_view_ignored_after_already_shown(self):
-        """After viewing once, 'v' on a now-untruncated display falls through to deny."""
-        long_cmd = "rm -rf " + "f" * 200
-        inputs = iter(["v", "v"])  # second 'v' should not match since is_truncated is False
-        with mock_patch("builtins.input", side_effect=inputs):
+    def test_session_with_long_command(self):
+        """Pressing 's' approves for session with long commands."""
+        long_cmd = "rm -rf " + "c" * 200
+        with mock_patch("builtins.input", return_value="s"):
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        # After first 'v', is_truncated becomes False, so second 'v' -> deny
+        assert result == "session"
+
+    def test_always_with_long_command(self):
+        """Pressing 'a' approves always with long commands."""
+        long_cmd = "rm -rf " + "d" * 200
+        with mock_patch("builtins.input", return_value="a"):
+            result = prompt_dangerous_approval(long_cmd, "recursive delete")
+        assert result == "always"
+
+    def test_deny_with_long_command(self):
+        """Pressing 'd' denies with long commands."""
+        long_cmd = "rm -rf " + "b" * 200
+        with mock_patch("builtins.input", return_value="d"):
+            result = prompt_dangerous_approval(long_cmd, "recursive delete")
+        assert result == "deny"
+
+    def test_invalid_input_denies(self):
+        """Invalid input (like 'v' which no longer exists) falls through to deny."""
+        short_cmd = "rm -rf /tmp"
+        with mock_patch("builtins.input", return_value="v"):
+            result = prompt_dangerous_approval(short_cmd, "recursive delete")
         assert result == "deny"
 
 

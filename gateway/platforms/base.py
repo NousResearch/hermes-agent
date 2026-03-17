@@ -528,6 +528,7 @@ class BasePlatformAdapter(ABC):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
@@ -1128,6 +1129,27 @@ class BasePlatformAdapter(ABC):
                 split_at = region.rfind(" ")
             if split_at < 1:
                 split_at = headroom
+
+            # Avoid splitting inside an inline code span (`...`).
+            # If the text before split_at has an odd number of unescaped
+            # backticks, the split falls inside inline code — the resulting
+            # chunk would have an unpaired backtick and any special characters
+            # (like parentheses) inside the broken span would be unescaped,
+            # causing MarkdownV2 parse errors on Telegram.
+            candidate = remaining[:split_at]
+            backtick_count = candidate.count("`") - candidate.count("\\`")
+            if backtick_count % 2 == 1:
+                # Find the last unescaped backtick and split before it
+                last_bt = candidate.rfind("`")
+                while last_bt > 0 and candidate[last_bt - 1] == "\\":
+                    last_bt = candidate.rfind("`", 0, last_bt)
+                if last_bt > 0:
+                    # Try to find a space or newline just before the backtick
+                    safe_split = candidate.rfind(" ", 0, last_bt)
+                    nl_split = candidate.rfind("\n", 0, last_bt)
+                    safe_split = max(safe_split, nl_split)
+                    if safe_split > headroom // 4:
+                        split_at = safe_split
 
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()

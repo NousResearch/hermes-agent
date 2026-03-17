@@ -928,36 +928,6 @@ class AIAgent:
         base_url = (self.base_url or "").lower()
         return "api.openai.com" in base_url and "openrouter" not in base_url
 
-    def _direct_openai_reasoning_effort(self) -> Optional[str]:
-        """Return the OpenAI chat-completions reasoning effort, if applicable.
-
-        Direct ``api.openai.com`` chat-completions calls use the top-level
-        ``reasoning_effort`` parameter rather than OpenRouter's extra-body
-        ``reasoning`` object. Hermes supports broader internal effort labels
-        than OpenAI does, so coerce them conservatively here.
-        """
-        if self.api_mode == "codex_responses":
-            return None
-
-        if not self._uses_direct_openai_responses_api():
-            return None
-
-        if self.reasoning_config and isinstance(self.reasoning_config, dict):
-            if self.reasoning_config.get("enabled") is False:
-                return None
-            effort = str(self.reasoning_config.get("effort", "medium") or "medium").lower()
-        else:
-            effort = "medium"
-
-        effort_map = {
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "high",
-        }
-        return effort_map.get(effort, "medium")
-
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any <think></think> blocks.
@@ -3672,10 +3642,6 @@ class AIAgent:
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
-
-        openai_reasoning_effort = self._direct_openai_reasoning_effort()
-        if openai_reasoning_effort:
-            api_kwargs["reasoning_effort"] = openai_reasoning_effort
 
         extra_body = {}
 

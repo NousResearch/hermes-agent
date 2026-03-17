@@ -2,10 +2,11 @@
 """
 Text-to-Speech Tool Module
 
-Supports three TTS providers:
+Supports four TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -72,6 +73,7 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
+DEFAULT_NEUTTS_VOICE = ""  # empty = use neutts_cli default voice
 DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
@@ -259,6 +261,59 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# NeuTTS (local, on-device TTS via neutts_cli)
+# ===========================================================================
+
+def _check_neutts_available() -> bool:
+    """Check if neutts_cli is importable (installed locally)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("neutts_cli") is not None
+    except Exception:
+        return False
+
+
+def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local NeuTTS CLI.
+
+    Calls neutts_cli.cli synth via subprocess. Outputs WAV by default;
+    the caller handles conversion to .ogg for Telegram if needed.
+    """
+    import sys
+
+    neutts_config = tts_config.get("neutts", {})
+    voice = neutts_config.get("voice", DEFAULT_NEUTTS_VOICE)
+
+    # NeuTTS outputs WAV natively — use a .wav path for generation,
+    # let the caller convert to the final format afterward.
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    cmd = [sys.executable, "-m", "neutts_cli.cli", "synth", "--text", text, "--out", wav_path]
+    if voice:
+        cmd.extend(["--voice", voice])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"NeuTTS synthesis failed: {stderr or 'unknown error'}")
+
+    # If the caller wanted .mp3 or .ogg, convert from WAV
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            # No ffmpeg — just rename the WAV to the expected path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -342,26 +397,45 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "neutts":
+            if not _check_neutts_available():
+                return json.dumps({
+                    "success": False,
+                    "error": "NeuTTS provider selected but neutts_cli is not installed. "
+                             "Install the NeuTTS skill and run the bootstrap helper first."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with NeuTTS (local)...")
+            _generate_neutts(text, file_str, tts_config)
+
         else:
-            # Default: Edge TTS (free)
+            # Default: Edge TTS (free), with NeuTTS as local fallback
+            edge_available = True
             try:
                 _import_edge_tts()
             except ImportError:
+                edge_available = False
+
+            if edge_available:
+                logger.info("Generating speech with Edge TTS...")
+                try:
+                    loop = asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(
+                            lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))
+                        ).result(timeout=60)
+                except RuntimeError:
+                    asyncio.run(_generate_edge_tts(text, file_str, tts_config))
+            elif _check_neutts_available():
+                logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
+                provider = "neutts"
+                _generate_neutts(text, file_str, tts_config)
+            else:
                 return json.dumps({
                     "success": False,
-                    "error": "Edge TTS not available. Run: pip install edge-tts"
+                    "error": "No TTS provider available. Install edge-tts (pip install edge-tts) "
+                             "or set up NeuTTS for local synthesis."
                 }, ensure_ascii=False)
-            logger.info("Generating speech with Edge TTS...")
-            # Edge TTS is async, run it
-            try:
-                loop = asyncio.get_running_loop()
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    pool.submit(
-                        lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))
-                    ).result(timeout=60)
-            except RuntimeError:
-                asyncio.run(_generate_edge_tts(text, file_str, tts_config))
 
         # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
@@ -370,9 +444,10 @@ def text_to_speech_tool(
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # Try Opus conversion for Telegram compatibility (Edge TTS only outputs MP3)
+        # Try Opus conversion for Telegram compatibility
+        # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider == "edge" and file_str.endswith(".mp3"):
+        if provider in ("edge", "neutts") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -444,6 +519,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if _check_neutts_available():
+        return True
     return False
 
 

@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -77,7 +77,7 @@ class SkillMeta:
 class SkillBundle:
     """A downloaded skill ready for quarantine/scanning/installation."""
     name: str
-    files: Dict[str, str]   # relative_path -> text content
+    files: Dict[str, Union[str, bytes]]   # relative_path -> file content
     source: str
     identifier: str
     trust_level: str
@@ -1940,13 +1940,18 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
-            if f.is_file() and not f.name.startswith("."):
+            if (
+                f.is_file()
+                and not f.name.startswith(".")
+                and "__pycache__" not in f.parts
+                and f.suffix != ".pyc"
+            ):
                 rel_path = str(f.relative_to(skill_dir))
                 try:
-                    files[rel_path] = f.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
+                    files[rel_path] = f.read_bytes()
+                except OSError:
                     continue
 
         if not files:
@@ -2257,7 +2262,10 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     for rel_path, file_content in bundle.files.items():
         file_dest = dest / rel_path
         file_dest.parent.mkdir(parents=True, exist_ok=True)
-        file_dest.write_text(file_content, encoding="utf-8")
+        if isinstance(file_content, bytes):
+            file_dest.write_bytes(file_content)
+        else:
+            file_dest.write_text(file_content, encoding="utf-8")
 
     return dest
 

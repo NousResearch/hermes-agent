@@ -29,6 +29,7 @@ Usage:
 """
 
 import re
+import unicodedata
 from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
 
@@ -254,34 +255,35 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     Strategy 7: Match by anchoring on first and last lines.
 
     If first and last lines match exactly, accept middle with adaptive similarity threshold.
-    Adjusted with permissive thresholds and unicode/whitespace normalization.
+    Adjusted with permissive thresholds and unicode normalization.
     """
-    pattern_lines = pattern.split("\n")
+    # Normalize both strings for comparison while keeping original content for offset calculation
+    norm_pattern = _unicode_normalize(pattern)
+    norm_content = _unicode_normalize(content)
+    
+    pattern_lines = norm_pattern.split('\n')
     if len(pattern_lines) < 2:
-        return []  # Need at least 2 lines for anchoring
-
+        return []
+    
     first_line = pattern_lines[0].strip()
     last_line = pattern_lines[-1].strip()
-
-    # Use normalized content for matching (consistent with other strategies)
-    # and original content for precise character offsets.
-    orig_content_lines = content.split("\n")
-    norm_content_lines = [line.strip() for line in orig_content_lines]
-
+    
+    # Use normalized lines for matching logic
+    norm_content_lines = norm_content.split('\n')
+    # BUT use original lines for calculating start/end positions to prevent index shift
+    orig_content_lines = content.split('\n')
+    
     pattern_line_count = len(pattern_lines)
-
-    # First pass: collect potential matches (first+last line anchors)
-    potential_matches: List[int] = []
+    
+    potential_matches = []
     for i in range(len(norm_content_lines) - pattern_line_count + 1):
-        if (
-            norm_content_lines[i] == first_line
-            and norm_content_lines[i + pattern_line_count - 1] == last_line
-        ):
+        if (norm_content_lines[i].strip() == first_line and 
+            norm_content_lines[i + pattern_line_count - 1].strip() == last_line):
             potential_matches.append(i)
-
-    matches: List[Tuple[int, int]] = []
+            
+    matches = []
     candidate_count = len(potential_matches)
-
+    
     # Thresholding logic: 0.10 for unique matches (max flexibility), 0.30 for multiple candidates
     threshold = 0.10 if candidate_count == 1 else 0.30
 
@@ -290,19 +292,17 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
             similarity = 1.0
         else:
             # Compare normalized middle sections
-            content_middle = "\n".join(
-                norm_content_lines[i + 1 : i + pattern_line_count - 1]
-            )
-            pattern_middle = "\n".join(pattern_lines[1:-1])
+            content_middle = '\n'.join(norm_content_lines[i+1:i+pattern_line_count-1])
+            pattern_middle = '\n'.join(pattern_lines[1:-1])
             similarity = SequenceMatcher(None, content_middle, pattern_middle).ratio()
-
+        
         if similarity >= threshold:
             # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
             start_pos, end_pos = _calculate_line_positions(
                 orig_content_lines, i, i + pattern_line_count, len(content)
             )
             matches.append((start_pos, end_pos))
-
+    
     return matches
 
 
@@ -344,6 +344,14 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def _unicode_normalize(text: str) -> str:
+    """
+    Normalize unicode characters to NFC form for consistent comparison.
+    Handles variations like composed vs decomposed characters.
+    """
+    return unicodedata.normalize('NFC', text)
+
 
 def _calculate_line_positions(content_lines: List[str], start_line: int, 
                               end_line: int, content_length: int) -> Tuple[int, int]:

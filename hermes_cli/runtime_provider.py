@@ -33,6 +33,24 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+def _get_configured_api_mode(model_cfg: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Return an optional API mode override from env or config.
+
+    Allows custom OpenAI-compatible endpoints to opt into codex_responses
+    mode via HERMES_API_MODE env var or model.api_mode in config.yaml,
+    without requiring the OpenAI Codex OAuth provider path.
+    """
+    candidate = os.getenv("HERMES_API_MODE", "").strip().lower()
+    if not candidate:
+        cfg = model_cfg if isinstance(model_cfg, dict) else _get_model_config()
+        raw = cfg.get("api_mode")
+        if isinstance(raw, str):
+            candidate = raw.strip().lower()
+    if candidate in {"chat_completions", "codex_responses"}:
+        return candidate
+    return None
+
+
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
     """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
@@ -121,7 +139,7 @@ def _resolve_named_custom_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": "chat_completions",
+        "api_mode": _get_configured_api_mode() or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -190,10 +208,11 @@ def _resolve_openrouter_runtime(
         )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
+    api_mode = _get_configured_api_mode(model_cfg) or "chat_completions"
 
     return {
         "provider": "openrouter",
-        "api_mode": "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

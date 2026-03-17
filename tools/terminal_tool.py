@@ -146,8 +146,39 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
 
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
-    return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_approval_callback)
+    result = _check_all_guards_impl(command, env_type,
+                                    approval_callback=_approval_callback)
+
+    # Audit log: record approval decision
+    try:
+        from agent.audit import get_audit_logger, EVENT_APPROVAL_RESULT
+        if not result["approved"]:
+            get_audit_logger().log_security_event(
+                event_type=EVENT_APPROVAL_RESULT,
+                context={
+                    "command": command[:200],
+                    "env_type": env_type,
+                    "approved": False,
+                    "status": result.get("status", "denied"),
+                    "description": result.get("description", ""),
+                    "smart_denied": result.get("smart_denied", False),
+                },
+            )
+        elif result.get("smart_approved"):
+            get_audit_logger().log_security_event(
+                event_type=EVENT_APPROVAL_RESULT,
+                severity="info",
+                context={
+                    "command": command[:200],
+                    "env_type": env_type,
+                    "approved": True,
+                    "smart_approved": True,
+                },
+            )
+    except Exception:
+        pass
+
+    return result
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:

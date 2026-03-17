@@ -1981,7 +1981,19 @@ class GatewayRunner:
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
-            
+
+            # Audit log: session start
+            try:
+                from agent.audit import get_audit_logger, EVENT_SESSION_START
+                get_audit_logger().log_session_event(
+                    event_type=EVENT_SESSION_START,
+                    session_id=session_entry.session_id,
+                    user_id=source.user_id,
+                    platform=source.platform.value if source.platform else None,
+                )
+            except Exception:
+                pass
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -2046,7 +2058,27 @@ class GatewayRunner:
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
-            
+
+            # Audit log: session end
+            try:
+                from agent.audit import get_audit_logger, EVENT_SESSION_END
+                get_audit_logger().log_session_event(
+                    event_type=EVENT_SESSION_END,
+                    session_id=session_entry.session_id,
+                    user_id=source.user_id,
+                    platform=source.platform.value if source.platform else None,
+                    model=agent_result.get("model"),
+                    provider=agent_result.get("provider"),
+                    context={
+                        "api_calls": agent_result.get("api_calls", 0),
+                        "completed": agent_result.get("completed", False),
+                        "failed": agent_result.get("failed", False),
+                        "cost_usd": agent_result.get("estimated_cost_usd"),
+                    },
+                )
+            except Exception:
+                pass
+
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -2170,6 +2202,19 @@ class GatewayRunner:
             
         except Exception as e:
             logger.exception("Agent error in session %s", session_key)
+
+            # Audit log: unhandled agent error
+            try:
+                from agent.audit import get_audit_logger, EVENT_API_ERROR
+                get_audit_logger().log_api_error(
+                    error=str(e)[:500],
+                    error_type=type(e).__name__,
+                    status_code=getattr(e, "status_code", None),
+                    session_id=session_entry.session_id if 'session_entry' in locals() else None,
+                )
+            except Exception:
+                pass
+
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""

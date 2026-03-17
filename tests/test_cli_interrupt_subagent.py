@@ -43,6 +43,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         parent._interrupt_requested = False
         parent._interrupt_message = None
         parent._active_children = []
+        parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True
         parent.model = "test/model"
         parent.base_url = "http://localhost:1"
@@ -112,21 +113,21 @@ class TestCLISubagentInterrupt(unittest.TestCase):
                     mock_instance._interrupt_requested = False
                     mock_instance._interrupt_message = None
                     mock_instance._active_children = []
+                    mock_instance._active_children_lock = threading.Lock()
                     mock_instance.quiet_mode = True
                     mock_instance.run_conversation = mock_child_run_conversation
                     mock_instance.interrupt = lambda msg=None: setattr(mock_instance, '_interrupt_requested', True) or setattr(mock_instance, '_interrupt_message', msg)
                     mock_instance.tools = []
                     MockAgent.return_value = mock_instance
-                    
+
+                    # Register child manually (normally done by _build_child_agent)
+                    parent._active_children.append(mock_instance)
+
                     result = _run_single_child(
                         task_index=0,
                         goal="Do something slow",
-                        context=None,
-                        toolsets=["terminal"],
-                        model=None,
-                        max_iterations=50,
+                        child=mock_instance,
                         parent_agent=parent,
-                        task_count=1,
                     )
                     delegate_result[0] = result
             except Exception as e:

@@ -187,3 +187,26 @@ class TestSecretCapturePayloadRedaction:
         text = '{"raw_secret": "ghp_abc123def456ghi789jkl"}'
         result = redact_sensitive_text(text)
         assert "abc123def456" not in result
+
+
+class TestEmailRedaction:
+    def test_email_redacted(self):
+        text = "Contact me at john.doe+test@example.com ASAP"
+        result = redact_sensitive_text(text)
+        assert "john.doe" not in result
+        assert "example.com" not in result
+        assert "[REDACTED EMAIL]" in result
+
+
+class TestIpRedaction:
+    def test_ipv4_redacted(self):
+        text = "Client connected from 192.168.1.23"
+        result = redact_sensitive_text(text)
+        assert "192.168.1.23" not in result
+        assert "[REDACTED IP]" in result
+
+    def test_ipv4_invalid_not_redacted(self):
+        # Not a valid IPv4; should pass through.
+        text = "Not an IP: 999.999.999.999"
+        result = redact_sensitive_text(text)
+        assert result == text

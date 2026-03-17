@@ -6169,6 +6169,8 @@ class AIAgent:
 
                     if truncated_response_prefix:
                         final_response = truncated_response_prefix + final_response
+                        truncated_response_prefix = ""
+                        length_continue_retries = 0
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()

@@ -141,6 +141,28 @@ Hermes supports voice on WhatsApp:
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
 - Agent responses are prefixed with "⚕ **Hermes Agent**" for easy identification
 
+
+## Custom Reply Prefix
+
+By default, Hermes prefixes WhatsApp replies with a short label so users can easily distinguish
+bot messages from human messages in busy chats. You can customize or disable this prefix from
+your `config.yaml`:
+
+```yaml
+gateway:
+  platforms:
+    whatsapp:
+      enabled: true
+      extra:
+        reply_prefix: "Custom Bot"
+```
+
+- Set `reply_prefix` to a non-empty string (e.g. `"Custom Bot"`) to override the default label.
+- Set `reply_prefix` to `""` (empty string) to remove the prefix entirely and send plain replies.
+
+This setting only affects **outgoing** WhatsApp messages and does not change behavior on other
+platforms like Telegram or Slack.
+
 ---
 
 ## Troubleshooting

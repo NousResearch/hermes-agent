@@ -1,4 +1,5 @@
 import logging
+from io import StringIO
 import subprocess
 import sys
 import types
@@ -211,3 +212,64 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
+
+class _FakePopen:
+    def __init__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.kwargs = kwargs
+        self.stdout = StringIO("")
+        self.stdin = None
+        self.returncode = 0
+
+    def poll(self):
+        return self.returncode
+
+
+def _make_execute_only_env(forward_env=None):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env.cwd = "/root"
+    env.timeout = 60
+    env._forward_env = forward_env or []
+    env._prepare_command = lambda command: (command, None)
+    env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
+    env._inner = type("Inner", (), {
+        "container_id": "test-container",
+        "config": type("Cfg", (), {"executable": "/usr/bin/docker", "env": {}})(),
+    })()
+    return env
+
+
+def test_execute_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
+    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    result = env.execute("echo hi")
+
+    assert result["returncode"] == 0
+    assert "GITHUB_TOKEN=value_from_dotenv" in popen_calls[0]
+
+
+def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
+    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "value_from_shell")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    env.execute("echo hi")
+
+    assert "GITHUB_TOKEN=value_from_shell" in popen_calls[0]
+    assert "GITHUB_TOKEN=value_from_dotenv" not in popen_calls[0]

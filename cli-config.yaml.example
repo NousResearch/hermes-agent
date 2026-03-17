@@ -123,6 +123,12 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # Optional: explicitly forward selected env vars into Docker.
+#   # These values come from your current shell first, then ~/.hermes/.env.
+#   # Warning: anything forwarded here is visible to commands run in the container.
+#   docker_forward_env:
+#     - "GITHUB_TOKEN"
+#     - "NPM_TOKEN"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container

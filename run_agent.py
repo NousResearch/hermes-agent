@@ -856,6 +856,19 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
+    @staticmethod
+    def _safe_print(*args, **kwargs):
+        """Print that silently handles broken pipes / closed stdout.
+
+        In headless environments (systemd, Docker, nohup) stdout may become
+        unavailable mid-session.  A raw ``print()`` raises ``OSError`` which
+        can crash cron jobs and lose completed work.
+        """
+        try:
+            print(*args, **kwargs)
+        except OSError:
+            pass
+
     def _vprint(self, *args, force: bool = False, **kwargs):
         """Verbose print — suppressed when streaming TTS is active.
 
@@ -864,7 +877,7 @@ class AIAgent:
         """
         if not force and self._has_stream_consumers():
             return
-        print(*args, **kwargs)
+        self._safe_print(*args, **kwargs)
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -4752,7 +4765,7 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -4822,7 +4835,7 @@ class AIAgent:
                     f"{self.context_compressor.context_length:,}",
                 )
                 if not self.quiet_mode:
-                    print(
+                    self._safe_print(
                         f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
                         f">= {self.context_compressor.threshold_tokens:,} threshold"
                     )
@@ -4862,13 +4875,13 @@ class AIAgent:
             if self._interrupt_requested:
                 interrupted = True
                 if not self.quiet_mode:
-                    print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                    self._safe_print(f"\n⚡ Breaking out of tool loop due to interrupt...")
                 break
             
             api_call_count += 1
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
-                    print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
+                    self._safe_print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)
@@ -5287,7 +5300,7 @@ class AIAgent:
                         if self.context_compressor._context_probed:
                             ctx = self.context_compressor.context_length
                             save_context_length(self.model, self.base_url, ctx)
-                            print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
+                            self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
                             self.context_compressor._context_probed = False
 
                         self.session_prompt_tokens += prompt_tokens
@@ -6129,12 +6142,15 @@ class AIAgent:
                     messages.append(final_msg)
                     
                     if not self.quiet_mode:
-                        print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+                        self._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
                 
             except Exception as e:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
-                print(f"❌ {error_msg}")
+                try:
+                    print(f"❌ {error_msg}")
+                except OSError:
+                    logger.error(error_msg)
                 
                 if self.verbose_logging:
                     logging.exception("Detailed error information:")

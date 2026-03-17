@@ -210,6 +210,7 @@ def load_cli_config() -> Dict[str, Any]:
             "compact": False,
             "resume_display": "full",
             "show_reasoning": False,
+            "streaming": False,
             "show_cost": False,
             "skin": "default",
         },
@@ -1034,6 +1035,14 @@ class HermesCLI:
         self.show_cost = CLI_CONFIG["display"].get("show_cost", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
+        # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
+        self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+
+        # Streaming display state
+        self._stream_buf = ""        # Partial line buffer for line-buffered rendering
+        self._stream_started = False  # True once first delta arrives
+        self._stream_box_opened = False  # True once the response box header is printed
+        
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
         # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
@@ -1454,6 +1463,177 @@ class HermesCLI:
         self._spinner_text = text or ""
         self._invalidate()
 
+    # ── Streaming display ────────────────────────────────────────────────
+
+    def _stream_reasoning_delta(self, text: str) -> None:
+        """Stream reasoning/thinking tokens into a dim box above the response.
+
+        Opens a dim reasoning box on first token, streams line-by-line.
+        The box is closed automatically when content tokens start arriving
+        (via _stream_delta → _emit_stream_text).
+        """
+        if not text:
+            return
+
+        # Open reasoning box on first reasoning token
+        if not getattr(self, "_reasoning_box_opened", False):
+            self._reasoning_box_opened = True
+            w = shutil.get_terminal_size().columns
+            r_label = " Reasoning "
+            r_fill = w - 2 - len(r_label)
+            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+
+        self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+
+        # Emit complete lines
+        while "\n" in self._reasoning_buf:
+            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            _cprint(f"{_DIM}{line}{_RST}")
+
+    def _close_reasoning_box(self) -> None:
+        """Close the live reasoning box if it's open."""
+        if getattr(self, "_reasoning_box_opened", False):
+            # Flush remaining reasoning buffer
+            buf = getattr(self, "_reasoning_buf", "")
+            if buf:
+                _cprint(f"{_DIM}{buf}{_RST}")
+                self._reasoning_buf = ""
+            w = shutil.get_terminal_size().columns
+            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
+            self._reasoning_box_opened = False
+
+    def _stream_delta(self, text: str) -> None:
+        """Line-buffered streaming callback for real-time token rendering.
+
+        Receives text deltas from the agent as tokens arrive. Buffers
+        partial lines and emits complete lines via _cprint to work
+        reliably with prompt_toolkit's patch_stdout.
+
+        Reasoning/thinking blocks (<REASONING_SCRATCHPAD>, <think>, etc.)
+        are suppressed during streaming since they'd display raw XML tags.
+        The agent strips them from the final response anyway.
+        """
+        if not text:
+            return
+
+        self._stream_started = True
+
+        # ── Tag-based reasoning suppression ──
+        # Track whether we're inside a reasoning/thinking block.
+        # These tags are model-generated (system prompt tells the model
+        # to use them) and get stripped from final_response. We must
+        # suppress them during streaming too.
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>")
+
+        # Append to a pre-filter buffer first
+        self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
+
+        # Check if we're entering a reasoning block
+        if not getattr(self, "_in_reasoning_block", False):
+            for tag in _OPEN_TAGS:
+                idx = self._stream_prefilt.find(tag)
+                if idx != -1:
+                    # Emit everything before the tag
+                    before = self._stream_prefilt[:idx]
+                    if before:
+                        self._emit_stream_text(before)
+                    self._in_reasoning_block = True
+                    self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                    break
+
+            # Could also be a partial open tag at the end — hold it back
+            if not getattr(self, "_in_reasoning_block", False):
+                # Check for partial tag match at the end
+                safe = self._stream_prefilt
+                for tag in _OPEN_TAGS:
+                    for i in range(1, len(tag)):
+                        if self._stream_prefilt.endswith(tag[:i]):
+                            safe = self._stream_prefilt[:-i]
+                            break
+                if safe:
+                    self._emit_stream_text(safe)
+                    self._stream_prefilt = self._stream_prefilt[len(safe):]
+                return
+
+        # Inside a reasoning block — look for close tag.
+        # Keep accumulating _stream_prefilt because close tags can arrive
+        # split across multiple tokens (e.g. "</REASONING_SCRATCH" + "PAD>...").
+        if getattr(self, "_in_reasoning_block", False):
+            for tag in _CLOSE_TAGS:
+                idx = self._stream_prefilt.find(tag)
+                if idx != -1:
+                    self._in_reasoning_block = False
+                    after = self._stream_prefilt[idx + len(tag):]
+                    self._stream_prefilt = ""
+                    # Process remaining text after close tag through full
+                    # filtering (it could contain another open tag)
+                    if after:
+                        self._stream_delta(after)
+                    return
+            # Still inside reasoning block — keep only the tail that could
+            # be a partial close tag prefix (save memory on long blocks).
+            max_tag_len = max(len(t) for t in _CLOSE_TAGS)
+            if len(self._stream_prefilt) > max_tag_len:
+                self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
+            return
+
+    def _emit_stream_text(self, text: str) -> None:
+        """Emit filtered text to the streaming display."""
+        if not text:
+            return
+
+        # Close the live reasoning box before opening the response box
+        self._close_reasoning_box()
+
+        # Open the response box header on the very first visible text
+        if not self._stream_box_opened:
+            # Strip leading whitespace/newlines before first visible content
+            text = text.lstrip("\n")
+            if not text:
+                return
+            self._stream_box_opened = True
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _skin = get_active_skin()
+                label = _skin.get_branding("response_label", "⚕ Hermes")
+            except Exception:
+                label = "⚕ Hermes"
+            w = shutil.get_terminal_size().columns
+            fill = w - 2 - len(label)
+            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+
+        self._stream_buf += text
+
+        # Emit complete lines, keep partial remainder in buffer
+        while "\n" in self._stream_buf:
+            line, self._stream_buf = self._stream_buf.split("\n", 1)
+            _cprint(line)
+
+    def _flush_stream(self) -> None:
+        """Emit any remaining partial line from the stream buffer and close the box."""
+        # Close reasoning box if still open (in case no content tokens arrived)
+        self._close_reasoning_box()
+
+        if self._stream_buf:
+            _cprint(self._stream_buf)
+            self._stream_buf = ""
+
+        # Close the response box
+        if self._stream_box_opened:
+            w = shutil.get_terminal_size().columns
+            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+
+    def _reset_stream_state(self) -> None:
+        """Reset streaming state before each agent invocation."""
+        self._stream_buf = ""
+        self._stream_started = False
+        self._stream_box_opened = False
+        self._stream_prefilt = ""
+        self._in_reasoning_block = False
+        self._reasoning_box_opened = False
+        self._reasoning_buf = ""
+
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
@@ -1469,6 +1649,8 @@ class HermesCLI:
             return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
+        if cmd_lower.startswith("/browser"):
+            return "Configuring browser..."
         return "Processing command..."
 
     def _command_spinner_frame(self) -> str:
@@ -1655,7 +1837,11 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
-                reasoning_callback=self._on_reasoning if (self.show_reasoning or self.verbose) else None,
+                reasoning_callback=(
+                    self._stream_reasoning_delta if (self.streaming_enabled and self.show_reasoning)
+                    else self._on_reasoning if (self.show_reasoning or self.verbose)
+                    else None
+                ),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -1663,6 +1849,7 @@ class HermesCLI:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
+                stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
             )
             self._active_agent_route_signature = (
                 effective_model,
@@ -3334,6 +3521,8 @@ class HermesCLI:
         elif cmd_lower == "/reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
+        elif cmd_lower.startswith("/browser"):
+            self._handle_browser_command(cmd_original)
         elif cmd_lower == "/plugins":
             try:
                 from hermes_cli.plugins import get_plugin_manager
@@ -3574,6 +3763,210 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    @staticmethod
+    def _try_launch_chrome_debug(port: int, system: str) -> bool:
+        """Try to launch Chrome/Chromium with remote debugging enabled.
+
+        Returns True if a launch command was executed (doesn't guarantee success).
+        """
+        import shutil
+        import subprocess as _sp
+
+        candidates = []
+        if system == "Darwin":
+            # macOS: try common app bundle locations
+            for app in (
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ):
+                if os.path.isfile(app):
+                    candidates.append(app)
+        else:
+            # Linux: try common binary names
+            for name in ("google-chrome", "google-chrome-stable", "chromium-browser",
+                         "chromium", "brave-browser", "microsoft-edge"):
+                path = shutil.which(name)
+                if path:
+                    candidates.append(path)
+
+        if not candidates:
+            return False
+
+        chrome = candidates[0]
+        try:
+            _sp.Popen(
+                [chrome, f"--remote-debugging-port={port}"],
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+                start_new_session=True,  # detach from terminal
+            )
+            return True
+        except Exception:
+            return False
+
+    def _handle_browser_command(self, cmd: str):
+        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        import platform as _plat
+        import subprocess as _sp
+
+        parts = cmd.strip().split(None, 1)
+        sub = parts[1].lower().strip() if len(parts) > 1 else "status"
+
+        _DEFAULT_CDP = "ws://localhost:9222"
+        current = os.environ.get("BROWSER_CDP_URL", "").strip()
+
+        if sub.startswith("connect"):
+            # Optionally accept a custom CDP URL: /browser connect ws://host:port
+            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
+            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+
+            # Clear any existing browser sessions so the next tool call uses the new backend
+            try:
+                from tools.browser_tool import cleanup_all_browsers
+                cleanup_all_browsers()
+            except Exception:
+                pass
+
+            print()
+
+            # Extract port for connectivity checks
+            _port = 9222
+            try:
+                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
+            except (ValueError, IndexError):
+                pass
+
+            # Check if Chrome is already listening on the debug port
+            import socket
+            _already_open = False
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                s.connect(("127.0.0.1", _port))
+                s.close()
+                _already_open = True
+            except (OSError, socket.timeout):
+                pass
+
+            if _already_open:
+                print(f"   ✓ Chrome is already listening on port {_port}")
+            elif cdp_url == _DEFAULT_CDP:
+                # Try to auto-launch Chrome with remote debugging
+                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                _launched = self._try_launch_chrome_debug(_port, _plat.system())
+                if _launched:
+                    # Wait for the port to come up
+                    import time as _time
+                    for _wait in range(10):
+                        try:
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            s.settimeout(1)
+                            s.connect(("127.0.0.1", _port))
+                            s.close()
+                            _already_open = True
+                            break
+                        except (OSError, socket.timeout):
+                            _time.sleep(0.5)
+                    if _already_open:
+                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                    else:
+                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        print("     You may need to close existing Chrome windows first and retry")
+                else:
+                    print(f"   ⚠ Could not auto-launch Chrome")
+                    # Show manual instructions as fallback
+                    sys_name = _plat.system()
+                    if sys_name == "Darwin":
+                        chrome_cmd = 'open -a "Google Chrome" --args --remote-debugging-port=9222'
+                    elif sys_name == "Windows":
+                        chrome_cmd = 'chrome.exe --remote-debugging-port=9222'
+                    else:
+                        chrome_cmd = "google-chrome --remote-debugging-port=9222"
+                    print(f"     Launch Chrome manually: {chrome_cmd}")
+            else:
+                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+
+            os.environ["BROWSER_CDP_URL"] = cdp_url
+            print()
+            print("🌐 Browser connected to live Chrome via CDP")
+            print(f"   Endpoint: {cdp_url}")
+            print()
+
+            # Inject context message so the model knows
+            if hasattr(self, '_pending_input'):
+                self._pending_input.put(
+                    "[System note: The user has connected your browser tools to their live Chrome browser "
+                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
+                    "and other browser tools now control their real browser — including any pages they have "
+                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
+                    "services before connecting. Please await their instruction before attempting to operate "
+                    "the browser. When you do act, be mindful that your actions affect their real browser — "
+                    "don't close tabs or navigate away from pages without asking.]"
+                )
+
+        elif sub == "disconnect":
+            if current:
+                os.environ.pop("BROWSER_CDP_URL", None)
+                try:
+                    from tools.browser_tool import cleanup_all_browsers
+                    cleanup_all_browsers()
+                except Exception:
+                    pass
+                print()
+                print("🌐 Browser disconnected from live Chrome")
+                print("   Browser tools reverted to default mode (local headless or Browserbase)")
+                print()
+
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(
+                        "[System note: The user has disconnected the browser tools from their live Chrome. "
+                        "Browser tools are back to default mode (headless local browser or Browserbase cloud).]"
+                    )
+            else:
+                print()
+                print("Browser is not connected to live Chrome (already using default mode)")
+                print()
+
+        elif sub == "status":
+            print()
+            if current:
+                print(f"🌐 Browser: connected to live Chrome via CDP")
+                print(f"   Endpoint: {current}")
+
+                _port = 9222
+                try:
+                    _port = int(current.rsplit(":", 1)[-1].split("/")[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    s.connect(("127.0.0.1", _port))
+                    s.close()
+                    print(f"   Status: ✓ reachable")
+                except (OSError, Exception):
+                    print(f"   Status: ⚠ not reachable (Chrome may not be running)")
+            elif os.environ.get("BROWSERBASE_API_KEY"):
+                print("🌐 Browser: Browserbase (cloud)")
+            else:
+                print("🌐 Browser: local headless Chromium (agent-browser)")
+            print()
+            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser disconnect   — revert to default")
+            print()
+
+        else:
+            print()
+            print("Usage: /browser connect|disconnect|status")
+            print()
+            print("   connect      Connect browser tools to your live Chrome session")
+            print("   disconnect   Revert to default browser backend")
+            print("   status       Show current browser mode")
+            print()
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
@@ -4750,6 +5143,9 @@ class HermesCLI:
             # Run the conversation with interrupt monitoring
             result = None
 
+            # Reset streaming display state for this turn
+            self._reset_stream_state()
+
             # --- Streaming TTS setup ---
             # When ElevenLabs is the TTS provider and sounddevice is available,
             # we stream audio sentence-by-sentence as the agent generates tokens
@@ -4876,6 +5272,9 @@ class HermesCLI:
 
             agent_thread.join()  # Ensure agent thread completes
 
+            # Flush any remaining streamed text and close the box
+            self._flush_stream()
+
             # Signal end-of-text to TTS consumer and wait for it to finish
             if use_streaming_tts and text_queue is not None:
                 text_queue.put(None)  # sentinel
@@ -4918,8 +5317,9 @@ class HermesCLI:
 
             response_previewed = result.get("response_previewed", False) if result else False
 
-            # Display reasoning (thinking) box if enabled and available
-            if self.show_reasoning and result:
+            # Display reasoning (thinking) box if enabled and available.
+            # Skip when streaming already showed reasoning live.
+            if self.show_reasoning and result and not self._stream_started:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
                     w = shutil.get_terminal_size().columns
@@ -4950,10 +5350,15 @@ class HermesCLI:
                     _resp_text = "#FFF8DC"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
+                already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
                     _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                elif already_streamed:
+                    # Response was already streamed token-by-token with box framing;
+                    # _flush_stream() already closed the box. Skip Rich Panel.
+                    pass
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -5145,7 +5550,7 @@ class HermesCLI:
             from honcho_integration.client import HonchoClientConfig
             from agent.display import honcho_session_line, write_tty
             hcfg = HonchoClientConfig.from_global_config()
-            if hcfg.enabled:
+            if hcfg.enabled and hcfg.api_key:
                 sname = hcfg.resolve_session_name(session_id=self.session_id)
                 if sname:
                     write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")

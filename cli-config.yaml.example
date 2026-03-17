@@ -355,6 +355,19 @@ session_reset:
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Gateway Streaming
+# ─────────────────────────────────────────────────────────────────────────────
+# Stream tokens to messaging platforms in real-time. The bot sends a message
+# on first token, then progressively edits it as more tokens arrive.
+# Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+streaming:
+  enabled: false
+  # transport: edit           # "edit" = progressive editMessageText
+  # edit_interval: 0.3        # seconds between message edits
+  # buffer_threshold: 40      # chars before forcing an edit flush
+  # cursor: " ▉"              # cursor shown during streaming
+
 # =============================================================================
 # Skills Configuration
 # =============================================================================
@@ -715,6 +728,12 @@ display:
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
   show_reasoning: false
+
+  # Stream tokens to the terminal as they arrive instead of waiting for the
+  # full response. The response box opens on first token and text appears
+  # line-by-line. Tool calls are still captured silently.
+  # Disabled by default — enable to try the streaming UX.
+  streaming: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

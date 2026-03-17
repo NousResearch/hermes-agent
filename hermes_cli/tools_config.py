@@ -171,6 +171,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Tavily",
+                "tag": "AI-native search, extract, and crawl",
+                "web_backend": "tavily",
+                "env_vars": [
+                    {"key": "TAVILY_API_KEY", "prompt": "Tavily API key", "url": "https://app.tavily.com/home"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "tag": "Free - run your own instance",
                 "web_backend": "firecrawl",
@@ -850,6 +858,11 @@ def _reconfigure_provider(provider: dict, config: dict):
         else:
             config.get("browser", {}).pop("cloud_provider", None)
             _print_success(f"  Browser set to local mode")
+
+    # Set web search backend in config if applicable
+    if provider.get("web_backend"):
+        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")

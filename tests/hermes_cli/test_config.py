@@ -316,6 +316,38 @@ class TestSanitizeEnvLines:
             assert fixes == 0
 
 
+class TestOptionalEnvVarsRegistry:
+    """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
+
+    def test_tavily_api_key_registered(self):
+        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
+
+    def test_tavily_api_key_is_tool_category(self):
+        """TAVILY_API_KEY is in the 'tool' category."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["category"] == "tool"
+
+    def test_tavily_api_key_is_password(self):
+        """TAVILY_API_KEY is marked as password."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["password"] is True
+
+    def test_tavily_api_key_has_url(self):
+        """TAVILY_API_KEY has a URL."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
+
+    def test_tavily_in_env_vars_by_version(self):
+        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "TAVILY_API_KEY" in all_vars
+
+
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
 

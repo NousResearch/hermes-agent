@@ -5132,6 +5132,13 @@ class AIAgent:
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
                         
+                        # Eager fallback: empty/malformed responses are a common
+                        # rate-limit symptom.  Switch to fallback immediately
+                        # rather than retrying with extended backoff.
+                        if not self._fallback_activated and self._try_activate_fallback():
+                            retry_count = 0
+                            continue
+
                         # Check for error field in response (some providers include this)
                         error_msg = "Unknown"
                         provider_name = "Unknown"
@@ -5485,6 +5492,24 @@ class AIAgent:
                     # A 413 is a payload-size error — the correct response is to
                     # compress history and retry, not abort immediately.
                     status_code = getattr(api_error, "status_code", None)
+
+                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                    # When a fallback model is configured, switch immediately instead
+                    # of burning through retries with exponential backoff -- the
+                    # primary provider won't recover within the retry window.
+                    is_rate_limited = (
+                        status_code == 429
+                        or "rate limit" in error_msg
+                        or "too many requests" in error_msg
+                        or "rate_limit" in error_msg
+                        or "usage limit" in error_msg
+                        or "quota" in error_msg
+                    )
+                    if is_rate_limited and not self._fallback_activated:
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
+
                     is_payload_too_large = (
                         status_code == 413
                         or 'request entity too large' in error_msg

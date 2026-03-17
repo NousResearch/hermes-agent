@@ -944,7 +944,13 @@ class SessionStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    messages.append(json.loads(line))
+                    try:
+                        messages.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping corrupt line in transcript %s: %s",
+                            session_id, line[:120],
+                        )
         
         return messages
 

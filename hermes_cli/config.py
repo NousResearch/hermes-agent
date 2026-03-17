@@ -356,7 +356,7 @@ DEFAULT_CONFIG = {
         "tirith_timeout": 5,
         "tirith_fail_open": True,
         "website_blocklist": {
-            "enabled": True,
+            "enabled": False,
             "domains": [],
             "shared_files": [],
         },

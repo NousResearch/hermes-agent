@@ -276,12 +276,10 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
-        # Support custom Anthropic-compatible endpoints via ANTHROPIC_BASE_URL
-        base_url = os.getenv("ANTHROPIC_BASE_URL", "").strip() or "https://api.anthropic.com"
         return {
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
-            "base_url": base_url,
+            "base_url": "https://api.anthropic.com",
             "api_key": token,
             "source": "env",
             "requested_provider": requested_provider,

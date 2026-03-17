@@ -158,16 +158,16 @@ class TestBackendSelection:
             from tools.web_tools import _get_backend
             assert _get_backend() == "parallel"
 
-    # ── Auto-detect mode ──────────────────────────────────────────────
+    # ── Fallback (no explicit WEB_SEARCH_BACKEND) ───────────────────
 
-    def test_auto_prefers_parallel_when_key_set(self):
-        """Auto mode with PARALLEL_API_KEY → 'parallel'."""
+    def test_fallback_parallel_only_key(self):
+        """Only PARALLEL_API_KEY set → 'parallel'."""
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             from tools.web_tools import _get_backend
             assert _get_backend() == "parallel"
 
-    def test_auto_prefers_firecrawl_when_both_set(self):
-        """Auto mode with both keys → 'firecrawl' preferred (existing backend)."""
+    def test_fallback_both_keys_defaults_to_firecrawl(self):
+        """Both keys set, no WEB_SEARCH_BACKEND → 'firecrawl' (backward compat)."""
         with patch.dict(os.environ, {
             "PARALLEL_API_KEY": "test-key",
             "FIRECRAWL_API_KEY": "fc-test",
@@ -175,19 +175,19 @@ class TestBackendSelection:
             from tools.web_tools import _get_backend
             assert _get_backend() == "firecrawl"
 
-    def test_auto_falls_back_to_firecrawl(self):
-        """Auto mode with only FIRECRAWL_API_KEY → 'firecrawl'."""
+    def test_fallback_firecrawl_only_key(self):
+        """Only FIRECRAWL_API_KEY set → 'firecrawl'."""
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             from tools.web_tools import _get_backend
             assert _get_backend() == "firecrawl"
 
-    def test_auto_no_keys_defaults_to_firecrawl(self):
-        """Auto mode with no keys → 'firecrawl' (will fail at client init)."""
+    def test_fallback_no_keys_defaults_to_firecrawl(self):
+        """No keys, no WEB_SEARCH_BACKEND → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
         assert _get_backend() == "firecrawl"
 
-    def test_invalid_backend_falls_through_to_auto(self):
-        """WEB_SEARCH_BACKEND=invalid → treated as 'auto'."""
+    def test_invalid_backend_falls_through_to_fallback(self):
+        """WEB_SEARCH_BACKEND=invalid → ignored, uses key-based fallback."""
         with patch.dict(os.environ, {
             "WEB_SEARCH_BACKEND": "tavily",
             "PARALLEL_API_KEY": "test-key",

@@ -3,7 +3,7 @@
 Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
-Backend selection is automatic (set WEB_SEARCH_BACKEND to override).
+Backend is selected during ``hermes tools`` setup (WEB_SEARCH_BACKEND env var).
 
 Available tools:
 - web_search_tool: Search the web for information
@@ -59,19 +59,19 @@ logger = logging.getLogger(__name__)
 def _get_backend() -> str:
     """Determine which web backend to use.
 
-    Priority:
-    1. WEB_SEARCH_BACKEND env var (explicit: 'parallel', 'firecrawl')
-    2. Auto-detect: Firecrawl preferred (existing backend), Parallel if
-       it's the only key configured.
+    Reads the explicit WEB_SEARCH_BACKEND env var set by ``hermes tools``.
+    Falls back to whichever API key is present for users who configured
+    keys manually without running setup.
     """
-    explicit = os.getenv("WEB_SEARCH_BACKEND", "auto").lower().strip()
+    explicit = os.getenv("WEB_SEARCH_BACKEND", "").lower().strip()
     if explicit in ("parallel", "firecrawl"):
         return explicit
-    # auto-detect: prefer Firecrawl (the existing default backend)
-    if os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"):
-        return "firecrawl"
-    if os.getenv("PARALLEL_API_KEY"):
+    # Fallback for manual / legacy config — use whichever key is present.
+    has_firecrawl = bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
+    has_parallel = bool(os.getenv("PARALLEL_API_KEY"))
+    if has_parallel and not has_firecrawl:
         return "parallel"
+    # Default to firecrawl (backward compat, or when both are set)
     return "firecrawl"
 
 

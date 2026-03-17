@@ -157,13 +157,15 @@ TOOL_CATEGORIES = {
             {
                 "name": "Firecrawl Cloud",
                 "tag": "Hosted service - search, extract, and crawl",
+                "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
             },
             {
                 "name": "Parallel",
-                "tag": "Cloud search and extract",
+                "tag": "AI-native search and extract",
+                "web_backend": "parallel",
                 "env_vars": [
                     {"key": "PARALLEL_API_KEY", "prompt": "Parallel API key", "url": "https://parallel.ai"},
                 ],
@@ -171,6 +173,7 @@ TOOL_CATEGORIES = {
             {
                 "name": "Firecrawl Self-Hosted",
                 "tag": "Free - run your own instance",
+                "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
@@ -625,6 +628,9 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if "browser_provider" in provider:
         current = config.get("browser", {}).get("cloud_provider")
         return provider["browser_provider"] == current
+    if provider.get("web_backend"):
+        current = get_env_value("WEB_SEARCH_BACKEND")
+        return current and current.lower() == provider["web_backend"]
     return False
 
 
@@ -656,6 +662,11 @@ def _configure_provider(provider: dict, config: dict):
             _print_success(f"  Browser cloud provider set to: {bp}")
         else:
             config.get("browser", {}).pop("cloud_provider", None)
+
+    # Set web search backend if applicable
+    if provider.get("web_backend"):
+        save_env_value("WEB_SEARCH_BACKEND", provider["web_backend"])
+        _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if not env_vars:
         _print_success(f"  {provider['name']} - no configuration needed!")

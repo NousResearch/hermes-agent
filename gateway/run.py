@@ -1869,10 +1869,30 @@ class GatewayRunner:
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
                 error_detail = agent_result.get("error", "unknown error")
-                response = (
-                    f"The request failed: {str(error_detail)[:300]}\n"
-                    "Try again or use /reset to start a fresh session."
+                error_str = str(error_detail).lower()
+
+                # Detect context-overflow failures and give specific guidance.
+                # Generic 400 "Error" from Anthropic with large sessions is the
+                # most common cause of this (#1630).
+                _is_ctx_fail = any(p in error_str for p in (
+                    "context", "token", "too large", "too long",
+                    "exceed", "payload",
+                )) or (
+                    "400" in error_str
+                    and len(history) > 50
                 )
+
+                if _is_ctx_fail:
+                    response = (
+                        "⚠️ Session too large for the model's context window.\n"
+                        "Use /compact to compress the conversation, or "
+                        "/reset to start fresh."
+                    )
+                else:
+                    response = (
+                        f"The request failed: {str(error_detail)[:300]}\n"
+                        "Try again or use /reset to start a fresh session."
+                    )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -1920,12 +1940,30 @@ class GatewayRunner:
             # This preserves the complete agent loop (tool_calls, tool results,
             # intermediate reasoning) so sessions can be resumed with full context
             # and transcripts are useful for debugging and training data.
+            #
+            # IMPORTANT: When the agent failed before producing any response
+            # (e.g. context-overflow 400), do NOT persist the user's message.
+            # Persisting it would make the session even larger, causing the
+            # same failure on the next attempt — an infinite loop. (#1630)
+            agent_failed_early = (
+                agent_result.get("failed")
+                and not agent_result.get("final_response")
+            )
+            if agent_failed_early:
+                logger.info(
+                    "Skipping transcript persistence for failed request in "
+                    "session %s to prevent session growth loop.",
+                    session_entry.session_id,
+                )
+
             ts = datetime.now().isoformat()
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
-            if not history:
+            if agent_failed_early:
+                pass  # Skip all transcript writes — don't grow a broken session
+            elif not history:
                 tool_defs = agent_result.get("tools", [])
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
@@ -1942,36 +1980,37 @@ class GatewayRunner:
             # Use the filtered history length (history_offset) that was actually
             # passed to the agent, not len(history) which includes session_meta
             # entries that were stripped before the agent saw them.
-            history_len = agent_result.get("history_offset", len(history))
-            new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
-            
-            # If no new messages found (edge case), fall back to simple user/assistant
-            if not new_messages:
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    {"role": "user", "content": message_text, "timestamp": ts}
-                )
-                if response:
+            if not agent_failed_early:
+                history_len = agent_result.get("history_offset", len(history))
+                new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+                
+                # If no new messages found (edge case), fall back to simple user/assistant
+                if not new_messages:
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "assistant", "content": response, "timestamp": ts}
+                        {"role": "user", "content": message_text, "timestamp": ts}
                     )
-            else:
-                # The agent already persisted these messages to SQLite via
-                # _flush_messages_to_session_db(), so skip the DB write here
-                # to prevent the duplicate-write bug (#860).  We still write
-                # to JSONL for backward compatibility and as a backup.
-                agent_persisted = self._session_db is not None
-                for msg in new_messages:
-                    # Skip system messages (they're rebuilt each run)
-                    if msg.get("role") == "system":
-                        continue
-                    # Add timestamp to each message for debugging
-                    entry = {**msg, "timestamp": ts}
-                    self.session_store.append_to_transcript(
-                        session_entry.session_id, entry,
-                        skip_db=agent_persisted,
-                    )
+                    if response:
+                        self.session_store.append_to_transcript(
+                            session_entry.session_id,
+                            {"role": "assistant", "content": response, "timestamp": ts}
+                        )
+                else:
+                    # The agent already persisted these messages to SQLite via
+                    # _flush_messages_to_session_db(), so skip the DB write here
+                    # to prevent the duplicate-write bug (#860).  We still write
+                    # to JSONL for backward compatibility and as a backup.
+                    agent_persisted = self._session_db is not None
+                    for msg in new_messages:
+                        # Skip system messages (they're rebuilt each run)
+                        if msg.get("role") == "system":
+                            continue
+                        # Add timestamp to each message for debugging
+                        entry = {**msg, "timestamp": ts}
+                        self.session_store.append_to_transcript(
+                            session_entry.session_id, entry,
+                            skip_db=agent_persisted,
+                        )
             
             # Update session with actual prompt token count and model from the agent
             self.session_store.update_session(
@@ -2005,6 +2044,18 @@ class GatewayRunner:
                 status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
+            elif status_code == 400:
+                # 400 with a large session is almost always a context overflow.
+                # Give specific guidance instead of a generic error. (#1630)
+                _hist_len = len(history) if 'history' in locals() else 0
+                if _hist_len > 50:
+                    return (
+                        "⚠️ Session too large for the model's context window.\n"
+                        "Use /compact to compress the conversation, or "
+                        "/reset to start fresh."
+                    )
+                else:
+                    status_hint = " The request was rejected by the API."
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"

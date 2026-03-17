@@ -43,6 +43,25 @@ class TestDetectDangerousSudo:
         assert key is not None
         assert "pipe" in desc.lower() or "shell" in desc.lower()
 
+    def test_shell_via_lc_flag(self):
+        """bash -lc should be treated as dangerous just like bash -c."""
+        is_dangerous, key, desc = detect_dangerous_command("bash -lc 'echo pwned'")
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_shell_via_lc_with_newline(self):
+        """Multi-line bash -lc invocations must still be detected."""
+        cmd = "bash -lc \\\n'echo pwned'"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+
+    def test_ksh_via_c_flag(self):
+        """ksh -c should be caught by the expanded pattern."""
+        is_dangerous, key, desc = detect_dangerous_command("ksh -c 'echo test'")
+        assert is_dangerous is True
+        assert key is not None
+
 
 class TestDetectSqlPatterns:
     def test_drop_table(self):

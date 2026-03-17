@@ -11,11 +11,13 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 
@@ -32,6 +34,7 @@ class CommandDef:
     category: str                      # "Session", "Configuration", etc.
     aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
+    subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
 
@@ -75,17 +78,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
-               cli_only=True, args_hint="[text]"),
+               cli_only=True, args_hint="[text]", subcommands=("clear",)),
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide]"),
+               args_hint="[level|show|hide]",
+               subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
-               args_hint="[on|off|tts|status]"),
+               args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
     # Tools & Skills
     CommandDef("tools", "List available tools", "Tools & Skills",
@@ -93,9 +97,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
-               "Tools & Skills", cli_only=True),
+               "Tools & Skills", cli_only=True,
+               subcommands=("search", "browse", "inspect", "install")),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
-               cli_only=True, args_hint="[subcommand]"),
+               cli_only=True, args_hint="[subcommand]",
+               subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("plugins", "List installed plugins and their status",
@@ -169,6 +175,26 @@ for _cmd in COMMAND_REGISTRY:
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
+# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
+SUBCOMMANDS: dict[str, list[str]] = {}
+for _cmd in COMMAND_REGISTRY:
+    if _cmd.subcommands:
+        SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+
+# Also extract subcommands hinted in args_hint via pipe-separated patterns
+# e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.
+# NOTE: If a command already has explicit subcommands, this fallback is skipped.
+# Use the `subcommands` field on CommandDef for intentional tab-completable args.
+_PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
+for _cmd in COMMAND_REGISTRY:
+    key = f"/{_cmd.name}"
+    if key in SUBCOMMANDS or not _cmd.args_hint:
+        continue
+    m = _PIPE_SUBS_RE.search(_cmd.args_hint)
+    if m:
+        SUBCOMMANDS[key] = m.group(0).split("|")
+
+
 # ---------------------------------------------------------------------------
 # Gateway helpers
 # ---------------------------------------------------------------------------
@@ -237,13 +263,34 @@ def slack_subcommand_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 class SlashCommandCompleter(Completer):
-    """Autocomplete for built-in slash commands and optional skill commands."""
+    """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        model_completer_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        # model_completer_provider returns {"current_provider": str,
+        #   "providers": {id: label, ...}, "models_for": callable(provider) -> list[str]}
+        self._model_completer_provider = model_completer_provider
+        self._model_info_cache: dict[str, Any] | None = None
+        self._model_info_cache_time: float = 0
+
+    def _get_model_info(self) -> dict[str, Any]:
+        """Get cached model/provider info for /model autocomplete."""
+        import time
+        now = time.monotonic()
+        if self._model_info_cache is not None and now - self._model_info_cache_time < 60:
+            return self._model_info_cache
+        if self._model_completer_provider is None:
+            return {}
+        try:
+            self._model_info_cache = self._model_completer_provider() or {}
+            self._model_info_cache_time = now
+        except Exception:
+            self._model_info_cache = self._model_info_cache or {}
+        return self._model_info_cache
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -348,6 +395,70 @@ class SlashCommandCompleter(Completer):
                 yield from self._path_completions(path_word)
             return
 
+        # Check if we're completing a subcommand (base command already typed)
+        parts = text.split(maxsplit=1)
+        base_cmd = parts[0].lower()
+        if len(parts) > 1 or (len(parts) == 1 and text.endswith(" ")):
+            sub_text = parts[1] if len(parts) > 1 else ""
+            sub_lower = sub_text.lower()
+
+            # /model gets two-stage completion:
+            #   Stage 1: provider names (with : suffix)
+            #   Stage 2: after "provider:", list that provider's models
+            if base_cmd == "/model" and " " not in sub_text:
+                info = self._get_model_info()
+                if info:
+                    current_prov = info.get("current_provider", "")
+                    providers = info.get("providers", {})
+                    models_for = info.get("models_for")
+
+                    if ":" in sub_text:
+                        # Stage 2: "anthropic:cl" → models for anthropic
+                        prov_part, model_part = sub_text.split(":", 1)
+                        model_lower = model_part.lower()
+                        if models_for:
+                            try:
+                                prov_models = models_for(prov_part)
+                            except Exception:
+                                prov_models = []
+                            for mid in prov_models:
+                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
+                                    full = f"{prov_part}:{mid}"
+                                    yield Completion(
+                                        full,
+                                        start_position=-len(sub_text),
+                                        display=mid,
+                                    )
+                    else:
+                        # Stage 1: providers sorted: non-current first, current last
+                        for pid, plabel in sorted(
+                            providers.items(),
+                            key=lambda kv: (kv[0] == current_prov, kv[0]),
+                        ):
+                            display_name = f"{pid}:"
+                            if display_name.lower().startswith(sub_lower):
+                                meta = f"({plabel})" if plabel != pid else ""
+                                if pid == current_prov:
+                                    meta = f"(current — {plabel})" if plabel != pid else "(current)"
+                                yield Completion(
+                                    display_name,
+                                    start_position=-len(sub_text),
+                                    display=display_name,
+                                    display_meta=meta,
+                                )
+                return
+
+            # Static subcommand completions
+            if " " not in sub_text and base_cmd in SUBCOMMANDS:
+                for sub in SUBCOMMANDS[base_cmd]:
+                    if sub.startswith(sub_lower) and sub != sub_lower:
+                        yield Completion(
+                            sub,
+                            start_position=-len(sub_text),
+                            display=sub,
+                        )
+            return
+
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
@@ -371,6 +482,90 @@ class SlashCommandCompleter(Completer):
                     display=cmd,
                     display_meta=f"⚡ {short_desc}",
                 )
+
+
+# ---------------------------------------------------------------------------
+# Inline auto-suggest (ghost text) for slash commands
+# ---------------------------------------------------------------------------
+
+class SlashCommandAutoSuggest(AutoSuggest):
+    """Inline ghost-text suggestions for slash commands and their subcommands.
+
+    Shows the rest of a command or subcommand in dim text as you type.
+    Falls back to history-based suggestions for non-slash input.
+    """
+
+    def __init__(
+        self,
+        history_suggest: AutoSuggest | None = None,
+        completer: SlashCommandCompleter | None = None,
+    ) -> None:
+        self._history = history_suggest
+        self._completer = completer  # Reuse its model cache
+
+    def get_suggestion(self, buffer, document):
+        text = document.text_before_cursor
+
+        # Only suggest for slash commands
+        if not text.startswith("/"):
+            # Fall back to history for regular text
+            if self._history:
+                return self._history.get_suggestion(buffer, document)
+            return None
+
+        parts = text.split(maxsplit=1)
+        base_cmd = parts[0].lower()
+
+        if len(parts) == 1 and not text.endswith(" "):
+            # Still typing the command name: /upd → suggest "ate"
+            word = text[1:].lower()
+            for cmd in COMMANDS:
+                cmd_name = cmd[1:]  # strip leading /
+                if cmd_name.startswith(word) and cmd_name != word:
+                    return Suggestion(cmd_name[len(word):])
+            return None
+
+        # Command is complete — suggest subcommands or model names
+        sub_text = parts[1] if len(parts) > 1 else ""
+        sub_lower = sub_text.lower()
+
+        # /model gets two-stage ghost text
+        if base_cmd == "/model" and " " not in sub_text and self._completer:
+            info = self._completer._get_model_info()
+            if info:
+                providers = info.get("providers", {})
+                models_for = info.get("models_for")
+                current_prov = info.get("current_provider", "")
+
+                if ":" in sub_text:
+                    # Stage 2: after provider:, suggest model
+                    prov_part, model_part = sub_text.split(":", 1)
+                    model_lower = model_part.lower()
+                    if models_for:
+                        try:
+                            for mid in models_for(prov_part):
+                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
+                                    return Suggestion(mid[len(model_part):])
+                        except Exception:
+                            pass
+                else:
+                    # Stage 1: suggest provider name with :
+                    for pid in sorted(providers, key=lambda p: (p == current_prov, p)):
+                        candidate = f"{pid}:"
+                        if candidate.lower().startswith(sub_lower) and candidate.lower() != sub_lower:
+                            return Suggestion(candidate[len(sub_text):])
+
+        # Static subcommands
+        if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
+            if " " not in sub_text:
+                for sub in SUBCOMMANDS[base_cmd]:
+                    if sub.startswith(sub_lower) and sub != sub_lower:
+                        return Suggestion(sub[len(sub_text):])
+
+        # Fall back to history
+        if self._history:
+            return self._history.get_suggestion(buffer, document)
+        return None
 
 
 def _file_size_label(path: str) -> str:

@@ -481,7 +481,34 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — hierarchical, recursive directory walk."""
+    """AGENTS.md — hierarchical, recursive directory walk.
+
+    Loads an optional global AGENTS.md from HERMES_HOME first, then the
+    project-local AGENTS.md files discovered recursively from *cwd_path*.
+    Both the global and project sections are individually scanned and
+    truncated before being combined.
+    """
+    sections = []
+
+    # Optional user-authored global AGENTS.md from HERMES_HOME
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading AGENTS.md: %s", e)
+
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    global_agents_path = hermes_home / "AGENTS.md"
+    if global_agents_path.exists():
+        try:
+            content = global_agents_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, "~/.hermes/AGENTS.md")
+                content = _truncate_content(content, "~/.hermes/AGENTS.md")
+                sections.append(f"## ~/.hermes/AGENTS.md\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read global AGENTS.md from %s: %s", global_agents_path, e)
+
     top_level_agents = None
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
@@ -489,31 +516,35 @@ def _load_agents_md(cwd_path: Path) -> str:
             top_level_agents = candidate
             break
 
-    if not top_level_agents:
+    if top_level_agents:
+        agents_files = []
+        for root, dirs, files in os.walk(cwd_path):
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')
+            ]
+            for f in files:
+                if f.lower() == "agents.md":
+                    agents_files.append(Path(root) / f)
+        agents_files.sort(key=lambda p: len(p.parts))
+
+        total_content = ""
+        for agents_path in agents_files:
+            try:
+                content = agents_path.read_text(encoding="utf-8").strip()
+                if content:
+                    rel_path = agents_path.relative_to(cwd_path)
+                    content = _scan_context_content(content, str(rel_path))
+                    total_content += f"## {rel_path}\n\n{content}\n\n"
+            except Exception as e:
+                logger.debug("Could not read %s: %s", agents_path, e)
+
+        if total_content:
+            sections.append(_truncate_content(total_content, "AGENTS.md"))
+
+    if not sections:
         return ""
-
-    agents_files = []
-    for root, dirs, files in os.walk(cwd_path):
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
-        for f in files:
-            if f.lower() == "agents.md":
-                agents_files.append(Path(root) / f)
-    agents_files.sort(key=lambda p: len(p.parts))
-
-    total_content = ""
-    for agents_path in agents_files:
-        try:
-            content = agents_path.read_text(encoding="utf-8").strip()
-            if content:
-                rel_path = agents_path.relative_to(cwd_path)
-                content = _scan_context_content(content, str(rel_path))
-                total_content += f"## {rel_path}\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read %s: %s", agents_path, e)
-
-    if not total_content:
-        return ""
-    return _truncate_content(total_content, "AGENTS.md")
+    return "\n\n".join(sections)
 
 
 def _load_claude_md(cwd_path: Path) -> str:

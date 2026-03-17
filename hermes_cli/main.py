@@ -2986,7 +2986,18 @@ For more help on a command:
     
     # config migrate
     config_migrate = config_subparsers.add_parser("migrate", help="Update config with new options")
-    
+
+    # config backup
+    config_backup = config_subparsers.add_parser("backup", help="Git-based config backup")
+    config_backup_sub = config_backup.add_subparsers(dest="backup_command")
+    config_backup_sub.add_parser("status", help="Show backup status")
+    config_backup_init = config_backup_sub.add_parser("init", help="Initialize backup repo")
+    config_backup_init.add_argument("remote", nargs="?", help="Optional remote URL (e.g. git@github.com:you/hermes-config)")
+    config_backup_sub.add_parser("push", help="Commit and push config changes")
+    config_backup_sub.add_parser("pull", help="Pull latest config from remote")
+    config_backup_auto = config_backup_sub.add_parser("auto", help="Enable/disable hourly auto-backup")
+    config_backup_auto.add_argument("state", choices=["on", "off"], help="on or off")
+
     config_parser.set_defaults(func=cmd_config)
     
     # =========================================================================

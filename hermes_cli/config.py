@@ -1749,6 +1749,186 @@ def set_config_value(key: str, value: str):
 # Command handler
 # =============================================================================
 
+BACKUP_TRACKED = ["config.yaml", "SOUL.md", "skills", "cron", "memories", ".gitignore"]
+BACKUP_GITIGNORE = """.env
+auth.json
+auth.lock
+logs/
+audio_cache/
+images/
+sandboxes/
+sessions/
+pairing/
+migration/
+bin/
+workspace/
+*.pid
+*.lock
+gateway_state.json
+channel_directory.json
+interrupt_debug.log
+state.db
+state.db-shm
+state.db-wal
+"""
+BACKUP_CRON_MARKER = "# hermes-config-backup"
+BACKUP_CRON_LINE = "0 * * * * /bin/zsh -lc 'hermes config backup push' >> ~/.hermes/logs/backup.log 2>&1"
+
+
+def _git(args: list, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+
+
+def backup_command(args):
+    """Handle hermes config backup subcommands."""
+    import datetime
+    home = get_hermes_home()
+    git_dir = home / ".git"
+    subcmd = getattr(args, "backup_command", None) or "status"
+
+    if subcmd == "init":
+        # Init git repo
+        if not git_dir.exists():
+            r = _git(["init"], cwd=home)
+            if r.returncode != 0:
+                print(color(f"  ✗ git init failed: {r.stderr.strip()}", Colors.RED))
+                sys.exit(1)
+            print(color("  ✓ Initialized git repo in ~/.hermes/", Colors.GREEN))
+        else:
+            print("  Git repo already initialized")
+
+        # Write .gitignore
+        gi_path = home / ".gitignore"
+        if not gi_path.exists():
+            gi_path.write_text(BACKUP_GITIGNORE)
+            print(color("  ✓ Created .gitignore (secrets excluded)", Colors.GREEN))
+
+        # Initial commit
+        existing = [f for f in BACKUP_TRACKED if (home / f).exists()]
+        _git(["add"] + existing, cwd=home)
+        diff = _git(["diff", "--cached", "--quiet"], cwd=home)
+        if diff.returncode != 0:
+            _git(["commit", "-m", "initial hermes config snapshot"], cwd=home)
+            print(color("  ✓ Created initial snapshot", Colors.GREEN))
+
+        # Add remote if provided
+        remote = getattr(args, "remote", None)
+        if remote:
+            existing_remote = _git(["remote", "get-url", "origin"], cwd=home)
+            if existing_remote.returncode == 0:
+                _git(["remote", "set-url", "origin", remote], cwd=home)
+                print(color(f"  ✓ Updated remote: {remote}", Colors.GREEN))
+            else:
+                _git(["remote", "add", "origin", remote], cwd=home)
+                print(color(f"  ✓ Remote added: {remote}", Colors.GREEN))
+
+        print()
+        print("  Next steps:")
+        print("    hermes config backup auto on   — enable hourly auto-backup")
+        if not remote:
+            print("    hermes config backup init <url> — add a remote for off-machine backup")
+
+    elif subcmd == "push":
+        if not git_dir.exists():
+            print(color("  ✗ No backup repo. Run: hermes config backup init", Colors.RED))
+            sys.exit(1)
+
+        existing = [f for f in BACKUP_TRACKED if (home / f).exists()]
+        _git(["add"] + existing, cwd=home)
+        diff = _git(["diff", "--cached", "--quiet"], cwd=home)
+        if diff.returncode == 0:
+            print("  Nothing to commit — config unchanged")
+            sys.exit(0)
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        _git(["commit", "-m", f"auto: config snapshot {timestamp}"], cwd=home)
+        print(color(f"  ✓ Committed snapshot ({timestamp})", Colors.GREEN))
+
+        remote = _git(["remote", "get-url", "origin"], cwd=home)
+        if remote.returncode == 0:
+            branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=home).stdout.strip() or "main"
+            r = _git(["push", "origin", branch], cwd=home)
+            if r.returncode == 0:
+                print(color(f"  ✓ Pushed to {remote.stdout.strip()}", Colors.GREEN))
+            else:
+                print(color(f"  ⚠ Push failed: {r.stderr.strip()}", Colors.YELLOW))
+
+    elif subcmd == "pull":
+        if not git_dir.exists():
+            print(color("  ✗ No backup repo. Run: hermes config backup init", Colors.RED))
+            sys.exit(1)
+        remote = _git(["remote", "get-url", "origin"], cwd=home)
+        if remote.returncode != 0:
+            print(color("  ✗ No remote configured. Run: hermes config backup init <url>", Colors.RED))
+            sys.exit(1)
+        branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=home).stdout.strip() or "main"
+        r = _git(["pull", "origin", branch], cwd=home)
+        if r.returncode == 0:
+            print(color("  ✓ Pulled latest config from remote", Colors.GREEN))
+            print(f"  {r.stdout.strip()}")
+        else:
+            print(color(f"  ✗ Pull failed: {r.stderr.strip()}", Colors.RED))
+            sys.exit(1)
+
+    elif subcmd == "auto":
+        state = getattr(args, "state", None)
+        try:
+            result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            lines = result.stdout.splitlines() if result.returncode == 0 else []
+        except Exception:
+            lines = []
+
+        lines = [l for l in lines if BACKUP_CRON_MARKER not in l]
+
+        if state == "on":
+            lines.append(f"{BACKUP_CRON_LINE}  {BACKUP_CRON_MARKER}")
+            subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True)
+            print(color("  ✓ Auto-backup enabled (hourly)", Colors.GREEN))
+            print("    Logs: ~/.hermes/logs/backup.log")
+        else:
+            subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True)
+            print(color("  ✓ Auto-backup disabled", Colors.GREEN))
+
+    else:  # status
+        if not git_dir.exists():
+            print("  No backup repo. Run: hermes config backup init")
+            return
+
+        print()
+        print(color("  Config Backup Status", Colors.CYAN, Colors.BOLD))
+        print()
+
+        last = _git(["log", "-1", "--format=%h %s (%ar)"], cwd=home)
+        if last.returncode == 0 and last.stdout.strip():
+            print(f"  Last commit:  {last.stdout.strip()}")
+        else:
+            print("  Last commit:  none yet")
+
+        remote = _git(["remote", "get-url", "origin"], cwd=home)
+        if remote.returncode == 0:
+            print(f"  Remote:       {remote.stdout.strip()}")
+        else:
+            print(color("  Remote:       none (local only)", Colors.DIM))
+
+        # Check cron
+        cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        auto_on = cron.returncode == 0 and BACKUP_CRON_MARKER in cron.stdout
+        status_str = color("on (hourly)", Colors.GREEN) if auto_on else color("off", Colors.DIM)
+        print(f"  Auto-backup:  {status_str}")
+
+        # Dirty files
+        existing = [f for f in BACKUP_TRACKED if (home / f).exists()]
+        dirty = _git(["status", "--short"] + existing, cwd=home)
+        if dirty.stdout.strip():
+            print()
+            print(color("  Uncommitted changes:", Colors.YELLOW))
+            for line in dirty.stdout.strip().splitlines():
+                print(f"    {line}")
+        else:
+            print("  Changes:      none (clean)")
+        print()
+
+
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
@@ -1872,15 +2052,19 @@ def config_command(args):
         
         print()
     
+    elif subcmd == "backup":
+        backup_command(args)
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()
         print("Available commands:")
-        print("  hermes config           Show current configuration")
-        print("  hermes config edit      Open config in editor")
+        print("  hermes config                     Show current configuration")
+        print("  hermes config edit                Open config in editor")
         print("  hermes config set <key> <value>   Set a config value")
-        print("  hermes config check     Check for missing/outdated config")
-        print("  hermes config migrate   Update config with new options")
-        print("  hermes config path      Show config file path")
-        print("  hermes config env-path  Show .env file path")
+        print("  hermes config check               Check for missing/outdated config")
+        print("  hermes config migrate             Update config with new options")
+        print("  hermes config path                Show config file path")
+        print("  hermes config env-path            Show .env file path")
+        print("  hermes config backup              Git-based config backup (init/push/pull/status/auto)")
         sys.exit(1)

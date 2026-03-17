@@ -689,21 +689,45 @@ class SessionDB:
         ``NOT``) have special meaning.  Passing raw user input directly to
         MATCH can cause ``sqlite3.OperationalError``.
 
-        Strategy: strip characters that are only meaningful as FTS5 operators
-        and would otherwise cause syntax errors.  This preserves normal keyword
-        search while preventing crashes on inputs like ``C++``, ``"unterminated``,
-        or ``hello AND``.
+        Strategy:
+        - Preserve properly paired quoted phrases (``"exact phrase"``)
+        - Strip unmatched FTS5-special characters that would cause errors
+        - Wrap unquoted hyphenated terms in quotes so FTS5 matches them
+          as exact phrases instead of splitting on the hyphen
         """
-        # Remove FTS5-special characters that are not useful in keyword search
-        sanitized = re.sub(r'[+{}()"^]', " ", query)
-        # Collapse repeated * (e.g. "***") into a single one, and remove
-        # leading * (prefix-only matching requires at least one char before *)
+        # Step 1: Extract balanced double-quoted phrases and protect them
+        # from further processing via numbered placeholders.
+        _quoted_parts: list = []
+
+        def _preserve_quoted(m: re.Match) -> str:
+            _quoted_parts.append(m.group(0))
+            return f"\x00Q{len(_quoted_parts) - 1}\x00"
+
+        sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
+
+        # Step 2: Strip remaining (unmatched) FTS5-special characters
+        sanitized = re.sub(r'[+{}()\"^]', " ", sanitized)
+
+        # Step 3: Collapse repeated * (e.g. "***") into a single one,
+        # and remove leading * (prefix-only needs at least one char before *)
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
-        # Remove dangling boolean operators at start/end that would cause
-        # syntax errors (e.g. "hello AND" or "OR world")
+
+        # Step 4: Remove dangling boolean operators at start/end that would
+        # cause syntax errors (e.g. "hello AND" or "OR world")
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+
+        # Step 5: Wrap unquoted hyphenated terms (e.g. ``chat-send``) in
+        # double quotes.  FTS5's tokenizer splits on hyphens, turning
+        # ``chat-send`` into ``chat AND send``.  Quoting preserves the
+        # intended phrase match.
+        sanitized = re.sub(r"\b(\w+(?:-\w+)+)\b", r'"\1"', sanitized)
+
+        # Step 6: Restore preserved quoted phrases
+        for i, quoted in enumerate(_quoted_parts):
+            sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
+
         return sanitized.strip()
 
     def search_messages(

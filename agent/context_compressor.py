@@ -311,6 +311,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 )
             compressed.append(msg)
 
+        _merge_summary_into_tail = False
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
             first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
@@ -326,13 +327,25 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 flipped = "assistant" if summary_role == "user" else "user"
                 if flipped != last_head_role:
                     summary_role = flipped
-            compressed.append({"role": summary_role, "content": summary})
+                else:
+                    # Both roles would create consecutive same-role messages
+                    # (e.g. head=assistant, tail=user — neither role works).
+                    # Merge the summary into the first tail message instead
+                    # of inserting a standalone message that breaks alternation.
+                    _merge_summary_into_tail = True
+            if not _merge_summary_into_tail:
+                compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
                 print("   ⚠️  No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
+            msg = messages[i].copy()
+            if _merge_summary_into_tail and i == compress_end:
+                original = msg.get("content") or ""
+                msg["content"] = summary + "\n\n" + original
+                _merge_summary_into_tail = False
+            compressed.append(msg)
 
         self.compression_count += 1
 

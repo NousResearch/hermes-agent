@@ -46,6 +46,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    API_SERVER = "api_server"
 
 
 @dataclass
@@ -246,6 +247,9 @@ class GatewayConfig:
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
+            # API Server uses enabled flag only (no token needed)
+            elif platform == Platform.API_SERVER:
+                connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -354,65 +358,73 @@ class GatewayConfig:
 def load_gateway_config() -> GatewayConfig:
     """
     Load gateway configuration from multiple sources.
-    
+
     Priority (highest to lowest):
     1. Environment variables
-    2. ~/.hermes/gateway.json
-    3. cli-config.yaml gateway section
-    4. Defaults
+    2. ~/.hermes/config.yaml (primary user-facing config)
+    3. ~/.hermes/gateway.json (legacy — provides defaults under config.yaml)
+    4. Built-in defaults
     """
-    config = GatewayConfig()
-    
-    # Try loading from ~/.hermes/gateway.json
     _home = get_hermes_home()
-    gateway_config_path = _home / "gateway.json"
-    if gateway_config_path.exists():
-        try:
-            with open(gateway_config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                config = GatewayConfig.from_dict(data)
-        except Exception as e:
-            print(f"[gateway] Warning: Failed to load {gateway_config_path}: {e}")
+    gw_data: dict = {}
 
-    # Bridge session_reset from config.yaml (the user-facing config file)
-    # into the gateway config. config.yaml takes precedence over gateway.json
-    # for session reset policy since that's where hermes setup writes it.
+    # Legacy fallback: gateway.json provides the base layer.
+    # config.yaml keys always win when both specify the same setting.
+    gateway_json_path = _home / "gateway.json"
+    if gateway_json_path.exists():
+        try:
+            with open(gateway_json_path, "r", encoding="utf-8") as f:
+                gw_data = json.load(f) or {}
+            logger.info(
+                "Loaded legacy %s — consider moving settings to config.yaml",
+                gateway_json_path,
+            )
+        except Exception as e:
+            logger.warning("Failed to load %s: %s", gateway_json_path, e)
+
+    # Primary source: config.yaml
     try:
         import yaml
         config_yaml_path = _home / "config.yaml"
         if config_yaml_path.exists():
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
+
+            # Map config.yaml keys → GatewayConfig.from_dict() schema.
+            # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
-                config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+                gw_data["default_reset_policy"] = sr
 
-            # Bridge quick commands from config.yaml into gateway runtime config.
-            # config.yaml is the user-facing config source, so when present it
-            # should override gateway.json for this setting.
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:
                 if isinstance(qc, dict):
-                    config.quick_commands = qc
+                    gw_data["quick_commands"] = qc
                 else:
-                    logger.warning("Ignoring invalid quick_commands in config.yaml (expected mapping, got %s)", type(qc).__name__)
+                    logger.warning(
+                        "Ignoring invalid quick_commands in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(qc).__name__,
+                    )
 
-            # Bridge STT enable/disable from config.yaml into gateway runtime.
-            # This keeps the gateway aligned with the user-facing config source.
             stt_cfg = yaml_cfg.get("stt")
-            if isinstance(stt_cfg, dict) and "enabled" in stt_cfg:
-                config.stt_enabled = _coerce_bool(stt_cfg.get("enabled"), True)
+            if isinstance(stt_cfg, dict):
+                gw_data["stt"] = stt_cfg
 
-            # Bridge group session isolation from config.yaml into gateway runtime.
-            # Secure default is per-user isolation in shared chats.
             if "group_sessions_per_user" in yaml_cfg:
-                config.group_sessions_per_user = _coerce_bool(
-                    yaml_cfg.get("group_sessions_per_user"),
-                    True,
-                )
+                gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
 
-            # Bridge discord settings from config.yaml to env vars
-            # (env vars take precedence — only set if not already defined)
+            streaming_cfg = yaml_cfg.get("streaming")
+            if isinstance(streaming_cfg, dict):
+                gw_data["streaming"] = streaming_cfg
+
+            if "reset_triggers" in yaml_cfg:
+                gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+
+            if "always_log_local" in yaml_cfg:
+                gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
@@ -424,8 +436,17 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Bridge whatsapp settings from config.yaml into platform config
+            whatsapp_cfg = yaml_cfg.get("whatsapp", {})
+            if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
+                if Platform.WHATSAPP not in config.platforms:
+                    config.platforms[Platform.WHATSAPP] = PlatformConfig()
+                config.platforms[Platform.WHATSAPP].extra["reply_prefix"] = whatsapp_cfg["reply_prefix"]
     except Exception:
         pass
+
+    config = GatewayConfig.from_dict(gw_data)
 
     # Override with environment variables
     _apply_env_overrides(config)
@@ -642,6 +663,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # API Server
+    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
+    api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_port = os.getenv("API_SERVER_PORT")
+    api_server_host = os.getenv("API_SERVER_HOST")
+    if api_server_enabled or api_server_key:
+        if Platform.API_SERVER not in config.platforms:
+            config.platforms[Platform.API_SERVER] = PlatformConfig()
+        config.platforms[Platform.API_SERVER].enabled = True
+        if api_server_key:
+            config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+        if api_server_port:
+            try:
+                config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
+            except ValueError:
+                pass
+        if api_server_host:
+            config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:
@@ -658,10 +698,4 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
 
-def save_gateway_config(config: GatewayConfig) -> None:
-    """Save gateway configuration to ~/.hermes/gateway.json."""
-    gateway_config_path = get_hermes_home() / "gateway.json"
-    gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(gateway_config_path, "w", encoding="utf-8") as f:
-        json.dump(config.to_dict(), f, indent=2)
+

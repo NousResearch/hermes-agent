@@ -261,6 +261,30 @@ class TestFTS5Search:
         # The word "C" appears in the content, so FTS5 should find it
         assert isinstance(results, list)
 
+    def test_search_hyphenated_term_does_not_crash(self, db):
+        """Hyphenated terms like 'chat-send' must not crash FTS5."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Run the chat-send command")
+
+        results = db.search_messages("chat-send")
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
+                    for r in results)
+
+    def test_search_quoted_phrase_preserved(self, db):
+        """User-provided quoted phrases should be preserved for exact matching."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="docker networking is complex")
+        db.append_message("s1", role="assistant", content="networking docker tips")
+
+        # Quoted phrase should match only the exact order
+        results = db.search_messages('"docker networking"')
+        assert isinstance(results, list)
+        # Should find the user message (exact phrase) but may or may not find
+        # the assistant message depending on FTS5 phrase matching
+        assert len(results) >= 1
+
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
@@ -277,6 +301,43 @@ class TestFTS5Search:
         assert s('***') == ''
         # Valid prefix kept
         assert s('deploy*') == 'deploy*'
+
+    def test_sanitize_fts5_preserves_quoted_phrases(self):
+        """Properly paired double-quoted phrases should be preserved."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple quoted phrase
+        assert s('"exact phrase"') == '"exact phrase"'
+        # Quoted phrase alongside unquoted terms
+        assert '"docker networking"' in s('"docker networking" setup')
+        # Multiple quoted phrases
+        result = s('"hello world" OR "foo bar"')
+        assert '"hello world"' in result
+        assert '"foo bar"' in result
+        # Unmatched quote still stripped
+        assert '"' not in s('"unterminated')
+
+    def test_sanitize_fts5_quotes_hyphenated_terms(self):
+        """Hyphenated terms should be wrapped in quotes for exact matching."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple hyphenated term
+        assert s('chat-send') == '"chat-send"'
+        # Multiple hyphens
+        assert s('docker-compose-up') == '"docker-compose-up"'
+        # Hyphenated term with other words
+        result = s('fix chat-send bug')
+        assert '"chat-send"' in result
+        assert 'fix' in result
+        assert 'bug' in result
+        # Multiple hyphenated terms with OR
+        result = s('chat-send OR deploy-prod')
+        assert '"chat-send"' in result
+        assert '"deploy-prod"' in result
+        # Already-quoted hyphenated term — no double quoting
+        assert s('"chat-send"') == '"chat-send"'
+        # Hyphenated inside a quoted phrase stays as-is
+        assert s('"my chat-send thing"') == '"my chat-send thing"'
 
 
 # =========================================================================

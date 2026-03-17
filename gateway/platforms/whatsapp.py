@@ -136,6 +136,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             "session_path",
             get_hermes_home() / "whatsapp" / "session"
         ))
+        self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -193,6 +194,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a")
             self._bridge_log_fh = bridge_log_fh
+
+            # Build bridge subprocess environment.
+            # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
+            # can use it without the user needing to set a separate env var.
+            bridge_env = os.environ.copy()
+            if self._reply_prefix is not None:
+                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -204,6 +213,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
+                env=bridge_env,
             )
             
             # Wait for the bridge to connect to WhatsApp.

@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -401,8 +402,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     venv_bin = str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
-    # Build a PATH that includes the venv, node_modules, and standard system dirs
-    sane_path = f"{venv_bin}:{node_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    path_entries = [venv_bin, node_bin]
+    resolved_node = shutil.which("node")
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in path_entries:
+            path_entries.append(resolved_node_dir)
+    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
+    sane_path = ":".join(path_entries)
 
     hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
 

@@ -219,7 +219,6 @@ def load_cli_config() -> Dict[str, Any]:
             "streaming": False,
 
             "skin": "default",
-            "theme_mode": "auto",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -3272,7 +3271,7 @@ class HermesCLI:
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
-            print("  Configuration file: ~/.hermes/gateway.json")
+            print("  Configuration file: ~/.hermes/config.yaml")
             print()
             
         except Exception as e:
@@ -3282,7 +3281,7 @@ class HermesCLI:
             print("    1. Set environment variables:")
             print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print("    2. Or create ~/.hermes/gateway.json")
+            print("    2. Or configure settings in ~/.hermes/config.yaml")
             print()
     
     def process_command(self, command: str) -> bool:

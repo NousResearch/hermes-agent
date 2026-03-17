@@ -332,6 +332,14 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
     },
 
+    # WhatsApp platform settings (gateway mode)
+    "whatsapp": {
+        # Reply prefix prepended to every outgoing WhatsApp message.
+        # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
+        # Set to "" (empty string) to disable the header entirely.
+        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
@@ -364,7 +372,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 9,
+    "_config_version": 10,
 }
 
 # =============================================================================
@@ -762,6 +770,38 @@ OPTIONAL_ENV_VARS = {
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_ENABLED": {
+        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
+        "prompt": "Enable API server (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_KEY": {
+        "description": "Bearer token for API server authentication. If empty, all requests are allowed (local use only).",
+        "prompt": "API server auth key (optional)",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_PORT": {
+        "description": "Port for the API server (default: 8642).",
+        "prompt": "API server port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_HOST": {
+        "description": "Host/bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access — requires API_SERVER_KEY for security.",
+        "prompt": "API server host",
         "url": None,
         "password": False,
         "category": "messaging",

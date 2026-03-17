@@ -51,6 +51,7 @@ def _make_adapter():
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
+    adapter._reply_prefix = None
     adapter._running = False
     adapter._message_queue = asyncio.Queue()
     return adapter

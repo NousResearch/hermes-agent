@@ -1162,6 +1162,13 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.API_SERVER:
+            from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
+            if not check_api_server_requirements():
+                logger.warning("API Server: aiohttp not installed")
+                return None
+            return APIServerAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, or your browser — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
@@ -27,6 +27,7 @@ flowchart TB
             mm[Mattermost]
             mx[Matrix]
             dt[DingTalk]
+            api["API Server<br/>(OpenAI-compatible)"]
         end
 
         store["Session store<br/>per chat"]
@@ -45,6 +46,7 @@ flowchart TB
     mm --> store
     mx --> store
     dt --> store
+    api --> store
     store --> agent
     cron --> store
 ```
@@ -306,6 +308,7 @@ Each platform has its own toolset:
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
+| API Server | `hermes` (default) | Full tools including terminal |
 
 ## Next Steps
 
@@ -320,3 +323,4 @@ Each platform has its own toolset:
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
+- [Open WebUI + API Server](open-webui.md)

@@ -46,6 +46,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    API_SERVER = "api_server"
 
 
 @dataclass
@@ -238,6 +239,9 @@ class GatewayConfig:
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
+            # API Server uses enabled flag only (no token needed)
+            elif platform == Platform.API_SERVER:
+                connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -416,6 +420,13 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Bridge whatsapp settings from config.yaml into platform config
+            whatsapp_cfg = yaml_cfg.get("whatsapp", {})
+            if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
+                if Platform.WHATSAPP not in config.platforms:
+                    config.platforms[Platform.WHATSAPP] = PlatformConfig()
+                config.platforms[Platform.WHATSAPP].extra["reply_prefix"] = whatsapp_cfg["reply_prefix"]
     except Exception:
         pass
 
@@ -633,6 +644,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=sms_home,
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # API Server
+    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
+    api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_port = os.getenv("API_SERVER_PORT")
+    api_server_host = os.getenv("API_SERVER_HOST")
+    if api_server_enabled or api_server_key:
+        if Platform.API_SERVER not in config.platforms:
+            config.platforms[Platform.API_SERVER] = PlatformConfig()
+        config.platforms[Platform.API_SERVER].enabled = True
+        if api_server_key:
+            config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+        if api_server_port:
+            try:
+                config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
+            except ValueError:
+                pass
+        if api_server_host:
+            config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

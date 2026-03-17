@@ -44,6 +44,14 @@ const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.herme
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
+const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
+  ? DEFAULT_REPLY_PREFIX
+  : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+
+function formatOutgoingMessage(message) {
+  return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+}
 
 mkdirSync(SESSION_DIR, { recursive: true });
 
@@ -188,7 +196,7 @@ async function startSocket() {
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && (body.startsWith('⚕ *Hermes Agent*') || recentlySentIds.has(msg.key.id))) {
+      if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
           try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
         }
@@ -251,10 +259,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    // Prefix responses so the user can distinguish agent replies from their
-    // own messages (especially in self-chat / "Message Yourself").
-    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
-    const sent = await sock.sendMessage(chatId, { text: prefixed });
+    const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
 
     // Track sent message ID to prevent echo-back loops
     if (sent?.key?.id) {
@@ -282,9 +287,8 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
-    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    await sock.sendMessage(chatId, { text: prefixed, edit: key });
+    await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

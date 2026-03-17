@@ -11,43 +11,177 @@ restartPolicyType = "always"
 sleepApplication = false
 
 # ── Environment variable definitions ─────────────────────────
+# LLM Providers (set at least one)
 
 [[deploy.envVars]]
 name = "OPENROUTER_API_KEY"
-description = "OpenRouter API key (openrouter.ai) — use this OR NOUS_API_KEY"
+description = "OpenRouter API key (openrouter.ai) — access 200+ models. Use this OR NOUS_API_KEY."
 
 [[deploy.envVars]]
 name = "NOUS_API_KEY"
-description = "Nous Portal API key (portal.nousresearch.com) — use this OR OPENROUTER_API_KEY"
+description = "Nous Portal API key (portal.nousresearch.com). Use this OR OPENROUTER_API_KEY."
+
+[[deploy.envVars]]
+name = "ANTHROPIC_API_KEY"
+description = "Anthropic API key for direct Claude access (api.anthropic.com)."
+
+[[deploy.envVars]]
+name = "OPENAI_API_KEY"
+description = "OpenAI API key for direct GPT access (api.openai.com)."
+
+[[deploy.envVars]]
+name = "KIMI_API_KEY"
+description = "Kimi / Moonshot API key — strong at coding tasks."
+
+[[deploy.envVars]]
+name = "MINIMAX_API_KEY"
+description = "MiniMax API key."
+
+[[deploy.envVars]]
+name = "MINIMAX_GROUP_ID"
+description = "MiniMax group ID (required when using MiniMax)."
+
+[[deploy.envVars]]
+name = "ZHIPU_API_KEY"
+description = "ZhipuAI GLM API key."
+
+[[deploy.envVars]]
+name = "CUSTOM_API_KEY"
+description = "API key for a self-hosted or OpenAI-compatible endpoint (vLLM, Ollama, LM Studio)."
+
+[[deploy.envVars]]
+name = "CUSTOM_ENDPOINT_URL"
+description = "Base URL for a custom OpenAI-compatible endpoint. Set together with CUSTOM_API_KEY."
 
 [[deploy.envVars]]
 name = "LLM_MODEL"
-description = "Model to use (e.g. anthropic/claude-opus-4-6, Hermes-4-70B)"
+description = "Model to use, e.g. anthropic/claude-opus-4-6 or Hermes-4-70B."
 defaultValue = "anthropic/claude-opus-4-6"
 
 [[deploy.envVars]]
 name = "HERMES_INFERENCE_PROVIDER"
-description = "Provider override: auto | openrouter | nous-api (auto-detected if not set)"
+description = "Provider override: auto | openrouter | nous-api | anthropic | openai (auto-detected if not set)."
 defaultValue = "auto"
 
 [[deploy.envVars]]
+name = "HERMES_MAX_TURNS"
+description = "Max tool-calling iterations per conversation turn."
+defaultValue = "60"
+
+[[deploy.envVars]]
+name = "HERMES_REASONING_EFFORT"
+description = "Reasoning depth: low | medium | high."
+defaultValue = "medium"
+
+# ── Messaging Platforms (set at least one) ────────────────────
+
+[[deploy.envVars]]
 name = "TELEGRAM_BOT_TOKEN"
-description = "Telegram bot token from @BotFather"
+description = "Telegram bot token from @BotFather."
 
 [[deploy.envVars]]
 name = "TELEGRAM_HOME_CHANNEL"
-description = "Your Telegram user ID (from @userinfobot)"
+description = "Your Telegram user ID (from @userinfobot) — where the agent sends proactive messages."
 
 [[deploy.envVars]]
 name = "TELEGRAM_ALLOWED_USERS"
-description = "Comma-separated Telegram user IDs allowed to use the bot"
+description = "Comma-separated Telegram user IDs allowed to use the bot. Leave empty to allow all."
+
+[[deploy.envVars]]
+name = "DISCORD_BOT_TOKEN"
+description = "Discord bot token from the Discord developer portal."
+
+[[deploy.envVars]]
+name = "DISCORD_HOME_CHANNEL"
+description = "Discord channel ID for proactive messages."
+
+[[deploy.envVars]]
+name = "DISCORD_ALLOWED_USERS"
+description = "Comma-separated Discord user IDs allowed to use the bot."
+
+[[deploy.envVars]]
+name = "SLACK_BOT_TOKEN"
+description = "Slack bot OAuth token (xoxb-…)."
+
+[[deploy.envVars]]
+name = "SLACK_APP_TOKEN"
+description = "Slack app-level token (xapp-…) for Socket Mode."
+
+[[deploy.envVars]]
+name = "SLACK_HOME_CHANNEL"
+description = "Slack channel ID for proactive messages."
+
+[[deploy.envVars]]
+name = "SIGNAL_HTTP_URL"
+description = "URL of a running signal-cli REST API bridge."
+
+[[deploy.envVars]]
+name = "SIGNAL_PHONE_NUMBER"
+description = "Registered Signal phone number used by the bridge."
+
+[[deploy.envVars]]
+name = "EMAIL_ADDRESS"
+description = "Email address for the agent inbox (IMAP/SMTP)."
+
+[[deploy.envVars]]
+name = "EMAIL_PASSWORD"
+description = "IMAP/SMTP password or app password."
+
+[[deploy.envVars]]
+name = "EMAIL_IMAP_HOST"
+description = "IMAP hostname, e.g. imap.gmail.com."
+
+[[deploy.envVars]]
+name = "EMAIL_SMTP_HOST"
+description = "SMTP hostname, e.g. smtp.gmail.com."
+
+# ── Optional Tool APIs ────────────────────────────────────────
+
+[[deploy.envVars]]
+name = "FIRECRAWL_API_KEY"
+description = "Firecrawl API key for web scraping and extraction."
+
+[[deploy.envVars]]
+name = "PARALLEL_API_KEY"
+description = "Parallel API key for web search."
+
+[[deploy.envVars]]
+name = "FAL_KEY"
+description = "fal.ai API key for image generation."
+
+[[deploy.envVars]]
+name = "BROWSERBASE_API_KEY"
+description = "Browserbase API key for cloud browser automation."
+
+[[deploy.envVars]]
+name = "BROWSERBASE_PROJECT_ID"
+description = "Browserbase project ID."
+
+[[deploy.envVars]]
+name = "HONCHO_API_KEY"
+description = "Honcho API key for long-term user modeling."
+
+[[deploy.envVars]]
+name = "GITHUB_TOKEN"
+description = "GitHub personal access token for Skills Hub sync and code tools."
+
+[[deploy.envVars]]
+name = "SKILLS_HUB_REPO"
+description = "Custom skills repository (owner/repo). Defaults to the Nous Research skills hub."
+
+# ── Gateway ───────────────────────────────────────────────────
 
 [[deploy.envVars]]
 name = "TERMINAL_ENV"
-description = "Terminal backend: local | docker"
+description = "Terminal backend: local | docker."
 defaultValue = "local"
 
 [[deploy.envVars]]
 name = "GATEWAY_ALLOW_ALL_USERS"
-description = "Set to true to allow any Telegram user (not recommended)"
+description = "Set to true to allow any user on any platform (not recommended for public bots)."
+defaultValue = "false"
+
+[[deploy.envVars]]
+name = "FORCE_AUTH_RESET"
+description = "Set to true to overwrite auth.json from HERMES_AUTH_JSON on next boot."
 defaultValue = "false"

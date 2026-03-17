@@ -1416,11 +1416,13 @@ def setup_model_provider(config: dict):
     elif provider_idx == 14:  # xgate
         selected_provider = "xgate"
         print()
-        print_header("xgate API Key")
+        print_header("xgate (Surface Only)")
         pconfig = PROVIDER_REGISTRY["xgate"]
         print_info(f"Provider: {pconfig.name}")
         print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Configure an API key if your xgate deployment requires one.")
+        print_info("This PR only adds the named provider surface and default base URL.")
+        print_info("Header-based auth lands in follow-up PR 2 and is required for the default hosted xgate flow.")
+        print_info("Only configure an API key here if your xgate deployment already accepts one directly.")
         print()
 
         existing_key = get_env_value("XGATE_API_KEY")
@@ -1437,7 +1439,7 @@ def setup_model_provider(config: dict):
                 save_env_value("XGATE_API_KEY", api_key)
                 print_success("xgate API key saved")
             else:
-                print_warning("Skipped - agent won't work without an API key")
+                print_info("Skipped - the hosted xgate auth path is added in follow-up PR 2")
 
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")

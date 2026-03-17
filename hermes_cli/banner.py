@@ -260,8 +260,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
+    # Tools that are runtime-gated (lazy init) should not show as red/disabled.
+    # They appear unavailable at banner time but activate on first use.
+    _LAZY_INIT_TOOLSETS = {"honcho", "homeassistant_tools", "send_message"}
     for item in unavailable_toolsets:
-        disabled_tools.update(item.get("tools", []))
+        toolset_name = item.get("toolset", "")
+        if toolset_name not in _LAZY_INIT_TOOLSETS:
+            disabled_tools.update(item.get("tools", []))
 
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="center")

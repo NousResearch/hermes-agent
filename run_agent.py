@@ -407,6 +407,7 @@ class AIAgent:
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
+        self._active_children_lock = threading.Lock()
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -1526,7 +1527,9 @@ class AIAgent:
         # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
         # Propagate interrupt to any running child agents (subagent delegation)
-        for child in self._active_children:
+        with self._active_children_lock:
+            children_copy = list(self._active_children)
+        for child in children_copy:
             try:
                 child.interrupt(message)
             except Exception as e:

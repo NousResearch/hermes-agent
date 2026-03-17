@@ -40,6 +40,8 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     SIGNAL = "signal"
+    MATTERMOST = "mattermost"
+    MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
     SMS = "sms"
@@ -442,6 +444,8 @@ def load_gateway_config() -> GatewayConfig:
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
+        Platform.MATTERMOST: "MATTERMOST_TOKEN",
+        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -533,6 +537,53 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SIGNAL,
                 chat_id=signal_home,
                 name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Mattermost
+    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    if mattermost_token:
+        mattermost_url = os.getenv("MATTERMOST_URL", "")
+        if not mattermost_url:
+            logger.warning("MATTERMOST_TOKEN set but MATTERMOST_URL is missing")
+        if Platform.MATTERMOST not in config.platforms:
+            config.platforms[Platform.MATTERMOST] = PlatformConfig()
+        config.platforms[Platform.MATTERMOST].enabled = True
+        config.platforms[Platform.MATTERMOST].token = mattermost_token
+        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+        if mattermost_home:
+            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+                platform=Platform.MATTERMOST,
+                chat_id=mattermost_home,
+                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Matrix
+    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
+    if matrix_token or os.getenv("MATRIX_PASSWORD"):
+        if not matrix_homeserver:
+            logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
+        if Platform.MATRIX not in config.platforms:
+            config.platforms[Platform.MATRIX] = PlatformConfig()
+        config.platforms[Platform.MATRIX].enabled = True
+        if matrix_token:
+            config.platforms[Platform.MATRIX].token = matrix_token
+        config.platforms[Platform.MATRIX].extra["homeserver"] = matrix_homeserver
+        matrix_user = os.getenv("MATRIX_USER_ID", "")
+        if matrix_user:
+            config.platforms[Platform.MATRIX].extra["user_id"] = matrix_user
+        matrix_password = os.getenv("MATRIX_PASSWORD", "")
+        if matrix_password:
+            config.platforms[Platform.MATRIX].extra["password"] = matrix_password
+        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
+        matrix_home = os.getenv("MATRIX_HOME_ROOM")
+        if matrix_home:
+            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+                platform=Platform.MATRIX,
+                chat_id=matrix_home,
+                name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
             )
 
     # Home Assistant

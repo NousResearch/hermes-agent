@@ -1351,7 +1351,7 @@ class AIAgent:
         error: Optional[Exception] = None,
     ) -> Optional[Path]:
         """
-        Dump a debug-friendly HTTP request record for chat.completions.create().
+        Dump a debug-friendly HTTP request record for the active inference API.
 
         Captures the request body from api_kwargs (excluding transport-only keys
         like timeout). Intended for debugging provider-side 4xx failures where
@@ -1374,7 +1374,7 @@ class AIAgent:
                 "reason": reason,
                 "request": {
                     "method": "POST",
-                    "url": f"{self.base_url.rstrip('/')}/chat/completions",
+                    "url": f"{self.base_url.rstrip('/')}{'/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
                     "headers": {
                         "Authorization": f"Bearer {self._mask_api_key_for_logs(api_key)}",
                         "Content-Type": "application/json",

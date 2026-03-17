@@ -380,6 +380,31 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local video file natively as a Telegram video."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            if not os.path.exists(video_path):
+                return SendResult(success=False, error=f"Video not found: {video_path}")
+            with open(video_path, "rb") as vf:
+                msg = await self._bot.send_video(
+                    chat_id=int(chat_id),
+                    video=vf,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.error("[%s] Failed to send video: %s", self.name, e, exc_info=True)
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
     async def send_image(
         self,
         chat_id: str,

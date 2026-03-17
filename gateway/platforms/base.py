@@ -621,6 +621,40 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
     
+
+    @staticmethod
+    def extract_local_files(content: str):
+        """
+        Detect bare local file paths in response text and extract them
+        for native media delivery.
+
+        Matches absolute paths (starting with /) ending in common image
+        or video extensions. Skips paths already wrapped in MEDIA: or IMAGE: tags.
+        """
+        _LOCAL_MEDIA_EXTS = (
+            '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            '.mp4', '.mov', '.avi', '.mkv', '.webm',
+        )
+        ext_pattern = '|'.join(ext.lstrip('.') for ext in _LOCAL_MEDIA_EXTS)
+        pattern = r'(~?(?:/[\w.\-]+)+\.(?:' + ext_pattern + r'))\b'
+
+        paths = []
+        cleaned = content
+        for match in re.finditer(pattern, content):
+            path = match.group(1)
+            expanded = os.path.expanduser(path)
+            if os.path.isfile(expanded):
+                paths.append(expanded)
+
+        paths = list(dict.fromkeys(paths))
+
+        if paths:
+            for path in paths:
+                cleaned = cleaned.replace(path, '')
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+        return paths, cleaned
+
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -704,6 +738,9 @@ class BasePlatformAdapter(ABC):
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
+
+                # Extract bare local file paths for native media delivery
+                local_files, text_content = self.extract_local_files(text_content)
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
@@ -801,6 +838,23 @@ class BasePlatformAdapter(ABC):
                     except Exception as media_err:
                         print(f"[{self.name}] Error sending media: {media_err}")
             
+                # Send auto-detected local files as native attachments
+                for file_path in local_files:
+                    try:
+                        ext = Path(file_path).suffix.lower()
+                        if ext in _IMAGE_EXTS:
+                            await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=file_path,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=file_path,
+                            )
+                    except Exception as file_err:
+                        logger.error("[%s] Error sending local file: %s", self.name, file_err)
+
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)

@@ -144,9 +144,11 @@ class TestIsClaudeCodeTokenValid:
 
 
 class TestResolveAnthropicToken:
-    def test_prefers_oauth_token_over_api_key(self, monkeypatch):
+    def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
 
     def test_reports_claude_json_primary_key_source(self, monkeypatch, tmp_path):
@@ -174,9 +176,11 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-api03-mykey"
 
-    def test_falls_back_to_token(self, monkeypatch):
+    def test_falls_back_to_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
 
     def test_returns_none_with_no_creds(self, monkeypatch, tmp_path):

@@ -985,12 +985,19 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if len(platform_keys) > 1:
         platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
+
+    # Show MCP option if any MCP servers are configured
+    _has_mcp = bool(config.get("mcp_servers"))
+    if _has_mcp:
+        platform_choices.append("Configure MCP server tools")
+
     platform_choices.append("Done")
 
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
-    _done_idx = _reconfig_idx + 1
+    _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
+    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -1002,6 +1009,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         # "Reconfigure" selected
         if idx == _reconfig_idx:
             _reconfigure_tool(config)
+            print()
+            continue
+
+        # "Configure MCP tools" selected
+        if idx == _mcp_idx:
+            _configure_mcp_tools_interactive(config)
             print()
             continue
 
@@ -1089,6 +1102,137 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print(color("  Tool configuration saved to ~/.hermes/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
+
+
+# ─── MCP Tools Interactive Configuration ─────────────────────────────────────
+
+
+def _configure_mcp_tools_interactive(config: dict):
+    """Probe MCP servers for available tools and let user toggle them on/off.
+
+    Connects to each configured MCP server, discovers tools, then shows
+    a per-server curses checklist.  Writes changes back as ``tools.exclude``
+    entries in config.yaml.
+    """
+    from hermes_cli.curses_ui import curses_checklist
+
+    mcp_servers = config.get("mcp_servers") or {}
+    if not mcp_servers:
+        _print_info("No MCP servers configured.")
+        return
+
+    # Count enabled servers
+    enabled_names = [
+        k for k, v in mcp_servers.items()
+        if v.get("enabled", True) not in (False, "false", "0", "no", "off")
+    ]
+    if not enabled_names:
+        _print_info("All MCP servers are disabled.")
+        return
+
+    print()
+    print(color("  Discovering tools from MCP servers...", Colors.YELLOW))
+    print(color(f"  Connecting to {len(enabled_names)} server(s): {', '.join(enabled_names)}", Colors.DIM))
+
+    try:
+        from tools.mcp_tool import probe_mcp_server_tools
+        server_tools = probe_mcp_server_tools()
+    except Exception as exc:
+        _print_error(f"Failed to probe MCP servers: {exc}")
+        return
+
+    if not server_tools:
+        _print_warning("Could not discover tools from any MCP server.")
+        _print_info("Check that server commands/URLs are correct and dependencies are installed.")
+        return
+
+    # Report discovery results
+    failed = [n for n in enabled_names if n not in server_tools]
+    if failed:
+        for name in failed:
+            _print_warning(f"  Could not connect to '{name}'")
+
+    total_tools = sum(len(tools) for tools in server_tools.values())
+    print(color(f"  Found {total_tools} tool(s) across {len(server_tools)} server(s)", Colors.GREEN))
+    print()
+
+    any_changes = False
+
+    for server_name, tools in server_tools.items():
+        if not tools:
+            _print_info(f"  {server_name}: no tools found")
+            continue
+
+        srv_cfg = mcp_servers.get(server_name, {})
+        tools_cfg = srv_cfg.get("tools") or {}
+        include_list = tools_cfg.get("include") or []
+        exclude_list = tools_cfg.get("exclude") or []
+
+        # Build checklist labels
+        labels = []
+        for tool_name, description in tools:
+            desc_short = description[:70] + "..." if len(description) > 70 else description
+            if desc_short:
+                labels.append(f"{tool_name}  ({desc_short})")
+            else:
+                labels.append(tool_name)
+
+        # Determine which tools are currently enabled
+        pre_selected: Set[int] = set()
+        tool_names = [t[0] for t in tools]
+        for i, tool_name in enumerate(tool_names):
+            if include_list:
+                # Include mode: only included tools are selected
+                if tool_name in include_list:
+                    pre_selected.add(i)
+            elif exclude_list:
+                # Exclude mode: everything except excluded
+                if tool_name not in exclude_list:
+                    pre_selected.add(i)
+            else:
+                # No filter: all enabled
+                pre_selected.add(i)
+
+        chosen = curses_checklist(
+            f"MCP Server: {server_name}  ({len(tools)} tools)",
+            labels,
+            pre_selected,
+            cancel_returns=pre_selected,
+        )
+
+        if chosen == pre_selected:
+            _print_info(f"  {server_name}: no changes")
+            continue
+
+        # Compute new exclude list based on unchecked tools
+        new_exclude = [tool_names[i] for i in range(len(tool_names)) if i not in chosen]
+
+        # Update config
+        srv_cfg = mcp_servers.setdefault(server_name, {})
+        tools_cfg = srv_cfg.setdefault("tools", {})
+
+        if new_exclude:
+            tools_cfg["exclude"] = new_exclude
+            # Remove include if present — we're switching to exclude mode
+            tools_cfg.pop("include", None)
+        else:
+            # All tools enabled — clear filters
+            tools_cfg.pop("exclude", None)
+            tools_cfg.pop("include", None)
+
+        enabled_count = len(chosen)
+        disabled_count = len(tools) - enabled_count
+        _print_success(
+            f"  {server_name}: {enabled_count} enabled, {disabled_count} disabled"
+        )
+        any_changes = True
+
+    if any_changes:
+        save_config(config)
+        print()
+        print(color("  ✓ MCP tool configuration saved", Colors.GREEN))
+    else:
+        print(color("  No changes to MCP tools", Colors.DIM))
 
 
 # ─── Non-interactive disable/enable ──────────────────────────────────────────

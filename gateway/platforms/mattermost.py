@@ -617,16 +617,16 @@ class MattermostAdapter(BasePlatformAdapter):
                         if mime.startswith("image/"):
                             local_path = cache_image_from_bytes(file_data, ext or ".png")
                             media_urls.append(local_path)
-                            media_types.append("image")
+                            media_types.append(mime)
                         elif mime.startswith("audio/"):
                             from gateway.platforms.base import cache_audio_from_bytes
                             local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
                             media_urls.append(local_path)
-                            media_types.append("audio")
+                            media_types.append(mime)
                         else:
                             local_path = cache_document_from_bytes(file_data, fname)
                             media_urls.append(local_path)
-                            media_types.append("document")
+                            media_types.append(mime)
                     else:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:

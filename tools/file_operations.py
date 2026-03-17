@@ -435,15 +435,30 @@ class ShellFileOperations(FileOperations):
     
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
-        Read a file with pagination, binary detection, and line numbers.
-        
-        Args:
-            path: File path (absolute or relative to cwd)
-            offset: Line number to start from (1-indexed, default 1)
-            limit: Maximum lines to return (default 500, max 2000)
-        
-        Returns:
-            ReadResult with content, metadata, or error info
+        Primary purpose: Reads the content of a text file with support for pagination and line numbers.
+    
+        When to use:
+        * Examining source code, logs, or configuration files.
+        * Reading large files in chunks using 'offset' and 'limit' to avoid token overflow.
+        * Identifying line numbers for subsequent patching or editing.
+    
+        When NOT to use:
+        * DO NOT use for images or binary files (the tool will return an error or metadata instead).
+        * AVOID reading extremely large files in one go; always use pagination for files over 500 lines.
+    
+        Common failure modes:
+        * File Not Found: If the path is incorrect, the tool will suggest similar filenames.
+        * Binary Detection: If a file contains non-printable characters, it will be blocked to prevent corrupting the conversation.
+    
+        Examples:
+        <good-example>
+        read_file(path="main.py", offset=1, limit=100)
+        </good-example>
+        <bad-example>
+        read_file(path="large_database.db") # Reading binary files as text will fail.
+        </bad-example>
+    
+        Output format: Returns the text content with line numbers (format: LINE|CONTENT) and pagination hints.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
@@ -620,18 +635,31 @@ class ShellFileOperations(FileOperations):
     
     def write_file(self, path: str, content: str) -> WriteResult:
         """
-        Write content to a file, creating parent directories as needed.
-
-        Pipes content through stdin to avoid OS ARG_MAX limits on large
-        files. The content never appears in the shell command string —
-        only the file path does.
-
-        Args:
-            path: File path to write
-            content: Content to write
-
-        Returns:
-            WriteResult with bytes written or error
+        Primary purpose: Writes or overwrites the full content of a file at the specified path.
+        
+        When to use:
+        * Creating new scripts, configuration files, or documentation.
+        * Completely replacing a file's content when a partial edit is too complex.
+        * Automatically creating required parent directories (the tool does this for you).
+        
+        When NOT to use:
+        * AVOID using to modify a single line in a large file; use 'patch_replace' instead to save tokens and avoid errors.
+        * DO NOT use for logs or appending; it completely overwrites existing data.
+        * DO NOT attempt to write to protected system paths (e.g., ~/.ssh, /etc/passwd) as they are hard-blocked for security.
+        
+        Common failure modes:
+        * Write Denied: Attempting to modify system/credential files on the internal deny-list.
+        * Disk Space: Fails if the environment (Docker/Modal) has reached its storage limit.
+        
+        Examples:
+        <good-example>
+        write_file(path="scripts/hello.py", content="print('Hello from Hermes!')")
+        </good-example>
+        <bad-example>
+        write_file(path="/etc/shadow", content="...") # Will be blocked by WRITE_DENIED_PATHS.
+        </bad-example>
+        
+        Output format: Returns the number of bytes written and whether directories were created.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
@@ -679,16 +707,31 @@ class ShellFileOperations(FileOperations):
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """
-        Replace text in a file using fuzzy matching.
-
-        Args:
-            path: File path to modify
-            old_string: Text to find (must be unique unless replace_all=True)
-            new_string: Replacement text
-            replace_all: If True, replace all occurrences
-
-        Returns:
-            PatchResult with diff and lint results
+        Primary purpose: Performs precise, fuzzy-matched text replacement within a file.
+    
+        When to use:
+        * Modifying specific functions, variables, or lines in existing code.
+        * Making changes to large files where 'write_file' would be inefficient or consume too many tokens.
+        * Ensuring the target text exists before applying changes (safety check).
+    
+        When NOT to use:
+        * DO NOT use if 'old_string' appears multiple times in the file and you only want to change one instance (unless it's uniquely identifiable).
+        * AVOID using for very small files where 'write_file' is simpler and more direct.
+        * DO NOT use for bulk renaming across many files; it only operates on one file at a time.
+    
+        Common failure modes:
+        * Match Failure: If 'old_string' cannot be found (even with fuzzy matching), the patch will fail.
+        * Lint Errors: The tool automatically runs a syntax check; if your 'new_string' breaks the code, it will report an error.
+    
+        Examples:
+        <good-example>
+        patch_replace(path="app.py", old_string="port = 5000", new_string="port = 8080")
+        </good-example>
+        <bad-example>
+        patch_replace(path="app.py", old_string="print", new_string="log") # Too generic; might replace the wrong instance of 'print'.
+        </bad-example>
+    
+        Output format: Returns a unified diff of the changes and the status of the automatic linting check.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
@@ -807,20 +850,30 @@ class ShellFileOperations(FileOperations):
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """
-        Search for content or files.
-        
-        Args:
-            pattern: Regex (for content) or glob pattern (for files)
-            path: Directory/file to search (default: cwd)
-            target: "content" (grep) or "files" (glob)
-            file_glob: File pattern filter for content search (e.g., "*.py")
-            limit: Max results (default 50)
-            offset: Skip first N results
-            output_mode: "content", "files_only", or "count"
-            context: Lines of context around matches
-        
-        Returns:
-            SearchResult with matches or file list
+        Primary purpose: Searches for specific text patterns (regex) or finds files by name (glob).
+    
+        When to use:
+        * Locating specific functions or variables across the entire project (target="content").
+        * Finding where a file is hidden in the directory tree (target="files").
+        * Using 'file_glob' to narrow down text searches to specific file types (e.g., "*.py").
+    
+        When NOT to use:
+        * DO NOT use target="files" to find text *inside* a file.
+        * AVOID searching from the root directory ("/") as it is slow and resource-intensive.
+    
+        Common failure modes:
+        * Path Not Found: Fails if the starting 'path' does not exist.
+        * Regex Error: Fails if the search pattern is an invalid regular expression.
+    
+        Examples:
+        <good-example>
+        search(pattern="class User", path="src", target="content", file_glob="*.py")
+        </good-example>
+        <bad-example>
+        search(pattern="config.json", target="content") # If you want to find the file itself, use target="files".
+        </bad-example>
+    
+        Output format: Returns a list of matches with line numbers or a list of file paths.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)

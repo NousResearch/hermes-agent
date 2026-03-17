@@ -162,10 +162,10 @@ def cmd_setup(args) -> None:
         hermes_host["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-directory")
     print(f"\n  Session strategy options:")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
-    print("    per-directory — one session per working directory")
+    print("    per-directory — one session per working directory (default)")
+    print("    per-session   — new Honcho session each run, named by Hermes session ID")
     print("    per-repo      — one session per git repository (uses repo root name)")
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)

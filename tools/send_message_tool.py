@@ -331,6 +331,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_discord(pconfig.token, chat_id, chunk)
         elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
+        elif platform == Platform.WHATSAPP:
+            result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
@@ -512,6 +514,34 @@ async def _send_slack(token, chat_id, message):
                 return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
+
+
+async def _send_whatsapp(extra, chat_id, message):
+    """Send via the local WhatsApp bridge HTTP API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        bridge_port = extra.get("bridge_port", 3000)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://localhost:{bridge_port}/send",
+                json={"chatId": chat_id, "message": message},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "whatsapp",
+                        "chat_id": chat_id,
+                        "message_id": data.get("messageId"),
+                    }
+                body = await resp.text()
+                return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
+    except Exception as e:
+        return {"error": f"WhatsApp send failed: {e}"}
 
 
 async def _send_signal(extra, chat_id, message):

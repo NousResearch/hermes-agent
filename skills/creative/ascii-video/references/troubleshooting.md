@@ -1,14 +1,19 @@
 # Troubleshooting Reference
 
-**Cross-references:**
-- Grid system, palettes, font selection: `architecture.md`
-- Effect building blocks (value fields, noise, SDFs): `effects.md`
-- `_render_vf()`, blend modes, tonemap: `composition.md`
-- Scene protocol, render_clip, SCENES table: `scenes.md`
-- Shader pipeline, feedback buffer, encoding: `shaders.md`
-- Input sources (audio, video, TTS): `inputs.md`
-- Performance tuning, hardware detection: `optimization.md`
-- Complete scene examples: `examples.md`
+> **See also:** composition.md · architecture.md · shaders.md · scenes.md · optimization.md
+
+## Quick Diagnostic
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| All black output | tonemap gamma too high or no effects rendering | Lower gamma to 0.5, check scene_fn returns non-zero canvas |
+| Washed out / too bright | Linear brightness multiplier instead of tonemap | Replace `canvas * N` with `tonemap(canvas, gamma=0.75)` |
+| ffmpeg hangs mid-render | stderr=subprocess.PIPE deadlock | Redirect stderr to file |
+| "read-only" array error | broadcast_to view without .copy() | Add `.copy()` after broadcast_to |
+| PicklingError | Lambda or closure in SCENES table | Define all fx_* at module level |
+| Random dark holes in output | Font missing Unicode glyphs | Validate palettes at init |
+| Audio-visual desync | Frame timing accumulation | Use integer frame counter, compute t fresh each frame |
+| Single-color flat output | Hue field shape mismatch | Ensure h,s,v arrays all (rows,cols) before hsv2rgb |
 
 Common bugs, gotchas, and platform-specific issues encountered during ASCII video development.
 
@@ -339,3 +344,22 @@ val = np.clip(vf_plasma(g, f, t, S) * 1.5, 0, 1)
 ```
 
 The `_render_vf()` helper clips automatically, but if you're building custom scenes, clip explicitly.
+
+## Brightness Best Practices
+
+- Dense animated backgrounds — never flat black, always fill the grid
+- Vignette minimum clamped to 0.15 (not 0.12)
+- Bloom threshold 130 (not 170) so more pixels contribute to glow
+- Use `screen` blend mode (not `overlay`) for dark ASCII layers — overlay squares dark values: `2 * 0.12 * 0.12 = 0.03`
+- FeedbackBuffer decay minimum 0.5 — below that, feedback disappears too fast to see
+- Value field floor: `vf * 0.8 + 0.05` ensures no cell is truly zero
+- Per-scene gamma overrides: default 0.75, solarize 0.55, posterize 0.50, bright scenes 0.85
+- Test frames early: render single frames at key timestamps before committing to full render
+
+**Quick checklist before full render:**
+1. Render 3 test frames (start, middle, end)
+2. Check `canvas.mean() > 8` after tonemap
+3. Check no scene is visually flat black
+4. Verify per-section variation (different bg/palette/color per scene)
+5. Confirm shader chain includes bloom (threshold 130)
+6. Confirm vignette strength ≤ 0.25

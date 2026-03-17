@@ -1,14 +1,6 @@
 # Optimization Reference
 
-**Cross-references:**
-- Grid system, resolution presets, portrait GridLayer: `architecture.md`
-- Effect building blocks (pre-computation strategies): `effects.md`
-- `_render_vf()`, tonemap (subsampled percentile): `composition.md`
-- Scene protocol, render_clip: `scenes.md`
-- Shader pipeline, encoding (ffmpeg flags): `shaders.md`
-- Input sources (audio chunking, WAV extraction): `inputs.md`
-- Common bugs (memory, OOM, frame drops): `troubleshooting.md`
-- Complete scene examples: `examples.md`
+> **See also:** architecture.md · composition.md · scenes.md · shaders.md · inputs.md · troubleshooting.md
 
 ## Hardware Detection
 

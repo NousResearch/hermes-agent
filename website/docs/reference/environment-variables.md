@@ -32,7 +32,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
-| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models via Anthropic-compatible API ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
+| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
+| `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: international endpoint) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
@@ -64,6 +65,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
+| `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |
+| `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
@@ -173,6 +176,19 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
+| `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |
+| `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
+| `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
+| `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |
+| `MATTERMOST_HOME_CHANNEL` | Channel ID for proactive message delivery (cron, notifications) |
+| `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
+| `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
+| `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |
+| `MATRIX_PASSWORD` | Matrix password (alternative to access token) |
+| `MATRIX_ALLOWED_USERS` | Comma-separated Matrix user IDs allowed to message the bot (e.g. `@alice:matrix.org`) |
+| `MATRIX_HOME_ROOM` | Room ID for proactive message delivery (e.g. `!abc123:matrix.org`) |
+| `MATRIX_ENCRYPTION` | Enable end-to-end encryption (`true`/`false`, default: `false`) |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |

@@ -72,6 +72,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
+| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
 | **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
@@ -136,16 +137,20 @@ hermes chat --provider minimax --model MiniMax-Text-01
 # MiniMax (China endpoint)
 hermes chat --provider minimax-cn --model MiniMax-Text-01
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
+
+# Alibaba Cloud / DashScope (Qwen models)
+hermes chat --provider alibaba --model qwen-plus
+# Requires: DASHSCOPE_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "zai"       # or: kimi-coding, minimax, minimax-cn
+  provider: "zai"       # or: kimi-coding, minimax, minimax-cn, alibaba
   default: "glm-4-plus"
 ```
 
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, or `MINIMAX_CN_BASE_URL` environment variables.
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables.
 
 ## Custom & Self-Hosted LLM Providers
 
@@ -873,6 +878,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 display:
   tool_progress: all      # off | new | all | verbose
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
+  theme_mode: auto        # auto | light | dark — color scheme for skin-aware rendering
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
@@ -881,6 +887,18 @@ display:
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   background_process_notifications: all  # all | result | error | off (gateway only)
 ```
+
+### Theme mode
+
+The `theme_mode` setting controls whether skins render in light or dark mode:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Detects your terminal's background color automatically. Falls back to `dark` if detection fails. |
+| `light` | Forces light-mode skin colors. Skins that define a `colors_light` override use those colors instead of the default dark-mode palette. |
+| `dark` | Forces dark-mode skin colors. |
+
+This works with any skin — built-in or custom. Skin authors can provide `colors_light` in their skin definition for optimal light-terminal appearance.
 
 | Mode | What you see |
 |------|-------------|
@@ -1055,6 +1073,54 @@ browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
 ```
+
+The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
+
+## Website Blocklist
+
+Block specific domains from being accessed by the agent's web and browser tools:
+
+```yaml
+website_blocklist:
+  enabled: false               # Enable URL blocking (default: false)
+  domains:                     # List of blocked domain patterns
+    - "*.internal.company.com"
+    - "admin.example.com"
+    - "*.local"
+  shared_files:                # Load additional rules from external files
+    - "/etc/hermes/blocked-sites.txt"
+```
+
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, `browser_navigate`, and any tool that accesses URLs.
+
+Domain rules support:
+- Exact domains: `admin.example.com`
+- Wildcard subdomains: `*.internal.company.com` (blocks all subdomains)
+- TLD wildcards: `*.local`
+
+Shared files contain one domain rule per line (blank lines and `#` comments are ignored). Missing or unreadable files log a warning but don't disable other web tools.
+
+The policy is cached for 30 seconds, so config changes take effect quickly without restart.
+
+## Smart Approvals
+
+Control how Hermes handles potentially dangerous commands:
+
+```yaml
+approval_mode: ask   # ask | smart | off
+```
+
+| Mode | Behavior |
+|------|----------|
+| `ask` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
+| `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
+| `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
+
+Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
+
+:::warning
+Setting `approval_mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
+:::
 
 ## Checkpoints
 

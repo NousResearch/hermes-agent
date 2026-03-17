@@ -2339,6 +2339,116 @@ def cmd_version(args):
         pass
 
 
+def cmd_audit(args):
+    """View audit log — structured history of agent actions, errors, and security events."""
+    from agent.audit import get_audit_logger
+    import json as _json
+
+    audit = get_audit_logger()
+    action = getattr(args, "audit_action", None) or "summary"
+
+    if action == "summary":
+        hours = getattr(args, "hours", 24) or 24
+        summary = audit.summary(last_hours=hours)
+        if not summary or not summary.get("total_events"):
+            print(f"No audit events in the last {hours} hours.")
+            return
+
+        print(f"\n  Audit Summary (last {hours}h)")
+        print(f"  {'=' * 40}")
+        print(f"  Total events:  {summary['total_events']:,}")
+        print(f"  Errors:        {summary['errors']:,} ({summary['error_rate']})")
+        print(f"  Tool calls:    {summary['tool_calls']:,}")
+        print(f"  API calls:     {summary['api_calls']:,}")
+        print(f"  API errors:    {summary['api_errors']:,}")
+
+        if summary.get("top_errors"):
+            print(f"\n  Top Errors:")
+            for e in summary["top_errors"]:
+                print(f"    {e['count']}x  {e['type']}: {e['message']}")
+
+        if summary.get("top_tools"):
+            print(f"\n  Tool Usage:")
+            for t in summary["top_tools"]:
+                avg = f" ({t['avg_ms']:.0f}ms avg)" if t.get("avg_ms") else ""
+                print(f"    {t['calls']:>4}x  {t['name']}{avg}")
+        print()
+
+    elif action == "list":
+        kwargs = {}
+        if getattr(args, "type", None):
+            kwargs["event_type"] = args.type
+        if getattr(args, "session", None):
+            kwargs["session_id"] = args.session
+        if getattr(args, "tool", None):
+            kwargs["tool_name"] = args.tool
+        if getattr(args, "severity", None):
+            kwargs["severity"] = args.severity
+        if getattr(args, "hours", None):
+            kwargs["last_hours"] = args.hours
+        if getattr(args, "errors", False):
+            kwargs["errors_only"] = True
+        kwargs["limit"] = getattr(args, "limit", 50) or 50
+
+        events = audit.query(**kwargs)
+        if not events:
+            print("No matching audit events.")
+            return
+
+        from datetime import datetime
+        for ev in events:
+            ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%H:%M:%S")
+            sev = ev["severity"][0].upper()
+            etype = ev["event_type"]
+            tool = ev.get("tool_name") or ""
+            err = ev.get("error_message") or ""
+            dur = f" {ev['duration_ms']:.0f}ms" if ev.get("duration_ms") else ""
+            status = ev.get("status_code") or ""
+
+            if etype == "tool_call":
+                icon = "+" if ev.get("success") else "x"
+                print(f"  {ts} [{sev}] {icon} {tool}{dur}")
+            elif etype in ("api_error", "tool_error"):
+                print(f"  {ts} [{sev}] ! {etype} {status} {err[:80]}")
+            else:
+                print(f"  {ts} [{sev}] {etype} {tool} {status}")
+
+    elif action == "export":
+        hours = getattr(args, "hours", 24) or 24
+        events = audit.query(last_hours=hours, limit=10000)
+        output = getattr(args, "output", None)
+        if output:
+            with open(output, "w") as f:
+                for ev in events:
+                    f.write(_json.dumps(ev, default=str) + "\n")
+            print(f"Exported {len(events)} events to {output}")
+        else:
+            for ev in events:
+                print(_json.dumps(ev, default=str))
+
+    elif action == "problems":
+        hours = getattr(args, "hours", 24) or 24
+        events = audit.query(errors_only=True, last_hours=hours, limit=100)
+        if not events:
+            print(f"No problems in the last {hours} hours.")
+            return
+
+        from datetime import datetime
+        print(f"\n  Problems (last {hours}h)")
+        print(f"  {'=' * 40}")
+        for ev in events:
+            ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%m-%d %H:%M:%S")
+            etype = ev["event_type"]
+            err_type = ev.get("error_type") or ""
+            err_msg = ev.get("error_message") or ""
+            tool = ev.get("tool_name") or ""
+            status = f"HTTP {ev['status_code']}" if ev.get("status_code") else ""
+            print(f"  {ts}  {etype} {tool} {status}")
+            if err_type:
+                print(f"           {err_type}: {err_msg[:100]}")
+        print()
+
+
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
     from hermes_cli.uninstall import run_uninstall
@@ -2918,7 +3028,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "sessions", "insights", "version", "update", "uninstall",
+        "sessions", "insights", "audit", "version", "update", "uninstall",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -3663,6 +3773,35 @@ For more help on a command:
 
     tools_parser.set_defaults(func=cmd_tools)
     # =========================================================================
+    # audit command
+    # =========================================================================
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="View audit log — agent actions, errors, security events",
+    )
+    audit_subparsers = audit_parser.add_subparsers(dest="audit_action")
+
+    audit_summary = audit_subparsers.add_parser("summary", help="Show audit summary (default)")
+    audit_summary.add_argument("--hours", type=float, default=24, help="Time window in hours (default: 24)")
+
+    audit_list = audit_subparsers.add_parser("list", help="List audit events")
+    audit_list.add_argument("--type", help="Filter by event type (tool_call, api_error, etc.)")
+    audit_list.add_argument("--session", help="Filter by session ID")
+    audit_list.add_argument("--tool", help="Filter by tool name")
+    audit_list.add_argument("--severity", help="Filter by severity (info, warning, error, critical)")
+    audit_list.add_argument("--hours", type=float, help="Time window in hours")
+    audit_list.add_argument("--errors", action="store_true", help="Show only errors")
+    audit_list.add_argument("--limit", type=int, default=50, help="Max events to show (default: 50)")
+
+    audit_problems = audit_subparsers.add_parser("problems", help="Show only problems and errors")
+    audit_problems.add_argument("--hours", type=float, default=24, help="Time window in hours (default: 24)")
+
+    audit_export = audit_subparsers.add_parser("export", help="Export audit events as JSONL")
+    audit_export.add_argument("--hours", type=float, default=24, help="Time window in hours (default: 24)")
+    audit_export.add_argument("--output", "-o", help="Output file (default: stdout)")
+
+    audit_parser.set_defaults(func=cmd_audit)
+
     # sessions command
     # =========================================================================
     sessions_parser = subparsers.add_parser(

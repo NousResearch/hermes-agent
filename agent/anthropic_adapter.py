@@ -1053,7 +1053,8 @@ def build_anthropic_kwargs(
         elif tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
         elif tool_choice == "none":
-            pass  # Don't send tool_choice — Anthropic will use tools if needed
+            # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
+            kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
             # Specific tool name
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}

@@ -37,6 +37,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
+    "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
 })
 
 import yaml
@@ -690,6 +692,55 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Slack App Token (xapp-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
+        "category": "messaging",
+    },
+    "MATTERMOST_URL": {
+        "description": "Mattermost server URL (e.g. https://mm.example.com)",
+        "prompt": "Mattermost server URL",
+        "url": "https://mattermost.com/deploy/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_TOKEN": {
+        "description": "Mattermost bot token or personal access token",
+        "prompt": "Mattermost bot token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATTERMOST_ALLOWED_USERS": {
+        "description": "Comma-separated Mattermost user IDs allowed to use the bot",
+        "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_HOMESERVER": {
+        "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
+        "prompt": "Matrix homeserver URL",
+        "url": "https://matrix.org/ecosystem/servers/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ACCESS_TOKEN": {
+        "description": "Matrix access token (preferred over password login)",
+        "prompt": "Matrix access token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATRIX_USER_ID": {
+        "description": "Matrix user ID (e.g. @hermes:example.org)",
+        "prompt": "Matrix user ID (@user:server)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ALLOWED_USERS": {
+        "description": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
+        "prompt": "Allowed Matrix user IDs (comma-separated)",
+        "url": None,
+        "password": False,
         "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {

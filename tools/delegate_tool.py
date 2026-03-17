@@ -175,7 +175,6 @@ def _build_child_agent(
 
     # Save the parent's resolved tool names before the child agent can
     # overwrite the process-global via get_tool_definitions().
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -259,6 +258,8 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+    # Save parent tool names so finally block can restore them (same scope fix)
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)

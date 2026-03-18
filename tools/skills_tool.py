@@ -873,6 +873,37 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        # Security: warn if skill is loaded from outside the trusted skills directory
+        try:
+            skill_md.resolve().relative_to(SKILLS_DIR.resolve())
+            _outside_skills_dir = False
+        except ValueError:
+            _outside_skills_dir = True
+
+        # Security: detect common prompt injection patterns
+        _INJECTION_PATTERNS = [
+            "ignore previous instructions",
+            "ignore all previous",
+            "you are now",
+            "disregard your",
+            "forget your instructions",
+            "new instructions:",
+            "system prompt:",
+            "<system>",
+            "]]>",
+        ]
+        _content_lower = content.lower()
+        _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
+
+        if _outside_skills_dir or _injection_detected:
+            _warnings = []
+            if _outside_skills_dir:
+                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
+            if _injection_detected:
+                _warnings.append("skill content contains patterns that may indicate prompt injection")
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+
         parsed_frontmatter: Dict[str, Any] = {}
         try:
             parsed_frontmatter, _ = _parse_frontmatter(content)
@@ -885,6 +916,20 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     "success": False,
                     "error": f"Skill '{name}' is not supported on this platform.",
                     "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+                },
+                ensure_ascii=False,
+            )
+
+        # Check if the skill is disabled by the user
+        resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
+        if _is_skill_disabled(resolved_name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{resolved_name}' is disabled. "
+                        "Enable it with `hermes skills` or inspect the files directly on disk."
+                    ),
                 },
                 ensure_ascii=False,
             )

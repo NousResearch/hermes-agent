@@ -6,16 +6,17 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 9-strategy chain (inspired by OpenCode):
+The 8-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
-3. Block anchor - Match first+last lines, use similarity for middle
-4. Whitespace normalized - Collapse multiple spaces/tabs to single space
-5. Indentation flexible - Ignore indentation differences entirely
-6. Escape normalized - Convert \\n literals to actual newlines
-7. Trimmed boundary - Trim first/last line whitespace only
+3. Whitespace normalized - Collapse multiple spaces/tabs to single space
+4. Indentation flexible - Ignore indentation differences entirely
+5. Escape normalized - Convert \\n literals to actual newlines
+6. Trimmed boundary - Trim first/last line whitespace only
+7. Block anchor - Match first+last lines, use similarity for middle
 8. Context-aware - 50% line similarity threshold
-9. Multi-occurrence - For replace_all flag
+
+Multi-occurrence matching is handled via the replace_all flag.
 
 Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace
@@ -254,10 +255,9 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
         
         if '\n'.join(check_lines) == modified_pattern:
             # Found match - calculate original positions
-            start_pos = sum(len(line) + 1 for line in content_lines[:i])
-            end_pos = sum(len(line) + 1 for line in content_lines[:i + pattern_line_count]) - 1
-            if end_pos >= len(content):
-                end_pos = len(content)
+            start_pos, end_pos = _calculate_line_positions(
+                content_lines, i, i + pattern_line_count, len(content)
+            )
             matches.append((start_pos, end_pos))
     
     return matches
@@ -309,9 +309,10 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
         
         if similarity >= threshold:
             # Calculate positions using ORIGINAL lines to ensure correct character offsets in the file
-            start_pos = sum(len(line) + 1 for line in orig_content_lines[:i])
-            end_pos = sum(len(line) + 1 for line in orig_content_lines[:i + pattern_line_count]) - 1
-            matches.append((start_pos, min(end_pos, len(content))))
+            start_pos, end_pos = _calculate_line_positions(
+                orig_content_lines, i, i + pattern_line_count, len(content)
+            )
+            matches.append((start_pos, end_pos))
     
     return matches
 
@@ -343,10 +344,9 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
         
         # Need at least 50% of lines to have high similarity
         if high_similarity_count >= len(pattern_lines) * 0.5:
-            start_pos = sum(len(line) + 1 for line in content_lines[:i])
-            end_pos = sum(len(line) + 1 for line in content_lines[:i + pattern_line_count]) - 1
-            if end_pos >= len(content):
-                end_pos = len(content)
+            start_pos, end_pos = _calculate_line_positions(
+                content_lines, i, i + pattern_line_count, len(content)
+            )
             matches.append((start_pos, end_pos))
     
     return matches
@@ -355,6 +355,26 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def _calculate_line_positions(content_lines: List[str], start_line: int,
+                              end_line: int, content_length: int) -> Tuple[int, int]:
+    """Calculate start and end character positions from line indices.
+
+    Args:
+        content_lines: List of lines (without newlines)
+        start_line: Starting line index (0-based)
+        end_line: Ending line index (exclusive, 0-based)
+        content_length: Total length of the original content string
+
+    Returns:
+        Tuple of (start_pos, end_pos) in the original content
+    """
+    start_pos = sum(len(line) + 1 for line in content_lines[:start_line])
+    end_pos = sum(len(line) + 1 for line in content_lines[:end_line]) - 1
+    if end_pos >= content_length:
+        end_pos = content_length
+    return start_pos, end_pos
+
 
 def _find_normalized_matches(content: str, content_lines: List[str],
                               content_normalized_lines: List[str],
@@ -383,13 +403,9 @@ def _find_normalized_matches(content: str, content_lines: List[str],
         
         if block == pattern_normalized:
             # Found a match - calculate original positions
-            start_pos = sum(len(line) + 1 for line in content_lines[:i])
-            end_pos = sum(len(line) + 1 for line in content_lines[:i + num_pattern_lines]) - 1
-            
-            # Handle case where end is past content
-            if end_pos >= len(content):
-                end_pos = len(content)
-            
+            start_pos, end_pos = _calculate_line_positions(
+                content_lines, i, i + num_pattern_lines, len(content)
+            )
             matches.append((start_pos, end_pos))
     
     return matches

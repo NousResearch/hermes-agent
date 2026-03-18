@@ -16,7 +16,6 @@ import os
 import platform
 import re
 import stat
-import sys
 import subprocess
 import sys
 import tempfile
@@ -25,6 +24,21 @@ from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Env var names written to .env that aren't in OPTIONAL_ENV_VARS
+# (managed by setup/provider flows directly).
+_EXTRA_ENV_KEYS = frozenset({
+    "OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "AUXILIARY_VISION_MODEL",
+    "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
+    "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
+    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+    "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
+    "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "WHATSAPP_MODE", "WHATSAPP_ENABLED",
+    "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+})
 
 import yaml
 
@@ -106,6 +120,7 @@ DEFAULT_CONFIG = {
         "cwd": ".",  # Use current directory
         "timeout": 180,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "docker_forward_env": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -146,6 +161,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,
         "summary_model": "google/gemini-3-flash-preview",
         "summary_provider": "auto",
+        "summary_base_url": None,
     },
     "smart_model_routing": {
         "enabled": False,
@@ -229,7 +245,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai"
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -242,6 +258,12 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "neutts": {
+            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
+            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
+            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
+            "device": "cpu",  # cpu, cuda, or mps
         },
     },
     
@@ -310,6 +332,14 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
     },
 
+    # WhatsApp platform settings (gateway mode)
+    "whatsapp": {
+        # Reply prefix prepended to every outgoing WhatsApp message.
+        # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
+        # Set to "" (empty string) to disable the header entirely.
+        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
@@ -334,10 +364,15 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "website_blocklist": {
+            "enabled": False,
+            "domains": [],
+            "shared_files": [],
+        },
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 8,
+    "_config_version": 10,
 }
 
 # =============================================================================
@@ -351,6 +386,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    10: ["TAVILY_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -473,8 +509,63 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "DASHSCOPE_API_KEY": {
+        "description": "Alibaba Cloud DashScope API key for Qwen models",
+        "prompt": "DashScope API Key",
+        "url": "https://modelstudio.console.alibabacloud.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "DASHSCOPE_BASE_URL": {
+        "description": "Custom DashScope base URL (default: international endpoint)",
+        "prompt": "DashScope Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_ZEN_API_KEY": {
+        "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
+        "prompt": "OpenCode Zen API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_ZEN_BASE_URL": {
+        "description": "OpenCode Zen base URL override",
+        "prompt": "OpenCode Zen base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_GO_API_KEY": {
+        "description": "OpenCode Go API key ($10/month subscription for open models)",
+        "prompt": "OpenCode Go API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_GO_BASE_URL": {
+        "description": "OpenCode Go base URL override",
+        "prompt": "OpenCode Go base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
+    "PARALLEL_API_KEY": {
+        "description": "Parallel API key for AI-native web search and extract",
+        "prompt": "Parallel API key",
+        "url": "https://parallel.ai/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_API_KEY": {
         "description": "Firecrawl API key for web search and scraping",
         "prompt": "Firecrawl API key",
@@ -491,6 +582,14 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "TAVILY_API_KEY": {
+        "description": "Tavily API key for AI-native web search, extract, and crawl",
+        "prompt": "Tavily API key",
+        "url": "https://app.tavily.com/home",
+        "tools": ["web_search", "web_extract", "web_crawl"],
+        "password": True,
+        "category": "tool",
+    },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
@@ -505,6 +604,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
+        "category": "tool",
+    },
+    "BROWSER_USE_API_KEY": {
+        "description": "Browser Use API key for cloud browser (optional — local browser works without this)",
+        "prompt": "Browser Use API key",
+        "url": "https://browser-use.com/",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": True,
         "category": "tool",
     },
     "FAL_KEY": {
@@ -611,9 +718,90 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "messaging",
     },
+    "MATTERMOST_URL": {
+        "description": "Mattermost server URL (e.g. https://mm.example.com)",
+        "prompt": "Mattermost server URL",
+        "url": "https://mattermost.com/deploy/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_TOKEN": {
+        "description": "Mattermost bot token or personal access token",
+        "prompt": "Mattermost bot token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATTERMOST_ALLOWED_USERS": {
+        "description": "Comma-separated Mattermost user IDs allowed to use the bot",
+        "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_HOMESERVER": {
+        "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
+        "prompt": "Matrix homeserver URL",
+        "url": "https://matrix.org/ecosystem/servers/",
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ACCESS_TOKEN": {
+        "description": "Matrix access token (preferred over password login)",
+        "prompt": "Matrix access token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "MATRIX_USER_ID": {
+        "description": "Matrix user ID (e.g. @hermes:example.org)",
+        "prompt": "Matrix user ID (@user:server)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATRIX_ALLOWED_USERS": {
+        "description": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
+        "prompt": "Allowed Matrix user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_ENABLED": {
+        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
+        "prompt": "Enable API server (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_KEY": {
+        "description": "Bearer token for API server authentication. If empty, all requests are allowed (local use only).",
+        "prompt": "API server auth key (optional)",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_PORT": {
+        "description": "Port for the API server (default: 8642).",
+        "prompt": "API server port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_HOST": {
+        "description": "Host/bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access — requires API_SERVER_KEY for security.",
+        "prompt": "API server host",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -765,7 +953,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         Dict with migration results: {"env_added": [...], "config_added": [...], "warnings": [...]}
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
-    
+
+    # ── Always: sanitize .env (split concatenated keys) ──
+    try:
+        fixes = sanitize_env_file()
+        if fixes and not quiet:
+            print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
+    except Exception:
+        pass  # best-effort; don't block migration on sanitize failure
+
     # Check config version
     current_ver, latest_ver = check_config_version()
     
@@ -807,6 +1003,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+
+    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
+    # The new Anthropic auth flow no longer uses this env var.
+    if current_ver < 9:
+        try:
+            old_token = get_env_value("ANTHROPIC_TOKEN")
+            if old_token:
+                save_env_value("ANTHROPIC_TOKEN", "")
+                if not quiet:
+                    print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
+        except Exception:
+            pass
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -1121,6 +1329,102 @@ def load_env() -> Dict[str, str]:
     return env_vars
 
 
+def _sanitize_env_lines(lines: list) -> list:
+    """Fix corrupted .env lines before writing.
+
+    Handles two known corruption patterns:
+    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
+       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
+    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+
+    Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
+    split on real Hermes env var names, avoiding false positives from values
+    that happen to contain uppercase text with ``=``.
+    """
+    # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
+    # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+
+    sanitized: list[str] = []
+    for line in lines:
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+
+        # Preserve blank lines and comments
+        if not stripped or stripped.startswith("#"):
+            sanitized.append(raw + "\n")
+            continue
+
+        # Detect concatenated KEY=VALUE pairs on one line.
+        # Search for known KEY= patterns at any position in the line.
+        split_positions = []
+        for key_name in known_keys:
+            needle = key_name + "="
+            idx = stripped.find(needle)
+            while idx >= 0:
+                split_positions.append(idx)
+                idx = stripped.find(needle, idx + len(needle))
+
+        if len(split_positions) > 1:
+            split_positions.sort()
+            # Deduplicate (shouldn't happen, but be safe)
+            split_positions = sorted(set(split_positions))
+            for i, pos in enumerate(split_positions):
+                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
+                part = stripped[pos:end].strip()
+                if part:
+                    sanitized.append(part + "\n")
+        else:
+            sanitized.append(stripped + "\n")
+
+    return sanitized
+
+
+def sanitize_env_file() -> int:
+    """Read, sanitize, and rewrite ~/.hermes/.env in place.
+
+    Returns the number of lines that were fixed (concatenation splits +
+    placeholder removals).  Returns 0 when no changes are needed.
+    """
+    env_path = get_env_path()
+    if not env_path.exists():
+        return 0
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        original_lines = f.readlines()
+
+    sanitized = _sanitize_env_lines(original_lines)
+
+    if sanitized == original_lines:
+        return 0
+
+    # Count fixes: difference in line count (from splits) + removed lines
+    fixes = abs(len(sanitized) - len(original_lines))
+    if fixes == 0:
+        # Lines changed content (e.g. *** removal) even if count is same
+        fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
+        fixes += abs(len(sanitized) - len(original_lines))
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
+    try:
+        with os.fdopen(fd, "w", **write_kw) as f:
+            f.writelines(sanitized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(env_path)
+    return fixes
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if not _ENV_VAR_NAME_RE.match(key):
@@ -1138,6 +1442,8 @@ def save_env_value(key: str, value: str):
     if env_path.exists():
         with open(env_path, **read_kw) as f:
             lines = f.readlines()
+        # Sanitize on every read: split concatenated keys, drop stale placeholders
+        lines = _sanitize_env_lines(lines)
     
     # Find and update or append
     found = False
@@ -1256,8 +1562,11 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
+        ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
+        ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
     ]
     
@@ -1404,7 +1713,8 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',

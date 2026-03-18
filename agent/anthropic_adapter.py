@@ -54,7 +54,37 @@ _OAUTH_ONLY_BETAS = [
 
 # Claude Code identity — required for OAuth requests to be routed correctly.
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
-_CLAUDE_CODE_VERSION = "2.1.2"
+# The version must stay reasonably current — Anthropic rejects OAuth requests
+# when the spoofed user-agent version is too far behind the actual release.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+
+
+def _detect_claude_code_version() -> str:
+    """Detect the installed Claude Code version, fall back to a static constant.
+
+    Anthropic's OAuth infrastructure validates the user-agent version and may
+    reject requests with a version that's too old.  Detecting dynamically means
+    users who keep Claude Code updated never hit stale-version 400s.
+    """
+    import subprocess as _sp
+
+    for cmd in ("claude", "claude-code"):
+        try:
+            result = _sp.run(
+                [cmd, "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
+                version = result.stdout.strip().split()[0]
+                if version and version[0].isdigit():
+                    return version
+        except Exception:
+            pass
+    return _CLAUDE_CODE_VERSION_FALLBACK
+
+
+_CLAUDE_CODE_VERSION = _detect_claude_code_version()
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
 
@@ -933,8 +963,12 @@ def convert_messages_to_anthropic(
                 elif isinstance(prev_blocks, str) and isinstance(curr_blocks, str):
                     fixed[-1]["content"] = prev_blocks + "\n" + curr_blocks
                 else:
-                    # Keep the later message
-                    fixed[-1] = m
+                    # Mixed types — normalize both to list and merge
+                    if isinstance(prev_blocks, str):
+                        prev_blocks = [{"type": "text", "text": prev_blocks}]
+                    if isinstance(curr_blocks, str):
+                        curr_blocks = [{"type": "text", "text": curr_blocks}]
+                    fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
             fixed.append(m)
     result = fixed
@@ -1019,7 +1053,8 @@ def build_anthropic_kwargs(
         elif tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
         elif tool_choice == "none":
-            pass  # Don't send tool_choice — Anthropic will use tools if needed
+            # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
+            kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
             # Specific tool name
             kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}

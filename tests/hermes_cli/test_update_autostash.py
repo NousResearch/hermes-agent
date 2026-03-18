@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
@@ -235,3 +236,82 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
 
     with pytest.raises(CalledProcessError):
         hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Update uses .[all] with fallback to .
+# ---------------------------------------------------------------------------
+
+def _setup_update_mocks(monkeypatch, tmp_path):
+    """Common setup for cmd_update tests."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
+    monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
+    monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
+    monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
+    monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
+
+
+def test_cmd_update_tries_extras_first_then_falls_back(monkeypatch, tmp_path):
+    """When .[all] fails, update should fall back to . instead of aborting."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        # .[all] fails
+        if ".[all]" in cmd:
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        # bare . succeeds
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    assert len(install_cmds) == 2
+    assert ".[all]" in install_cmds[0]
+    assert "." in install_cmds[1] and ".[all]" not in install_cmds[1]
+
+
+def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
+    """When .[all] succeeds, no fallback should be attempted."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    assert len(install_cmds) == 1
+    assert ".[all]" in install_cmds[0]

@@ -42,8 +42,48 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_accepts_script_style_gateway_cmdline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/venv/bin/python", "/repo/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "/venv/bin/python /repo/hermes_cli/main.py gateway run --replace",
+        )
+
+        assert status.get_running_pid() == os.getpid()
+
 
 class TestGatewayRuntimeStatus:
+    def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
+        """Regression: setdefault() preserved stale PID from previous process (#1631)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Simulate a previous gateway run that left a state file with a stale PID
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "platforms": {},
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
+        assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

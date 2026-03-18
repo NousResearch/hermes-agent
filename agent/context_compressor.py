@@ -45,16 +45,18 @@ class ContextCompressor:
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
+        api_key: str = "",
     ):
         self.model = model
         self.base_url = base_url
+        self.api_key = api_key
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
 
-        self.context_length = get_model_context_length(model, base_url=base_url)
+        self.context_length = get_model_context_length(model, base_url=base_url, api_key=api_key)
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error
@@ -275,7 +277,11 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         n_messages = len(messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:
-                print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
+                logger.warning(
+                    "Cannot compress: only %d messages (need > %d)",
+                    n_messages,
+                    self.protect_first_n + self.protect_last_n + 1,
+                )
             return messages
 
         compress_start = self.protect_first_n
@@ -293,11 +299,23 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         if not self.quiet_mode:
-            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
-            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
-
-        if not self.quiet_mode:
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+            logger.info(
+                "Context compression triggered (%d tokens >= %d threshold)",
+                display_tokens,
+                self.threshold_tokens,
+            )
+            logger.info(
+                "Model context limit: %d tokens (%.0f%% = %d)",
+                self.context_length,
+                self.threshold_percent * 100,
+                self.threshold_tokens,
+            )
+            logger.info(
+                "Summarizing turns %d-%d (%d turns)",
+                compress_start + 1,
+                compress_end,
+                len(turns_to_summarize),
+            )
 
         summary = self._generate_summary(turns_to_summarize)
 
@@ -311,16 +329,41 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 )
             compressed.append(msg)
 
+        _merge_summary_into_tail = False
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
-            compressed.append({"role": summary_role, "content": summary})
+            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+            # Pick a role that avoids consecutive same-role with both neighbors.
+            # Priority: avoid colliding with head (already committed), then tail.
+            if last_head_role in ("assistant", "tool"):
+                summary_role = "user"
+            else:
+                summary_role = "assistant"
+            # If the chosen role collides with the tail AND flipping wouldn't
+            # collide with the head, flip it.
+            if summary_role == first_tail_role:
+                flipped = "assistant" if summary_role == "user" else "user"
+                if flipped != last_head_role:
+                    summary_role = flipped
+                else:
+                    # Both roles would create consecutive same-role messages
+                    # (e.g. head=assistant, tail=user — neither role works).
+                    # Merge the summary into the first tail message instead
+                    # of inserting a standalone message that breaks alternation.
+                    _merge_summary_into_tail = True
+            if not _merge_summary_into_tail:
+                compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
-                print("   ⚠️  No summary model available — middle turns dropped without summary")
+                logger.warning("No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
+            msg = messages[i].copy()
+            if _merge_summary_into_tail and i == compress_end:
+                original = msg.get("content") or ""
+                msg["content"] = summary + "\n\n" + original
+                _merge_summary_into_tail = False
+            compressed.append(msg)
 
         self.compression_count += 1
 
@@ -329,7 +372,12 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         if not self.quiet_mode:
             new_estimate = estimate_messages_tokens_rough(compressed)
             saved_estimate = display_tokens - new_estimate
-            print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
-            print(f"   💡 Compression #{self.compression_count} complete")
+            logger.info(
+                "Compressed: %d -> %d messages (~%d tokens saved)",
+                n_messages,
+                len(compressed),
+                saved_estimate,
+            )
+            logger.info("Compression #%d complete", self.compression_count)
 
         return compressed

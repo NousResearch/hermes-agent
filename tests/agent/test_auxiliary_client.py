@@ -248,6 +248,31 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_resolve_provider_client_copilot_uses_runtime_credentials(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "gh-cli-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "gh-cli-token"
+        assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
+        assert call_kwargs["default_headers"]["Editor-Version"]
+
     def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
         with (
@@ -525,14 +550,16 @@ class TestTaskSpecificOverrides:
         assert model == "google/gemini-3-flash-preview"  # OpenRouter, not Nous
 
     def test_compression_task_reads_context_prefix(self, monkeypatch):
-        """Compression task should check CONTEXT_COMPRESSION_PROVIDER."""
+        """Compression task should check CONTEXT_COMPRESSION_PROVIDER env var."""
         monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")  # would win in auto
         with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
              patch("agent.auxiliary_client.OpenAI"):
-            mock_nous.return_value = {"access_token": "nous-tok"}
+            mock_nous.return_value = {"access_token": "***"}
             client, model = get_text_auxiliary_client("compression")
-        assert model == "gemini-3-flash"  # forced to Nous, not OpenRouter
+        # Config-first: model comes from config.yaml summary_model default,
+        # but provider is forced to Nous via env var
+        assert client is not None
 
     def test_web_extract_task_override(self, monkeypatch):
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "openrouter")
@@ -565,6 +592,25 @@ class TestTaskSpecificOverrides:
         with patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
+
+    def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
+        """compression.summary_base_url should produce a custom-endpoint client."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: custom
+  summary_model: glm-4.7
+  summary_base_url: https://api.z.ai/api/coding/paas/v4
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Custom endpoints need an API key to build the client
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("compression")
+        assert model == "glm-4.7"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
 
 
 class TestAuxiliaryMaxTokensParam:

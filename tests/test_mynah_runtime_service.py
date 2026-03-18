@@ -1,8 +1,7 @@
 from fastapi.testclient import TestClient
 
 from mynah_runtime.service import (
-    DEFAULT_MYNAH_AGENT_IDENTITY,
-    _resolve_runtime_identity_prompt,
+    _load_runtime_soul,
     create_runtime_app,
 )
 
@@ -101,9 +100,23 @@ def test_runtime_turn_stream_emits_reasoning_answer_and_final(monkeypatch):
     assert "\"final_response\": \"runtime ok\"" in payload
 
 
-def test_runtime_identity_prompt_defaults_and_env_override(monkeypatch):
-    monkeypatch.delenv("MYNAH_AGENT_IDENTITY", raising=False)
-    assert _resolve_runtime_identity_prompt() == DEFAULT_MYNAH_AGENT_IDENTITY
+def test_runtime_identity_prompt_loads_soul(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "SOUL.md").write_text("I am your MYNAH assistant.", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    monkeypatch.setenv("MYNAH_AGENT_IDENTITY", "  I am your MYNAH assistant.  ")
-    assert _resolve_runtime_identity_prompt() == "I am your MYNAH assistant."
+    assert _load_runtime_soul() == "I am your MYNAH assistant."
+
+
+def test_runtime_identity_prompt_requires_soul(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    try:
+        _load_runtime_soul()
+    except RuntimeError as exc:
+        assert "SOUL.md" in str(exc)
+    else:
+        raise AssertionError("expected runtime to require SOUL.md")

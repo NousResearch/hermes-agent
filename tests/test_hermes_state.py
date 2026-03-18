@@ -210,6 +210,25 @@ class TestFTS5Search:
         sources = [r["source"] for r in results]
         assert all(s == "telegram" for s in sources)
 
+    def test_search_default_sources_include_acp(self, db):
+        db.create_session(session_id="s1", source="acp")
+        db.append_message("s1", role="user", content="ACP question about Python")
+
+        results = db.search_messages("Python")
+        sources = [r["source"] for r in results]
+        assert "acp" in sources
+
+    def test_search_default_includes_all_platforms(self, db):
+        """Default search (no source_filter) should find sessions from any platform."""
+        for src in ("cli", "telegram", "signal", "homeassistant", "acp", "matrix"):
+            sid = f"s-{src}"
+            db.create_session(session_id=sid, source=src)
+            db.append_message(sid, role="user", content=f"universal search test from {src}")
+
+        results = db.search_messages("universal search test")
+        found_sources = {r["source"] for r in results}
+        assert found_sources == {"cli", "telegram", "signal", "homeassistant", "acp", "matrix"}
+
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="What is FastAPI?")
@@ -261,6 +280,30 @@ class TestFTS5Search:
         # The word "C" appears in the content, so FTS5 should find it
         assert isinstance(results, list)
 
+    def test_search_hyphenated_term_does_not_crash(self, db):
+        """Hyphenated terms like 'chat-send' must not crash FTS5."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Run the chat-send command")
+
+        results = db.search_messages("chat-send")
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
+                    for r in results)
+
+    def test_search_quoted_phrase_preserved(self, db):
+        """User-provided quoted phrases should be preserved for exact matching."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="docker networking is complex")
+        db.append_message("s1", role="assistant", content="networking docker tips")
+
+        # Quoted phrase should match only the exact order
+        results = db.search_messages('"docker networking"')
+        assert isinstance(results, list)
+        # Should find the user message (exact phrase) but may or may not find
+        # the assistant message depending on FTS5 phrase matching
+        assert len(results) >= 1
+
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
@@ -277,6 +320,43 @@ class TestFTS5Search:
         assert s('***') == ''
         # Valid prefix kept
         assert s('deploy*') == 'deploy*'
+
+    def test_sanitize_fts5_preserves_quoted_phrases(self):
+        """Properly paired double-quoted phrases should be preserved."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple quoted phrase
+        assert s('"exact phrase"') == '"exact phrase"'
+        # Quoted phrase alongside unquoted terms
+        assert '"docker networking"' in s('"docker networking" setup')
+        # Multiple quoted phrases
+        result = s('"hello world" OR "foo bar"')
+        assert '"hello world"' in result
+        assert '"foo bar"' in result
+        # Unmatched quote still stripped
+        assert '"' not in s('"unterminated')
+
+    def test_sanitize_fts5_quotes_hyphenated_terms(self):
+        """Hyphenated terms should be wrapped in quotes for exact matching."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple hyphenated term
+        assert s('chat-send') == '"chat-send"'
+        # Multiple hyphens
+        assert s('docker-compose-up') == '"docker-compose-up"'
+        # Hyphenated term with other words
+        result = s('fix chat-send bug')
+        assert '"chat-send"' in result
+        assert 'fix' in result
+        assert 'bug' in result
+        # Multiple hyphenated terms with OR
+        result = s('chat-send OR deploy-prod')
+        assert '"chat-send"' in result
+        assert '"deploy-prod"' in result
+        # Already-quoted hyphenated term — no double quoting
+        assert s('"chat-send"') == '"chat-send"'
+        # Hyphenated inside a quoted phrase stays as-is
+        assert s('"my chat-send thing"') == '"my chat-send thing"'
 
 
 # =========================================================================
@@ -657,7 +737,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -713,12 +793,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v4
+        # Open with SessionDB — should migrate to v5
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 4
+        assert cursor.fetchone()[0] == 5
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

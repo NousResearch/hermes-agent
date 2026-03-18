@@ -82,6 +82,9 @@ def _build_provider_env_blocklist() -> frozenset:
         "FIREWORKS_API_KEY",       # Fireworks AI
         "XAI_API_KEY",             # xAI (Grok)
         "HELICONE_API_KEY",        # LLM Observability proxy
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
         # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
         "TELEGRAM_HOME_CHANNEL",
         "TELEGRAM_HOME_CHANNEL_NAME",
@@ -117,6 +120,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
         "GITHUB_APP_INSTALLATION_ID",
+        # Remote sandbox backend credentials.
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "DAYTONA_API_KEY",
     })
     return frozenset(blocked)
 

@@ -343,7 +343,11 @@ class SessionEntry:
     # Token tracking
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    cost_status: str = "unknown"
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
@@ -363,8 +367,12 @@ class SessionEntry:
             "chat_type": self.chat_type,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
+            "cost_status": self.cost_status,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -394,8 +402,12 @@ class SessionEntry:
             chat_type=data.get("chat_type", "dm"),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
+            cache_read_tokens=data.get("cache_read_tokens", 0),
+            cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
+            cost_status=data.get("cost_status", "unknown"),
         )
 
 
@@ -696,8 +708,15 @@ class SessionStore:
         session_key: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
         last_prompt_tokens: int = None,
         model: str = None,
+        estimated_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -707,15 +726,35 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            entry.cache_read_tokens += cache_read_tokens
+            entry.cache_write_tokens += cache_write_tokens
             if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
-            entry.total_tokens = entry.input_tokens + entry.output_tokens
+            if estimated_cost_usd is not None:
+                entry.estimated_cost_usd += estimated_cost_usd
+            if cost_status:
+                entry.cost_status = cost_status
+            entry.total_tokens = (
+                entry.input_tokens
+                + entry.output_tokens
+                + entry.cache_read_tokens
+                + entry.cache_write_tokens
+            )
             self._save()
             
             if self._db:
                 try:
                     self._db.update_token_counts(
-                        entry.session_id, input_tokens, output_tokens,
+                        entry.session_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        estimated_cost_usd=estimated_cost_usd,
+                        cost_status=cost_status,
+                        cost_source=cost_source,
+                        billing_provider=provider,
+                        billing_base_url=base_url,
                         model=model,
                     )
                 except Exception as e:
@@ -905,7 +944,13 @@ class SessionStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    messages.append(json.loads(line))
+                    try:
+                        messages.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping corrupt line in transcript %s: %s",
+                            session_id, line[:120],
+                        )
         
         return messages
 

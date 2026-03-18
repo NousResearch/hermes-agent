@@ -44,7 +44,7 @@ hermes-agent/
 │   ├── terminal_tool.py  # Terminal orchestration
 │   ├── process_registry.py # Background process management
 │   ├── file_tools.py     # File read/write/search/patch
-│   ├── web_tools.py      # Firecrawl search/extract
+│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
 │   ├── browser_tool.py   # Browserbase browser automation
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py  # Subagent delegation
@@ -383,7 +383,7 @@ Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) inst
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
 
 ### `_last_resolved_tool_names` is a process-global in `model_tools.py`
-When subagents overwrite this global, `execute_code` calls after delegation may fail with missing tool imports. Known bug.
+`_run_single_child()` in `delegate_tool.py` saves and restores this global around subagent execution. If you add new code that reads this global, be aware it may be temporarily stale during child agent runs.
 
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.

@@ -228,6 +228,17 @@ def _format_context_length(tokens: int) -> str:
     return str(tokens)
 
 
+def _display_toolset_name(toolset_name: str) -> str:
+    """Normalize internal/legacy toolset identifiers for banner display."""
+    if not toolset_name:
+        return "unknown"
+    return (
+        toolset_name[:-6]
+        if toolset_name.endswith("_tools")
+        else toolset_name
+    )
+
+
 def build_welcome_banner(console: Console, model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
@@ -292,12 +303,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     for tool in tools:
         tool_name = tool["function"]["name"]
-        toolset = get_toolset_for_tool(tool_name) or "other"
+        toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
         toolsets_dict.setdefault(toolset, []).append(tool_name)
 
     for item in unavailable_toolsets:
         toolset_id = item.get("id", item.get("name", "unknown"))
-        display_name = f"{toolset_id}_tools" if not toolset_id.endswith("_tools") else toolset_id
+        display_name = _display_toolset_name(toolset_id)
         if display_name not in toolsets_dict:
             toolsets_dict[display_name] = []
         for tool_name in item.get("tools", []):
@@ -337,10 +348,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
     # MCP Servers section (only if configured)
     try:
@@ -351,12 +362,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     if mcp_status:
         right_lines.append("")
-        right_lines.append("[bold #FFBF00]MCP Servers[/]")
+        right_lines.append(f"[bold {accent}]MCP Servers[/]")
         for srv in mcp_status:
             if srv["connected"]:
                 right_lines.append(
-                    f"[dim #B8860B]{srv['name']}[/] [#FFF8DC]({srv['transport']})[/] "
-                    f"[dim #B8860B]—[/] [#FFF8DC]{srv['tools']} tool(s)[/]"
+                    f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
+                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
                 )
             else:
                 right_lines.append(

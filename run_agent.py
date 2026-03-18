@@ -852,6 +852,10 @@ class AIAgent:
         except Exception:
             _agent_cfg = {}
 
+        # Session persistence — per-turn SQLite flush for crash resilience
+        session_cfg = _agent_cfg.get("session", {})
+        self._write_through_flush = session_cfg.get("write_through_flush", True)
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -6413,7 +6417,11 @@ class AIAgent:
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
                     self._save_session_log(messages)
-                    
+                    # Write-through: flush to SQLite after every tool-call turn so
+                    # messages survive crashes between turns (not just at session end).
+                    if self._write_through_flush:
+                        self._flush_messages_to_session_db(messages, conversation_history)
+
                     # Continue loop for next response
                     continue
                 

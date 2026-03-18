@@ -321,6 +321,15 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # Session persistence — controls how aggressively messages are flushed
+    # to the SQLite session DB during a conversation.
+    "session": {
+        # When true, flush messages to SQLite after every tool-call turn
+        # (not just at session end). Improves crash resilience at negligible
+        # performance cost.
+        "write_through_flush": True,
+    },
+
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.
     "timezone": "",

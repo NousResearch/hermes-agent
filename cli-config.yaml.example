@@ -355,6 +355,13 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
 
+# Session persistence — controls SQLite flush strategy during conversations.
+session:
+  write_through_flush: true   # Flush messages to SQLite after every tool-call
+                               # turn, not just at session end. Improves crash
+                               # resilience at negligible cost. Disable only if
+                               # per-turn DB writes are a bottleneck.
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

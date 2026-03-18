@@ -506,6 +506,35 @@ class TestToolsetInjection:
         # Original tools preserved
         assert "terminal" in fake_toolsets["hermes-cli"]["tools"]
 
+    def test_discover_mcp_tools_creates_server_named_toolset(self):
+        """Configured MCP servers should become explicit toolsets for platform overrides."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_tools = [_make_mcp_tool("list_files", "List files")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_toolsets = {
+            "hermes-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
+        }
+        fake_config = {"github": {"command": "npx", "args": []}}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("toolsets.TOOLSETS", fake_toolsets):
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+
+        assert "mcp_github_list_files" in fake_toolsets["github"]["tools"]
+        assert fake_toolsets["github"]["includes"] == []
+
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
         from tools.mcp_tool import MCPServerTask

@@ -1238,6 +1238,53 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     }
 
 
+def _server_toolset_name(server_name: str) -> str:
+    return str(server_name)
+
+
+def _server_tool_prefix(server_name: str) -> str:
+    safe_server_name = server_name.replace("-", "_").replace(".", "_")
+    return f"mcp_{safe_server_name}_"
+
+
+def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
+    """Expose discovered MCP tools as real toolsets and inject into hermes-* sets."""
+    from toolsets import TOOLSETS
+
+    if server_names is None:
+        server_names = list(_load_mcp_config().keys())
+
+    existing_tool_names = _existing_tool_names()
+    all_mcp_tools: List[str] = []
+
+    for server_name in server_names:
+        server_tools = sorted(
+            tool_name for tool_name in existing_tool_names
+            if tool_name.startswith(_server_tool_prefix(server_name))
+        )
+        all_mcp_tools.extend(server_tools)
+        toolset_name = _server_toolset_name(server_name)
+        existing_toolset = TOOLSETS.get(toolset_name)
+        if existing_toolset and not str(existing_toolset.get("description", "")).startswith("MCP server '"):
+            logger.warning(
+                "Skipping MCP toolset alias '%s' because a built-in toolset already uses that name",
+                toolset_name,
+            )
+            continue
+        TOOLSETS[toolset_name] = {
+            "description": f"MCP server '{server_name}' tools",
+            "tools": server_tools,
+            "includes": [],
+        }
+
+    for ts_name, ts in TOOLSETS.items():
+        if not ts_name.startswith("hermes-"):
+            continue
+        for tool_name in all_mcp_tools:
+            if tool_name not in ts["tools"]:
+                ts["tools"].append(tool_name)
+
+
 def _build_utility_schemas(server_name: str) -> List[dict]:
     """Build schemas for the MCP utility tools (resources & prompts).
 
@@ -1523,6 +1570,7 @@ def discover_mcp_tools() -> List[str]:
         }
 
     if not new_servers:
+        _sync_mcp_toolsets(list(servers.keys()))
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -1562,14 +1610,7 @@ def discover_mcp_tools() -> List[str]:
     # The outer timeout is generous: 120s total for parallel discovery.
     _run_on_mcp_loop(_discover_all(), timeout=120)
 
-    if all_tools:
-        # Dynamically inject into all hermes-* platform toolsets
-        from toolsets import TOOLSETS
-        for ts_name, ts in TOOLSETS.items():
-            if ts_name.startswith("hermes-"):
-                for tool_name in all_tools:
-                    if tool_name not in ts["tools"]:
-                        ts["tools"].append(tool_name)
+    _sync_mcp_toolsets(list(servers.keys()))
 
     # Print summary
     total_servers = len(new_servers)

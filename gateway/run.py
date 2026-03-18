@@ -432,6 +432,16 @@ class GatewayRunner:
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
     
+    # -- Setup skill availability ----------------------------------------
+
+    def _has_setup_skill(self) -> bool:
+        """Check if the hermes-agent-setup skill is installed."""
+        try:
+            from tools.skill_manager_tool import _find_skill
+            return _find_skill("hermes-agent-setup") is not None
+        except Exception:
+            return False
+
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
@@ -1884,15 +1894,19 @@ class GatewayRunner:
                     _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
                     if _stt_adapter:
                         try:
-                            await _stt_adapter.send(
-                                source.chat_id,
+                            _stt_msg = (
                                 "🎤 I received your voice message but can't transcribe it — "
                                 "no speech-to-text provider is configured.\n\n"
                                 "To enable voice: install faster-whisper "
                                 "(`pip install faster-whisper` in the Hermes venv) "
                                 "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway.\n\n"
-                                "For full setup instructions, type: `/skill hermes-agent-setup`",
+                                "then /restart the gateway."
+                            )
+                            # Point to setup skill if it's installed
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id, _stt_msg,
                                 metadata=_stt_meta,
                             )
                         except Exception:
@@ -3966,11 +3980,13 @@ class GatewayRunner:
             The enriched message string with transcriptions prepended.
         """
         if not getattr(self.config, "stt_enabled", True):
-            disabled_note = (
-                "[The user sent voice message(s), but transcription is disabled in config. "
-                "You have a skill called hermes-agent-setup that can help users configure "
-                "Hermes features including voice, tools, and more.]"
-            )
+            disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
+            if self._has_setup_skill():
+                disabled_note += (
+                    " You have a skill called hermes-agent-setup that can help "
+                    "users configure Hermes features including voice, tools, and more."
+                )
+            disabled_note += "]"
             if user_text:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
@@ -3997,14 +4013,20 @@ class GatewayRunner:
                         "No STT provider" in error
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
-                        enriched_parts.append(
+                        _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
                             "to it right now — no STT provider is configured. "
                             "A direct message has already been sent to the user "
-                            "with setup instructions. You have a skill called "
-                            "hermes-agent-setup that can help users configure "
-                            "Hermes features including voice, tools, and more.]"
+                            "with setup instructions."
                         )
+                        if self._has_setup_skill():
+                            _no_stt_note += (
+                                " You have a skill called hermes-agent-setup "
+                                "that can help users configure Hermes features "
+                                "including voice, tools, and more."
+                            )
+                        _no_stt_note += "]"
+                        enriched_parts.append(_no_stt_note)
                     else:
                         enriched_parts.append(
                             "[The user sent a voice message but I had trouble "

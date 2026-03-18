@@ -77,6 +77,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi-k2-thinking-turbo": 262144,
     "kimi-k2-turbo-preview": 262144,
     "kimi-k2-0905-preview": 131072,
+    "MiniMax-M2.7": 204800,
+    "MiniMax-M2.7-highspeed": 204800,
     "MiniMax-M2.5": 204800,
     "MiniMax-M2.5-highspeed": 204800,
     "MiniMax-M2.1": 204800,

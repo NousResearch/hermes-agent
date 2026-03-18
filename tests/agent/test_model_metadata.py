@@ -218,6 +218,23 @@ class TestGetModelContextLength:
 
         assert result == CONTEXT_PROBE_TIERS[0]
 
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_gemini_endpoint_recognized_as_known_provider(self, mock_endpoint_fetch, mock_fetch):
+        mock_fetch.return_value = {}
+        # The endpoint fetch might fail or return empty for Gemini
+        mock_endpoint_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "google/gemini-2.5-pro",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="test-key",
+        )
+
+        # Because generativelanguage.googleapis.com is a known provider, it falls through to
+        # DEFAULT_CONTEXT_LENGTHS which gives 1048576, instead of CONTEXT_PROBE_TIERS[0].
+        assert result == 1048576
+
 
 # =========================================================================
 # fetch_model_metadata — caching, TTL, slugs, failures

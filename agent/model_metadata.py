@@ -172,6 +172,7 @@ def _is_known_provider_base_url(base_url: str) -> bool:
         "api.moonshot.ai",
         "api.kimi.com",
         "api.minimax",
+        "generativelanguage.googleapis.com",
     )
     return any(known_host in host for known_host in known_hosts)
 

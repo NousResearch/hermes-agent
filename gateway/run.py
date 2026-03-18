@@ -1543,7 +1543,12 @@ class GatewayRunner:
                 # Show full command without consuming the approval
                 cmd = self._pending_approvals[session_key_preview]["command"]
                 return f"Full command:\n\n```\n{cmd}\n```\n\nReply yes/no to approve or deny."
-            # If it's not clearly an approval/denial, fall through to normal processing
+            else:
+                # User sent an unrelated message — discard the stale approval
+                # to prevent accidental execution if a later "yes" is meant
+                # for something else (e.g. a clarify question). (#1888)
+                self._pending_approvals.pop(session_key_preview, None)
+                logger.info("Discarded stale pending approval for session %s (unrelated message)", session_key_preview)
         
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)

@@ -138,7 +138,7 @@ TOOLSETS = {
 
     "lattice": {
         "description": "Agent-to-agent messaging: send messages to other AI agents via Lattice",
-        "tools": ["lattice_send_agent"],
+        "tools": ["lattice_send", "lattice_get_pubkey"],
         "includes": []
     },
     
@@ -312,7 +312,7 @@ TOOLSETS = {
 
     "hermes-lattice": {
         "description": "Lattice push notification toolset - receive push notifications and send messages to other AI agents",
-        "tools": _HERMES_CORE_TOOLS + ["lattice_send_agent"],
+        "tools": _HERMES_CORE_TOOLS + ["lattice_send", "lattice_get_pubkey"],
         "includes": []
     },
 

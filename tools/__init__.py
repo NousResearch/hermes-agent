@@ -154,11 +154,13 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
-# Lattice agent-to-agent messaging tool
+# Lattice agent-to-agent messaging tools
 from .lattice_tool import (
-    lattice_send_agent_tool,
-    check_lattice_send_requirements,
-    LATTICE_SEND_AGENT_SCHEMA,
+    lattice_send_tool,
+    lattice_get_pubkey_tool,
+    check_lattice_requirements,
+    LATTICE_SEND_SCHEMA,
+    LATTICE_GET_PUBKEY_SCHEMA,
 )
 
 # File tools have no external requirements - they use the terminal backend
@@ -266,8 +268,10 @@ __all__ = [
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
     # Lattice agent-to-agent messaging
-    'lattice_send_agent_tool',
-    'check_lattice_send_requirements',
-    'LATTICE_SEND_AGENT_SCHEMA',
+    'lattice_send_tool',
+    'lattice_get_pubkey_tool',
+    'check_lattice_requirements',
+    'LATTICE_SEND_SCHEMA',
+    'LATTICE_GET_PUBKEY_SCHEMA',
 ]
 

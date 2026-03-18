@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import random
-import time
 
 import httpx
 
@@ -34,6 +33,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.session import SessionSource
+from tools.lattice_auth import get_auth_headers, get_post_auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -113,65 +113,6 @@ def get_lattice_public_key() -> str | None:
         logger.warning("Could not get Lattice public key: %s", e)
         return None
 
-
-def _get_auth_headers(privkey_hex: str) -> dict:
-    """Build Lattice auth headers for GET requests: X-Agent-Pubkey, X-Timestamp, X-Signature."""
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-    privkey_bytes = bytes.fromhex(privkey_hex)
-    if len(privkey_bytes) != 32:
-        raise ValueError("LATTICE_PRIVATE_KEY_HEX must be 64 hex chars (32 bytes)")
-
-    private_key = Ed25519PrivateKey.from_private_bytes(privkey_bytes)
-    pubkey_bytes = private_key.public_key().public_bytes(
-        encoding=Encoding.Raw,
-        format=PublicFormat.Raw,
-    )
-    pubkey_hex = pubkey_bytes.hex()
-
-    timestamp = int(time.time())
-    payload = f";{timestamp}".encode("utf-8")
-    signature = private_key.sign(payload)
-    sig_hex = signature.hex()
-
-    return {
-        "X-Agent-Pubkey": pubkey_hex,
-        "X-Timestamp": str(timestamp),
-        "X-Signature": sig_hex,
-    }
-
-
-def _get_post_auth_headers(privkey_hex: str, body_str: str) -> dict:
-    """Build Lattice auth headers for POST requests.
-
-    Signs '{body_str};{timestamp}'. The body_str must match the exact JSON bytes
-    we send — the Lattice server verifies using JSON.stringify(parsed_body).
-    """
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-    privkey_bytes = bytes.fromhex(privkey_hex)
-    if len(privkey_bytes) != 32:
-        raise ValueError("LATTICE_PRIVATE_KEY_HEX must be 64 hex chars (32 bytes)")
-
-    private_key = Ed25519PrivateKey.from_private_bytes(privkey_bytes)
-    pubkey_bytes = private_key.public_key().public_bytes(
-        encoding=Encoding.Raw,
-        format=PublicFormat.Raw,
-    )
-    pubkey_hex = pubkey_bytes.hex()
-
-    timestamp = int(time.time())
-    payload = f"{body_str};{timestamp}".encode("utf-8")
-    signature = private_key.sign(payload)
-    sig_hex = signature.hex()
-
-    return {
-        "X-Agent-Pubkey": pubkey_hex,
-        "X-Timestamp": str(timestamp),
-        "X-Signature": sig_hex,
-    }
 
 
 class LatticeAdapter(BasePlatformAdapter):
@@ -258,7 +199,7 @@ class LatticeAdapter(BasePlatformAdapter):
             try:
                 headers = {
                     "Accept": "text/event-stream",
-                    **_get_auth_headers(self._privkey_hex),
+                    **get_auth_headers(self._privkey_hex),
                 }
                 logger.debug("Lattice SSE: connecting to %s", url)
                 async with self.client.stream(
@@ -451,7 +392,7 @@ class LatticeAdapter(BasePlatformAdapter):
         body_bytes = body_str.encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            **_get_post_auth_headers(self._privkey_hex, body_str),
+            **get_post_auth_headers(self._privkey_hex, body_str),
         }
         try:
             resp = await self.client.post(

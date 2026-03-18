@@ -94,7 +94,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-    ("lattice",          "🔗 Lattice Agent Messaging",  "lattice_send_agent — send messages to other AI agents"),
+    ("lattice",          "🔗 Lattice Agent Messaging",  "lattice_send, lattice_get_pubkey — send messages to other AI agents and get your public key"),
 ]
 
 # Toolsets that are OFF by default for new installs.

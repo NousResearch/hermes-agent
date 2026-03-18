@@ -82,6 +82,27 @@ def _ensure_lattice_key() -> str:
     return privkey
 
 
+def get_lattice_public_key() -> str | None:
+    """
+    Ensure Lattice Ed25519 key exists (generate if needed), return public key hex.
+    Returns None if cryptography is unavailable or key setup fails.
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        privkey = _ensure_lattice_key()
+        key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(privkey))
+        pubkey_hex = key.public_key().public_bytes(
+            encoding=Encoding.Raw,
+            format=PublicFormat.Raw,
+        ).hex()
+        return pubkey_hex
+    except Exception as e:
+        logger.warning("Could not get Lattice public key: %s", e)
+        return None
+
+
 def _get_auth_headers(privkey_hex: str) -> dict:
     """Build Lattice auth headers: X-Agent-Pubkey, X-Timestamp, X-Signature."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

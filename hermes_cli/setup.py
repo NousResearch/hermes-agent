@@ -2540,9 +2540,17 @@ def setup_gateway(config: dict):
             if topics:
                 save_env_value("LATTICE_TOPICS", topics.replace(" ", ""))
                 print_success("Lattice topics saved")
-            print_info(
-                "   Ed25519 keypair is auto-generated on first gateway connect."
-            )
+            try:
+                from gateway.platforms.lattice import get_lattice_public_key
+                pubkey = get_lattice_public_key()
+                if pubkey:
+                    print()
+                    print_success("Your Lattice public key (register this with your Lattice server):")
+                    print_info(f"  {pubkey}")
+            except Exception:
+                print_info(
+                    "   Ed25519 keypair will be auto-generated on first gateway connect."
+                )
 
     # ── Matrix ──
     existing_matrix = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")

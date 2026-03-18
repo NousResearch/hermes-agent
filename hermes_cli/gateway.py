@@ -1568,6 +1568,16 @@ def gateway_setup():
             _setup_signal()
         else:
             _setup_standard_platform(platform)
+            if platform["key"] == "lattice":
+                try:
+                    from gateway.platforms.lattice import get_lattice_public_key
+                    pubkey = get_lattice_public_key()
+                    if pubkey:
+                        print()
+                        print_success("Your Lattice public key (register this with your Lattice server):")
+                        print_info(f"  {pubkey}")
+                except Exception:
+                    pass
 
     # ── Post-setup: offer to install/restart gateway ──
     any_configured = any(

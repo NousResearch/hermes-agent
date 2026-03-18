@@ -1413,14 +1413,41 @@ def call_llm(
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry
+    import time as _time
+    _aux_start = _time.time()
     try:
-        return client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**kwargs)
+        try:
+            from agent.audit import get_audit_logger
+            _dur = (_time.time() - _aux_start) * 1000
+            _usage = getattr(response, "usage", None)
+            get_audit_logger().log_api_call(
+                model=final_model, provider=resolved_provider,
+                status_code=200, duration_ms=_dur,
+                input_tokens=getattr(_usage, "prompt_tokens", 0) if _usage else None,
+                output_tokens=getattr(_usage, "completion_tokens", 0) if _usage else None,
+                context={"auxiliary_task": task},
+            )
+        except Exception:
+            pass
+        return response
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             return client.chat.completions.create(**kwargs)
+        try:
+            from agent.audit import get_audit_logger
+            get_audit_logger().log_api_error(
+                model=final_model, provider=resolved_provider,
+                status_code=getattr(first_err, "status_code", None),
+                error=str(first_err)[:500], error_type=type(first_err).__name__,
+                duration_ms=(_time.time() - _aux_start) * 1000,
+                context={"auxiliary_task": task},
+            )
+        except Exception:
+            pass
         raise
 
 
@@ -1495,12 +1522,39 @@ async def async_call_llm(
         tools=tools, timeout=timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    import time as _time
+    _aux_start = _time.time()
     try:
-        return await client.chat.completions.create(**kwargs)
+        response = await client.chat.completions.create(**kwargs)
+        try:
+            from agent.audit import get_audit_logger
+            _dur = (_time.time() - _aux_start) * 1000
+            _usage = getattr(response, "usage", None)
+            get_audit_logger().log_api_call(
+                model=final_model, provider=resolved_provider,
+                status_code=200, duration_ms=_dur,
+                input_tokens=getattr(_usage, "prompt_tokens", 0) if _usage else None,
+                output_tokens=getattr(_usage, "completion_tokens", 0) if _usage else None,
+                context={"auxiliary_task": task},
+            )
+        except Exception:
+            pass
+        return response
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             return await client.chat.completions.create(**kwargs)
+        try:
+            from agent.audit import get_audit_logger
+            get_audit_logger().log_api_error(
+                model=final_model, provider=resolved_provider,
+                status_code=getattr(first_err, "status_code", None),
+                error=str(first_err)[:500], error_type=type(first_err).__name__,
+                duration_ms=(_time.time() - _aux_start) * 1000,
+                context={"auxiliary_task": task},
+            )
+        except Exception:
+            pass
         raise

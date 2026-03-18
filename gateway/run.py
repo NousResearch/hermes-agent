@@ -23,7 +23,6 @@ import sys
 import signal
 import tempfile
 import threading
-import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -217,7 +216,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
 )
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -1543,7 +1542,9 @@ class GatewayRunner:
                 # Show full command without consuming the approval
                 cmd = self._pending_approvals[session_key_preview]["command"]
                 return f"Full command:\n\n```\n{cmd}\n```\n\nReply yes/no to approve or deny."
-            # If it's not clearly an approval/denial, fall through to normal processing
+            else:
+                self._pending_approvals.pop(session_key_preview, None)
+                logger.info("Unrelated message cleared pending approval for session %s", session_key_preview)
         
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
@@ -2061,7 +2062,26 @@ class GatewayRunner:
                 from tools.approval import pop_pending
                 pending = pop_pending(session_key)
                 if pending:
-                    self._pending_approvals[session_key] = pending
+                    # NEW: Improved Option D - Sequential ordering / Shadowing protection
+                    # If the agent sent a new message or called another tool in this turn, 
+                    # the old approval is considered "shadowed" and discarded to prevent accidents.
+                    is_shadowed = False
+                    messages = agent_result.get("messages", [])
+                
+                    for msg in reversed(messages):
+                        if msg.get("role") == "assistant":
+                            # If assistant sent text or any tool call (not just 'clarify')
+                            if msg.get("content") or msg.get("tool_calls"):
+                                is_shadowed = True
+                                break
+                        if msg.get("role") == "user":
+                            # We only check the current interaction turn
+                            break
+
+                    if not is_shadowed:
+                        self._pending_approvals[session_key] = pending
+                    else:
+                        logger.info("✨ [Issue 1888] Shadowed approval discarded for session %s due to new agent activity", session_key)
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             
@@ -2569,7 +2589,7 @@ class GatewayRunner:
                 else:
                     preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
                 lines.append(f"• `{name}` — {preview}")
-            lines.append(f"\nUsage: `/personality <name>`")
+            lines.append("\nUsage: `/personality <name>`")
             return "\n".join(lines)
 
         def _resolve_prompt(value):

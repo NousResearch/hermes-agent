@@ -480,11 +480,11 @@ def _read_codex_access_token() -> Optional[str]:
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order.
 
-    Returns (client, model) for the first provider whose env var is set,
-    or (None, None) if none are configured.
+    Returns (client, model) for the first provider with usable runtime
+    credentials, or (None, None) if none are configured.
     """
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
@@ -492,34 +492,24 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
-        # Check if any of the provider's env vars are set
-        api_key = ""
-        for env_var in pconfig.api_key_env_vars:
-            val = os.getenv(env_var, "").strip()
-            if val:
-                api_key = val
-                break
-        if not api_key:
-            continue
         if provider_id == "anthropic":
             return _try_anthropic()
 
-        # Resolve base URL (with optional env-var override)
-        # Kimi Code keys (sk-kimi-) need api.kimi.com/coding/v1
-        env_url = ""
-        if pconfig.base_url_env_var:
-            env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-        if env_url:
-            base_url = env_url.rstrip("/")
-        elif provider_id == "kimi-coding" and api_key.startswith("sk-kimi-"):
-            base_url = "https://api.kimi.com/coding/v1"
-        else:
-            base_url = pconfig.inference_base_url
+        creds = resolve_api_key_provider_credentials(provider_id)
+        api_key = str(creds.get("api_key", "")).strip()
+        if not api_key:
+            continue
+
+        base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
             extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+        elif "api.githubcopilot.com" in base_url.lower():
+            from hermes_cli.models import copilot_default_headers
+
+            extra["default_headers"] = copilot_default_headers()
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -744,6 +734,10 @@ def _to_async_client(sync_client, model: str):
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
         async_kwargs["default_headers"] = dict(_OR_HEADERS)
+    elif "api.githubcopilot.com" in base_lower:
+        from hermes_cli.models import copilot_default_headers
+
+        async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
         async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
     return AsyncOpenAI(**async_kwargs), model
@@ -885,7 +879,7 @@ def resolve_provider_client(
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_kimi_base_url
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
         return None, None
@@ -904,26 +898,18 @@ def resolve_provider_client(
             final_model = model or default_model
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
-        # Find the first configured API key
-        api_key = ""
-        for env_var in pconfig.api_key_env_vars:
-            api_key = os.getenv(env_var, "").strip()
-            if api_key:
-                break
+        creds = resolve_api_key_provider_credentials(provider)
+        api_key = str(creds.get("api_key", "")).strip()
         if not api_key:
+            tried_sources = list(pconfig.api_key_env_vars)
+            if provider == "copilot":
+                tried_sources.append("gh auth token")
             logger.warning("resolve_provider_client: provider %s has no API "
                            "key configured (tried: %s)",
-                           provider, ", ".join(pconfig.api_key_env_vars))
+                           provider, ", ".join(tried_sources))
             return None, None
 
-        # Resolve base URL (env override → provider-specific logic → default)
-        base_url_override = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-        if provider == "kimi-coding":
-            base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, base_url_override)
-        elif base_url_override:
-            base_url = base_url_override
-        else:
-            base_url = pconfig.inference_base_url
+        base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = model or default_model
@@ -932,6 +918,10 @@ def resolve_provider_client(
         headers = {}
         if "api.kimi.com" in base_url.lower():
             headers["User-Agent"] = "KimiCLI/1.0"
+        elif "api.githubcopilot.com" in base_url.lower():
+            from hermes_cli.models import copilot_default_headers
+
+            headers.update(copilot_default_headers())
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))

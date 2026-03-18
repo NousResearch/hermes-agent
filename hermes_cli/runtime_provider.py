@@ -14,6 +14,7 @@ from hermes_cli.auth import (
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_api_key_provider_credentials,
+    resolve_external_process_provider_credentials,
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
@@ -33,7 +34,24 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses"}
+def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    if configured_mode:
+        return configured_mode
+
+    model_name = str(model_cfg.get("default") or "").strip()
+    if not model_name:
+        return "chat_completions"
+
+    try:
+        from hermes_cli.models import copilot_model_api_mode
+
+        return copilot_model_api_mode(model_name, api_key=api_key)
+    except Exception:
+        return "chat_completions"
+
+
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -267,6 +285,19 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "copilot-acp":
+        creds = resolve_external_process_provider_credentials(provider)
+        return {
+            "provider": "copilot-acp",
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "command": creds.get("command", ""),
+            "args": list(creds.get("args") or []),
+            "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         from agent.anthropic_adapter import resolve_anthropic_token
@@ -302,9 +333,13 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        model_cfg = _get_model_config()
+        api_mode = "chat_completions"
+        if provider == "copilot":
+            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         return {
             "provider": provider,
-            "api_mode": "chat_completions",
+            "api_mode": api_mode,
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "env"),

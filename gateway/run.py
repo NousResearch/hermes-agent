@@ -379,6 +379,35 @@ class GatewayRunner:
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
 
+        # Parallel task execution support (#1468)
+        self._parallel_execution = self._load_parallel_execution_config()
+        self._parallel_integration = None
+        if self._parallel_execution.get("enabled", False):
+            try:
+                from gateway.parallel_integration import ParallelExecutionIntegration
+                self._parallel_integration = ParallelExecutionIntegration(
+                    self,
+                    max_concurrent=self._parallel_execution.get("max_concurrent", 3)
+                )
+                logger.info(
+                    f"Parallel task execution enabled (max_concurrent={self._parallel_integration._max_concurrent})"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize parallel execution: {e}")
+
+    def _load_parallel_execution_config(self) -> Dict[str, Any]:
+        """Load parallel execution configuration from config.yaml."""
+        try:
+            config_path = _hermes_home / 'config.yaml'
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                return user_config.get("parallel_execution", {})
+        except Exception as e:
+            logger.debug("Could not load parallel_execution config: %s", e)
+        return {"enabled": False}
+
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
         if not hasattr(self, "_honcho_managers"):
@@ -1002,6 +1031,13 @@ class GatewayRunner:
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
 
+        # Initialize parallel task execution if enabled
+        if self._parallel_integration:
+            try:
+                await self._parallel_integration.initialize()
+            except Exception as e:
+                logger.warning(f"Failed to initialize parallel execution: {e}")
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -1072,6 +1108,14 @@ class GatewayRunner:
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
+        
+        # Shutdown parallel task execution
+        if self._parallel_integration:
+            try:
+                await self._parallel_integration.shutdown()
+            except Exception as e:
+                logger.debug("Parallel execution shutdown error: %s", e)
+        
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file, write_runtime_status
@@ -1317,6 +1361,9 @@ class GatewayRunner:
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
         #
+        # NEW: Parallel task execution support (#1468)
+        # Check if this message can run in parallel with existing tasks.
+        #
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
@@ -1324,6 +1371,42 @@ class GatewayRunner:
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
+
+            # PARALLEL EXECUTION: Check if this task can run in parallel
+            if (self._parallel_integration 
+                    and self._parallel_integration.is_enabled() 
+                    and not event.get_command()):
+                should_use_parallel = self._parallel_integration.should_use_parallel(
+                    event.text, _quick_key
+                )
+                if should_use_parallel:
+                    try:
+                        session = self._get_or_create_session(source)
+                        history = self._get_conversation_history(session.session_id)
+                        
+                        task = await self._parallel_integration.submit_task(
+                            session_key=_quick_key,
+                            message=event.text,
+                            event=event,
+                            conversation_history=history,
+                        )
+                        
+                        if task:
+                            logger.info(
+                                f"Task {task.task_id[:8]} submitted for parallel execution "
+                                f"({task.classification.task_type.value}, conf={task.classification.confidence:.2f})"
+                            )
+                            # Acknowledge to user
+                            adapter = self.adapters.get(source.platform)
+                            if adapter and task.classification.task_type.value == "independent":
+                                await adapter.send(
+                                    source.chat_id,
+                                    f"⚡ Starting in parallel: {event.text[:50]}{'...' if len(event.text) > 50 else ''}"
+                                )
+                            return None
+                    except Exception as e:
+                        logger.warning(f"Parallel execution failed, falling back to interrupt: {e}")
+                        # Fall through to interrupt behavior
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -1385,6 +1468,9 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
+        
+        if canonical == "tasks":
+            return await self._handle_tasks_command(event)
         
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -2287,6 +2373,13 @@ class GatewayRunner:
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ]
         
+        # Add parallel execution status
+        if self._parallel_integration and self._parallel_integration.is_enabled():
+            stats = self._parallel_integration.get_stats()
+            lines.append("")
+            lines.append(f"**Parallel Execution:** Enabled (max={stats.get('max_concurrent', 3)})")
+            lines.append(f"**Running Tasks:** {stats.get('running_tasks', 0)}")
+        
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
@@ -2301,6 +2394,44 @@ class GatewayRunner:
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:
             return "No active task to stop."
+    
+    async def _handle_tasks_command(self, event: MessageEvent) -> str:
+        """Handle /tasks command - list parallel tasks."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        
+        if not self._parallel_integration or not self._parallel_integration.is_enabled():
+            return "Parallel task execution is not enabled."
+        
+        # Get tasks for this session
+        tasks = self._parallel_integration.get_session_tasks(session_key)
+        
+        if not tasks:
+            return "No tasks running for this session."
+        
+        lines = ["📋 **Running Tasks**\n"]
+        
+        for i, task in enumerate(tasks[-5:], 1):  # Show last 5 tasks
+            status_emoji = {
+                "pending": "⏳",
+                "queued": "🔄",
+                "running": "⚡",
+                "completed": "✅",
+                "failed": "❌",
+                "cancelled": "🚫",
+            }.get(task.get("status", ""), "❓")
+            
+            msg = task.get("message", "Unknown")
+            if len(msg) > 40:
+                msg = msg[:37] + "..."
+            
+            lines.append(f"{i}. {status_emoji} `{task.get('task_id', 'unknown')[:8]}`")
+            lines.append(f"   {msg}")
+            lines.append(f"   Type: {task.get('classification', {}).get('type', 'unknown')}")
+            lines.append("")
+        
+        return "\n".join(lines)
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""

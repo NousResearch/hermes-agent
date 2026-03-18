@@ -451,7 +451,7 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Bridge per-platform unauthorized_dm_behavior from config.yaml
+            # Bridge per-platform settings from config.yaml into gw_data
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
@@ -462,7 +462,16 @@ def load_gateway_config() -> GatewayConfig:
                 platform_cfg = yaml_cfg.get(plat.value)
                 if not isinstance(platform_cfg, dict):
                     continue
-                if "unauthorized_dm_behavior" not in platform_cfg:
+                # Collect bridgeable keys from this platform section
+                bridged = {}
+                if "unauthorized_dm_behavior" in platform_cfg:
+                    bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
+                        platform_cfg.get("unauthorized_dm_behavior"),
+                        gw_data.get("unauthorized_dm_behavior", "pair"),
+                    )
+                if "reply_prefix" in platform_cfg:
+                    bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
                 if not isinstance(plat_data, dict):
@@ -472,10 +481,7 @@ def load_gateway_config() -> GatewayConfig:
                 if not isinstance(extra, dict):
                     extra = {}
                     plat_data["extra"] = extra
-                extra["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
-                    platform_cfg.get("unauthorized_dm_behavior"),
-                    gw_data.get("unauthorized_dm_behavior", "pair"),
-                )
+                extra.update(bridged)
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
@@ -489,13 +495,6 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
-
-            # Bridge whatsapp settings from config.yaml into platform config
-            whatsapp_cfg = yaml_cfg.get("whatsapp", {})
-            if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
-                if Platform.WHATSAPP not in config.platforms:
-                    config.platforms[Platform.WHATSAPP] = PlatformConfig()
-                config.platforms[Platform.WHATSAPP].extra["reply_prefix"] = whatsapp_cfg["reply_prefix"]
     except Exception:
         pass
 

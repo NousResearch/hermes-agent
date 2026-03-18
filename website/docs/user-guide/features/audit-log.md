@@ -191,3 +191,14 @@ hermes audit list --type pairing_approved
 hermes audit summary
 # → "Tool Usage: 14x search_files (587ms avg)"
 ```
+
+## Agent Self-Query
+
+The agent has an `audit_query` tool that lets it inspect its own audit trail. Users can ask natural language questions and the agent will query the audit log:
+
+- "What errors happened in the last hour?"
+- "Show me recent tool usage"
+- "Are there any problems with the system?"
+- "How many API calls were made today?"
+
+The tool supports `summary`, `problems`, `list`, and `types` actions with time filtering and full-text search. It is auto-injected into the agent's tool list when audit is enabled.

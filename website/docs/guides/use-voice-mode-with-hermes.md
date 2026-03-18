@@ -72,6 +72,12 @@ pip install hermes-agent[messaging]
 pip install hermes-agent[tts-premium]
 ```
 
+### Local NeuTTS (optional)
+
+```bash
+python -m pip install -U neutts[all]
+```
+
 ### Everything
 
 ```bash
@@ -84,18 +90,21 @@ pip install hermes-agent[all]
 
 ```bash
 brew install portaudio ffmpeg opus
+brew install espeak-ng
 ```
 
 ### Ubuntu / Debian
 
 ```bash
 sudo apt install portaudio19-dev ffmpeg libopus0
+sudo apt install espeak-ng
 ```
 
 Why these matter:
 - `portaudio` → microphone input / playback for CLI voice mode
 - `ffmpeg` → audio conversion for TTS and messaging delivery
 - `opus` → Discord voice codec support
+- `espeak-ng` → phonemizer backend for NeuTTS
 
 ## Step 4: choose STT and TTS providers
 
@@ -133,8 +142,19 @@ ELEVENLABS_API_KEY=***
 #### Text-to-speech
 
 - `edge` → free and good enough for most users
+- `neutts` → free local/on-device TTS
 - `elevenlabs` → best quality
 - `openai` → good middle ground
+
+### If you use `hermes setup`
+
+If you choose NeuTTS in the setup wizard, Hermes checks whether `neutts` is already installed. If it is missing, the wizard tells you NeuTTS needs the Python package `neutts` and the system package `espeak-ng`, offers to install them for you, installs `espeak-ng` with your platform package manager, and then runs:
+
+```bash
+python -m pip install -U neutts[all]
+```
+
+If you skip that install or it fails, the wizard falls back to Edge TTS.
 
 ## Step 5: recommended config
 
@@ -158,6 +178,18 @@ tts:
 ```
 
 This is a good conservative default for most people.
+
+If you want local TTS instead, switch the `tts` block to:
+
+```yaml
+tts:
+  provider: "neutts"
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
+```
 
 ## Use case 1: CLI voice mode
 

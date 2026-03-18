@@ -929,7 +929,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
   elevenlabs:
@@ -938,6 +938,11 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
 ```
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).

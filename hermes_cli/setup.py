@@ -1710,7 +1710,7 @@ def _install_neutts_deps() -> bool:
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         print_error(f"Failed to install neutts: {e}")
-        print_info("Try manually: pip install neutts[all]")
+        print_info("Try manually: python -m pip install -U neutts[all]")
         return False
 
 

@@ -24,7 +24,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse, urlunparse
 
@@ -53,6 +53,29 @@ INDEX_CACHE_DIR = HUB_DIR / "index-cache"
 
 # Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
+
+
+# ---------------------------------------------------------------------------
+# Path validation
+# ---------------------------------------------------------------------------
+
+def _sanitize_bundle_subpath(path: str, *, allow_nested: bool) -> str:
+    """Normalize a bundle-controlled path and reject traversal/absolute writes."""
+    raw = str(path or "").strip()
+    if not raw:
+        raise ValueError("Skill bundle contains an empty path")
+
+    normalized = raw.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized):
+        raise ValueError(f"Skill bundle path must be relative: {path!r}")
+
+    parts = [part for part in PurePosixPath(normalized).parts if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Skill bundle path escapes the install directory: {path!r}")
+    if not allow_nested and len(parts) != 1:
+        raise ValueError(f"Skill bundle name must be a single path segment: {path!r}")
+
+    return str(PurePosixPath(*parts))
 
 
 # ---------------------------------------------------------------------------
@@ -2254,12 +2277,18 @@ def ensure_hub_dirs() -> None:
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
     ensure_hub_dirs()
-    dest = QUARANTINE_DIR / bundle.name
+    safe_name = _sanitize_bundle_subpath(bundle.name, allow_nested=False)
+    sanitized_files: dict[str, Union[str, bytes]] = {}
+    for rel_path, file_content in bundle.files.items():
+        safe_rel_path = _sanitize_bundle_subpath(rel_path, allow_nested=True)
+        sanitized_files[safe_rel_path] = file_content
+
+    dest = QUARANTINE_DIR / safe_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
 
-    for rel_path, file_content in bundle.files.items():
+    for rel_path, file_content in sanitized_files.items():
         file_dest = dest / rel_path
         file_dest.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(file_content, bytes):
@@ -2278,10 +2307,13 @@ def install_from_quarantine(
     scan_result: ScanResult,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
-    if category:
-        install_dir = SKILLS_DIR / category / skill_name
+    safe_skill_name = _sanitize_bundle_subpath(skill_name, allow_nested=False)
+    safe_category = _sanitize_bundle_subpath(category, allow_nested=True) if category else ""
+
+    if safe_category:
+        install_dir = SKILLS_DIR / safe_category / safe_skill_name
     else:
-        install_dir = SKILLS_DIR / skill_name
+        install_dir = SKILLS_DIR / safe_skill_name
 
     if install_dir.exists():
         shutil.rmtree(install_dir)

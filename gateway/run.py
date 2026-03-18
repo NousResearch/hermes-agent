@@ -1183,6 +1183,14 @@ class GatewayRunner:
                 return None
             return APIServerAdapter(config)
 
+        elif platform == Platform.MISSION_CONTROL:
+            from gateway.platforms.mission_control import MissionControlAdapter, check_mc_requirements
+            if not check_mc_requirements():
+                logger.warning("Mission Control: aiohttp not installed or requirements not met")
+                return None
+            # Mission Control doesn't need user allowlist - it's a system source
+            return MissionControlAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:

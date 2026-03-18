@@ -56,6 +56,7 @@ class Platform(Enum):
     SMS = "sms"
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
+    MISSION_CONTROL = "mission_control"
 
 
 @dataclass

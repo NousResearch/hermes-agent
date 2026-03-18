@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -122,10 +122,28 @@ class TestComputeNextRun:
         schedule = {"kind": "once", "run_at": future}
         assert compute_next_run(schedule) == future
 
+    def test_once_recent_past_within_grace_returns_time(self, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 22, 3, tzinfo=timezone.utc)
+        run_at = "2026-03-18T04:22:00+00:00"
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "once", "run_at": run_at}
+
+        assert compute_next_run(schedule) == run_at
+
     def test_once_past_returns_none(self):
         past = (datetime.now() - timedelta(hours=1)).isoformat()
         schedule = {"kind": "once", "run_at": past}
         assert compute_next_run(schedule) is None
+
+    def test_once_with_last_run_returns_none_even_within_grace(self, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 22, 3, tzinfo=timezone.utc)
+        run_at = "2026-03-18T04:22:00+00:00"
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "once", "run_at": run_at}
+
+        assert compute_next_run(schedule, last_run_at=now.isoformat()) is None
 
     def test_interval_first_run(self):
         schedule = {"kind": "interval", "minutes": 60}
@@ -346,6 +364,67 @@ class TestGetDueJobs:
 
         due = get_due_jobs()
         assert len(due) == 0
+
+    def test_broken_recent_one_shot_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 22, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        run_at = "2026-03-18T04:22:00+00:00"
+        save_jobs(
+            [{
+                "id": "oneshot-recover",
+                "name": "Recover me",
+                "prompt": "Word of the day",
+                "schedule": {"kind": "once", "run_at": run_at, "display": "once at 2026-03-18 04:22"},
+                "schedule_display": "once at 2026-03-18 04:22",
+                "repeat": {"times": 1, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T04:21:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        due = get_due_jobs()
+
+        assert [job["id"] for job in due] == ["oneshot-recover"]
+        assert get_job("oneshot-recover")["next_run_at"] == run_at
+
+    def test_broken_stale_one_shot_without_next_run_is_not_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "oneshot-stale",
+                "name": "Too old",
+                "prompt": "Word of the day",
+                "schedule": {"kind": "once", "run_at": "2026-03-18T04:22:00+00:00", "display": "once at 2026-03-18 04:22"},
+                "schedule_display": "once at 2026-03-18 04:22",
+                "repeat": {"times": 1, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T04:21:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        assert get_job("oneshot-stale")["next_run_at"] is None
 
 
 class TestSaveJobOutput:

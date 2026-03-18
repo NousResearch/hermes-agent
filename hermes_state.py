@@ -757,16 +757,14 @@ class SessionDB:
         if not query:
             return []
 
-        if source_filter is None:
-            source_filter = ["cli", "telegram", "discord", "whatsapp", "slack"]
-
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
 
-        source_placeholders = ",".join("?" for _ in source_filter)
-        where_clauses.append(f"s.source IN ({source_placeholders})")
-        params.extend(source_filter)
+        if source_filter is not None:
+            source_placeholders = ",".join("?" for _ in source_filter)
+            where_clauses.append(f"s.source IN ({source_placeholders})")
+            params.extend(source_filter)
 
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)

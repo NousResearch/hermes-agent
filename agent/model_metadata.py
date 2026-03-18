@@ -136,6 +136,7 @@ _CONTEXT_LENGTH_KEYS = (
     "max_input_tokens",
     "max_sequence_length",
     "max_seq_len",
+    "n_ctx_train",
 )
 
 _MAX_COMPLETION_KEYS = (

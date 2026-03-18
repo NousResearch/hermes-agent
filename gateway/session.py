@@ -276,6 +276,14 @@ def build_session_context_prompt(
             "Do not promise to perform these actions. If the user asks, explain "
             "that you can only read messages sent directly to you and respond."
         )
+    elif context.source.platform == Platform.LATTICE:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** This message is a push notification delivered via Lattice. "
+            "You cannot reply directly to Lattice. If this notification requires user attention, "
+            "use the send_message tool to reach them on one of the connected platforms listed "
+            "in Home Channels above."
+        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

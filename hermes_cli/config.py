@@ -807,6 +807,27 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "LATTICE_URL": {
+        "description": "Lattice push notification server URL (enables Lattice platform)",
+        "prompt": "Lattice Server URL",
+        "url": "https://github.com/lattice-pns/lattice",
+        "password": False,
+        "category": "messaging",
+    },
+    "LATTICE_PRIVATE_KEY_HEX": {
+        "description": "Ed25519 private key hex for Lattice device identity (64 chars). Auto-generated on first run if blank.",
+        "prompt": "Lattice Private Key (hex)",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "LATTICE_TOPICS": {
+        "description": "Comma-separated Lattice topics to subscribe to",
+        "prompt": "Lattice Topics",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
 
     # ── Agent settings ──
     "MESSAGING_CWD": {

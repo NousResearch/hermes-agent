@@ -1169,6 +1169,13 @@ class GatewayRunner:
                 return None
             return APIServerAdapter(config)
 
+        elif platform == Platform.LATTICE:
+            from gateway.platforms.lattice import LatticeAdapter, check_lattice_requirements
+            if not check_lattice_requirements():
+                logger.warning("Lattice: LATTICE_URL not configured")
+                return None
+            return LatticeAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1186,6 +1193,11 @@ class GatewayRunner:
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
         if source.platform == Platform.HOMEASSISTANT:
+            return True
+
+        # Lattice notifications are push-in from our own SSE subscription;
+        # Ed25519 auth already authenticates the connection.
+        if source.platform == Platform.LATTICE:
             return True
 
         user_id = source.user_id
@@ -3086,6 +3098,7 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
+                Platform.LATTICE: "hermes-lattice",
             }
             platform_toolsets_config = {}
             try:
@@ -3108,6 +3121,7 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
                 Platform.DINGTALK: "dingtalk",
+                Platform.LATTICE: "lattice",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -4106,6 +4120,7 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
+            Platform.LATTICE: "hermes-lattice",
         }
 
         # Try to load platform_toolsets from config
@@ -4131,8 +4146,9 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",
+            Platform.LATTICE: "lattice",
         }.get(source.platform, "telegram")
-        
+
         # Use config override if present (list of toolsets), otherwise hardcoded default
         config_toolsets = platform_toolsets_config.get(platform_config_key)
         if config_toolsets and isinstance(config_toolsets, list):

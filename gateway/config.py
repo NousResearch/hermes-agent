@@ -47,6 +47,7 @@ class Platform(Enum):
     SMS = "sms"
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
+    LATTICE = "lattice"
 
 
 @dataclass
@@ -654,6 +655,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=sms_home,
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # Lattice (push notifications via SSE)
+    lattice_url = os.getenv("LATTICE_URL")
+    if lattice_url:
+        if Platform.LATTICE not in config.platforms:
+            config.platforms[Platform.LATTICE] = PlatformConfig()
+        config.platforms[Platform.LATTICE].enabled = True
+        config.platforms[Platform.LATTICE].extra["url"] = lattice_url
+        lattice_topics = os.getenv("LATTICE_TOPICS", "")
+        if lattice_topics:
+            config.platforms[Platform.LATTICE].extra["topics"] = lattice_topics
+        privkey = os.getenv("LATTICE_PRIVATE_KEY_HEX")
+        if privkey:
+            config.platforms[Platform.LATTICE].token = privkey
 
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")

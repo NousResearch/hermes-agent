@@ -201,7 +201,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenCode Go",
         auth_type="***",
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPEN...",),
+        api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilocode": ProviderConfig(

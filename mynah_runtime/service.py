@@ -58,6 +58,26 @@ class HermesRuntimeAgentFactory:
         return build_runtime_agent()
 
 
+def _normalize_final_response(result: dict[str, Any]) -> str:
+    final_response = result.get("final_response")
+    if isinstance(final_response, str) and final_response.strip():
+        return final_response
+
+    response = result.get("response")
+    if isinstance(response, str) and response.strip():
+        return response
+
+    messages = result.get("messages") or []
+    if isinstance(messages, list):
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+
+    raise ValueError("runtime agent result did not include an assistant response")
+
+
 def build_runtime_agent() -> RuntimeConversationAgent:
     from run_agent import AIAgent
 
@@ -105,7 +125,7 @@ def create_runtime_app(factory: RuntimeAgentFactory | None = None) -> FastAPI:
             conversation_history=request.conversation_history,
         )
         return RuntimeTurnResponse(
-            final_response=result["response"],
+            final_response=_normalize_final_response(result),
             messages=result["messages"],
             session_id=agent.session_id,
             runtime_profile=runtime_profile,

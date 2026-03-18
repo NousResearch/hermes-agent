@@ -12,7 +12,7 @@ class FakeAgent:
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": "runtime ok"})
         return {
-            "response": "runtime ok",
+            "final_response": "runtime ok",
             "messages": history,
         }
 
@@ -46,3 +46,28 @@ def test_runtime_health_and_turn(monkeypatch):
     assert body["final_response"] == "runtime ok"
     assert body["session_id"] == "session-123"
     assert body["messages"][-1]["content"] == "runtime ok"
+
+
+def test_runtime_turn_accepts_legacy_response_key():
+    class LegacyAgent:
+        def __init__(self):
+            self.session_id = "legacy-session"
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None):
+            history = list(conversation_history or [])
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": "legacy ok"})
+            return {
+                "response": "legacy ok",
+                "messages": history,
+            }
+
+    class LegacyFactory:
+        def create(self):
+            return LegacyAgent()
+
+    client = TestClient(create_runtime_app(LegacyFactory()))
+    turn = client.post("/runtime/turn", json={"user_message": "hello"})
+
+    assert turn.status_code == 200
+    assert turn.json()["final_response"] == "legacy ok"

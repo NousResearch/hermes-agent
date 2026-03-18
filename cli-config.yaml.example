@@ -615,6 +615,12 @@ toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#   council:
+#     command: hermes-council-server
+#     env:
+#       COUNCIL_API_KEY: ""
+#       COUNCIL_MODEL: "nousresearch/hermes-3-llama-3.1-70b"
+#     timeout: 180
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

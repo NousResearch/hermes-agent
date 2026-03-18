@@ -291,6 +291,59 @@ class TestToolNamePreservation(unittest.TestCase):
 
         self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
 
+    def test_parent_tools_survive_child_construction_mutation(self):
+        """Child construction must not permanently replace the parent's tool set."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        parent_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
+        child_tools = ["terminal", "read_file"]
+        model_tools._last_resolved_tool_names = list(parent_tools)
+
+        def _mutating_constructor(**_kwargs):
+            model_tools._last_resolved_tool_names = list(child_tools)
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_mutating_constructor):
+            delegate_task(goal="Test parent survives mutation", parent_agent=parent)
+
+        self.assertEqual(model_tools._last_resolved_tool_names, parent_tools)
+
+    def test_batch_parent_tools_survive_multiple_child_mutations(self):
+        """Batch delegation must restore the parent's tools after all child builds."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        parent_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
+        model_tools._last_resolved_tool_names = list(parent_tools)
+        call_count = [0]
+
+        def _mutating_constructor(**_kwargs):
+            call_count[0] += 1
+            model_tools._last_resolved_tool_names = [
+                f"child{call_count[0]}_tool_a",
+                f"child{call_count[0]}_tool_b",
+            ]
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": f"done {call_count[0]}",
+                "completed": True,
+                "api_calls": 1,
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_mutating_constructor):
+            delegate_task(
+                tasks=[{"goal": "Task A"}, {"goal": "Task B"}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(model_tools._last_resolved_tool_names, parent_tools)
+
 
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""

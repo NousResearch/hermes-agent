@@ -173,6 +173,10 @@ def _build_child_agent(
     from run_agent import AIAgent
     import model_tools
 
+    # Snapshot the parent's resolved tool names before child construction
+    # mutates the process-global via get_tool_definitions().
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
@@ -232,7 +236,9 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
-    child._delegate_saved_tool_names = list(_saved_tool_names)
+    # Worker cleanup restores from the snapshot captured before construction.
+    child._parent_saved_tool_names = list(_saved_tool_names)
+    child._model_tools_module = model_tools
 
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
@@ -263,13 +269,6 @@ def _run_single_child(
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
-
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    # This must be in _run_single_child (not _build_child_agent) so the
-    # save/restore happens in the same scope as the try/finally.
-    import model_tools
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -380,11 +379,13 @@ def _run_single_child(
     finally:
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
-        import model_tools
-
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
+        try:
+            model_tools_module = getattr(child, "_model_tools_module", None) if child is not None else None
+            saved_tool_names = getattr(child, "_parent_saved_tool_names", None) if child is not None else None
+            if model_tools_module is not None and saved_tool_names is not None:
+                model_tools_module._last_resolved_tool_names = list(saved_tool_names)
+        except Exception as e:
+            logger.debug("Could not restore parent tool names: %s", e)
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -466,89 +467,95 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
-    # Build all child agents on the main thread (thread-safe construction)
-    children = []
-    for i, t in enumerate(task_list):
-        child = _build_child_agent(
-            task_index=i, goal=t["goal"], context=t.get("context"),
-            toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-            max_iterations=effective_max_iter, parent_agent=parent_agent,
-            override_provider=creds["provider"], override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
-        )
-        children.append((i, t, child))
+    import model_tools as _mt
+    _parent_tool_names_snapshot = list(_mt._last_resolved_tool_names)
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
-    else:
-        # Batch -- run in parallel with per-task progress lines
-        completed_count = 0
-        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+    try:
+        # Build all child agents on the main thread (thread-safe construction)
+        children = []
+        for i, t in enumerate(task_list):
+            child = _build_child_agent(
+                task_index=i, goal=t["goal"], context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                max_iterations=effective_max_iter, parent_agent=parent_agent,
+                override_provider=creds["provider"], override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+            )
+            children.append((i, t, child))
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
-            futures = {}
-            for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
-                )
-                futures[future] = i
+        if n_tasks == 1:
+            # Single task -- run directly (no thread pool overhead)
+            _i, _t, child = children[0]
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            results.append(result)
+        else:
+            # Batch -- run in parallel with per-task progress lines
+            completed_count = 0
+            spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-            for future in as_completed(futures):
-                try:
-                    entry = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    entry = {
-                        "task_index": idx,
-                        "status": "error",
-                        "summary": None,
-                        "error": str(exc),
-                        "api_calls": 0,
-                        "duration_seconds": 0,
-                    }
-                results.append(entry)
-                completed_count += 1
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+                futures = {}
+                for i, t, child in children:
+                    future = executor.submit(
+                        _run_single_child,
+                        task_index=i,
+                        goal=t["goal"],
+                        child=child,
+                        parent_agent=parent_agent,
+                    )
+                    futures[future] = i
 
-                # Print per-task completion line above the spinner
-                idx = entry["task_index"]
-                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                dur = entry.get("duration_seconds", 0)
-                status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
-                remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                if spinner_ref:
+                for future in as_completed(futures):
                     try:
-                        spinner_ref.print_above(completion_line)
-                    except Exception:
+                        entry = future.result()
+                    except Exception as exc:
+                        idx = futures[future]
+                        entry = {
+                            "task_index": idx,
+                            "status": "error",
+                            "summary": None,
+                            "error": str(exc),
+                            "api_calls": 0,
+                            "duration_seconds": 0,
+                        }
+                    results.append(entry)
+                    completed_count += 1
+
+                    # Print per-task completion line above the spinner
+                    idx = entry["task_index"]
+                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                    dur = entry.get("duration_seconds", 0)
+                    status = entry.get("status", "?")
+                    icon = "✓" if status == "completed" else "✗"
+                    remaining = n_tasks - completed_count
+                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                    if spinner_ref:
+                        try:
+                            spinner_ref.print_above(completion_line)
+                        except Exception:
+                            print(f"  {completion_line}")
+                    else:
                         print(f"  {completion_line}")
-                else:
-                    print(f"  {completion_line}")
 
-                # Update spinner text to show remaining count
-                if spinner_ref and remaining > 0:
-                    try:
-                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                    except Exception as e:
-                        logger.debug("Spinner update_text failed: %s", e)
+                    # Update spinner text to show remaining count
+                    if spinner_ref and remaining > 0:
+                        try:
+                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        except Exception as e:
+                            logger.debug("Spinner update_text failed: %s", e)
 
-        # Sort by task_index so results match input order
-        results.sort(key=lambda r: r["task_index"])
+            # Sort by task_index so results match input order
+            results.sort(key=lambda r: r["task_index"])
 
-    total_duration = round(time.monotonic() - overall_start, 2)
+        total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps({
-        "results": results,
-        "total_duration_seconds": total_duration,
-    }, ensure_ascii=False)
+        return json.dumps({
+            "results": results,
+            "total_duration_seconds": total_duration,
+        }, ensure_ascii=False)
+    finally:
+        _mt._last_resolved_tool_names = list(_parent_tool_names_snapshot)
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:

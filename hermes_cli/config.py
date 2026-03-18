@@ -371,8 +371,29 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Audit log settings
+    "audit": {
+        "enabled": True,
+        "redact": True,
+        "retention_days": 7,
+        "jsonl": True,  # also write JSONL files for hermes tail
+        # Per-source filtering.  Source is derived from the event type prefix.
+        # Core events (session.*, api.*, tool.*, cli.*, context.*) map to "core".
+        # Everything else uses its own prefix (honcho.*, cron.*, mcp.*, etc.).
+        # Missing keys default to True (opt-out, not opt-in).
+        "sources": {
+            "core": True,       # session, api, tool, cli, context events
+            "honcho": True,     # honcho.* events
+            "memory": True,     # memory.* events
+            "cron": True,       # cron.* events
+            "mcp": True,        # MCP tool/server events
+            "skill": True,      # skill load/manage events
+            "plugin": True,     # external plugin events
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -1015,6 +1036,54 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
+
+    # ── Version 9 → 10: migrate flat audit keys to nested audit block ──
+    if current_ver < 10:
+        config = load_config()
+        audit_block = config.get("audit", {})
+        if not isinstance(audit_block, dict):
+            audit_block = {}
+        # Migrate old flat keys into the new nested block
+        if "audit_log" in config:
+            audit_block.setdefault("enabled", config.pop("audit_log"))
+            results["config_added"].append("audit.enabled (migrated from audit_log)")
+        if "audit_log_redact" in config:
+            audit_block.setdefault("redact", config.pop("audit_log_redact"))
+            results["config_added"].append("audit.redact (migrated from audit_log_redact)")
+        if "audit_log_retention_days" in config:
+            audit_block.setdefault("retention_days", config.pop("audit_log_retention_days"))
+            results["config_added"].append("audit.retention_days (migrated from audit_log_retention_days)")
+        # Ensure defaults
+        audit_block.setdefault("enabled", True)
+        audit_block.setdefault("redact", True)
+        audit_block.setdefault("retention_days", 7)
+        audit_block.setdefault("jsonl", True)
+        config["audit"] = audit_block
+        save_config(config)
+        if not quiet:
+            print("  ✓ Migrated audit config to nested audit block")
+
+    # ── Version 10 → 11: add audit.sources for per-source filtering ──
+    if current_ver < 11:
+        config = load_config()
+        audit_block = config.get("audit", {})
+        if not isinstance(audit_block, dict):
+            audit_block = {}
+        if "sources" not in audit_block:
+            audit_block["sources"] = {
+                "core": True,
+                "honcho": True,
+                "memory": True,
+                "cron": True,
+                "mcp": True,
+                "skill": True,
+                "plugin": True,
+            }
+            results["config_added"].append("audit.sources (per-source filtering)")
+        config["audit"] = audit_block
+        save_config(config)
+        if not quiet:
+            print("  ✓ Added audit.sources for per-source event filtering")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

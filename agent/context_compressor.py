@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from agent.auxiliary_client import call_llm
 from agent.model_metadata import (
     get_model_context_length,
+    get_cached_context_length,
+    get_upgrade_context_tier,
     estimate_messages_tokens_rough,
 )
 
@@ -59,6 +61,17 @@ class ContextCompressor:
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error
 
+        # Upgrade probe: some models support higher context on premium plans.
+        # When the default threshold is reached, we upgrade speculatively and
+        # let the next API call confirm whether the user has the higher tier.
+        # Skip probing if the context was loaded from the persistent cache —
+        # that means we already know the user's actual limit from a prior
+        # session and should not re-probe.
+        cached = get_cached_context_length(model, base_url) if base_url else None
+        self._upgrade_tier = None if cached is not None else get_upgrade_context_tier(model)
+        self._upgrade_probe_active = False
+        self._pre_upgrade_context_length = None
+
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
@@ -71,15 +84,54 @@ class ContextCompressor:
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", 0)
 
+    def _try_activate_upgrade_probe(self, tokens: int) -> bool:
+        """Activate upgrade probe if an upgrade tier is available.
+
+        When the session reaches the default compression threshold and the
+        model has a potential upgrade tier (e.g., 1M on Max plan), we
+        speculatively raise the context limit instead of compressing.  The
+        next API call will either succeed (confirming the upgrade) or fail
+        with a context error (handled by the existing step-down logic).
+
+        Returns True if the probe was activated (caller should skip compression).
+        """
+        if (
+            self._upgrade_tier
+            and not self._context_probed
+            and not self._upgrade_probe_active
+            and self._upgrade_tier > self.context_length
+        ):
+            self._upgrade_probe_active = True
+            self._pre_upgrade_context_length = self.context_length
+            old_ctx = self.context_length
+            self.context_length = self._upgrade_tier
+            self.threshold_tokens = int(self._upgrade_tier * self.threshold_percent)
+            logger.info(
+                "Upgrade probe activated: %s → %s tokens (threshold %s → %s)",
+                f"{old_ctx:,}", f"{self._upgrade_tier:,}",
+                f"{int(old_ctx * self.threshold_percent):,}",
+                f"{self.threshold_tokens:,}",
+            )
+            return True
+        return False
+
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        return tokens >= self.threshold_tokens
+        if tokens >= self.threshold_tokens:
+            if self._try_activate_upgrade_probe(tokens):
+                return False
+            return True
+        return False
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick pre-flight check using rough estimate (before API call)."""
         rough_estimate = estimate_messages_tokens_rough(messages)
-        return rough_estimate >= self.threshold_tokens
+        if rough_estimate >= self.threshold_tokens:
+            if self._try_activate_upgrade_probe(rough_estimate):
+                return False
+            return True
+        return False
 
     def get_status(self) -> Dict[str, Any]:
         """Get current compression status for display/logging."""

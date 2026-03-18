@@ -22,11 +22,13 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    UPGRADE_CONTEXT_TIERS,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
+    get_upgrade_context_tier,
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
@@ -462,3 +464,36 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# Upgrade context tiers
+# =========================================================================
+
+class TestUpgradeContextTiers:
+    def test_opus_46_has_upgrade_tier(self):
+        assert get_upgrade_context_tier("anthropic/claude-opus-4.6") == 1_000_000
+        assert get_upgrade_context_tier("claude-opus-4-6") == 1_000_000
+
+    def test_sonnet_has_no_upgrade_tier(self):
+        assert get_upgrade_context_tier("anthropic/claude-sonnet-4.6") is None
+        assert get_upgrade_context_tier("claude-sonnet-4-6") is None
+
+    def test_unknown_model_has_no_upgrade_tier(self):
+        assert get_upgrade_context_tier("openai/gpt-5") is None
+
+    def test_fuzzy_match(self):
+        """Upgrade tier should match model IDs that contain the key."""
+        assert get_upgrade_context_tier("anthropic/claude-opus-4.6:beta") == 1_000_000
+
+    def test_no_false_positive_on_shorter_model(self):
+        """claude-opus-4 must NOT match claude-opus-4-6's upgrade tier."""
+        assert get_upgrade_context_tier("claude-opus-4") is None
+        assert get_upgrade_context_tier("anthropic/claude-opus-4") is None
+
+    def test_defaults_remain_200k(self):
+        """Models with upgrade tiers must still default to 200K."""
+        for model in UPGRADE_CONTEXT_TIERS:
+            assert DEFAULT_CONTEXT_LENGTHS.get(model) == 200000, (
+                f"{model} has upgrade tier but default is not 200K"
+            )

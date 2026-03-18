@@ -75,7 +75,7 @@ from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, COGNITIVE_MEMORY_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
@@ -755,7 +755,43 @@ class AIAgent:
                     self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
-        
+
+        # Cognitive memory (semantic recall with vector embeddings)
+        self._cognitive_store = None
+        self._cognitive_engine = None
+        self._cognitive_forgetting = None
+        if not skip_memory:
+            try:
+                from hermes_cli.config import load_config as _load_cog_config
+                cog_config = _load_cog_config().get("cognitive_memory", {})
+                if cog_config.get("enabled", False):
+                    from cognitive_memory.store import CognitiveStore
+                    from cognitive_memory.embeddings import get_embedder
+                    from cognitive_memory.recall import RecallEngine, RecallConfig
+                    from cognitive_memory.extraction import ForgettingManager
+
+                    self._cognitive_store = CognitiveStore(
+                        db_path=cog_config.get("db_path"),
+                    )
+                    embedder = get_embedder(cog_config)
+                    recall_config = RecallConfig(
+                        similarity_threshold=cog_config.get("similarity_threshold", 0.3),
+                        default_limit=cog_config.get("default_limit", 10),
+                    )
+                    self._cognitive_engine = RecallEngine(
+                        store=self._cognitive_store,
+                        embedder=embedder,
+                        config=recall_config,
+                    )
+                    self._cognitive_forgetting = ForgettingManager(
+                        store=self._cognitive_store,
+                        decay_half_life_days=cog_config.get("decay_half_life_days", 30.0),
+                        prune_threshold=cog_config.get("prune_threshold", 0.05),
+                    )
+                    logger.info("Cognitive memory active (store: %s)", self._cognitive_store._db_path)
+            except Exception as e:
+                logger.debug("Cognitive memory init failed (non-fatal): %s", e)
+
         # Honcho AI-native memory (cross-session user modeling)
         # Reads ~/.honcho/config.json as the single source of truth.
         self._honcho = None  # HonchoSessionManager | None
@@ -1860,6 +1896,8 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "cognitive_recall" in self.valid_tool_names:
+            tool_guidance.append(COGNITIVE_MEMORY_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
@@ -4450,6 +4488,23 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif function_name == "cognitive_recall":
+                from tools.cognitive_memory_tool import cognitive_memory_tool as _cognitive_tool
+                function_result = _cognitive_tool(
+                    action=function_args.get("action", ""),
+                    query=function_args.get("query"),
+                    content=function_args.get("content"),
+                    scope=function_args.get("scope", "/"),
+                    importance=function_args.get("importance"),
+                    categories=function_args.get("categories"),
+                    limit=function_args.get("limit", 5),
+                    engine=self._cognitive_engine,
+                    store=self._cognitive_store,
+                    forgetting=self._cognitive_forgetting,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('cognitive_recall', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(

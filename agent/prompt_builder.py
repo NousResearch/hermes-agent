@@ -145,6 +145,16 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+COGNITIVE_MEMORY_GUIDANCE = (
+    "You have a semantic memory system (cognitive_recall tool) that remembers things "
+    "across sessions using meaning-based search. Use it proactively: "
+    "STORE important facts the user shares (preferences, project details, corrections) "
+    "with cognitive_recall action='store'. Before answering questions about past context, "
+    "RECALL relevant memories with cognitive_recall action='recall'. "
+    "When the user corrects you, store the correction -- contradictions are auto-detected. "
+    "This complements the basic memory tool with unlimited, searchable, categorized memory."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "

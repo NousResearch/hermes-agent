@@ -627,7 +627,7 @@ def _exa_search(query: str, limit: int = 10) -> dict:
         query,
         num_results=limit,
         contents={
-            "highlights": {"max_characters": 4000},
+            "highlights": True,
         },
     )
 

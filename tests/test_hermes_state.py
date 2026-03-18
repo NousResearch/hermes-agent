@@ -218,6 +218,17 @@ class TestFTS5Search:
         sources = [r["source"] for r in results]
         assert "acp" in sources
 
+    def test_search_default_includes_all_platforms(self, db):
+        """Default search (no source_filter) should find sessions from any platform."""
+        for src in ("cli", "telegram", "signal", "homeassistant", "acp", "matrix"):
+            sid = f"s-{src}"
+            db.create_session(session_id=sid, source=src)
+            db.append_message(sid, role="user", content=f"universal search test from {src}")
+
+        results = db.search_messages("universal search test")
+        found_sources = {r["source"] for r in results}
+        assert found_sources == {"cli", "telegram", "signal", "homeassistant", "acp", "matrix"}
+
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="What is FastAPI?")

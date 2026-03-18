@@ -611,6 +611,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "http_url": signal_url,
             "account": signal_account,
             "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
+            "send_read_receipts": os.getenv("SIGNAL_SEND_READ_RECEIPTS", "true").lower() in ("true", "1", "yes"),
         })
         signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
         if signal_home:

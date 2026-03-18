@@ -154,6 +154,13 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
+# Lattice agent-to-agent messaging tool
+from .lattice_tool import (
+    lattice_send_agent_tool,
+    check_lattice_send_requirements,
+    LATTICE_SEND_AGENT_SCHEMA,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -258,5 +265,9 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+    # Lattice agent-to-agent messaging
+    'lattice_send_agent_tool',
+    'check_lattice_send_requirements',
+    'LATTICE_SEND_AGENT_SCHEMA',
 ]
 

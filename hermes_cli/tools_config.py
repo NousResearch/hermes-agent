@@ -94,12 +94,13 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("lattice",          "🔗 Lattice Agent Messaging",  "lattice_send_agent — send messages to other AI agents"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "lattice"}
 
 # Platform display config
 PLATFORMS = {
@@ -270,6 +271,10 @@ TOOL_CATEGORIES = {
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "lattice":    [
+        ("LATTICE_URL", "https://lattice-production-ddbe.up.railway.app"),
+        ("LATTICE_PRIVATE_KEY_HEX", None),  # Ed25519 private key (64 hex chars); auto-generated if blank
+    ],
 }
 
 

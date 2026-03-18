@@ -128,4 +128,4 @@ class TestGatewayHonchoLifecycle:
         assert kwargs["honcho_session_key"] == "gateway-key"
         tmp_agent.run_conversation.assert_called_once()
         _, run_kwargs = tmp_agent.run_conversation.call_args
-        assert run_kwargs["sync_honcho"] is False
+        assert run_kwargs["sync_memory"] is False

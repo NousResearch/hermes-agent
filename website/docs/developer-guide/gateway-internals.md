@@ -110,7 +110,7 @@ When a session is reset, resumed, or expires, the gateway flushes memories befor
 
 - `session_id` set to the old session's ID (so transcripts load correctly)
 - `honcho_session_key` set to the gateway session key (so Honcho writes go to the right place)
-- `sync_honcho=False` passed to `run_conversation()` (so the synthetic flush turn doesn't write back to Honcho's conversation history)
+- `sync_memory=False` passed to `run_conversation()` (so the synthetic flush turn doesn't write back to Honcho's conversation history)
 
 After the flush completes, any queued Honcho writes are drained and the gateway-level Honcho manager is shut down for that session key.
 

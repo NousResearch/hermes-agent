@@ -204,6 +204,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hindsight": {
+        "description": "Hindsight long-term memory with knowledge graph and multi-strategy retrieval",
+        "tools": ["hindsight_retain", "hindsight_recall", "hindsight_reflect"],
+        "includes": []
+    },
+
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],

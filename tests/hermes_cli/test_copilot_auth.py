@@ -160,6 +160,36 @@ class TestCopilotDefaultHeaders:
         assert "x-initiator" in headers
 
 
+class TestApiModeSelection:
+    """API mode selection matching opencode's shouldUseCopilotResponsesApi."""
+
+    def test_gpt5_uses_responses(self):
+        from hermes_cli.models import _should_use_copilot_responses_api
+        assert _should_use_copilot_responses_api("gpt-5.4") is True
+        assert _should_use_copilot_responses_api("gpt-5.4-mini") is True
+        assert _should_use_copilot_responses_api("gpt-5.3-codex") is True
+        assert _should_use_copilot_responses_api("gpt-5.2-codex") is True
+        assert _should_use_copilot_responses_api("gpt-5.2") is True
+        assert _should_use_copilot_responses_api("gpt-5.1-codex-max") is True
+
+    def test_gpt5_mini_excluded(self):
+        from hermes_cli.models import _should_use_copilot_responses_api
+        assert _should_use_copilot_responses_api("gpt-5-mini") is False
+
+    def test_gpt4_uses_chat(self):
+        from hermes_cli.models import _should_use_copilot_responses_api
+        assert _should_use_copilot_responses_api("gpt-4.1") is False
+        assert _should_use_copilot_responses_api("gpt-4o") is False
+        assert _should_use_copilot_responses_api("gpt-4o-mini") is False
+
+    def test_non_gpt_uses_chat(self):
+        from hermes_cli.models import _should_use_copilot_responses_api
+        assert _should_use_copilot_responses_api("claude-sonnet-4.6") is False
+        assert _should_use_copilot_responses_api("claude-opus-4.6") is False
+        assert _should_use_copilot_responses_api("gemini-2.5-pro") is False
+        assert _should_use_copilot_responses_api("grok-code-fast-1") is False
+
+
 class TestEnvVarOrder:
     """PROVIDER_REGISTRY has correct env var order."""
 

@@ -191,6 +191,10 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display
     child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
+    # Snapshot the parent's resolved tool names before any child conversation
+    # can overwrite the process-global registry state.
+    saved_tool_names = list(getattr(model_tools, "_last_resolved_tool_names", []))
+
     # Share the parent's iteration budget so subagent tool calls
     # count toward the session-wide limit.
     shared_budget = getattr(parent_agent, "iteration_budget", None)
@@ -232,7 +236,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
-    child._delegate_saved_tool_names = list(_saved_tool_names)
+    child._delegate_saved_tool_names = saved_tool_names
 
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
@@ -263,13 +267,6 @@ def _run_single_child(
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
-
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    # This must be in _run_single_child (not _build_child_agent) so the
-    # save/restore happens in the same scope as the try/finally.
-    import model_tools
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     try:
         result = child.run_conversation(user_message=goal)

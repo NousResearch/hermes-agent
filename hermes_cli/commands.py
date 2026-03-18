@@ -81,6 +81,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[text]", subcommands=("clear",)),
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
+    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
+               cli_only=True, aliases=("sb",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",

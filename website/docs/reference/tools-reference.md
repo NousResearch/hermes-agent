@@ -141,6 +141,19 @@ This page documents the built-in Hermes tool registry as it exists in code. Avai
 |------|-------------|----------------------|
 | `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Writing: - Provide 'todos' array to create/update items - merge=… | — |
 
+## `vision` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `vision_analyze` | Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content. | — |
+
+## `web` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `web_search` | Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions. | PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `web_extract` | Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized. | PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+
 ## `tts` toolset
 
 | Tool | Description | Requires environment |

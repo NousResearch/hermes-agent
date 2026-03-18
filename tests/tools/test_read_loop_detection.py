@@ -442,6 +442,14 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("error", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_pagination_offset_does_not_count_as_repeat(self, _mock_ops):
+        """Paginating truncated results should not be blocked as a repeat search."""
+        for offset in (0, 50, 100, 150):
+            result = json.loads(search_tool("def main", task_id="t1", offset=offset, limit=50))
+            self.assertNotIn("_warning", result)
+            self.assertNotIn("error", result)
+
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_read_between_searches_resets_consecutive(self, _mock_ops):
         """A read_file call between searches resets search consecutive counter."""
         search_tool("def main", task_id="t1")

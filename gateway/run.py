@@ -242,6 +242,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
     }
 
 
@@ -601,6 +603,8 @@ class GatewayRunner:
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
+            "command": runtime_kwargs.get("command"),
+            "args": list(runtime_kwargs.get("args") or []),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
@@ -2122,23 +2126,41 @@ class GatewayRunner:
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
             status_code = getattr(e, "status_code", None)
+            _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
             elif status_code == 429:
-                status_hint = " You are being rate-limited. Please wait a moment and try again."
+                # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
+                _err_body = getattr(e, "response", None)
+                _err_json = {}
+                try:
+                    if _err_body is not None:
+                        _err_json = _err_body.json().get("error", {})
+                except Exception:
+                    pass
+                if _err_json.get("type") == "usage_limit_reached":
+                    _resets_in = _err_json.get("resets_in_seconds")
+                    if _resets_in and _resets_in > 0:
+                        import math
+                        _hours = math.ceil(_resets_in / 3600)
+                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                    else:
+                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                else:
+                    status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
-            elif status_code == 400:
-                # 400 with a large session is almost always a context overflow.
-                # Give specific guidance instead of a generic error. (#1630)
-                _hist_len = len(history) if 'history' in locals() else 0
+            elif status_code in (400, 500):
+                # 400 with a large session is context overflow.
+                # 500 with a large session often means the payload is too large
+                # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
                         "/reset to start fresh."
                     )
-                else:
+                elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"

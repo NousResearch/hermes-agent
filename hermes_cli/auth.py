@@ -116,7 +116,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="GitHub Copilot",
         auth_type="api_key",
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
-        api_key_env_vars=("GITHUB_TOKEN", "GH_TOKEN"),
+        api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
     ),
     "copilot-acp": ProviderConfig(
         id="copilot-acp",
@@ -282,15 +282,23 @@ def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    if provider_id == "copilot":
+        # Use the dedicated copilot auth module for proper token validation
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token
+            token, source = resolve_copilot_token()
+            if token:
+                return token, source
+        except ValueError as exc:
+            logger.warning("Copilot token validation failed: %s", exc)
+        except Exception:
+            pass
+        return "", ""
+
     for env_var in pconfig.api_key_env_vars:
         val = os.getenv(env_var, "").strip()
         if val:
             return val, env_var
-
-    if provider_id == "copilot":
-        token = _try_gh_cli_token()
-        if token:
-            return token, "gh auth token"
 
     return "", ""
 

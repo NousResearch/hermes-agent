@@ -5923,6 +5923,40 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # ── Fallback parsing for local/self-hosted models ───────────────────
+                # Some local models (llama.cpp, Ollama, etc.) output tool calls as raw text
+                # instead of structured tool_calls. Auto-detect and parse common formats.
+                if (
+                    not getattr(assistant_message, 'tool_calls', None)
+                    and assistant_message.content
+                ):
+                    try:
+                        from environments.tool_call_parsers import get_parser
+                        auto_parser = get_parser('auto')
+                        parsed_content, parsed_calls = auto_parser.parse(
+                            assistant_message.content
+                        )
+                        if parsed_calls:
+                            # Convert to SimpleNamespace to match OpenAI format
+                            assistant_message.tool_calls = [
+                                SimpleNamespace(
+                                    id=tc.id,
+                                    type='function',
+                                    function=SimpleNamespace(
+                                        name=tc.function.name,
+                                        arguments=tc.function.arguments
+                                    )
+                                )
+                                for tc in parsed_calls
+                            ]
+                            if parsed_content is not None:
+                                assistant_message.content = parsed_content
+                            if not self.quiet_mode:
+                                self._vprint(f"{self.log_prefix}🔧 Parsed {len(parsed_calls)} tool call(s) from model output")
+                    except Exception as e:
+                        logger.debug(f"Auto tool parsing failed: {e}")
+                        pass  # Fall through to normal handling
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:

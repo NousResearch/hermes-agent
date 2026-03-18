@@ -38,6 +38,8 @@ def _setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
+    # Suppress minisweagent environment debug logs from leaking into TUI transcript
+    logging.getLogger("minisweagent").setLevel(logging.WARNING)
 
 
 def _load_env() -> None:

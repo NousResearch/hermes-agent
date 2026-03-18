@@ -627,16 +627,17 @@ def _exa_search(query: str, limit: int = 5) -> dict:
         query,
         num_results=min(limit, 20),
         contents={
-            "text": {"max_characters": 1000},
+            "highlights": {"max_characters": 4000},
         },
     )
 
     web_results = []
     for i, result in enumerate(response.results or []):
+        highlights = result.highlights or []
         web_results.append({
             "url": result.url or "",
             "title": result.title or "",
-            "description": result.text or "",
+            "description": " ".join(highlights) if highlights else "",
             "position": i + 1,
         })
 

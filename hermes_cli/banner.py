@@ -102,27 +102,22 @@ COMPACT_BANNER = """
 # =========================================================================
 
 def get_available_skills() -> Dict[str, List[str]]:
-    """Scan ~/.hermes/skills/ and return skills grouped by category."""
-    import os
+    """Return skills grouped by category, filtered by platform and disabled state.
 
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    skills_dir = hermes_home / "skills"
-    skills_by_category = {}
+    Delegates to ``_find_all_skills()`` from ``tools/skills_tool`` which already
+    handles platform gating (``platforms:`` frontmatter) and respects the
+    user's ``skills.disabled`` config list.
+    """
+    try:
+        from tools.skills_tool import _find_all_skills
+        all_skills = _find_all_skills()  # already filtered
+    except Exception:
+        return {}
 
-    if not skills_dir.exists():
-        return skills_by_category
-
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        if len(parts) >= 2:
-            category = parts[0]
-            skill_name = parts[-2]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        skills_by_category.setdefault(category, []).append(skill_name)
-
+    skills_by_category: Dict[str, List[str]] = {}
+    for skill in all_skills:
+        category = skill.get("category") or "general"
+        skills_by_category.setdefault(category, []).append(skill["name"])
     return skills_by_category
 
 

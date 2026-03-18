@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import queue
+import threading
 from typing import Any, Protocol
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 class RuntimeTurnRequest(BaseModel):
@@ -78,6 +82,10 @@ def _normalize_final_response(result: dict[str, Any]) -> str:
     raise ValueError("runtime agent result did not include an assistant response")
 
 
+def _encode_sse(event: str, data: dict[str, Any]) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
 def build_runtime_agent() -> RuntimeConversationAgent:
     from run_agent import AIAgent
 
@@ -131,6 +139,44 @@ def create_runtime_app(factory: RuntimeAgentFactory | None = None) -> FastAPI:
             runtime_profile=runtime_profile,
             runtime_toolset=runtime_toolset,
         )
+
+    @app.post("/runtime/turn/stream")
+    def runtime_turn_stream(request: RuntimeTurnRequest) -> StreamingResponse:
+        event_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+
+        def _run() -> None:
+            try:
+                agent = agent_factory.create()
+                setattr(agent, "reasoning_callback", lambda text: event_queue.put(("reasoning", {"delta": text})))
+                result = agent.run_conversation(
+                    request.user_message,
+                    system_message=request.system_message,
+                    conversation_history=request.conversation_history,
+                    stream_callback=lambda _text: None,
+                )
+                response = RuntimeTurnResponse(
+                    final_response=_normalize_final_response(result),
+                    messages=result["messages"],
+                    session_id=agent.session_id,
+                    runtime_profile=runtime_profile,
+                    runtime_toolset=runtime_toolset,
+                )
+                event_queue.put(("final", response.model_dump(mode="json")))
+            except Exception as exc:
+                event_queue.put(("error", {"detail": str(exc)}))
+            finally:
+                event_queue.put(("done", {}))
+
+        def _stream():
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+            while True:
+                event, payload = event_queue.get()
+                if event == "done":
+                    break
+                yield _encode_sse(event, payload)
+
+        return StreamingResponse(_stream(), media_type="text/event-stream")
 
     return app
 

@@ -85,7 +85,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -1948,28 +1948,38 @@ class AIAgent:
         is stable across all turns in a session, maximizing prefix cache hits.
         """
         # Layers (in order):
-        #   1. Default agent identity (always present)
+        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
         #   2. User / gateway system prompt (if provided)
         #   3. Persistent memory (frozen snapshot)
         #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (SOUL.md, AGENTS.md, .cursorrules)
+        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
-        # If an AI peer name is configured in Honcho, personalise the identity line.
-        _ai_peer_name = (
-            self._honcho_config.ai_peer
-            if self._honcho_config and self._honcho_config.ai_peer != "hermes"
-            else None
-        )
-        if _ai_peer_name:
-            _identity = DEFAULT_AGENT_IDENTITY.replace(
-                "You are Hermes Agent",
-                f"You are {_ai_peer_name}",
-                1,
+
+        # Try SOUL.md as primary identity (unless context files are skipped)
+        _soul_loaded = False
+        if not self.skip_context_files:
+            _soul_content = load_soul_md()
+            if _soul_content:
+                prompt_parts = [_soul_content]
+                _soul_loaded = True
+
+        if not _soul_loaded:
+            # Fallback to hardcoded identity
+            _ai_peer_name = (
+                self._honcho_config.ai_peer
+                if self._honcho_config and self._honcho_config.ai_peer != "hermes"
+                else None
             )
-        else:
-            _identity = DEFAULT_AGENT_IDENTITY
-        prompt_parts = [_identity]
+            if _ai_peer_name:
+                _identity = DEFAULT_AGENT_IDENTITY.replace(
+                    "You are Hermes Agent",
+                    f"You are {_ai_peer_name}",
+                    1,
+                )
+            else:
+                _identity = DEFAULT_AGENT_IDENTITY
+            prompt_parts = [_identity]
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -2065,7 +2075,7 @@ class AIAgent:
             prompt_parts.append(skills_prompt)
 
         if not self.skip_context_files:
-            context_files_prompt = build_context_files_prompt()
+            context_files_prompt = build_context_files_prompt(skip_soul=_soul_loaded)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 

@@ -429,11 +429,42 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def build_context_files_prompt(cwd: Optional[str] = None) -> str:
+def load_soul_md() -> Optional[str]:
+    """Load SOUL.md from HERMES_HOME and return its content, or None.
+
+    Used as the agent identity (slot #1 in the system prompt).  When this
+    returns content, ``build_context_files_prompt`` should be called with
+    ``skip_soul=True`` so SOUL.md isn't injected twice.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+
+    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    if not soul_path.exists():
+        return None
+    try:
+        content = soul_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "SOUL.md")
+        content = _truncate_content(content, "SOUL.md")
+        return content
+    except Exception as e:
+        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+        return None
+
+
+def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
     Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
     and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
+
+    When *skip_soul* is True, SOUL.md is not included here (it was already
+    loaded via ``load_soul_md()`` for the identity slot).
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -523,23 +554,11 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         hermes_md_content = _truncate_content(hermes_md_content, ".hermes.md")
         sections.append(hermes_md_content)
 
-    # SOUL.md from HERMES_HOME only
-    try:
-        from hermes_cli.config import ensure_hermes_home
-        ensure_hermes_home()
-    except Exception as e:
-        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
-
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
-    if soul_path.exists():
-        try:
-            content = soul_path.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, "SOUL.md")
-                content = _truncate_content(content, "SOUL.md")
-                sections.append(content)
-        except Exception as e:
-            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    if not skip_soul:
+        soul_content = load_soul_md()
+        if soul_content:
+            sections.append(soul_content)
 
     if not sections:
         return ""

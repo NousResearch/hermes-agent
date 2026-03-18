@@ -44,6 +44,7 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
+        ("opencode-go", "OpenCode Go", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -86,6 +87,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
         assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
+
+    def test_opencode_go_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["opencode-go"]
+        assert pconfig.api_key_env_vars == ("OPENCODE_GO_API_KEY",)
+        assert pconfig.base_url_env_var == "OPENCODE_GO_BASE_URL"
 
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"

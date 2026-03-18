@@ -462,6 +462,13 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    # Snapshot parent's tool names on the main thread BEFORE any child
+    # construction can mutate the process-global.  This is the authoritative
+    # value restored after all children finish (especially important for
+    # batch mode where per-child restores race on worker threads).
+    import model_tools as _mt
+    _parent_tool_names_snapshot = list(_mt._last_resolved_tool_names)
+
     # Build all child agents on the main thread (thread-safe construction)
     children = []
     for i, t in enumerate(task_list):
@@ -538,6 +545,12 @@ def delegate_task(
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
+
+    # Authoritative restore of the parent's tool names on the main thread.
+    # Per-child restores in _run_single_child are best-effort (race in batch).
+    # This guarantees the parent gets its original tool names back regardless
+    # of child count, ordering, or worker-thread race conditions.
+    _mt._last_resolved_tool_names = list(_parent_tool_names_snapshot)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 

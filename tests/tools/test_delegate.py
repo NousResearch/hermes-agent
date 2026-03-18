@@ -291,6 +291,69 @@ class TestToolNamePreservation(unittest.TestCase):
 
         self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
 
+    def test_parent_tools_survive_child_construction_mutation(self):
+        """Regression for #1802: child construction overwrites the process-global
+        _last_resolved_tool_names.  The restore in _run_single_child must use
+        the snapshot captured BEFORE construction, not the post-mutation value.
+
+        Without the fix, the parent's tool names are silently replaced by the
+        child's tool names after delegation completes."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        parent_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
+        child_tools = ["terminal", "read_file"]  # child has a smaller toolset
+        model_tools._last_resolved_tool_names = list(parent_tools)
+
+        def _mutating_constructor(**kwargs):
+            """Simulate AIAgent.__init__ overwriting the global via
+            get_tool_definitions() during child construction."""
+            model_tools._last_resolved_tool_names = list(child_tools)
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_mutating_constructor):
+            delegate_task(goal="Test parent survives mutation", parent_agent=parent)
+
+        # The global must hold the PARENT's tools, not the child's
+        self.assertEqual(model_tools._last_resolved_tool_names, parent_tools)
+
+    def test_batch_parent_tools_survive_multiple_child_mutations(self):
+        """Regression for #1802 (batch mode): when multiple children are built
+        sequentially on the main thread then run on worker threads, each child
+        construction mutates the global.  The final restore must still produce
+        the parent's original tool names, not any child's."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        parent_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
+        model_tools._last_resolved_tool_names = list(parent_tools)
+
+        call_count = [0]
+
+        def _mutating_constructor(**kwargs):
+            """Each child overwrites the global with a different toolset."""
+            call_count[0] += 1
+            model_tools._last_resolved_tool_names = [f"child{call_count[0]}_tool_a", f"child{call_count[0]}_tool_b"]
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": f"done {call_count[0]}", "completed": True, "api_calls": 1,
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_mutating_constructor):
+            tasks = [
+                {"goal": "Task A"},
+                {"goal": "Task B"},
+            ]
+            delegate_task(tasks=tasks, parent_agent=parent)
+
+        # After both children complete, the global must be the PARENT's tools
+        self.assertEqual(model_tools._last_resolved_tool_names, parent_tools)
+
 
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""

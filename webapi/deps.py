@@ -5,8 +5,18 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from gateway.run import _resolve_model, _resolve_runtime_agent_kwargs
 from hermes_cli.config import load_config
+
+try:
+    from gateway.run import _resolve_model, _resolve_runtime_agent_kwargs
+except ImportError:
+    def _resolve_model() -> str:
+        config = load_config()
+        return config.get("model", os.getenv("HERMES_MODEL", "claude-sonnet-4-5"))
+
+    def _resolve_runtime_agent_kwargs() -> dict:
+        config = load_config()
+        return {"provider": config.get("provider", os.getenv("HERMES_PROVIDER", "anthropic"))}
 from hermes_state import SessionDB
 from run_agent import AIAgent
 from tools.memory_tool import MemoryStore

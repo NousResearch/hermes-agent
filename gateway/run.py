@@ -1660,6 +1660,7 @@ if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
     os.environ["TERMINAL_CWD"] = _fallback
 
 from gateway.config import (
+    ChannelOverride,
     Platform,
     _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
@@ -1822,6 +1823,27 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+    }
+
+
+def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+    try:
+        runtime = resolve_runtime_provider(requested=provider)
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
     }
 
 
@@ -2282,6 +2304,20 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _get_channel_override(
+    config: GatewayConfig,
+    platform: Platform,
+    chat_id: str,
+) -> Optional[ChannelOverride]:
+    """Return per-channel override for this platform/chat_id, or None."""
+    if not chat_id:
+        return None
+    platform_config = config.platforms.get(platform)
+    if not platform_config or not platform_config.channel_overrides:
+        return None
+    return platform_config.channel_overrides.get(str(chat_id))
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -3601,6 +3637,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key, model, runtime_kwargs
             )
 
+        cfg = getattr(self, "config", None)
+        if cfg and source is not None and source.chat_id:
+            ch = _get_channel_override(cfg, source.platform, str(source.chat_id))
+            if ch:
+                channel_touch = False
+                if ch.model and not (override and override.get("model")):
+                    model = ch.model
+                    channel_touch = True
+                if ch.provider and not (override and override.get("provider")):
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_model = runtime_kwargs.pop("model", None)
+                    if runtime_model:
+                        model = runtime_model or model
+                    channel_touch = True
+                if channel_touch and override and resolved_session_key:
+                    model, runtime_kwargs = self._apply_session_model_override(
+                        resolved_session_key, model, runtime_kwargs
+                    )
+
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
         # fall back to the provider's first catalog model so the API call
@@ -4472,6 +4527,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prompt
         cfg = _load_gateway_runtime_config()
         return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+
+    def _resolve_model_for_channel(self, platform: Platform, chat_id: str) -> str:
+        """Resolve model for this channel: channel_overrides[channel_id] else global default."""
+        config = getattr(self, "config", None)
+        if config:
+            override = _get_channel_override(config, platform, chat_id)
+            if override and override.model:
+                return override.model
+        return _resolve_gateway_model()
+
+    def _get_system_prompt_for_channel(self, platform: Platform, chat_id: str) -> str:
+        """System prompt for this channel: channel override else global ephemeral."""
+        config = getattr(self, "config", None)
+        if config:
+            override = _get_channel_override(config, platform, chat_id)
+            if override and override.system_prompt:
+                return (override.system_prompt or "").strip()
+        return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -16791,14 +16864,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
-            # Combine platform context, per-channel context, and the user-configured
-            # ephemeral system prompt.
+            # Combine platform context, YAML channel_prompts hint for this chat,
+            # channel_overrides system_prompt (or global ephemeral), and gateway
+            # ephemeral prompt from _get_system_prompt_for_channel.
             combined_ephemeral = context_prompt or ""
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            cfg_channel_prompt = self._get_system_prompt_for_channel(
+                source.platform, source.chat_id or ""
+            )
+            if cfg_channel_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
             max_iterations = _current_max_iterations()
 

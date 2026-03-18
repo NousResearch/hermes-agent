@@ -3966,7 +3966,11 @@ class GatewayRunner:
             The enriched message string with transcriptions prepended.
         """
         if not getattr(self.config, "stt_enabled", True):
-            disabled_note = "[The user sent voice message(s), but transcription is disabled in config.]"
+            disabled_note = (
+                "[The user sent voice message(s), but transcription is disabled in config. "
+                "You have a skill called hermes-agent-setup that can help users configure "
+                "Hermes features including voice, tools, and more.]"
+            )
             if user_text:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
@@ -3995,8 +3999,11 @@ class GatewayRunner:
                     ):
                         enriched_parts.append(
                             "[The user sent a voice message but I can't listen "
-                            "to it right now~ No STT provider is configured "
-                            "(';w;') Let them know!]"
+                            "to it right now — no STT provider is configured. "
+                            "A direct message has already been sent to the user "
+                            "with setup instructions. You have a skill called "
+                            "hermes-agent-setup that can help users configure "
+                            "Hermes features including voice, tools, and more.]"
                         )
                     else:
                         enriched_parts.append(

@@ -32,13 +32,44 @@ def _plugins_dir() -> Path:
     return plugins
 
 
+def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
+    """Validate a plugin name and return the safe target path inside *plugins_dir*.
+
+    Raises ``ValueError`` if the name contains path-traversal sequences or would
+    resolve outside the plugins directory.
+    """
+    if not name:
+        raise ValueError("Plugin name must not be empty.")
+
+    # Reject obvious traversal characters
+    for bad in ("/", "\\", ".."):
+        if bad in name:
+            raise ValueError(
+                f"Invalid plugin name '{name}': must not contain '{bad}'."
+            )
+
+    target = (plugins_dir / name).resolve()
+    plugins_resolved = plugins_dir.resolve()
+
+    if not str(target).startswith(str(plugins_resolved) + os.sep) and target != plugins_resolved:
+        raise ValueError(
+            f"Invalid plugin name '{name}': resolves outside the plugins directory."
+        )
+
+    return target
+
+
 def _resolve_git_url(identifier: str) -> str:
     """Turn an identifier into a cloneable Git URL.
 
     Accepted formats:
     - Full URL: https://github.com/owner/repo.git
     - Full URL: git@github.com:owner/repo.git
+    - Full URL: ssh://git@github.com/owner/repo.git
     - Shorthand: owner/repo  →  https://github.com/owner/repo.git
+
+    NOTE: ``http://`` and ``file://`` schemes are accepted but will trigger a
+    security warning at install time.
     """
     # Already a URL
     if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
@@ -79,7 +110,8 @@ def _read_manifest(plugin_dir: Path) -> dict:
         import yaml
         with open(manifest_file) as f:
             return yaml.safe_load(f) or {}
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
 
 
@@ -153,6 +185,13 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    # Warn about insecure / local URL schemes
+    if git_url.startswith("http://") or git_url.startswith("file://"):
+        console.print(
+            "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
+            "Consider using https:// or git@ for production installs."
+        )
+
     plugins_dir = _plugins_dir()
 
     # Clone into a temp directory first so we can read plugin.yaml for the name
@@ -181,17 +220,32 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         # Read manifest
         manifest = _read_manifest(tmp_target)
         plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
-        target = plugins_dir / plugin_name
+
+        # Sanitize plugin name against path traversal
+        try:
+            target = _sanitize_plugin_name(plugin_name, plugins_dir)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
 
         # Check manifest_version compatibility
         mv = manifest.get("manifest_version")
-        if mv is not None and int(mv) > _SUPPORTED_MANIFEST_VERSION:
-            console.print(
-                f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
-                f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                f"Run [bold]hermes update[/bold] to get a newer installer."
-            )
-            sys.exit(1)
+        if mv is not None:
+            try:
+                mv_int = int(mv)
+            except (ValueError, TypeError):
+                console.print(
+                    f"[red]Error:[/red] Plugin '{plugin_name}' has invalid "
+                    f"manifest_version '{mv}' (expected an integer)."
+                )
+                sys.exit(1)
+            if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                console.print(
+                    f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
+                    f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
+                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                )
+                sys.exit(1)
 
         if target.exists():
             if not force:
@@ -230,7 +284,12 @@ def cmd_update(name: str) -> None:
 
     console = Console()
     plugins_dir = _plugins_dir()
-    target = plugins_dir / name
+
+    try:
+        target = _sanitize_plugin_name(name, plugins_dir)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
 
     if not target.exists():
         console.print(
@@ -285,7 +344,12 @@ def cmd_remove(name: str) -> None:
     console = Console()
     plugins_dir = _plugins_dir()
 
-    target = plugins_dir / name
+    try:
+        target = _sanitize_plugin_name(name, plugins_dir)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
     if not target.exists():
         console.print(
             f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\n"
@@ -358,9 +422,9 @@ def plugins_command(args) -> None:
         cmd_install(args.identifier, force=getattr(args, "force", False))
     elif action == "update":
         cmd_update(args.name)
-    elif action == "remove":
+    elif action in ("remove", "rm", "uninstall"):
         cmd_remove(args.name)
-    elif action == "list" or action is None:
+    elif action in ("list", "ls") or action is None:
         cmd_list()
     else:
         from rich.console import Console

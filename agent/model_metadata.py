@@ -549,9 +549,33 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
+    """Return True if *candidate_id* (from server) matches *lookup_model* (configured).
+
+    Supports two forms:
+    - Exact match:  "nvidia-nemotron-super-49b-v1" == "nvidia-nemotron-super-49b-v1"
+    - Slug match:   "nvidia/nvidia-nemotron-super-49b-v1" matches "nvidia-nemotron-super-49b-v1"
+                    (the part after the last "/" equals lookup_model)
+
+    This covers LM Studio's native API which stores models as "publisher/slug"
+    while users typically configure only the slug after the "local:" prefix.
+    """
+    if candidate_id == lookup_model:
+        return True
+    # Slug match: basename of candidate equals the lookup name
+    if "/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model:
+        return True
+    return False
+
+
 def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
+
+    # Strip provider prefix (e.g., "local:model-name" → "model-name").
+    # LM Studio and Ollama don't use provider prefixes in their model IDs.
+    if ":" in model and not model.startswith("http"):
+        model = model.split(":", 1)[1]
 
     # Strip /v1 suffix to get the server root
     server_url = base_url.rstrip("/")
@@ -587,6 +611,28 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                                     except ValueError:
                                         pass
 
+            # LM Studio native API: /api/v1/models returns max_context_length.
+            # This is more reliable than the OpenAI-compat /v1/models which
+            # doesn't include context window information for LM Studio servers.
+            # Use _model_id_matches for fuzzy matching: LM Studio stores models as
+            # "publisher/slug" but users configure only "slug" after "local:" prefix.
+            if server_type == "lm-studio":
+                resp = client.get(f"{server_url}/api/v1/models")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for m in data.get("models", []):
+                        if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
+                            # Prefer loaded instance context (actual runtime value)
+                            for inst in m.get("loaded_instances", []):
+                                cfg = inst.get("config", {})
+                                ctx = cfg.get("context_length")
+                                if ctx and isinstance(ctx, (int, float)):
+                                    return int(ctx)
+                            # Fall back to max_context_length (theoretical model max)
+                            ctx = m.get("max_context_length") or m.get("context_length")
+                            if ctx and isinstance(ctx, (int, float)):
+                                return int(ctx)
+
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
@@ -596,13 +642,14 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
-            # Try /v1/models and find the model in the list
+            # Try /v1/models and find the model in the list.
+            # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("data", [])
                 for m in models_list:
-                    if m.get("id") == model:
+                    if _model_id_matches(m.get("id", ""), model):
                         ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
                         if ctx and isinstance(ctx, (int, float)):
                             return int(ctx)
@@ -632,6 +679,12 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # Normalise provider-prefixed model names (e.g. "local:model-name" →
+    # "model-name") so cache lookups and server queries use the bare ID that
+    # local servers actually know about.
+    if ":" in model and not model.startswith("http"):
+        model = model.split(":", 1)[1]
 
     # 1. Check persistent cache (model+provider)
     if base_url:

@@ -206,6 +206,186 @@ class TestQueryLocalContextLengthModelsList:
         assert result is None
 
 
+class TestQueryLocalContextLengthLmStudio:
+    """_query_local_context_length with LM Studio native /api/v1/models response."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def _make_client(self, native_resp, detail_resp, list_resp):
+        """Build a mock httpx.Client with sequenced GET responses."""
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+
+        responses = [native_resp, detail_resp, list_resp]
+        call_idx = [0]
+
+        def get_side_effect(url, **kwargs):
+            idx = call_idx[0]
+            call_idx[0] += 1
+            if idx < len(responses):
+                return responses[idx]
+            return self._make_resp(404, {})
+
+        client_mock.get.side_effect = get_side_effect
+        return client_mock
+
+    def test_lmstudio_exact_key_match(self):
+        """Reads max_context_length when key matches exactly."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {"key": "nvidia/nvidia-nemotron-super-49b-v1", "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "max_context_length": 131072},
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "nvidia/nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 131072
+
+    def test_lmstudio_slug_only_matches_key_with_publisher_prefix(self):
+        """Fuzzy match: bare model slug matches key that includes publisher prefix.
+
+        When the user configures the model as "local:nvidia-nemotron-super-49b-v1"
+        (slug only, no publisher), but LM Studio's native API stores it as
+        "nvidia/nvidia-nemotron-super-49b-v1", the lookup must still succeed.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {"key": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                 "max_context_length": 131072},
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            # Model passed in is just the slug after stripping "local:" prefix
+            result = _query_local_context_length(
+                "nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 131072
+
+    def test_lmstudio_v1_models_list_slug_fuzzy_match(self):
+        """Fuzzy match also works for /v1/models list when exact match fails.
+
+        LM Studio's OpenAI-compat /v1/models returns id like
+        "nvidia/nvidia-nemotron-super-49b-v1" — must match bare slug.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        # native /api/v1/models: no match
+        native_resp = self._make_resp(404, {})
+        # /v1/models/{model}: no match
+        detail_resp = self._make_resp(404, {})
+        # /v1/models list: model found with publisher prefix, includes context_length
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "nvidia/nvidia-nemotron-super-49b-v1", "context_length": 131072},
+            ]
+        })
+        client_mock = self._make_client(native_resp, detail_resp, list_resp)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 131072
+
+    def test_lmstudio_loaded_instances_context_length(self):
+        """Reads active context_length from loaded_instances when max_context_length absent."""
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "nvidia/nvidia-nemotron-super-49b-v1",
+                    "id": "nvidia/nvidia-nemotron-super-49b-v1",
+                    "loaded_instances": [
+                        {"config": {"context_length": 65536}},
+                    ],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 65536
+
+    def test_lmstudio_loaded_instance_beats_max_context_length(self):
+        """loaded_instances context_length takes priority over max_context_length.
+
+        LM Studio may show max_context_length=1_048_576 (theoretical model max)
+        while the actual loaded context is 122_651 (runtime setting). The loaded
+        value is the real constraint and must be preferred.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "nvidia/nvidia-nemotron-3-nano-4b",
+                    "id": "nvidia/nvidia-nemotron-3-nano-4b",
+                    "max_context_length": 1_048_576,
+                    "loaded_instances": [
+                        {"config": {"context_length": 122_651}},
+                    ],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "nvidia-nemotron-3-nano-4b", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 122_651, (
+            f"Expected loaded instance context (122651) but got {result}. "
+            "max_context_length (1048576) must not win over loaded_instances."
+        )
+
+
 class TestQueryLocalContextLengthNetworkError:
     """_query_local_context_length handles network failures gracefully."""
 

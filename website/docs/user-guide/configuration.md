@@ -15,7 +15,7 @@ All settings are stored in the `~/.hermes/` directory for easy access.
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
 ├── auth.json       # OAuth provider credentials (Nous Portal, etc.)
-├── SOUL.md         # Optional: global persona (agent embodies this personality)
+├── SOUL.md         # Primary agent identity (slot #1 in system prompt)
 ├── memories/       # Persistent memory (MEMORY.md, USER.md)
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
 ├── cron/           # Scheduled jobs
@@ -1318,15 +1318,15 @@ Hermes uses two different context scopes:
 
 | File | Purpose | Scope |
 |------|---------|-------|
+| `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
 | `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
-| `SOUL.md` | Default persona for this Hermes instance | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
 | `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
 | `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
 
+- **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
+- If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
-- **SOUL.md** is now global to the Hermes instance and is loaded only from `HERMES_HOME`.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- An empty `SOUL.md` contributes nothing to the system prompt.
 - All loaded context files are capped at 20,000 characters with smart truncation.
 
 See also:

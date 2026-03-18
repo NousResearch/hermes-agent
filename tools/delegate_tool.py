@@ -173,10 +173,6 @@ def _build_child_agent(
     from run_agent import AIAgent
     import model_tools
 
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
-
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
@@ -205,6 +201,8 @@ def _build_child_agent(
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
+    effective_acp_command = getattr(parent_agent, "acp_command", None)
+    effective_acp_args = list(getattr(parent_agent, "acp_args", []) or [])
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -212,6 +210,8 @@ def _build_child_agent(
         model=effective_model,
         provider=effective_provider,
         api_mode=effective_api_mode,
+        acp_command=effective_acp_command,
+        acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=getattr(parent_agent, "reasoning_config", None),
@@ -232,6 +232,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
+    child._delegate_saved_tool_names = list(_saved_tool_names)
 
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
@@ -262,6 +263,13 @@ def _run_single_child(
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
+
+    # Save the parent's resolved tool names before the child agent can
+    # overwrite the process-global via get_tool_definitions().
+    # This must be in _run_single_child (not _build_child_agent) so the
+    # save/restore happens in the same scope as the try/finally.
+    import model_tools
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -372,7 +380,11 @@ def _run_single_child(
     finally:
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
-        model_tools._last_resolved_tool_names = _saved_tool_names
+        import model_tools
+
+        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
+        if isinstance(saved_tool_names, list):
+            model_tools._last_resolved_tool_names = list(saved_tool_names)
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -623,6 +635,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
     }
 
 

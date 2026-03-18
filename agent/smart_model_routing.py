@@ -125,6 +125,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "base_url": primary.get("base_url"),
                 "provider": primary.get("provider"),
                 "api_mode": primary.get("api_mode"),
+                "command": primary.get("command"),
+                "args": list(primary.get("args") or []),
             },
             "label": None,
             "signature": (
@@ -132,6 +134,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 primary.get("provider"),
                 primary.get("base_url"),
                 primary.get("api_mode"),
+                primary.get("command"),
+                tuple(primary.get("args") or ()),
             ),
         }
 
@@ -156,6 +160,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "base_url": primary.get("base_url"),
                 "provider": primary.get("provider"),
                 "api_mode": primary.get("api_mode"),
+                "command": primary.get("command"),
+                "args": list(primary.get("args") or []),
             },
             "label": None,
             "signature": (
@@ -163,6 +169,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 primary.get("provider"),
                 primary.get("base_url"),
                 primary.get("api_mode"),
+                primary.get("command"),
+                tuple(primary.get("args") or ()),
             ),
         }
 
@@ -173,6 +181,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "base_url": runtime.get("base_url"),
             "provider": runtime.get("provider"),
             "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
         },
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
         "signature": (
@@ -180,5 +190,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             runtime.get("provider"),
             runtime.get("base_url"),
             runtime.get("api_mode"),
+            runtime.get("command"),
+            tuple(runtime.get("args") or ()),
         ),
     }

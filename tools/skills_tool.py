@@ -920,6 +920,20 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        # Check if the skill is disabled by the user
+        resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
+        if _is_skill_disabled(resolved_name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Skill '{resolved_name}' is disabled. "
+                        "Enable it with `hermes skills` or inspect the files directly on disk."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
             # Security: Prevent path traversal attacks

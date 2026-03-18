@@ -41,6 +41,18 @@ Start Hermes — your tools appear alongside built-in tools. The model can call 
 | Project | `.hermes/plugins/` | Project-specific plugins |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 
+## Real-world example: WZRD
+
+WZRD is a packaged Hermes plugin that treats model momentum as an attention prior rather than a router. It follows the same `plugin.yaml` + `__init__.py` + handler structure described above and exposes three tools:
+
+- `wzrd_trending`
+- `wzrd_candidates`
+- `wzrd_compare`
+
+The plugin keeps routing separate from execution: it surfaces momentum-informed candidates, but leaves the final provider and endpoint choice to the execution router.
+
+Source: [twzrd-sol/wzrd-final](https://github.com/twzrd-sol/wzrd-final/tree/main/agents/hermes-plugin/wzrd-plugin)
+
 ## Available hooks
 
 | Hook | Fires when |

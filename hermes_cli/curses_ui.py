@@ -4,7 +4,7 @@ Used by `hermes tools` and `hermes skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
-from typing import List, Set
+from typing import Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
 
@@ -15,6 +15,7 @@ def curses_checklist(
     selected: Set[int],
     *,
     cancel_returns: Set[int] | None = None,
+    status_fn: Optional[Callable[[Set[int]], str]] = None,
 ) -> Set[int]:
     """Curses multi-select checklist. Returns set of selected indices.
 
@@ -23,6 +24,9 @@ def curses_checklist(
         items: Display labels for each row.
         selected: Indices that start checked (pre-selected).
         cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
+        status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
+            value is rendered on the bottom row of the terminal.  Use this for
+            live aggregate info (e.g. estimated token counts).
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
@@ -47,6 +51,9 @@ def curses_checklist(
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
+                # Reserve bottom row for status bar when status_fn provided
+                footer_rows = 1 if status_fn else 0
+
                 # Header
                 try:
                     hattr = curses.A_BOLD
@@ -62,7 +69,7 @@ def curses_checklist(
                     pass
 
                 # Scrollable item list
-                visible_rows = max_y - 3
+                visible_rows = max_y - 3 - footer_rows
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
@@ -72,7 +79,7 @@ def curses_checklist(
                     range(scroll_offset, min(len(items), scroll_offset + visible_rows))
                 ):
                     y = draw_i + 3
-                    if y >= max_y - 1:
+                    if y >= max_y - 1 - footer_rows:
                         break
                     check = "✓" if i in chosen else " "
                     arrow = "→" if i == cursor else " "
@@ -84,6 +91,20 @@ def curses_checklist(
                             attr |= curses.color_pair(1)
                     try:
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                # Status bar (bottom row, right-aligned)
+                if status_fn:
+                    try:
+                        status_text = status_fn(chosen)
+                        if status_text:
+                            # Right-align on the bottom row
+                            sx = max(0, max_x - len(status_text) - 1)
+                            sattr = curses.A_DIM
+                            if curses.has_colors():
+                                sattr |= curses.color_pair(3)
+                            stdscr.addnstr(max_y - 1, sx, status_text, max_x - sx - 1, sattr)
                     except curses.error:
                         pass
 
@@ -107,7 +128,7 @@ def curses_checklist(
         return result_holder[0] if result_holder[0] is not None else cancel_returns
 
     except Exception:
-        return _numbered_fallback(title, items, selected, cancel_returns)
+        return _numbered_fallback(title, items, selected, cancel_returns, status_fn)
 
 
 def _numbered_fallback(
@@ -115,6 +136,7 @@ def _numbered_fallback(
     items: List[str],
     selected: Set[int],
     cancel_returns: Set[int],
+    status_fn: Optional[Callable[[Set[int]], str]] = None,
 ) -> Set[int]:
     """Text-based toggle fallback for terminals without curses."""
     chosen = set(selected)
@@ -125,6 +147,10 @@ def _numbered_fallback(
         for i, label in enumerate(items):
             marker = color("[✓]", Colors.GREEN) if i in chosen else "[ ]"
             print(f"  {marker} {i + 1:>2}. {label}")
+        if status_fn:
+            status_text = status_fn(chosen)
+            if status_text:
+                print(color(f"\n  {status_text}", Colors.DIM))
         print()
         try:
             val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()

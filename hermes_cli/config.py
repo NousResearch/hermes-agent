@@ -1811,6 +1811,18 @@ def config_command(args):
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
+
+        # Audit log: config change
+        try:
+            from agent.audit import get_audit_logger
+            # Redact values that look like secrets
+            display_value = value if not any(s in key.upper() for s in ("KEY", "TOKEN", "SECRET", "PASSWORD")) else "***"
+            get_audit_logger().log_session_event(
+                event_type="config_change",
+                context={"key": key, "value": display_value},
+            )
+        except Exception:
+            pass
     
     elif subcmd == "path":
         print(get_config_path())

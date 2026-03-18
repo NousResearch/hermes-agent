@@ -215,6 +215,16 @@ terminal:
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
 
 # =============================================================================
+# Audit Log
+# =============================================================================
+#
+# Structured event log for tool calls, API calls, errors, and security events.
+# Stored in ~/.hermes/audit.db (SQLite). Query with: hermes audit
+#
+# audit:
+#   enabled: true               # Set to false to disable audit logging entirely
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

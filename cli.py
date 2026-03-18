@@ -1178,9 +1178,11 @@ class HermesCLI:
         # Audit log: CLI session start
         try:
             from agent.audit import get_audit_logger, EVENT_SESSION_START
+            import getpass as _gp
             get_audit_logger().log_session_event(
                 event_type=EVENT_SESSION_START,
                 session_id=self.session_id,
+                user_id=_gp.getuser(),
                 platform="cli",
                 model=self.model,
             )

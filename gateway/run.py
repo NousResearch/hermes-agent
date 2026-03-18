@@ -967,6 +967,17 @@ class GatewayRunner:
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
+
+        # Audit log: gateway startup
+        try:
+            from agent.audit import get_audit_logger, EVENT_SESSION_START
+            get_audit_logger().log_session_event(
+                event_type="gateway_startup",
+                platform="gateway",
+                context={"platforms": [p.value for p in self.adapters.keys()], "count": connected_count},
+            )
+        except Exception:
+            pass
         
         # Build initial channel directory for send_message name resolution
         try:
@@ -1048,6 +1059,16 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
+
+        # Audit log: gateway shutdown
+        try:
+            from agent.audit import get_audit_logger
+            get_audit_logger().log_session_event(
+                event_type="gateway_shutdown",
+                platform="gateway",
+            )
+        except Exception:
+            pass
 
         for session_key, agent in list(self._running_agents.items()):
             try:

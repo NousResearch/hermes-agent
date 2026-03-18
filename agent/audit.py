@@ -646,11 +646,52 @@ _audit_logger: Optional[AuditLogger] = None
 _audit_lock = threading.Lock()
 
 
+class _NullAuditLogger:
+    """No-op audit logger used when auditing is disabled."""
+    def log_tool_call(self, *a, **kw): pass
+    def log_tool_error(self, *a, **kw): pass
+    def log_api_call(self, *a, **kw): pass
+    def log_api_error(self, *a, **kw): pass
+    def log_session_event(self, *a, **kw): pass
+    def log_security_event(self, *a, **kw): pass
+    def query(self, *a, **kw): return []
+    def search(self, *a, **kw): return []
+    def summary(self, *a, **kw): return {}
+    def detect_problems(self, *a, **kw): return []
+    def prune(self, *a, **kw): return 0
+    def close(self): pass
+
+
+def _is_audit_enabled() -> bool:
+    """Check config.yaml for audit.enabled (default: True)."""
+    try:
+        import yaml
+        cfg_path = _HERMES_HOME / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            return cfg.get("audit", {}).get("enabled", True) is not False
+    except Exception:
+        pass
+    return True
+
+
 def get_audit_logger() -> AuditLogger:
-    """Get or create the global audit logger singleton."""
+    """Get or create the global audit logger singleton.
+
+    Returns a no-op logger if audit.enabled is false in config.yaml.
+    """
     global _audit_logger
     if _audit_logger is None:
         with _audit_lock:
             if _audit_logger is None:
-                _audit_logger = AuditLogger()
+                if _is_audit_enabled():
+                    _audit_logger = AuditLogger()
+                    # Auto-prune events older than 90 days on startup
+                    try:
+                        _audit_logger.prune(older_than_days=90)
+                    except Exception:
+                        pass
+                else:
+                    _audit_logger = _NullAuditLogger()
     return _audit_logger

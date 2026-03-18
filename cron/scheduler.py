@@ -255,6 +255,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    # Audit log: cron job start
+    try:
+        from agent.audit import get_audit_logger, EVENT_SESSION_START
+        get_audit_logger().log_session_event(
+            event_type=EVENT_SESSION_START,
+            session_id=f"cron_{job_id}",
+            platform="cron",
+            context={"job_name": job_name, "schedule": job.get("schedule_display")},
+        )
+    except Exception:
+        pass
+
     # Inject origin context so the agent's send_message tool knows the chat
     if origin:
         os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
@@ -408,11 +420,34 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+
+        try:
+            from agent.audit import get_audit_logger, EVENT_SESSION_END
+            get_audit_logger().log_session_event(
+                event_type=EVENT_SESSION_END,
+                session_id=f"cron_{job_id}",
+                platform="cron",
+                context={"job_name": job_name, "completed": True},
+            )
+        except Exception:
+            pass
+
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.error("Job '%s' failed: %s", job_name, error_msg)
+
+        try:
+            from agent.audit import get_audit_logger, EVENT_SESSION_END
+            get_audit_logger().log_session_event(
+                event_type=EVENT_SESSION_END,
+                session_id=f"cron_{job_id}",
+                platform="cron",
+                context={"job_name": job_name, "completed": False, "error": error_msg[:200]},
+            )
+        except Exception:
+            pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

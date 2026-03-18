@@ -757,6 +757,15 @@ class AIAgent:
             quiet_mode=self.quiet_mode,
         )
         
+        # Inject audit_query tool if audit is enabled
+        try:
+            from tools.audit_tool import AUDIT_TOOL_DEF
+            from agent.audit import _is_audit_enabled
+            if _is_audit_enabled() and self.tools is not None:
+                self.tools.append(AUDIT_TOOL_DEF)
+        except Exception:
+            pass
+
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
         if self.tools:
@@ -4365,7 +4374,7 @@ class AIAgent:
         }
 
     # Tools handled inline (not via model_tools.py) — need separate audit logging
-    _INLINE_TOOLS = {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    _INLINE_TOOLS = {"todo", "session_search", "memory", "clarify", "delegate_task", "audit_query"}
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -4434,6 +4443,15 @@ class AIAgent:
                     tasks=function_args.get("tasks"),
                     max_iterations=function_args.get("max_iterations"),
                     parent_agent=self,
+                )
+            elif function_name == "audit_query":
+                from tools.audit_tool import audit_query as _audit_query
+                result = _audit_query(
+                    action=function_args.get("action", "summary"),
+                    hours=function_args.get("hours", 24),
+                    event_type=function_args.get("event_type"),
+                    search=function_args.get("search"),
+                    limit=function_args.get("limit", 20),
                 )
             else:
                 result = json.dumps({"error": f"Unknown inline tool: {function_name}"})
@@ -4814,6 +4832,18 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "audit_query":
+                from tools.audit_tool import audit_query as _audit_query
+                function_result = _audit_query(
+                    action=function_args.get("action", "summary"),
+                    hours=function_args.get("hours", 24),
+                    event_type=function_args.get("event_type"),
+                    search=function_args.get("search"),
+                    limit=function_args.get("limit", 20),
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('audit_query', function_args, tool_duration, result=function_result)}")
             elif self.quiet_mode and not self._has_stream_consumers():
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                 emoji = _get_tool_emoji(function_name)

@@ -447,7 +447,8 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            assert a.valid_tool_names == {"web_search", "terminal"}
+            # audit_query is auto-injected when audit is enabled
+            assert {"web_search", "terminal"}.issubset(a.valid_tool_names)
 
     def test_session_id_auto_generated(self):
         """Session ID should be auto-generated in YYYYMMDD_HHMMSS_<hex6> format."""

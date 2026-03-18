@@ -806,7 +806,7 @@ class TestConcurrentToolExecution:
                 mock_con.assert_not_called()
 
     def test_multiple_tools_uses_concurrent_path(self, agent):
-        """Multiple non-interactive tools should use concurrent path."""
+        """Multiple read-only tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -816,6 +816,70 @@ class TestConcurrentToolExecution:
                 agent._execute_tool_calls(mock_msg, messages, "task-1")
                 mock_con.assert_called_once()
                 mock_seq.assert_not_called()
+
+    def test_terminal_batch_forces_sequential(self, agent):
+        """Stateful tools should not share the concurrent execution path."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_write_batch_forces_sequential(self, agent):
+        """File mutations should stay ordered within a turn."""
+        tc1 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c1")
+        tc2 = _mock_tool_call(name="write_file", arguments='{"path":"x.py","content":"print(1)"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_disjoint_write_batch_uses_concurrent_path(self, agent):
+        """Independent file writes should still run concurrently."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/b.py","content":"print(2)"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_con.assert_called_once()
+                mock_seq.assert_not_called()
+
+    def test_overlapping_write_batch_forces_sequential(self, agent):
+        """Writes to the same file must stay ordered."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/a.py","old_string":"1","new_string":"2"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""

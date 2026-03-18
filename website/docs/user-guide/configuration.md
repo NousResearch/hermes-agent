@@ -63,8 +63,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **GitHub Copilot** | `hermes model` (uses `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -119,20 +119,64 @@ model:
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
+### GitHub Copilot
+
+Hermes supports GitHub Copilot as a first-class provider with two modes:
+
+**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
+
+```bash
+hermes chat --provider copilot --model gpt-5.4
+```
+
+**Authentication options** (checked in this order):
+
+1. `COPILOT_GITHUB_TOKEN` environment variable
+2. `GH_TOKEN` environment variable
+3. `GITHUB_TOKEN` environment variable
+4. `gh auth token` CLI fallback
+
+If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
+
+:::warning Token types
+The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
+
+| Type | Prefix | How to get |
+|------|--------|------------|
+| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
+| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
+| GitHub App token | `ghu_` | Via GitHub App installation |
+
+If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
+:::
+
+**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
+
+**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
+
+```bash
+hermes chat --provider copilot-acp --model copilot-acp
+# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "copilot"
+  default: "gpt-5.4"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
+| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
+| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
 ### First-Class Chinese AI Providers
 
 These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
 
 ```bash
-# GitHub Copilot ACP agent backend
-hermes chat --provider copilot-acp --model copilot-acp
-# Requires the GitHub Copilot CLI in PATH and an existing `copilot login`
-# session. Hermes starts `copilot --acp --stdio` for each request.
-
-# GitHub Copilot
-hermes chat --provider copilot --model gpt-5.4
-# Uses: GITHUB_TOKEN, GH_TOKEN, or `gh auth token`
-
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-4-plus
 # Requires: GLM_API_KEY in ~/.hermes/.env
@@ -157,19 +201,11 @@ hermes chat --provider alibaba --model qwen-plus
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "copilot-acp"   # or: copilot, zai, kimi-coding, minimax, minimax-cn, alibaba
-  default: "copilot-acp"
+  provider: "zai"       # or: kimi-coding, minimax, minimax-cn, alibaba
+  default: "glm-4-plus"
 ```
 
-Or, for the direct Copilot premium API provider:
-
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables. The Copilot premium API provider uses the built-in GitHub Copilot API base URL automatically. The Copilot ACP backend can be pointed at a different executable with `HERMES_COPILOT_ACP_COMMAND`, `COPILOT_CLI_PATH`, and `HERMES_COPILOT_ACP_ARGS`.
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables.
 
 ## Custom & Self-Hosted LLM Providers
 

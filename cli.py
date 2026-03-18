@@ -1048,7 +1048,7 @@ class HermesCLI:
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not model
+        self._model_is_default = not model and not _config_model
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url

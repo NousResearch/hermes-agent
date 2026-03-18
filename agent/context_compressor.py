@@ -45,16 +45,18 @@ class ContextCompressor:
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
+        api_key: str = "",
     ):
         self.model = model
         self.base_url = base_url
+        self.api_key = api_key
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
 
-        self.context_length = get_model_context_length(model, base_url=base_url)
+        self.context_length = get_model_context_length(model, base_url=base_url, api_key=api_key)
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error

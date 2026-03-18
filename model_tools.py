@@ -276,6 +276,7 @@ def get_tool_definitions(
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
 def handle_function_call(
@@ -305,7 +306,6 @@ def handle_function_call(
     """
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
-    _READ_SEARCH_TOOLS = {"read_file", "search_files"}
     if function_name not in _READ_SEARCH_TOOLS:
         try:
             from tools.file_tools import notify_other_tool_call

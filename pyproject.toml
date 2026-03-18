@@ -56,6 +56,7 @@ pty = [
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 hindsight = ["hindsight-client>=0.4.0"]
+hindsight-local = ["hindsight-all>=0.4.18"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]

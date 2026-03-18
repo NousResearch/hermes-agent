@@ -853,7 +853,9 @@ class AIAgent:
                 else:
                     if not hscfg.enabled:
                         logger.debug("Hindsight disabled in global config")
-                    elif not hscfg.api_key:
+                    elif hscfg.mode == "local" and not hscfg.llm_api_key:
+                        logger.debug("Hindsight local mode enabled but no LLM API key configured")
+                    elif hscfg.mode != "local" and not hscfg.api_key:
                         logger.debug("Hindsight enabled but no API key configured")
             except Exception as e:
                 logger.warning("Hindsight init failed — memory disabled: %s", e)
@@ -861,6 +863,13 @@ class AIAgent:
 
         if not self._hindsight:
             self._strip_hindsight_tools_from_surface()
+        else:
+            # Hindsight owns long-term memory — disable local MEMORY.md/USER.md writes
+            # so the agent doesn't split facts across two stores (mirrors Honcho behaviour).
+            self._memory_flush_min_turns = 0
+            self._memory_enabled = False
+            self._user_profile_enabled = False
+            logger.debug("Hindsight active: local MEMORY.md and USER.md writes disabled")
 
         # Gate local memory writes based on per-peer memory modes.
         # AI peer governs MEMORY.md; user peer governs USER.md.
@@ -1682,7 +1691,11 @@ class AIAgent:
 
     def _hindsight_should_activate(self, hscfg) -> bool:
         """Return True when Hindsight should be active."""
-        return bool(hscfg and hscfg.enabled and hscfg.api_key and hscfg.bank_id)
+        if not (hscfg and hscfg.enabled and hscfg.bank_id):
+            return False
+        if hscfg.mode == "local":
+            return bool(hscfg.llm_api_key)
+        return bool(hscfg.api_key)
 
     def _strip_hindsight_tools_from_surface(self) -> None:
         """Remove Hindsight tools from the active tool surface."""

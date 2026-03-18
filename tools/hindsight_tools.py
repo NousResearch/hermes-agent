@@ -67,7 +67,21 @@ def _fresh_client():
     thread-local event loop, not the main asyncio loop.
     """
     cfg = _get_config()
-    if cfg is None or not cfg.api_key:
+    if cfg is None or not cfg.enabled:
+        raise RuntimeError("Hindsight is not configured.")
+    if cfg.mode == "local":
+        try:
+            from hindsight import HindsightEmbedded
+        except ImportError:
+            raise RuntimeError("hindsight-all is not installed.")
+        return HindsightEmbedded(
+            profile=cfg.local_profile,
+            llm_provider=cfg.llm_provider,
+            llm_api_key=cfg.llm_api_key or "",
+            llm_model=cfg.llm_model,
+            llm_base_url=cfg.llm_base_url,
+        )
+    if not cfg.api_key:
         raise RuntimeError("Hindsight is not configured.")
     try:
         from hindsight_client import Hindsight
@@ -130,7 +144,11 @@ def _check_hindsight_available() -> bool:
     if _session_manager is not None:
         return True
     cfg = _get_config()
-    return bool(cfg and cfg.api_key and cfg.bank_id)
+    if cfg is None:
+        return False
+    if cfg.mode == "local":
+        return bool(cfg.llm_api_key and cfg.bank_id)
+    return bool(cfg.api_key and cfg.bank_id)
 
 
 # ── hindsight_retain ──

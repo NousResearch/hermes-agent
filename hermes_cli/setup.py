@@ -61,6 +61,11 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
+        "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
+    ],
 }
 
 
@@ -741,6 +746,7 @@ def setup_model_provider(config: dict):
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
         "OpenCode Go (open models, $10/month subscription)",
+        "Hugging Face Inference Providers (20+ open models)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1412,7 +1418,29 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 14 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 14:  # Hugging Face Inference Providers
+        selected_provider = "huggingface"
+        print()
+        print_header("Hugging Face API Token")
+        pconfig = PROVIDER_REGISTRY["huggingface"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your token at: https://huggingface.co/settings/tokens")
+        print_info("Required permission: 'Make calls to Inference Providers'")
+        print()
+
+        api_key = prompt_fn(
+            "  HF_TOKEN: ",
+            is_password=True,
+        ).strip()
+        if api_key:
+            save_env_value("HF_TOKEN", api_key)
+            # Clear OpenRouter env vars to prevent routing confusion
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "huggingface", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 15 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:

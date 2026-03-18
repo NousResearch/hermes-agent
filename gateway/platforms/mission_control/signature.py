@@ -3,6 +3,7 @@
 import hmac
 import hashlib
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,14 @@ def verify_signature(body: bytes, signature_header: str, secret: str) -> bool:
         True
     """
     if not secret:
-        logger.warning("[mc] No webhook secret configured, accepting all requests (dev mode)")
+        # In production, require a secret. Allow unauthenticated only in explicit dev mode.
+        if os.getenv("MC_ALLOW_UNAUTHENTICATED", "").lower() != "true":
+            logger.error(
+                "[mc] No webhook secret configured. Set MC_WEBHOOK_SECRET "
+                "or MC_ALLOW_UNAUTHENTICATED=true for development"
+            )
+            return False
+        logger.warning("[mc] Dev mode: accepting unauthenticated requests (MC_ALLOW_UNAUTHENTICATED=true)")
         return True
         
     if not signature_header:

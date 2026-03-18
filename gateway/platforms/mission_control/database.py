@@ -117,20 +117,35 @@ class MissionControlDatabase:
             logger.error("[mc] Failed to create task: %s", e)
             return False
             
+    # Whitelist of allowed columns for update (prevents SQL injection)
+    ALLOWED_COLUMNS = {
+        "title", "description", "status", "priority", "assigned_to",
+        "created_by", "project_id", "workspace_id", "metadata"
+    }
+    
     def update_task(self, task_id: int, updates: Dict[str, Any]) -> bool:
         """Update existing task fields."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 now = int(datetime.now().timestamp())
                 
-                # Build dynamic update
+                # Build dynamic update with column whitelist validation
                 fields = []
                 values = []
                 for key, value in updates.items():
+                    # Validate column name against whitelist (prevents SQL injection)
+                    if key not in self.ALLOWED_COLUMNS:
+                        logger.warning("[mc] Ignoring invalid column in update: %s", key)
+                        continue
+                        
                     if key == "metadata":
                         value = json.dumps(value)
                     fields.append(f"{key} = ?")
                     values.append(value)
+                    
+                if not fields:
+                    logger.warning("[mc] No valid fields to update for task %d", task_id)
+                    return False
                     
                 fields.append("updated_at = ?")
                 values.append(now)

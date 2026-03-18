@@ -12,12 +12,14 @@ Environment Variables:
     MC_AUTO_ACCEPT: Auto-accept assignments (default: true)
 """
 
-import asyncio
 import json
 import logging
 import os
 from pathlib import Path
 from typing import Optional, Any, Dict
+
+# Maximum request body size (1MB) to prevent memory exhaustion
+MAX_REQUEST_BODY_SIZE = 1024 * 1024
 
 try:
     from aiohttp import web
@@ -160,6 +162,11 @@ class MissionControlAdapter(BasePlatformAdapter):
         
         Verifies signature, checks idempotency, routes to handler.
         """
+        # Check request body size to prevent memory exhaustion
+        if request.content_length and request.content_length > MAX_REQUEST_BODY_SIZE:
+            logger.warning("[mc] Request body too large: %d bytes", request.content_length)
+            return web.Response(status=413, text="Payload too large")
+        
         # Read raw body for signature verification
         body = await request.read()
         

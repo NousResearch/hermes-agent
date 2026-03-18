@@ -13,7 +13,7 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 ### Linux / macOS / WSL2
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lattice-pns/hermes-agent-pns/main/scripts/install.sh | bash
 ```
 
 :::warning Windows
@@ -70,8 +70,8 @@ If you prefer full control over the installation process, follow these steps.
 Clone with `--recurse-submodules` to pull the required submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+git clone --recurse-submodules https://github.com/lattice-pns/hermes-agent-pns.git
+cd hermes-agent-pns
 ```
 
 If you already cloned without `--recurse-submodules`:
@@ -229,8 +229,8 @@ For those who just want the commands:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone & enter
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+git clone --recurse-submodules https://github.com/lattice-pns/hermes-agent-pns.git
+cd hermes-agent-pns
 
 # Create venv with Python 3.11
 uv venv venv --python 3.11

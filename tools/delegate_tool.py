@@ -21,6 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import time
+import model_tools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -171,11 +172,6 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
-    import model_tools
-
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -259,6 +255,8 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)

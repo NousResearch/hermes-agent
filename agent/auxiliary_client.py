@@ -654,10 +654,23 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     if not token:
         return None, None
 
+    # Allow base URL override from config.yaml model.base_url
+    base_url = _ANTHROPIC_DEFAULT_BASE_URL
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if cfg_base_url:
+                base_url = cfg_base_url
+    except Exception:
+        pass
+
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
-    logger.debug("Auxiliary client: Anthropic native (%s)", model)
-    real_client = build_anthropic_client(token, _ANTHROPIC_DEFAULT_BASE_URL)
-    return AnthropicAuxiliaryClient(real_client, model, token, _ANTHROPIC_DEFAULT_BASE_URL), model
+    logger.debug("Auxiliary client: Anthropic native (%s) at %s", model, base_url)
+    real_client = build_anthropic_client(token, base_url)
+    return AnthropicAuxiliaryClient(real_client, model, token, base_url), model
 
 
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:

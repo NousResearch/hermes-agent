@@ -55,6 +55,25 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
+    "copilot-acp": [
+        "copilot-acp",
+    ],
+    "copilot": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gemini-2.5-pro",
+        "grok-code-fast-1",
+    ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "minimax": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
@@ -64,6 +83,59 @@ _DEFAULT_PROVIDER_MODELS = {
 }
 
 
+def _current_reasoning_effort(config: Dict[str, Any]) -> str:
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
+    return ""
+
+
+def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
+    agent_cfg = config.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+        config["agent"] = agent_cfg
+    agent_cfg["reasoning_effort"] = effort
+
+
+def _setup_copilot_reasoning_selection(
+    config: Dict[str, Any],
+    model_id: str,
+    prompt_choice,
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: str = "",
+) -> None:
+    from hermes_cli.models import github_model_reasoning_efforts, normalize_copilot_model_id
+
+    normalized_model = normalize_copilot_model_id(
+        model_id,
+        catalog=catalog,
+        api_key=api_key,
+    ) or model_id
+    efforts = github_model_reasoning_efforts(normalized_model, catalog=catalog, api_key=api_key)
+    if not efforts:
+        return
+
+    current_effort = _current_reasoning_effort(config)
+    choices = list(efforts) + ["Disable reasoning", f"Keep current ({current_effort or 'default'})"]
+
+    if current_effort == "none":
+        default_idx = len(efforts)
+    elif current_effort in efforts:
+        default_idx = efforts.index(current_effort)
+    elif "medium" in efforts:
+        default_idx = efforts.index("medium")
+    else:
+        default_idx = len(choices) - 1
+
+    effort_idx = prompt_choice("Select reasoning effort:", choices, default_idx)
+    if effort_idx < len(efforts):
+        _set_reasoning_effort(config, efforts[effort_idx])
+    elif effort_idx == len(efforts):
+        _set_reasoning_effort(config, "none")
+
+
 def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
     """Model selection for API-key providers with live /models detection.
 
@@ -71,29 +143,60 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     hardcoded default list with a warning if the endpoint is unreachable.
     Always offers a 'Custom model' escape hatch.
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import (
+        copilot_model_api_mode,
+        fetch_api_models,
+        fetch_github_model_catalog,
+        normalize_copilot_model_id,
+    )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
+    is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
 
     # Resolve API key and base URL for the probe
-    api_key = ""
-    for ev in pconfig.api_key_env_vars:
-        api_key = get_env_value(ev) or os.getenv(ev, "")
-        if api_key:
-            break
-    base_url_env = pconfig.base_url_env_var or ""
-    base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+    if is_copilot_catalog_provider:
+        api_key = ""
+        if provider_id == "copilot":
+            creds = resolve_api_key_provider_credentials(provider_id)
+            api_key = creds.get("api_key", "")
+            base_url = creds.get("base_url", "") or pconfig.inference_base_url
+        else:
+            try:
+                creds = resolve_api_key_provider_credentials("copilot")
+                api_key = creds.get("api_key", "")
+            except Exception:
+                pass
+            base_url = pconfig.inference_base_url
+        catalog = fetch_github_model_catalog(api_key)
+        current_model = normalize_copilot_model_id(
+            current_model,
+            catalog=catalog,
+            api_key=api_key,
+        ) or current_model
+    else:
+        api_key = ""
+        for ev in pconfig.api_key_env_vars:
+            api_key = get_env_value(ev) or os.getenv(ev, "")
+            if api_key:
+                break
+        base_url_env = pconfig.base_url_env_var or ""
+        base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+        catalog = None
 
     # Try live /models endpoint
-    live_models = fetch_api_models(api_key, base_url)
+    if is_copilot_catalog_provider and catalog:
+        live_models = [item.get("id", "") for item in catalog if item.get("id")]
+    else:
+        live_models = fetch_api_models(api_key, base_url)
 
     if live_models:
         provider_models = live_models
         print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
     else:
-        provider_models = _DEFAULT_PROVIDER_MODELS.get(provider_id, [])
+        fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
+        provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
         if provider_models:
             print_warning(
                 f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
@@ -107,12 +210,29 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     keep_idx = len(model_choices) - 1
     model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
 
+    selected_model = current_model
+
     if model_idx < len(provider_models):
-        _set_default_model(config, provider_models[model_idx])
+        selected_model = provider_models[model_idx]
+        if is_copilot_catalog_provider:
+            selected_model = normalize_copilot_model_id(
+                selected_model,
+                catalog=catalog,
+                api_key=api_key,
+            ) or selected_model
+        _set_default_model(config, selected_model)
     elif model_idx == len(provider_models):
         custom = prompt_fn("Enter model name")
         if custom:
-            _set_default_model(config, custom)
+            if is_copilot_catalog_provider:
+                selected_model = normalize_copilot_model_id(
+                    custom,
+                    catalog=catalog,
+                    api_key=api_key,
+                ) or custom
+            else:
+                selected_model = custom
+            _set_default_model(config, selected_model)
     else:
         # "Keep current" selected — validate it's compatible with the new
         # provider.  OpenRouter-formatted names (containing "/") won't work
@@ -123,7 +243,24 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 f"and won't work with {pconfig.name}. "
                 f"Switching to {provider_models[0]}."
             )
+            selected_model = provider_models[0]
             _set_default_model(config, provider_models[0])
+
+    if provider_id == "copilot" and selected_model:
+        model_cfg = _model_config_dict(config)
+        model_cfg["api_mode"] = copilot_model_api_mode(
+            selected_model,
+            catalog=catalog,
+            api_key=api_key,
+        )
+        config["model"] = model_cfg
+        _setup_copilot_reasoning_selection(
+            config,
+            selected_model,
+            prompt_choice,
+            catalog=catalog,
+            api_key=api_key,
+        )
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -673,6 +810,8 @@ def setup_model_provider(config: dict):
         resolve_codex_runtime_credentials,
         DEFAULT_CODEX_BASE_URL,
         detect_external_credentials,
+        get_auth_status,
+        resolve_api_key_provider_credentials,
     )
 
     print_header("Inference Provider")
@@ -682,6 +821,8 @@ def setup_model_provider(config: dict):
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
     existing_custom = get_env_value("OPENAI_BASE_URL")
+    copilot_status = get_auth_status("copilot")
+    copilot_acp_status = get_auth_status("copilot-acp")
 
     model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
     current_config_provider = str(model_cfg.get("provider") or "").strip().lower() or None
@@ -702,7 +843,12 @@ def setup_model_provider(config: dict):
 
     # Detect if any provider is already configured
     has_any_provider = bool(
-        current_config_provider or active_oauth or existing_custom or existing_or
+        current_config_provider
+        or active_oauth
+        or existing_custom
+        or existing_or
+        or copilot_status.get("logged_in")
+        or copilot_acp_status.get("logged_in")
     )
 
     # Build "keep current" label
@@ -741,6 +887,8 @@ def setup_model_provider(config: dict):
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
         "OpenCode Go (open models, $10/month subscription)",
+        "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)",
+        "GitHub Copilot ACP (spawns `copilot --acp --stdio`)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1412,7 +1560,56 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 14 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 14:  # GitHub Copilot
+        selected_provider = "copilot"
+        print()
+        print_header("GitHub Copilot")
+        pconfig = PROVIDER_REGISTRY["copilot"]
+        print_info("Hermes can use GITHUB_TOKEN, GH_TOKEN, or your gh CLI login.")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print()
+
+        copilot_creds = resolve_api_key_provider_credentials("copilot")
+        source = copilot_creds.get("source", "")
+        token = copilot_creds.get("api_key", "")
+        if token:
+            if source in ("GITHUB_TOKEN", "GH_TOKEN"):
+                print_info(f"Current: {token[:8]}... ({source})")
+            elif source == "gh auth token":
+                print_info("Current: authenticated via `gh auth token`")
+            else:
+                print_info("Current: GitHub token configured")
+        else:
+            api_key = prompt("  GitHub token", password=True)
+            if api_key:
+                save_env_value("GITHUB_TOKEN", api_key)
+                print_success("GitHub token saved")
+            else:
+                print_warning("Skipped - agent won't work without a GitHub token or gh auth login")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "copilot", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 15:  # GitHub Copilot ACP
+        selected_provider = "copilot-acp"
+        print()
+        print_header("GitHub Copilot ACP")
+        pconfig = PROVIDER_REGISTRY["copilot-acp"]
+        print_info("Hermes will start `copilot --acp --stdio` for each request.")
+        print_info("Use HERMES_COPILOT_ACP_COMMAND or COPILOT_CLI_PATH to override the command.")
+        print_info(f"Base marker: {pconfig.inference_base_url}")
+        print()
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 16 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1444,6 +1641,8 @@ def setup_model_provider(config: dict):
     if _vision_needs_setup:
         _prov_names = {
             "nous-api": "Nous Portal API key",
+            "copilot": "GitHub Copilot",
+            "copilot-acp": "GitHub Copilot ACP",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "minimax": "MiniMax",
@@ -1583,7 +1782,15 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
+        elif selected_provider == "copilot-acp":
+            _setup_provider_model_selection(
+                config, selected_provider, current_model,
+                prompt_choice, prompt,
+            )
+            model_cfg = _model_config_dict(config)
+            model_cfg["api_mode"] = "chat_completions"
+            config["model"] = model_cfg
+        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1644,7 +1851,7 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)

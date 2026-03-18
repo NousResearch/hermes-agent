@@ -274,6 +274,10 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        acp_command: str = None,
+        acp_args: list[str] | None = None,
+        command: str = None,
+        args: list[str] | None = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -379,6 +383,8 @@ class AIAgent:
         self.base_url = base_url or OPENROUTER_BASE_URL
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or "openrouter"
+        self.acp_command = acp_command or command
+        self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -572,6 +578,9 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
+                if self.provider == "copilot-acp":
+                    client_kwargs["command"] = self.acp_command
+                    client_kwargs["args"] = self.acp_args
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
@@ -579,6 +588,10 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
+                elif "api.githubcopilot.com" in effective_base.lower():
+                    from hermes_cli.models import copilot_default_headers
+
+                    client_kwargs["default_headers"] = copilot_default_headers()
                 elif "api.kimi.com" in effective_base.lower():
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
@@ -2685,10 +2698,23 @@ class AIAgent:
 
         if isinstance(client, Mock):
             return False
+        if bool(getattr(client, "is_closed", False)):
+            return True
         http_client = getattr(client, "_client", None)
         return bool(getattr(http_client, "is_closed", False))
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(**client_kwargs)
+            logger.info(
+                "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -3544,6 +3570,11 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
+            is_github_responses = (
+                "models.github.ai" in self.base_url.lower()
+                or "api.githubcopilot.com" in self.base_url.lower()
+            )
+
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
             reasoning_enabled = True
@@ -3561,13 +3592,23 @@ class AIAgent:
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
                 "store": False,
-                "prompt_cache_key": self.session_id,
             }
 
+            if not is_github_responses:
+                kwargs["prompt_cache_key"] = self.session_id
+
             if reasoning_enabled:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
-            else:
+                if is_github_responses:
+                    # Copilot's Responses route advertises reasoning-effort support,
+                    # but not OpenAI-specific prompt cache or encrypted reasoning
+                    # fields. Keep the payload to the documented subset.
+                    github_reasoning = self._github_models_reasoning_extra_body()
+                    if github_reasoning is not None:
+                        kwargs["reasoning"] = github_reasoning
+                else:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = ["reasoning.encrypted_content"]
+            elif not is_github_responses:
                 kwargs["include"] = []
 
             if self.max_tokens is not None:
@@ -3638,6 +3679,10 @@ class AIAgent:
         extra_body = {}
 
         _is_openrouter = "openrouter" in self.base_url.lower()
+        _is_github_models = (
+            "models.github.ai" in self.base_url.lower()
+            or "api.githubcopilot.com" in self.base_url.lower()
+        )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
         # specific.  Only send to OpenRouter-compatible endpoints.
@@ -3648,19 +3693,24 @@ class AIAgent:
         _is_nous = "nousresearch" in self.base_url.lower()
 
         if self._supports_reasoning_extra_body():
-            if self.reasoning_config is not None:
-                rc = dict(self.reasoning_config)
-                # Nous Portal requires reasoning enabled — don't send
-                # enabled=false to it (would cause 400).
-                if _is_nous and rc.get("enabled") is False:
-                    pass  # omit reasoning entirely for Nous when disabled
-                else:
-                    extra_body["reasoning"] = rc
+            if _is_github_models:
+                github_reasoning = self._github_models_reasoning_extra_body()
+                if github_reasoning is not None:
+                    extra_body["reasoning"] = github_reasoning
             else:
-                extra_body["reasoning"] = {
-                    "enabled": True,
-                    "effort": "medium"
-                }
+                if self.reasoning_config is not None:
+                    rc = dict(self.reasoning_config)
+                    # Nous Portal requires reasoning enabled — don't send
+                    # enabled=false to it (would cause 400).
+                    if _is_nous and rc.get("enabled") is False:
+                        pass  # omit reasoning entirely for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": "medium"
+                    }
 
         # Nous Portal product attribution
         if _is_nous:
@@ -3683,6 +3733,13 @@ class AIAgent:
             return True
         if "ai-gateway.vercel.sh" in base_url:
             return True
+        if "models.github.ai" in base_url or "api.githubcopilot.com" in base_url:
+            try:
+                from hermes_cli.models import github_model_reasoning_efforts
+
+                return bool(github_model_reasoning_efforts(self.model))
+            except Exception:
+                return False
         if "openrouter" not in base_url:
             return False
         if "api.mistral.ai" in base_url:
@@ -3698,6 +3755,38 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _github_models_reasoning_extra_body(self) -> dict | None:
+        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
+        try:
+            from hermes_cli.models import github_model_reasoning_efforts
+        except Exception:
+            return None
+
+        supported_efforts = github_model_reasoning_efforts(self.model)
+        if not supported_efforts:
+            return None
+
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                return None
+            requested_effort = str(
+                self.reasoning_config.get("effort", "medium")
+            ).strip().lower()
+        else:
+            requested_effort = "medium"
+
+        if requested_effort == "xhigh" and "high" in supported_efforts:
+            requested_effort = "high"
+        elif requested_effort not in supported_efforts:
+            if requested_effort == "minimal" and "low" in supported_efforts:
+                requested_effort = "low"
+            elif "medium" in supported_efforts:
+                requested_effort = "medium"
+            else:
+                requested_effort = supported_efforts[0]
+
+        return {"effort": requested_effort}
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.

@@ -1063,6 +1063,8 @@ class HermesCLI:
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.acp_command: Optional[str] = None
+        self.acp_args: list[str] = []
         self.base_url = (
             base_url
             or os.getenv("OPENAI_BASE_URL")
@@ -1374,26 +1376,34 @@ class HermesCLI:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
-        """Strip provider prefixes and swap the default model for Codex.
-
-        When the resolved provider is ``openai-codex``:
-
-        1. Strip any ``provider/`` prefix (the Codex Responses API only
-           accepts bare model slugs like ``gpt-5.4``, not ``openai/gpt-5.4``).
-        2. If the active model is still the *untouched default* (user never
-           explicitly chose a model), replace it with a Codex-compatible
-           default so the first session doesn't immediately error.
-
-        If the user explicitly chose a model — *any* model — we trust them
-        and let the API be the judge.  No allowlists, no slug checks.
-
-        Returns True when the active model was changed.
-        """
-        if resolved_provider != "openai-codex":
-            return False
-
+        """Normalize provider-specific model IDs and routing."""
         current_model = (self.model or "").strip()
         changed = False
+
+        if resolved_provider == "copilot":
+            try:
+                from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+
+                canonical = normalize_copilot_model_id(current_model, api_key=self.api_key)
+                if canonical and canonical != current_model:
+                    if not self._model_is_default:
+                        self.console.print(
+                            f"[yellow]⚠️  Normalized Copilot model '{current_model}' to '{canonical}'.[/]"
+                        )
+                    self.model = canonical
+                    current_model = canonical
+                    changed = True
+
+                resolved_mode = copilot_model_api_mode(current_model, api_key=self.api_key)
+                if resolved_mode != self.api_mode:
+                    self.api_mode = resolved_mode
+                    changed = True
+            except Exception:
+                pass
+            return changed
+
+        if resolved_provider != "openai-codex":
+            return False
 
         # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
         if "/" in current_model:
@@ -1670,6 +1680,8 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_acp_command = runtime.get("command")
+        resolved_acp_args = list(runtime.get("args") or [])
         if not isinstance(api_key, str) or not api_key:
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
@@ -1681,9 +1693,13 @@ class HermesCLI:
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
+            or resolved_acp_command != self.acp_command
+            or resolved_acp_args != self.acp_args
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
+        self.acp_command = resolved_acp_command
+        self.acp_args = resolved_acp_args
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -1713,6 +1729,8 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
             },
         )
 
@@ -1781,6 +1799,8 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -1789,6 +1809,8 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                acp_command=runtime.get("command"),
+                acp_args=runtime.get("args"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -1825,6 +1847,8 @@ class HermesCLI:
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
+                runtime.get("command"),
+                tuple(runtime.get("args") or ()),
             )
 
             if self._pending_title and self._session_db:
@@ -3750,6 +3774,8 @@ class HermesCLI:
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
                     api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,

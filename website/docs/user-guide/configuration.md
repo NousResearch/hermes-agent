@@ -63,6 +63,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **GitHub Copilot** | `hermes model` (uses `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -122,6 +124,15 @@ model:
 These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
 
 ```bash
+# GitHub Copilot ACP agent backend
+hermes chat --provider copilot-acp --model copilot-acp
+# Requires the GitHub Copilot CLI in PATH and an existing `copilot login`
+# session. Hermes starts `copilot --acp --stdio` for each request.
+
+# GitHub Copilot
+hermes chat --provider copilot --model gpt-5.4
+# Uses: GITHUB_TOKEN, GH_TOKEN, or `gh auth token`
+
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-4-plus
 # Requires: GLM_API_KEY in ~/.hermes/.env
@@ -146,11 +157,19 @@ hermes chat --provider alibaba --model qwen-plus
 Or set the provider permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "zai"       # or: kimi-coding, minimax, minimax-cn, alibaba
-  default: "glm-4-plus"
+  provider: "copilot-acp"   # or: copilot, zai, kimi-coding, minimax, minimax-cn, alibaba
+  default: "copilot-acp"
 ```
 
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables.
+Or, for the direct Copilot premium API provider:
+
+```yaml
+model:
+  provider: "copilot"
+  default: "gpt-5.4"
+```
+
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables. The Copilot premium API provider uses the built-in GitHub Copilot API base URL automatically. The Copilot ACP backend can be pointed at a different executable with `HERMES_COPILOT_ACP_COMMAND`, `COPILOT_CLI_PATH`, and `HERMES_COPILOT_ACP_ARGS`.
 
 ## Custom & Self-Hosted LLM Providers
 
@@ -443,7 +462,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
@@ -766,7 +785,7 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers: `auto`, `openrouter`, `nous`, `codex`, `anthropic`, `main`, `zai`, `kimi-coding`, `minimax`, and any provider registered in the [provider registry](/docs/reference/environment-variables).
+Available providers: `auto`, `openrouter`, `nous`, `codex`, `copilot`, `anthropic`, `main`, `zai`, `kimi-coding`, `minimax`, and any provider registered in the [provider registry](/docs/reference/environment-variables).
 
 ### Full auxiliary config reference
 
@@ -1224,7 +1243,7 @@ delegation:
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 
-The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 

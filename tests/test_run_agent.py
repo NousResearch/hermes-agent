@@ -631,6 +631,28 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
+    def test_reasoning_sent_for_copilot_gpt5(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-4.1"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
@@ -2170,6 +2192,41 @@ class TestFallbackAnthropicProvider:
         assert result is True
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
+
+
+def test_aiagent_uses_copilot_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_is_openai_client_closed_honors_custom_client_flag():
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=True)) is True
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False
 
 
 class TestAnthropicBaseUrlPassthrough:

@@ -32,8 +32,8 @@ class TestSetupProviderModelSelection:
     @pytest.mark.parametrize("provider_id,expected_defaults", [
         ("zai", ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]),
         ("kimi-coding", ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]),
-        ("minimax", ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
-        ("minimax-cn", ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
+        ("minimax", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
+        ("minimax-cn", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
     ])
     @patch("hermes_cli.models.fetch_api_models", return_value=[])
     @patch("hermes_cli.config.get_env_value", return_value="fake-key")

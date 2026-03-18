@@ -177,6 +177,50 @@ def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch
     assert resolved["api_key"] == "local-key"
 
 
+def test_custom_endpoint_uses_config_api_key_over_env(monkeypatch):
+    """provider: custom with base_url and api_key in config uses them (#1760)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-api.example.com/v1",
+            "api_key": "config-api-key",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://other.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://my-api.example.com/v1"
+    assert resolved["api_key"] == "config-api-key"
+
+
+def test_custom_endpoint_uses_config_api_field_when_no_api_key(monkeypatch):
+    """provider: custom with 'api' in config uses it as api_key (#1760)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://custom.example.com/v1",
+            "api": "config-api-field",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+    assert resolved["api_key"] == "config-api-field"
+
+
 def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
     """Auto provider with non-OpenRouter base_url should prefer OPENAI_API_KEY.
 

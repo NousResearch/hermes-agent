@@ -635,7 +635,7 @@ class MatrixAdapter(BasePlatformAdapter):
             source=source,
             raw_message=getattr(event, "source", {}),
             message_id=event.event_id,
-            reply_to=reply_to,
+            reply_to_message_id=reply_to,
         )
 
         await self.handle_message(msg_event)

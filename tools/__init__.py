@@ -154,6 +154,18 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
+# SiYuan Note knowledge base integration
+from .siyuan_tool import (
+    _check_siyuan_available as check_siyuan_requirements,
+    SIYUAN_SEARCH_SCHEMA,
+    SIYUAN_READ_SCHEMA,
+    SIYUAN_WRITE_SCHEMA,
+    SIYUAN_UPDATE_SCHEMA,
+    SIYUAN_DELETE_SCHEMA,
+    SIYUAN_LIST_SCHEMA,
+    SIYUAN_EXPORT_SCHEMA,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -258,5 +270,14 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+    # SiYuan Note
+    'check_siyuan_requirements',
+    'SIYUAN_SEARCH_SCHEMA',
+    'SIYUAN_READ_SCHEMA',
+    'SIYUAN_WRITE_SCHEMA',
+    'SIYUAN_UPDATE_SCHEMA',
+    'SIYUAN_DELETE_SCHEMA',
+    'SIYUAN_LIST_SCHEMA',
+    'SIYUAN_EXPORT_SCHEMA',
 ]
 

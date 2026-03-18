@@ -64,6 +64,9 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # SiYuan Note knowledge base (gated on SIYUAN_TOKEN via check_fn)
+    "siyuan_search", "siyuan_read", "siyuan_write", "siyuan_update",
+    "siyuan_delete", "siyuan_list", "siyuan_export",
 ]
 
 
@@ -205,6 +208,15 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "siyuan": {
+        "description": "SiYuan Note knowledge base: search, read, write, update, delete notes and blocks",
+        "tools": [
+            "siyuan_search", "siyuan_read", "siyuan_write", "siyuan_update",
+            "siyuan_delete", "siyuan_list", "siyuan_export",
+        ],
         "includes": []
     },
 

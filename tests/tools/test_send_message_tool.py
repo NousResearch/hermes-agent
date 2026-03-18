@@ -417,6 +417,47 @@ class TestSendToPlatformWhatsapp:
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
 
+class TestSendToPlatformWeCom:
+    def test_wecom_media_only_routes_via_bundle_sender(self):
+        async_mock = AsyncMock(return_value={"success": True, "platform": "wecom", "chat_id": "chat-1", "message_id": "abc123"})
+
+        with patch("tools.send_message_tool._send_wecom_bundle", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token=None, extra={"bot_id": "bot-1"}),
+                    "chat-1",
+                    "",
+                    media_files=[("/tmp/demo.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with(
+            {"bot_id": "bot-1"},
+            "chat-1",
+            [""],
+            [("/tmp/demo.png", False)],
+        )
+
+    def test_wecom_text_and_media_do_not_emit_generic_omit_warning(self):
+        async_mock = AsyncMock(return_value={"success": True, "platform": "wecom", "chat_id": "chat-1", "message_id": "abc123"})
+
+        with patch("tools.send_message_tool._send_wecom_bundle", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token=None, extra={"bot_id": "bot-1"}),
+                    "chat-1",
+                    "hello",
+                    media_files=[("/tmp/demo.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert "warnings" not in result
+
+
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""

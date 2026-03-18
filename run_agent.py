@@ -4809,12 +4809,17 @@ class AIAgent:
         ):
             _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
             _msg_tok_est = estimate_messages_tokens_rough(messages)
-            _preflight_tokens = _sys_tok_est + _msg_tok_est
+            # Include tool schema tokens — with many tools these can add 20-30K+ tokens
+            _tool_tok_est = estimate_tokens_rough(json.dumps(self.tools)) if self.tools else 0
+            _preflight_tokens=*** + _msg_tok_est + _tool_tok_est
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
-                    "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                    "Preflight compression: ~%s tokens (sys=%s, msg=%s, tools=%s) >= %s threshold (model %s, ctx %s)",
                     f"{_preflight_tokens:,}",
+                    f"{_sys_tok_est:,}",
+                    f"{_msg_tok_est:,}",
+                    f"{_tool_tok_est:,}",
                     f"{self.context_compressor.threshold_tokens:,}",
                     self.model,
                     f"{self.context_compressor.context_length:,}",
@@ -4822,6 +4827,7 @@ class AIAgent:
                 if not self.quiet_mode:
                     print(
                         f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                        f"(sys={_sys_tok_est:,}, msg={_msg_tok_est:,}, tools={_tool_tok_est:,}) "
                         f">= {self.context_compressor.threshold_tokens:,} threshold"
                     )
                 # May need multiple passes for very large sessions with small
@@ -5477,9 +5483,11 @@ class AIAgent:
                     is_context_length_error = any(phrase in error_msg for phrase in [
                         'context length', 'context size', 'maximum context',
                         'token limit', 'too many tokens', 'reduce the length',
-                        'exceeds the limit', 'context window',
+                        'exceeds the limit', 'exceeds max length',  # Zhipu GLM: "Prompt exceeds max length" (error 1261)
+                        'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
+                        'prompt exceeds',  # Broad catch for prompt-too-long variants
                     ])
                     
                     if is_context_length_error:

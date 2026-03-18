@@ -1438,6 +1438,9 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "audit":
+            return await self._handle_audit_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
@@ -3627,6 +3630,216 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
+
+    async def _handle_audit_command(self, event: MessageEvent) -> str:
+        """Handle /audit command -- query the structured audit log.
+
+        Usage:
+            /audit                    -- last 20 events
+            /audit 50                 -- last 50 events
+            /audit --type tool.call   -- filter by event type
+            /audit --tool terminal    -- filter by tool name
+            /audit --source core      -- filter by source (core/honcho/mcp/...)
+            /audit --session <id>     -- filter by session ID
+            /audit --after 2026-03-17T12:00:00   -- only events after this time
+            /audit --before 2026-03-17T18:00:00  -- only events before this time
+            /audit --keyword <text>   -- full-text search in payloads
+            /audit sessions           -- list recent audit sessions
+        """
+        import asyncio as _asyncio
+        from datetime import datetime as _datetime
+
+        args_str = event.get_command_args().strip()
+        limit = 20
+        event_type = None
+        tool_name = None
+        source_filter = None
+        session_id = None
+        keyword = None
+        after_epoch = None
+        before_epoch = None
+        show_sessions = False
+
+        if args_str:
+            parts = args_str.split()
+            # Check for sub-action first
+            if parts[0] == "sessions":
+                show_sessions = True
+            elif parts[0] in ("summary", "problems"):
+                # Handled below after parsing remaining flags
+                pass
+            else:
+                i = 0
+                while i < len(parts):
+                    p = parts[i]
+                    if p == "--type" and i + 1 < len(parts):
+                        event_type = parts[i + 1]; i += 2
+                    elif p == "--tool" and i + 1 < len(parts):
+                        tool_name = parts[i + 1]; i += 2
+                    elif p == "--source" and i + 1 < len(parts):
+                        source_filter = parts[i + 1]; i += 2
+                    elif p == "--session" and i + 1 < len(parts):
+                        session_id = parts[i + 1]; i += 2
+                    elif p == "--keyword" and i + 1 < len(parts):
+                        keyword = parts[i + 1]; i += 2
+                    elif p == "--after" and i + 1 < len(parts):
+                        try:
+                            after_epoch = _datetime.fromisoformat(parts[i + 1]).timestamp()
+                        except ValueError:
+                            return f"Cannot parse date: {parts[i + 1]}"
+                        i += 2
+                    elif p == "--before" and i + 1 < len(parts):
+                        try:
+                            before_epoch = _datetime.fromisoformat(parts[i + 1]).timestamp()
+                        except ValueError:
+                            return f"Cannot parse date: {parts[i + 1]}"
+                        i += 2
+                    elif p.isdigit():
+                        limit = int(p); i += 1
+                    else:
+                        i += 1
+
+        try:
+            from agent.audit import query_events, list_sessions as _audit_list_sessions, audit_summary, audit_problems
+
+            loop = _asyncio.get_event_loop()
+
+            def _format_gateway_tool_detail(tool: str, detail: dict) -> str:
+                """Compact tool detail for messaging output."""
+                if not detail:
+                    return ""
+                if tool == "terminal":
+                    cmd = detail.get("command", "")
+                    return cmd[:60] if cmd else ""
+                elif tool in ("read_file", "write_file", "patch_file"):
+                    return detail.get("path", "")[:60]
+                elif tool == "web_search":
+                    return detail.get("query", "")[:60]
+                elif tool == "search_files":
+                    return detail.get("query", "")[:60]
+                elif tool == "browser_navigate":
+                    return detail.get("url", "")[:60]
+                elif tool == "delegate_task":
+                    return detail.get("task", "")[:60]
+                # Fallback: show first non-empty value
+                for v in detail.values():
+                    if v:
+                        return str(v)[:60]
+                return ""
+
+            def _run_query():
+                _parts = args_str.split() if args_str else []
+                _sub = _parts[0] if _parts else ""
+
+                # Sub-action: summary
+                if _sub == "summary":
+                    s = audit_summary(session_id=session_id, after=after_epoch, before=before_epoch)
+                    if s.get("total", 0) == 0:
+                        return "No audit events found."
+                    lines = [f"**Audit Summary** ({s['sessions']} sessions)\n"]
+                    lines.append(f"Events: {s['total']}  API: {s['api_calls']}  Tools: {s['tool_calls']}  Errors: {s['errors']} ({s['error_rate']}%)")
+                    lines.append(f"Tokens: {s['total_tokens']:,}  Cost: ${s['total_cost_usd']:.4f}")
+                    if s.get("top_tools"):
+                        lines.append("\nTop tools:")
+                        for t in s["top_tools"]:
+                            lines.append(f"  `{t['tool']}` {t['count']} calls, avg {t['avg_ms']}ms")
+                    if s.get("top_errors"):
+                        lines.append("\nTop errors:")
+                        for e in s["top_errors"]:
+                            lines.append(f"  {e['error'][:60]} x{e['count']}")
+                    return "\n".join(lines)
+
+                # Sub-action: problems
+                if _sub == "problems":
+                    findings = audit_problems(session_id=session_id, after=after_epoch, before=before_epoch)
+                    if not findings:
+                        return "No problems detected."
+                    lines = [f"**{len(findings)} problem{'s' if len(findings) != 1 else ''} detected**\n"]
+                    for f in findings:
+                        lines.append(f"`{f['rule']}` {f['message']}")
+                    return "\n".join(lines)
+
+                # Sub-action: list sessions
+                if show_sessions:
+                    sessions = _audit_list_sessions()
+                    if not sessions:
+                        return "No audit sessions found."
+                    lines = ["**Audit Sessions**\n"]
+                    import time as _time
+                    for s in sessions[:20]:
+                        sid = s.get("session_id", "?")
+                        size = s.get("size_kb", 0)
+                        modified = s.get("modified", "?")
+                        lines.append(f"`{sid}` {size}kb {modified}")
+                    return "\n".join(lines)
+
+                events = query_events(
+                    event_type=event_type,
+                    tool_name=tool_name,
+                    source=source_filter,
+                    session_id=session_id,
+                    keyword=keyword,
+                    after=after_epoch,
+                    before=before_epoch,
+                    limit=limit,
+                )
+
+                if not events:
+                    return "No audit events found. Enable with `audit.enabled: true` in config.yaml"
+
+                lines = [f"**Audit Log** ({len(events)} events)\n"]
+                for e in events:
+                    ts = e.get("iso", "")[:19]
+                    etype = e.get("type", "?")
+                    src = e.get("source", "")
+                    src_tag = f"[{src}] " if src else ""
+
+                    if etype == "api.request":
+                        model = e.get("model", "")
+                        tokens = e.get("total_tokens", 0)
+                        cost = e.get("cost_usd")
+                        cost_str = f"${cost:.4f}" if cost else ""
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {model} {tokens} tok {cost_str}")
+                    elif etype in ("tool.call", "tool.error"):
+                        tool = e.get("tool", "")
+                        dur = e.get("duration_ms")
+                        dur_str = f"{dur:.0f}ms" if dur else ""
+                        err = e.get("error", "")
+                        if err:
+                            lines.append(f"`{ts}` {src_tag}**{etype}** {tool} {dur_str} ERR: {err[:40]}")
+                        else:
+                            detail = e.get("detail", {})
+                            info = _format_gateway_tool_detail(tool, detail)
+                            lines.append(f"`{ts}` {src_tag}**{etype}** {tool} {dur_str} {info}")
+                    elif etype.startswith("honcho."):
+                        op = e.get("operation", etype.split(".", 1)[1])
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {op}")
+                    elif etype.startswith("memory."):
+                        action = e.get("action", etype.split(".", 1)[1])
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {action}")
+                    elif etype == "cron.run":
+                        job = e.get("job_name", "")
+                        ok = "OK" if e.get("success") else "FAIL"
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {job} {ok}")
+                    elif etype == "cli.launch":
+                        model = e.get("model", "")
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {model}")
+                    elif etype.startswith("mcp."):
+                        mcp_tool = e.get("mcp_tool", etype)
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {mcp_tool}")
+                    elif etype.startswith("skill."):
+                        skill = e.get("skill", e.get("name", ""))
+                        lines.append(f"`{ts}` {src_tag}**{etype}** {skill}")
+                    elif etype.startswith("plugin."):
+                        lines.append(f"`{ts}` {src_tag}**{etype}**")
+                    else:
+                        lines.append(f"`{ts}` {src_tag}**{etype}**")
+                return "\n".join(lines)
+
+            return await loop.run_in_executor(None, _run_query)
+        except Exception as e:
+            logger.error("Audit command error: %s", e, exc_info=True)
+            return f"Error querying audit log: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""

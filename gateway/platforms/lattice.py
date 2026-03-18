@@ -382,7 +382,9 @@ class LatticeAdapter(BasePlatformAdapter):
         )
 
         if self._message_handler:
-            await self._message_handler(event)
+            # Use base handle_message so the agent response is properly sent via
+            # _process_message_background (which calls our send() back to the sender).
+            await self.handle_message(event)
         else:
             logger.warning("Lattice: no message handler set, dropping notification")
 

@@ -2519,6 +2519,31 @@ def setup_gateway(config: dict):
                     "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
+    # ── Lattice ──
+    existing_lattice = get_env_value("LATTICE_URL")
+    if existing_lattice:
+        print_info("Lattice: already configured")
+        if prompt_yes_no("Reconfigure Lattice?", False):
+            existing_lattice = None
+
+    if not existing_lattice and prompt_yes_no("Set up Lattice push notifications?", False):
+        print_info("Lattice delivers push notifications to Hermes via SSE.")
+        print_info("   See https://github.com/lattice-pns/lattice for running a Lattice server.")
+        print()
+        url = prompt("Lattice server URL (e.g. https://lattice.example.com)")
+        if url:
+            save_env_value("LATTICE_URL", url.rstrip("/"))
+            print_success("Lattice URL saved")
+            topics = prompt(
+                "Topics to subscribe (comma-separated, leave empty for all)"
+            )
+            if topics:
+                save_env_value("LATTICE_TOPICS", topics.replace(" ", ""))
+                print_success("Lattice topics saved")
+            print_info(
+                "   Ed25519 keypair is auto-generated on first gateway connect."
+            )
+
     # ── Matrix ──
     existing_matrix = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
     if existing_matrix:
@@ -3214,6 +3239,8 @@ def _run_quick_setup(config: dict, hermes_home):
                 plat = "Discord"
             elif "SLACK" in name:
                 plat = "Slack"
+            elif "LATTICE" in name:
+                plat = "Lattice"
             else:
                 continue
             if plat not in platforms:
@@ -3225,6 +3252,7 @@ def _run_quick_setup(config: dict, hermes_home):
                 "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "Lattice": "🔔 Lattice",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3237,7 +3265,7 @@ def _run_quick_setup(config: dict, hermes_home):
         for idx in selected_indices:
             plat = platform_order[idx]
             vars_list = platforms[plat]
-            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
+            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼", "Lattice": "🔔"}.get(plat, "")
             print()
             print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
             print()

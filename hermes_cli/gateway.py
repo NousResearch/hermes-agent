@@ -1149,6 +1149,25 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "lattice",
+        "label": "Lattice",
+        "emoji": "🔔",
+        "token_var": "LATTICE_URL",
+        "setup_instructions": [
+            "1. Lattice delivers push notifications to Hermes via SSE",
+            "2. You need a running Lattice server (see https://github.com/lattice-pns/lattice)",
+            "3. Enter the Lattice server URL (e.g. https://lattice.example.com)",
+            "4. Optionally specify topics to subscribe to (comma-separated)",
+            "5. An Ed25519 keypair is auto-generated on first gateway connect",
+        ],
+        "vars": [
+            {"name": "LATTICE_URL", "prompt": "Lattice server URL", "password": False,
+             "help": "Full URL of your Lattice push notification server."},
+            {"name": "LATTICE_TOPICS", "prompt": "Topics to subscribe (comma-separated, or empty for all)", "password": False,
+             "help": "Optional comma-separated topics. Leave empty to receive all notifications."},
+        ],
+    },
 ]
 
 

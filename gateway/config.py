@@ -243,6 +243,9 @@ class GatewayConfig:
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
                 connected.append(platform)
+            # Lattice uses extra url (LATTICE_URL; key auto-generated on first run)
+            elif platform == Platform.LATTICE and config.extra.get("url"):
+                connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:

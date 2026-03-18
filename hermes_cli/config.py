@@ -820,6 +820,7 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
         "category": "messaging",
+        "advanced": True,
     },
     "LATTICE_TOPICS": {
         "description": "Comma-separated Lattice topics to subscribe to",

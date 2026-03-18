@@ -219,7 +219,6 @@ def load_cli_config() -> Dict[str, Any]:
             "streaming": False,
 
             "skin": "default",
-            "theme_mode": "auto",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -1045,11 +1044,17 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
-        self.model = model or _config_model or "anthropic/claude-opus-4.6"
+        _FALLBACK_MODEL = "anthropic/claude-opus-4.6"
+        self.model = model or _config_model or _FALLBACK_MODEL
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not model
+        # A config model that matches the global fallback is NOT considered an
+        # explicit choice — the user just never changed it.  But a config model
+        # like "gpt-5.3-codex" IS explicit and must be preserved.
+        self._model_is_default = not model and (
+            not _config_model or _config_model == _FALLBACK_MODEL
+        )
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -1064,6 +1069,8 @@ class HermesCLI:
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.acp_command: Optional[str] = None
+        self.acp_args: list[str] = []
         self.base_url = (
             base_url
             or os.getenv("OPENAI_BASE_URL")
@@ -1210,6 +1217,9 @@ class HermesCLI:
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
+        # Status bar visibility (toggled via /statusbar)
+        self._status_bar_visible = True
+
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
@@ -1317,6 +1327,8 @@ class HermesCLI:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
+        if not self._status_bar_visible:
+            return []
         try:
             snapshot = self._get_status_bar_snapshot()
             width = shutil.get_terminal_size((80, 24)).columns
@@ -1375,26 +1387,34 @@ class HermesCLI:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
-        """Strip provider prefixes and swap the default model for Codex.
-
-        When the resolved provider is ``openai-codex``:
-
-        1. Strip any ``provider/`` prefix (the Codex Responses API only
-           accepts bare model slugs like ``gpt-5.4``, not ``openai/gpt-5.4``).
-        2. If the active model is still the *untouched default* (user never
-           explicitly chose a model), replace it with a Codex-compatible
-           default so the first session doesn't immediately error.
-
-        If the user explicitly chose a model — *any* model — we trust them
-        and let the API be the judge.  No allowlists, no slug checks.
-
-        Returns True when the active model was changed.
-        """
-        if resolved_provider != "openai-codex":
-            return False
-
+        """Normalize provider-specific model IDs and routing."""
         current_model = (self.model or "").strip()
         changed = False
+
+        if resolved_provider == "copilot":
+            try:
+                from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+
+                canonical = normalize_copilot_model_id(current_model, api_key=self.api_key)
+                if canonical and canonical != current_model:
+                    if not self._model_is_default:
+                        self.console.print(
+                            f"[yellow]⚠️  Normalized Copilot model '{current_model}' to '{canonical}'.[/]"
+                        )
+                    self.model = canonical
+                    current_model = canonical
+                    changed = True
+
+                resolved_mode = copilot_model_api_mode(current_model, api_key=self.api_key)
+                if resolved_mode != self.api_mode:
+                    self.api_mode = resolved_mode
+                    changed = True
+            except Exception:
+                pass
+            return changed
+
+        if resolved_provider != "openai-codex":
+            return False
 
         # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
         if "/" in current_model:
@@ -1671,6 +1691,8 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_acp_command = runtime.get("command")
+        resolved_acp_args = list(runtime.get("args") or [])
         if not isinstance(api_key, str) or not api_key:
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
@@ -1682,9 +1704,13 @@ class HermesCLI:
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
+            or resolved_acp_command != self.acp_command
+            or resolved_acp_args != self.acp_args
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
+        self.acp_command = resolved_acp_command
+        self.acp_args = resolved_acp_args
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -1714,6 +1740,8 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
             },
         )
 
@@ -1782,6 +1810,8 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "command": self.acp_command,
+                "args": list(self.acp_args or []),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -1790,6 +1820,8 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                acp_command=runtime.get("command"),
+                acp_args=runtime.get("args"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -1826,6 +1858,8 @@ class HermesCLI:
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
+                runtime.get("command"),
+                tuple(runtime.get("args") or ()),
             )
 
             if self._pending_title and self._session_db:
@@ -3272,7 +3306,7 @@ class HermesCLI:
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
-            print("  Configuration file: ~/.hermes/gateway.json")
+            print("  Configuration file: ~/.hermes/config.yaml")
             print()
             
         except Exception as e:
@@ -3282,7 +3316,7 @@ class HermesCLI:
             print("    1. Set environment variables:")
             print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print("    2. Or create ~/.hermes/gateway.json")
+            print("    2. Or configure settings in ~/.hermes/config.yaml")
             print()
     
     def process_command(self, command: str) -> bool:
@@ -3546,6 +3580,10 @@ class HermesCLI:
                 self._handle_skills_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
+        elif canonical == "statusbar":
+            self._status_bar_visible = not self._status_bar_visible
+            state = "visible" if self._status_bar_visible else "hidden"
+            self.console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "reasoning":
@@ -3561,7 +3599,7 @@ class HermesCLI:
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
-        elif _base_word == "browser":
+        elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
             try:
@@ -3751,6 +3789,8 @@ class HermesCLI:
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
                     api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
@@ -6582,9 +6622,12 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
-        status_bar = Window(
-            content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
-            height=1,
+        status_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
+                height=1,
+            ),
+            filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
         # Layout: interactive prompt widgets + ruled input at bottom.

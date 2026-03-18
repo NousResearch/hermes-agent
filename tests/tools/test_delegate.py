@@ -249,6 +249,49 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
 
+class TestToolNamePreservation(unittest.TestCase):
+    """Verify _last_resolved_tool_names is restored after subagent runs."""
+
+    def test_global_tool_names_restored_after_delegation(self):
+        """The process-global _last_resolved_tool_names must be restored
+        after a subagent completes so the parent's execute_code sandbox
+        generates correct imports."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        original_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
+        model_tools._last_resolved_tool_names = list(original_tools)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test tool preservation", parent_agent=parent)
+
+        self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+
+    def test_global_tool_names_restored_after_child_failure(self):
+        """Even when the child agent raises, the global must be restored."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        original_tools = ["terminal", "read_file", "web_search"]
+        model_tools._last_resolved_tool_names = list(original_tools)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Crash test", parent_agent=parent))
+            self.assertEqual(result["results"][0]["status"], "error")
+
+        self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+
+
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 

@@ -99,3 +99,27 @@ def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(m
     )
 
     assert result.status == "unknown"
+
+
+def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "zai-org/GLM-5-TEE": {
+                "pricing": {
+                    "prompt": "0.0000005",
+                    "completion": "0.000002",
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "zai-org/GLM-5-TEE",
+        provider="custom",
+        base_url="https://llm.chutes.ai/v1",
+        api_key="test-key",
+    )
+
+    assert float(entry.input_cost_per_million) == 0.5
+    assert float(entry.output_cost_per_million) == 2.0

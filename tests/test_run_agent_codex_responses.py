@@ -49,6 +49,27 @@ def _build_agent(monkeypatch):
     return agent
 
 
+def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="copilot",
+        api_mode="codex_responses",
+        base_url="https://api.githubcopilot.com",
+        api_key="gh-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -242,6 +263,28 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["model"] == "gpt-5.4"
+    assert kwargs["store"] is False
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
+    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert "prompt_cache_key" not in kwargs
+    assert "include" not in kwargs
+
+
+def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch, model="gpt-4.1")
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert "reasoning" not in kwargs
+    assert "include" not in kwargs
+    assert "prompt_cache_key" not in kwargs
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):

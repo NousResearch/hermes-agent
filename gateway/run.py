@@ -242,6 +242,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
     }
 
 
@@ -432,6 +434,16 @@ class GatewayRunner:
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
     
+    # -- Setup skill availability ----------------------------------------
+
+    def _has_setup_skill(self) -> bool:
+        """Check if the hermes-agent-setup skill is installed."""
+        try:
+            from tools.skill_manager_tool import _find_skill
+            return _find_skill("hermes-agent-setup") is not None
+        except Exception:
+            return False
+
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
@@ -601,6 +613,8 @@ class GatewayRunner:
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
+            "command": runtime_kwargs.get("command"),
+            "args": list(runtime_kwargs.get("args") or []),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
@@ -1162,6 +1176,13 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.API_SERVER:
+            from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
+            if not check_api_server_requirements():
+                logger.warning("API Server: aiohttp not installed")
+                return None
+            return APIServerAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1240,6 +1261,13 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform."""
+        config = getattr(self, "config", None)
+        if config and hasattr(config, "get_unauthorized_dm_behavior"):
+            return config.get_unauthorized_dm_behavior(platform)
+        return "pair"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1260,7 +1288,7 @@ class GatewayRunner:
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm":
+            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
@@ -1863,6 +1891,37 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
+                # If STT failed, send a direct message to the user so they
+                # know voice isn't configured — don't rely on the agent to
+                # relay the error clearly.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(m in message_text for m in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            # Point to setup skill if it's installed
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id, _stt_msg,
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
 
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
@@ -2115,23 +2174,41 @@ class GatewayRunner:
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
             status_code = getattr(e, "status_code", None)
+            _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
             elif status_code == 429:
-                status_hint = " You are being rate-limited. Please wait a moment and try again."
+                # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
+                _err_body = getattr(e, "response", None)
+                _err_json = {}
+                try:
+                    if _err_body is not None:
+                        _err_json = _err_body.json().get("error", {})
+                except Exception:
+                    pass
+                if _err_json.get("type") == "usage_limit_reached":
+                    _resets_in = _err_json.get("resets_in_seconds")
+                    if _resets_in and _resets_in > 0:
+                        import math
+                        _hours = math.ceil(_resets_in / 3600)
+                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                    else:
+                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                else:
+                    status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
-            elif status_code == 400:
-                # 400 with a large session is almost always a context overflow.
-                # Give specific guidance instead of a generic error. (#1630)
-                _hist_len = len(history) if 'history' in locals() else 0
+            elif status_code in (400, 500):
+                # 400 with a large session is context overflow.
+                # 500 with a large session often means the payload is too large
+                # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
                         "/reset to start fresh."
                     )
-                else:
+                elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
@@ -3914,7 +3991,13 @@ class GatewayRunner:
             The enriched message string with transcriptions prepended.
         """
         if not getattr(self.config, "stt_enabled", True):
-            disabled_note = "[The user sent voice message(s), but transcription is disabled in config.]"
+            disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
+            if self._has_setup_skill():
+                disabled_note += (
+                    " You have a skill called hermes-agent-setup that can help "
+                    "users configure Hermes features including voice, tools, and more."
+                )
+            disabled_note += "]"
             if user_text:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
@@ -3941,11 +4024,20 @@ class GatewayRunner:
                         "No STT provider" in error
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
-                        enriched_parts.append(
+                        _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
-                            "to it right now~ No STT provider is configured "
-                            "(';w;') Let them know!]"
+                            "to it right now — no STT provider is configured. "
+                            "A direct message has already been sent to the user "
+                            "with setup instructions."
                         )
+                        if self._has_setup_skill():
+                            _no_stt_note += (
+                                " You have a skill called hermes-agent-setup "
+                                "that can help users configure Hermes features "
+                                "including voice, tools, and more."
+                            )
+                        _no_stt_note += "]"
+                        enriched_parts.append(_no_stt_note)
                     else:
                         enriched_parts.append(
                             "[The user sent a voice message but I had trouble "

@@ -2516,6 +2516,17 @@ def cmd_audit(args):
         deleted = audit.prune(older_than_days=days)
         print(f"Deleted {deleted} audit events older than {days} days.")
 
+    elif action == "types":
+        event_types = audit.get_event_types()
+        if not event_types:
+            print("No audit events recorded yet.")
+            return
+        print("\n  Available event types:")
+        print(f"  {'=' * 35}")
+        for etype, count in event_types:
+            print(f"    {count:>5}x  {etype}")
+        print(f"\n  Use: hermes audit list --type <type>\n")
+
 
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
@@ -3872,6 +3883,8 @@ For more help on a command:
     audit_prune = audit_subparsers.add_parser("prune", help="Delete old audit events")
     audit_prune.add_argument("--older-than", type=int, default=90, help="Delete events older than N days (default: 90)")
     audit_prune.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+
+    audit_subparsers.add_parser("types", help="List available event types")
 
     audit_parser.set_defaults(func=cmd_audit)
 

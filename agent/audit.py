@@ -500,6 +500,19 @@ class AuditLogger:
         except Exception:
             return []
 
+    def get_event_types(self) -> List[tuple]:
+        """Return distinct event types with counts from the database."""
+        if not self._conn:
+            return []
+        try:
+            with self._lock:
+                return self._conn.execute(
+                    "SELECT event_type, COUNT(*) as cnt FROM events "
+                    "GROUP BY event_type ORDER BY cnt DESC"
+                ).fetchall()
+        except Exception:
+            return []
+
     def detect_problems(self, last_hours: float = 24) -> List[Dict]:
         """Analyze recent events and detect patterns that indicate problems.
 
@@ -678,6 +691,7 @@ class _NullAuditLogger:
     def search(self, *a, **kw): return []
     def summary(self, *a, **kw): return {}
     def detect_problems(self, *a, **kw): return []
+    def get_event_types(self, *a, **kw): return []
     def prune(self, *a, **kw): return 0
     def close(self): pass
 

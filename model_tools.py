@@ -95,6 +95,7 @@ def _discover_tools():
         "tools.send_message_tool",
         "tools.honcho_tools",
         "tools.homeassistant_tool",
+        "tools.composio_tool",
     ]
     import importlib
     for mod_name in _modules:
@@ -112,6 +113,13 @@ try:
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
+
+# Composio tool discovery (OAuth-connected apps from config)
+try:
+    from tools.composio_tool import discover_composio_tools
+    discover_composio_tools()
+except Exception as e:
+    logger.debug("Composio tool discovery failed: %s", e)
 
 # Plugin tool discovery (user/project/pip plugins)
 try:

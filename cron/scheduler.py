@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+from cron.jobs import (
+    get_due_jobs, mark_job_run, save_job_output,
+    try_acquire_job_lock, is_transient_error,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -227,6 +230,53 @@ def _build_job_prompt(job: dict) -> str:
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
     return "\n".join(parts)
+
+
+def _send_failure_alert(job: dict, error: str, consecutive: int) -> None:
+    """
+    Send a failure alert for a job that has exceeded its error threshold.
+    Mirrors OpenClaw's emitFailureAlert — delivers to the job's alert channel
+    or falls back to the job's normal delivery target.
+    """
+    alert_cfg = job.get("failure_alert") or {}
+    if alert_cfg is False:
+        return  # Alerts suppressed for this job
+
+    after = alert_cfg.get("after", 2)
+    cooldown = alert_cfg.get("cooldown_seconds", 3600)
+
+    if consecutive < after:
+        return
+
+    # Cooldown check
+    last_alert = job.get("last_failure_alert_at")
+    if last_alert:
+        try:
+            last_dt = datetime.fromisoformat(last_alert)
+            if (_hermes_now() - last_dt).total_seconds() < cooldown:
+                return
+        except Exception:
+            pass
+
+    name = job.get("name", job.get("id", "unknown"))
+    msg = (
+        f"⚠️ Cron job \"{name}\" has failed {consecutive} time(s).\n"
+        f"Last error: {str(error)[:200]}"
+    )
+    logger.warning("Failure alert: %s", msg)
+
+    try:
+        _deliver_result(job, msg)
+        # Update last alert timestamp directly in storage
+        from cron.jobs import load_jobs, save_jobs
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_failure_alert_at"] = _hermes_now().isoformat()
+                break
+        save_jobs(jobs)
+    except Exception as e:
+        logger.error("Failed to send failure alert for job %s: %s", job.get("id"), e)
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
@@ -489,34 +539,53 @@ def tick(verbose: bool = True) -> int:
 
         executed = 0
         for job in due_jobs:
+            job_id = job["id"]
+
+            # Per-job lock — skip if already running (e.g. manual trigger during tick)
+            lock = try_acquire_job_lock(job_id)
+            if lock is None:
+                logger.info("Job '%s' already running — skipping this tick", job_id)
+                continue
+
             try:
                 success, output, final_response, error = run_job(job)
 
-                output_file = save_job_output(job["id"], output)
+                output_file = save_job_output(job_id, output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job_id)}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job_id, SILENT_MARKER)
                     should_deliver = False
 
                 if should_deliver:
                     try:
                         _deliver_result(job, deliver_content)
                     except Exception as de:
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+                        logger.error("Delivery failed for job %s: %s", job_id, de)
 
-                mark_job_run(job["id"], success, error)
+                mark_job_run(job_id, success, error)
+
+                # Fire failure alert if consecutive errors hit the threshold
+                if not success:
+                    consecutive = job.get("consecutive_errors", 0) + 1
+                    try:
+                        _send_failure_alert(job, error or "", consecutive)
+                    except Exception as ae:
+                        logger.error("Failure alert error for job %s: %s", job_id, ae)
+
                 executed += 1
 
             except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                logger.error("Error processing job %s: %s", job_id, e)
+                mark_job_run(job_id, False, str(e))
+            finally:
+                lock.release()
 
         return executed
     finally:

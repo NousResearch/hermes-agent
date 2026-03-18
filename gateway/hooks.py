@@ -7,16 +7,25 @@ Hooks are discovered from ~/.hermes/hooks/ directories, each containing:
   - handler.py (Python handler with async def handle(event_type, context))
 
 Events:
-  - gateway:startup     -- Gateway process starts
-  - session:start       -- New session created (first message of a new session)
-  - session:end         -- Session ends (user ran /new or /reset)
-  - session:reset       -- Session reset completed (new session entry created)
-  - agent:start         -- Agent begins processing a message
-  - agent:step          -- Each turn in the tool-calling loop
-  - agent:end           -- Agent finishes processing
-  - command:*           -- Any slash command executed (wildcard match)
+  - gateway:startup      -- Gateway process starts
+  - session:start        -- New session created (first message of a new session)
+  - session:end          -- Session ends (user ran /new or /reset)
+  - session:reset        -- Session reset completed (new session entry created)
+  - session:compact      -- Session context was compacted/summarized
+  - agent:start          -- Agent begins processing a message
+  - agent:bootstrap      -- Agent context files loaded (payload: platform, user_id, files[])
+  - agent:step           -- Each turn in the tool-calling loop
+  - agent:end            -- Agent finishes processing
+  - message:received     -- Inbound message received (payload: platform, user_id, text, attachments[])
+  - message:sent         -- Outbound message delivered (payload: platform, chat_id, text)
+  - message:transcribed  -- Voice/audio transcribed to text (payload: platform, user_id, text, audio_path)
+  - message:preprocessed -- Message after pre-processing transforms (payload: platform, user_id, text)
+  - command:*            -- Any slash command executed (wildcard match)
 
 Errors in hooks are caught and logged but never block the main pipeline.
+
+Hook handlers can push reply strings into context["messages"] to send
+additional messages back to the user after the hook fires.
 """
 
 import asyncio
@@ -118,21 +127,45 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    # Events that fire all handlers in parallel (fire-and-forget style)
+    PARALLEL_EVENTS = {
+        "gateway:startup",
+        "session:start", "session:end", "session:reset", "session:compact",
+        "agent:start", "agent:bootstrap", "agent:step", "agent:end",
+        "message:received", "message:sent", "message:transcribed", "message:preprocessed",
+        "command:*",
+    }
+
+    async def emit(
+        self,
+        event_type: str,
+        context: Optional[Dict[str, Any]] = None,
+        parallel: Optional[bool] = None,
+    ) -> List[str]:
         """
         Fire all handlers registered for an event.
 
         Supports wildcard matching: handlers registered for "command:*" will
-        fire for any "command:..." event. Handlers registered for a base type
-        like "agent" won't fire for "agent:start" -- only exact matches and
-        explicit wildcards.
+        fire for any "command:..." event.
+
+        Handlers can append strings to context["messages"] to send replies
+        back to the user after the hook fires.
 
         Args:
             event_type: The event identifier (e.g. "agent:start").
             context:    Optional dict with event-specific data.
+            parallel:   If True, run handlers concurrently. Defaults to True
+                        for fire-and-forget events, False for modifying events.
+
+        Returns:
+            List of reply messages pushed by handlers via context["messages"].
         """
         if context is None:
             context = {}
+
+        # Ensure messages list exists for handlers to push replies into
+        if "messages" not in context:
+            context["messages"] = []
 
         # Collect handlers: exact match + wildcard match
         handlers = list(self._handlers.get(event_type, []))
@@ -143,11 +176,27 @@ class HookRegistry:
             wildcard_key = f"{base}:*"
             handlers.extend(self._handlers.get(wildcard_key, []))
 
-        for fn in handlers:
+        if not handlers:
+            return []
+
+        # Determine execution mode
+        use_parallel = parallel
+        if use_parallel is None:
+            base_event = event_type.split(":")[0] + ":*"
+            use_parallel = event_type in self.PARALLEL_EVENTS or base_event in self.PARALLEL_EVENTS
+
+        async def _run_one(fn):
             try:
                 result = fn(event_type, context)
-                # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+
+        if use_parallel:
+            await asyncio.gather(*[_run_one(fn) for fn in handlers], return_exceptions=True)
+        else:
+            for fn in handlers:
+                await _run_one(fn)
+
+        return list(context.get("messages", []))

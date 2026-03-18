@@ -8,6 +8,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 import copy
 import json
 import logging
+import threading
 import tempfile
 import os
 import re
@@ -34,6 +35,61 @@ HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
+
+# =============================================================================
+# Per-job locking — prevents concurrent execution of the same job
+# =============================================================================
+
+_job_locks: Dict[str, threading.Lock] = {}
+_job_locks_mutex = threading.Lock()
+
+
+def get_job_lock(job_id: str) -> threading.Lock:
+    """Return (creating if needed) a per-job threading lock."""
+    with _job_locks_mutex:
+        if job_id not in _job_locks:
+            _job_locks[job_id] = threading.Lock()
+        return _job_locks[job_id]
+
+
+def try_acquire_job_lock(job_id: str):
+    """Try to acquire the per-job lock non-blocking. Returns lock if acquired, None if already running."""
+    lock = get_job_lock(job_id)
+    if lock.acquire(blocking=False):
+        return lock
+    return None
+
+
+# =============================================================================
+# Retry + failure alert configuration
+# =============================================================================
+
+DEFAULT_RETRY_BACKOFF_SECONDS = [30, 60, 300]   # 30s, 1m, 5m
+DEFAULT_MAX_RETRIES = 3
+
+TRANSIENT_ERROR_PATTERNS = [
+    ("rate_limit",   r"rate[_ ]limit|too many requests|429"),
+    ("overloaded",   r"529|overloaded|high demand|capacity"),
+    ("network",      r"network|econnreset|econnrefused|fetch failed|socket|connection"),
+    ("timeout",      r"timeout|etimedout|timed out"),
+    ("server_error", r"\b5\d{2}\b"),
+]
+
+
+def is_transient_error(error_msg: str) -> bool:
+    """Return True if the error looks transient and worth retrying."""
+    lower = error_msg.lower()
+    for _, pattern in TRANSIENT_ERROR_PATTERNS:
+        if re.search(pattern, lower):
+            return True
+    return False
+
+
+def get_retry_delay(attempt: int) -> int:
+    """Return seconds to wait before retry attempt N (0-indexed)."""
+    if attempt < len(DEFAULT_RETRY_BACKOFF_SECONDS):
+        return DEFAULT_RETRY_BACKOFF_SECONDS[attempt]
+    return DEFAULT_RETRY_BACKOFF_SECONDS[-1]
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -303,6 +359,8 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    retry: Optional[Dict[str, Any]] = None,
+    failure_alert: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -372,6 +430,13 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Retry config (transient error retries for one-shot jobs)
+        "retry": retry or {"max_attempts": DEFAULT_MAX_RETRIES, "backoff_seconds": DEFAULT_RETRY_BACKOFF_SECONDS},
+        # Failure alert config (optional: {"after": 2, "cooldown_seconds": 3600})
+        "failure_alert": failure_alert,
+        # Runtime error tracking
+        "consecutive_errors": 0,
+        "last_failure_alert_at": None,
     }
 
     jobs = load_jobs()
@@ -505,7 +570,13 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
-            
+
+            if success:
+                job["consecutive_errors"] = 0
+                job["last_failure_alert_at"] = None
+            else:
+                job["consecutive_errors"] = job.get("consecutive_errors", 0) + 1
+
             # Increment completed count
             if job.get("repeat"):
                 job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
@@ -519,7 +590,30 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
                     save_jobs(jobs)
                     return
             
-            # Compute next run
+            # For failed one-shot jobs, attempt retry before giving up
+            if not success and job["schedule"].get("kind") == "once":
+                retry_cfg = job.get("retry") or {}
+                max_attempts = retry_cfg.get("max_attempts", DEFAULT_MAX_RETRIES)
+                consecutive = job.get("consecutive_errors", 1)
+                if consecutive <= max_attempts and is_transient_error(error or ""):
+                    backoff = get_retry_delay(consecutive - 1)
+                    retry_at = _hermes_now() + timedelta(seconds=backoff)
+                    job["next_run_at"] = retry_at.isoformat()
+                    job["state"] = "scheduled"
+                    logger.info(
+                        "Job '%s' failed (attempt %d/%d, transient), retrying in %ds",
+                        job.get("name", job_id), consecutive, max_attempts, backoff,
+                    )
+                    save_jobs(jobs)
+                    return
+                else:
+                    job["enabled"] = False
+                    job["state"] = "completed"
+                    job["next_run_at"] = None
+                    save_jobs(jobs)
+                    return
+
+            # Compute next run normally
             job["next_run_at"] = compute_next_run(job["schedule"], now)
 
             # If no next run (one-shot completed), disable
@@ -531,7 +625,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
             save_jobs(jobs)
             return
-    
+
     save_jobs(jobs)
 
 

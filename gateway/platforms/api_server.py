@@ -206,6 +206,27 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
+    async def _handle_webhook(self, request: "web.Request") -> "web.Response":
+        """POST /hooks/* — inbound webhook trigger."""
+        try:
+            from gateway.webhooks import handle_webhook_request
+            body = await request.read()
+            headers = dict(request.headers)
+            client_ip = request.remote or "unknown"
+            path = request.path
+            status, response = await handle_webhook_request(
+                method=request.method,
+                path=path,
+                headers=headers,
+                body=body,
+                client_ip=client_ip,
+                base_path="/hooks",
+            )
+            return web.json_response(response, status=status)
+        except Exception as e:
+            logger.error("[api_server] Webhook handler error: %s", e)
+            return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -739,6 +760,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+
+            # Inbound webhook trigger endpoints
+            self._app.router.add_post("/hooks/{path:.*}", self._handle_webhook)
+            self._app.router.add_post("/hooks", self._handle_webhook)
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

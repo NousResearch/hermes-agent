@@ -386,6 +386,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+    6: ["COMPOSIO_API_KEY", "HERMES_WEBHOOK_TOKEN"],
     10: ["TAVILY_API_KEY"],
 }
 
@@ -587,6 +588,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
         "tools": ["web_search", "web_extract", "web_crawl"],
+        "password": True,
+        "category": "tool",
+    },
+    "COMPOSIO_API_KEY": {
+        "description": "Composio API key for OAuth integration with Twitter, YouTube, TikTok, Gmail, and 1000+ services",
+        "prompt": "Composio API key",
+        "url": "https://app.composio.dev/",
+        "tools": ["composio_connect", "composio_list_connections"],
         "password": True,
         "category": "tool",
     },

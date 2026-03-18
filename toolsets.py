@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Composio OAuth integration (gated on COMPOSIO_API_KEY via check_fn)
+    "composio_connect", "composio_list_connections",
 ]
 
 
@@ -205,6 +207,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "composio": {
+        "description": "Composio OAuth integration — connect and call 1000+ services (Twitter, YouTube, TikTok, Gmail, etc.)",
+        "tools": ["composio_connect", "composio_list_connections"],
         "includes": []
     },
 

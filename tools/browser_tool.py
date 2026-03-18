@@ -338,6 +338,10 @@ BROWSER_TOOL_SCHEMAS = [
                 "url": {
                     "type": "string",
                     "description": "The URL to navigate to (e.g., 'https://example.com')"
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Optional persistent profile name. When set, cookies, localStorage, and auth state are automatically saved and restored across browser restarts. Use the same name on future calls to resume a logged-in session (e.g., 'twitter', 'gmail')."
                 }
             },
             "required": ["url"]
@@ -480,6 +484,34 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_save_session",
+        "description": "Associate the current browser session with a named persistent profile. After calling this, all subsequent browser actions in this task will automatically save cookies, localStorage, and auth state under the given profile name. The state is restored automatically when the same profile name is passed to browser_navigate or browser_load_session in future sessions. Use this after logging into a site to preserve the login.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Profile name to save under (e.g. 'twitter', 'gmail', 'work-google'). Must be a short alphanumeric slug."
+                }
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "browser_load_session",
+        "description": "Load a previously saved browser profile for this task. The next browser_navigate call will automatically restore cookies, localStorage, and auth state saved under this profile name. Use this at the start of a task to resume a logged-in browser session without having to log in again.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Profile name to load. Must match the name used in a previous browser_save_session or browser_navigate(profile=...) call."
+                }
+            },
+            "required": ["name"]
+        }
+    },
 ]
 
 
@@ -487,15 +519,16 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_local_session(task_id: str) -> Dict[str, str]:
+def _create_local_session(task_id: str, profile_name: Optional[str] = None) -> Dict[str, str]:
     import uuid
     session_name = f"h_{uuid.uuid4().hex[:10]}"
-    logger.info("Created local browser session %s for task %s",
-                session_name, task_id)
+    logger.info("Created local browser session %s for task %s (profile=%s)",
+                session_name, task_id, profile_name or "none")
     return {
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": None,
+        "profile_name": profile_name,
         "features": {"local": True},
     }
 
@@ -514,7 +547,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
+def _get_session_info(task_id: Optional[str] = None, profile_name: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
     
@@ -525,9 +558,13 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     Args:
         task_id: Unique identifier for the task
+        profile_name: Optional persistent profile name for cookie/state persistence.
+                      When set, agent-browser uses --session-name to auto-save/restore
+                      browser state (cookies, localStorage, etc.) across sessions.
         
     Returns:
-        Dict with session_name (always), bb_session_id + cdp_url (cloud only)
+        Dict with session_name (always), bb_session_id + cdp_url (cloud only),
+        and profile_name if persistent cookies are enabled.
     """
     if task_id is None:
         task_id = "default"
@@ -541,18 +578,28 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     with _cleanup_lock:
         # Check if we already have a session for this task
         if task_id in _active_sessions:
-            return _active_sessions[task_id]
+            existing = _active_sessions[task_id]
+            # If caller wants to upgrade to a named profile, update it in-place
+            if profile_name and not existing.get("profile_name"):
+                existing["profile_name"] = profile_name
+                logger.info("Attached profile '%s' to existing session %s (task=%s)",
+                            profile_name, existing["session_name"], task_id)
+            return existing
     
     # Create session outside the lock (network call in cloud mode)
     cdp_override = _get_cdp_override()
     if cdp_override:
         session_info = _create_cdp_session(task_id, cdp_override)
+        if profile_name:
+            session_info["profile_name"] = profile_name
     else:
         provider = _get_cloud_provider()
         if provider is None:
-            session_info = _create_local_session(task_id)
+            session_info = _create_local_session(task_id, profile_name=profile_name)
         else:
             session_info = provider.create_session(task_id)
+            if profile_name:
+                session_info["profile_name"] = profile_name
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -686,6 +733,12 @@ def _run_browser_command(
     else:
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
+
+    # Persistent profile: pass --session-name so agent-browser auto-saves/restores
+    # cookies, localStorage, and auth state across browser restarts.
+    profile_name = session_info.get("profile_name")
+    if profile_name:
+        backend_args += ["--session-name", profile_name]
 
     cmd_parts = browser_cmd.split() + backend_args + [
         "--json",
@@ -900,13 +953,16 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 # Browser Tool Functions
 # ============================================================================
 
-def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
+def browser_navigate(url: str, task_id: Optional[str] = None, profile: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
     
     Args:
         url: The URL to navigate to
         task_id: Task identifier for session isolation
+        profile: Optional persistent profile name. When set, cookies/localStorage/auth
+                 state are automatically saved and restored across browser restarts.
+                 Use the same profile name on future calls to resume the logged-in session.
         
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
@@ -924,7 +980,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(effective_task_id)
+    session_info = _get_session_info(effective_task_id, profile_name=profile)
     is_first_nav = session_info.get("_first_nav", True)
     
     # Auto-start recording if configured and this is first navigation
@@ -1252,6 +1308,68 @@ def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "js_errors": errors,
         "total_messages": len(messages),
         "total_errors": len(errors),
+    }, ensure_ascii=False)
+
+
+def browser_save_session(name: str, task_id: Optional[str] = None) -> str:
+    """
+    Associate the current browser session with a named persistent profile.
+
+    After calling this, all subsequent browser commands in this task will
+    automatically save cookies, localStorage, and auth state under the given
+    profile name. The state is restored automatically when the same profile
+    name is used in a future browser_navigate or browser_load_session call.
+
+    Args:
+        name: Profile name to save under (e.g. "twitter", "google-work")
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string confirming the profile was attached
+    """
+    effective_task_id = task_id or "default"
+    session_info = _get_session_info(effective_task_id, profile_name=name)
+    return json.dumps({
+        "success": True,
+        "profile": name,
+        "session_name": session_info.get("session_name"),
+        "message": (
+            f"Session is now persisting state under profile '{name}'. "
+            "Cookies and localStorage will be auto-saved on every browser action "
+            "and restored on future sessions using the same profile name."
+        ),
+    }, ensure_ascii=False)
+
+
+def browser_load_session(name: str, task_id: Optional[str] = None) -> str:
+    """
+    Load a previously saved browser profile for this task.
+
+    If no browser session exists yet, one is created with the profile attached
+    so the next browser_navigate call will automatically restore cookies,
+    localStorage, and auth state saved under this profile name.
+
+    If a session is already running, the profile is attached to it so all
+    future commands in this task will save/restore state under the given name.
+
+    Args:
+        name: Profile name to load (must match name used in a previous
+              browser_save_session or browser_navigate(profile=...) call)
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string confirming the profile was loaded
+    """
+    effective_task_id = task_id or "default"
+    session_info = _get_session_info(effective_task_id, profile_name=name)
+    return json.dumps({
+        "success": True,
+        "profile": name,
+        "session_name": session_info.get("session_name"),
+        "message": (
+            f"Profile '{name}' loaded. Navigate to any URL with browser_navigate "
+            "and saved cookies/auth state will be automatically restored."
+        ),
     }, ensure_ascii=False)
 
 
@@ -1717,7 +1835,7 @@ registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id"), profile=args.get("profile")),
     check_fn=check_browser_requirements,
     emoji="🌐",
 )
@@ -1801,4 +1919,20 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_save_session",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_save_session"],
+    handler=lambda args, **kw: browser_save_session(name=args.get("name", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="💾",
+)
+registry.register(
+    name="browser_load_session",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_load_session"],
+    handler=lambda args, **kw: browser_load_session(name=args.get("name", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📂",
 )

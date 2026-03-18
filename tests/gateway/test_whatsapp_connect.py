@@ -54,6 +54,8 @@ def _make_adapter():
     adapter._reply_prefix = None
     adapter._running = False
     adapter._message_queue = asyncio.Queue()
+    adapter._http_session = None
+    adapter._poll_task = None
     return adapter
 
 
@@ -360,3 +362,80 @@ class TestKillPortProcess:
         with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
              patch("gateway.platforms.whatsapp.subprocess.run", side_effect=OSError("no netstat")):
             _kill_port_process(3000)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Persistent HTTP session lifecycle
+# ---------------------------------------------------------------------------
+
+class TestHttpSessionLifecycle:
+    """Verify persistent aiohttp.ClientSession is created and cleaned up."""
+
+    @pytest.mark.asyncio
+    async def test_session_closed_on_disconnect(self):
+        """disconnect() should close self._http_session."""
+        adapter = _make_adapter()
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        adapter._http_session = mock_session
+        adapter._poll_task = None
+        adapter._bridge_process = None
+        adapter._running = True
+
+        await adapter.disconnect()
+
+        mock_session.close.assert_called_once()
+        assert adapter._http_session is None
+
+    @pytest.mark.asyncio
+    async def test_session_not_closed_when_already_closed(self):
+        """disconnect() should skip close() when session is already closed."""
+        adapter = _make_adapter()
+        mock_session = AsyncMock()
+        mock_session.closed = True
+        adapter._http_session = mock_session
+        adapter._poll_task = None
+        adapter._bridge_process = None
+        adapter._running = True
+
+        await adapter.disconnect()
+
+        mock_session.close.assert_not_called()
+        assert adapter._http_session is None
+
+    @pytest.mark.asyncio
+    async def test_poll_task_cancelled_on_disconnect(self):
+        """disconnect() should cancel the poll task."""
+        adapter = _make_adapter()
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        mock_task.cancel = MagicMock()
+        # Make awaiting the task raise CancelledError (normal cancellation)
+        mock_future = asyncio.Future()
+        mock_future.set_exception(asyncio.CancelledError())
+        mock_task.__await__ = mock_future.__await__
+        adapter._poll_task = mock_task
+        adapter._http_session = None
+        adapter._bridge_process = None
+        adapter._running = True
+
+        await adapter.disconnect()
+
+        mock_task.cancel.assert_called_once()
+        assert adapter._poll_task is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_skips_done_poll_task(self):
+        """disconnect() should not cancel an already-done poll task."""
+        adapter = _make_adapter()
+        mock_task = MagicMock()
+        mock_task.done.return_value = True
+        adapter._poll_task = mock_task
+        adapter._http_session = None
+        adapter._bridge_process = None
+        adapter._running = True
+
+        await adapter.disconnect()
+
+        mock_task.cancel.assert_not_called()
+        assert adapter._poll_task is None

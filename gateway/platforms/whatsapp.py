@@ -140,6 +140,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
+        self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._poll_task: Optional["asyncio.Task"] = None
     
     async def connect(self) -> bool:
         """
@@ -281,8 +283,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
+            # Create a persistent HTTP session for all bridge communication
+            self._http_session = aiohttp.ClientSession()
+
             # Start message polling task
-            asyncio.create_task(self._poll_messages())
+            self._poll_task = asyncio.create_task(self._poll_messages())
             
             self._running = True
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
@@ -327,6 +332,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
         
+        # Cancel the poll task before setting _running = False
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._poll_task = None
+
+        # Close the persistent HTTP session
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+        self._http_session = None
+
         # Also kill any orphaned bridge processes on our port
         _kill_port_process(self._bridge_port)
         
@@ -343,41 +362,34 @@ class WhatsAppAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message via the WhatsApp bridge."""
-        if not self._running:
+        if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         
         try:
             import aiohttp
+
+            payload = {
+                "chatId": chat_id,
+                "message": content,
+            }
+            if reply_to:
+                payload["replyTo"] = reply_to
             
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "chatId": chat_id,
-                    "message": content,
-                }
-                if reply_to:
-                    payload["replyTo"] = reply_to
-                
-                async with session.post(
-                    f"http://localhost:{self._bridge_port}/send",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return SendResult(
-                            success=True,
-                            message_id=data.get("messageId"),
-                            raw_response=data
-                        )
-                    else:
-                        error = await resp.text()
-                        return SendResult(success=False, error=error)
-                        
-        except ImportError:
-            return SendResult(
-                success=False, 
-                error="aiohttp not installed. Run: pip install aiohttp"
-            )
+            async with self._http_session.post(
+                f"http://localhost:{self._bridge_port}/send",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return SendResult(
+                        success=True,
+                        message_id=data.get("messageId"),
+                        raw_response=data
+                    )
+                else:
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -388,25 +400,24 @@ class WhatsAppAdapter(BasePlatformAdapter):
         content: str,
     ) -> SendResult:
         """Edit a previously sent message via the WhatsApp bridge."""
-        if not self._running:
+        if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"http://localhost:{self._bridge_port}/edit",
-                    json={
-                        "chatId": chat_id,
-                        "messageId": message_id,
-                        "message": content,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    if resp.status == 200:
-                        return SendResult(success=True, message_id=message_id)
-                    else:
-                        error = await resp.text()
-                        return SendResult(success=False, error=error)
+            async with self._http_session.post(
+                f"http://localhost:{self._bridge_port}/edit",
+                json={
+                    "chatId": chat_id,
+                    "messageId": message_id,
+                    "message": content,
+                },
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    return SendResult(success=True, message_id=message_id)
+                else:
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -419,7 +430,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> SendResult:
         """Send any media file via bridge /send-media endpoint."""
-        if not self._running:
+        if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         try:
             import aiohttp
@@ -437,22 +448,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if file_name:
                 payload["fileName"] = file_name
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"http://localhost:{self._bridge_port}/send-media",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return SendResult(
-                            success=True,
-                            message_id=data.get("messageId"),
-                            raw_response=data,
-                        )
-                    else:
-                        error = await resp.text()
-                        return SendResult(success=False, error=error)
+            async with self._http_session.post(
+                f"http://localhost:{self._bridge_port}/send-media",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return SendResult(
+                        success=True,
+                        message_id=data.get("messageId"),
+                        raw_response=data,
+                    )
+                else:
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
 
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -507,41 +517,39 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""
-        if not self._running:
+        if not self._running or not self._http_session:
             return
         
         try:
             import aiohttp
-            
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"http://localhost:{self._bridge_port}/typing",
-                    json={"chatId": chat_id},
-                    timeout=aiohttp.ClientTimeout(total=5)
-                )
+
+            await self._http_session.post(
+                f"http://localhost:{self._bridge_port}/typing",
+                json={"chatId": chat_id},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
         except Exception:
             pass  # Ignore typing indicator failures
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
-        if not self._running:
+        if not self._running or not self._http_session:
             return {"name": "Unknown", "type": "dm"}
         
         try:
             import aiohttp
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://localhost:{self._bridge_port}/chat/{chat_id}",
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return {
-                            "name": data.get("name", chat_id),
-                            "type": "group" if data.get("isGroup") else "dm",
-                            "participants": data.get("participants", []),
-                        }
+
+            async with self._http_session.get(
+                f"http://localhost:{self._bridge_port}/chat/{chat_id}",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "name": data.get("name", chat_id),
+                        "type": "group" if data.get("isGroup") else "dm",
+                        "participants": data.get("participants", []),
+                    }
         except Exception as e:
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         
@@ -549,25 +557,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
     
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
-        try:
-            import aiohttp
-        except ImportError:
-            print(f"[{self.name}] aiohttp not installed, message polling disabled")
-            return
-        
+        import aiohttp
+
         while self._running:
+            if not self._http_session:
+                break
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"http://localhost:{self._bridge_port}/messages",
-                        timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        if resp.status == 200:
-                            messages = await resp.json()
-                            for msg_data in messages:
-                                event = await self._build_message_event(msg_data)
-                                if event:
-                                    await self.handle_message(event)
+                async with self._http_session.get(
+                    f"http://localhost:{self._bridge_port}/messages",
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        messages = await resp.json()
+                        for msg_data in messages:
+                            event = await self._build_message_event(msg_data)
+                            if event:
+                                await self.handle_message(event)
             except asyncio.CancelledError:
                 break
             except Exception as e:

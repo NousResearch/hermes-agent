@@ -240,10 +240,10 @@ def _build_child_agent(
     )
     child._delegate_saved_tool_names = list(_saved_tool_names)
 
-        # Set delegation depth so children can't spawn grandchildren
-        child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+    # Set delegation depth so children can't spawn grandchildren
+    child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
-        # Register child for interrupt propagation
+    # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)
         if lock:

@@ -226,12 +226,41 @@ class MissionControlAdapter(BasePlatformAdapter):
             return False
             
         handlers = {
+            # Task events (both activity.* and direct task.* formats)
             "activity.task_created": self._task_manager.handle_task_created,
             "activity.task_updated": self._task_manager.handle_task_updated,
             "activity.task_status_changed": self._task_manager.handle_task_status_changed,
             "activity.task_deleted": self._handle_task_deleted,
+            "task.created": self._task_manager.handle_task_created,
+            "task.updated": self._task_manager.handle_task_updated,
+            "task.status_changed": self._task_manager.handle_task_status_changed,
+            "task.deleted": self._handle_task_deleted,
+            # Agent events
             "agent.status_change": self._task_manager.handle_agent_status_changed,
             "agent.error": self._task_manager.handle_agent_status_changed,
+            "agent.updated": self._task_manager.handle_agent_status_changed,
+            "agent.created": self._task_manager.handle_agent_status_changed,
+            "agent.deleted": self._handle_agent_deleted,
+            "agent.synced": self._task_manager.handle_agent_status_changed,
+            "agent.status_changed": self._task_manager.handle_agent_status_changed,
+            # Chat events
+            "chat.message": self._handle_chat_message,
+            "chat.message.deleted": self._handle_chat_message_deleted,
+            # Notification events
+            "notification.created": self._handle_notification_created,
+            "notification.read": self._handle_notification_read,
+            # Activity events
+            "activity.created": self._handle_activity_created,
+            # Security/Audit events
+            "audit.security": self._handle_security_event,
+            "security.event": self._handle_security_event,
+            # Connection events
+            "connection.created": self._handle_connection_event,
+            "connection.disconnected": self._handle_connection_event,
+            # GitHub events
+            "github.synced": self._handle_github_synced,
+            # Test events
+            "test.ping": self._handle_test_ping,
         }
         
         handler = handlers.get(event_type)
@@ -248,7 +277,92 @@ class MissionControlAdapter(BasePlatformAdapter):
             logger.info("[mc] Task %d deleted", task_id)
             # Optionally remove from DB or mark as deleted
         return True
-        
+
+    def _handle_agent_deleted(self, data: Dict[str, Any]) -> bool:
+        """Handle agent deletion."""
+        agent_id = data.get("id") or data.get("agent_id")
+        agent_name = data.get("name") or data.get("agent_name", "unknown")
+        if agent_id:
+            logger.info("[mc] Agent %s (ID: %s) deleted", agent_name, agent_id)
+        return True
+
+    def _handle_chat_message(self, data: Dict[str, Any]) -> bool:
+        """Handle chat message."""
+        message_id = data.get("id")
+        content = data.get("content", "")
+        sender = data.get("sender", "unknown")
+        channel = data.get("channel", "default")
+        logger.info("[mc] Chat message in %s from %s: %s", channel, sender, content[:50])
+        # Could route to CLI notifications or create a session
+        return True
+
+    def _handle_chat_message_deleted(self, data: Dict[str, Any]) -> bool:
+        """Handle chat message deletion."""
+        message_id = data.get("id")
+        if message_id:
+            logger.info("[mc] Chat message %s deleted", message_id)
+        return True
+
+    def _handle_notification_created(self, data: Dict[str, Any]) -> bool:
+        """Handle notification creation."""
+        notification_id = data.get("id")
+        title = data.get("title", "Notification")
+        message = data.get("message", "")
+        level = data.get("level", "info")
+        logger.info("[mc] Notification [%s]: %s - %s", level, title, message[:50])
+        if self._notifier:
+            self._notifier.notify(f"📢 {title}: {message}")
+        return True
+
+    def _handle_notification_read(self, data: Dict[str, Any]) -> bool:
+        """Handle notification read."""
+        notification_id = data.get("id")
+        if notification_id:
+            logger.info("[mc] Notification %s marked as read", notification_id)
+        return True
+
+    def _handle_activity_created(self, data: Dict[str, Any]) -> bool:
+        """Handle activity log entry."""
+        activity_type = data.get("type", "unknown")
+        description = data.get("description", "")
+        user = data.get("user", "system")
+        logger.info("[mc] Activity: %s by %s - %s", activity_type, user, description[:50])
+        return True
+
+    def _handle_security_event(self, data: Dict[str, Any]) -> bool:
+        """Handle security/audit event."""
+        event_type = data.get("type") or data.get("event_type", "unknown")
+        severity = data.get("severity", "info")
+        description = data.get("description", "")
+        logger.warning("[mc] Security [%s]: %s - %s", severity, event_type, description[:50])
+        if self._notifier and severity in ("high", "critical", "error"):
+            self._notifier.notify(f"🚨 Security Alert [{severity}]: {event_type}")
+        return True
+
+    def _handle_connection_event(self, data: Dict[str, Any]) -> bool:
+        """Handle connection created/disconnected events."""
+        event_type = data.get("type", "unknown")
+        connection_id = data.get("id") or data.get("connection_id")
+        agent_name = data.get("agent_name", "unknown")
+        if event_type == "connection.created":
+            logger.info("[mc] Connection established: %s (agent: %s)", connection_id, agent_name)
+        else:
+            logger.info("[mc] Connection disconnected: %s (agent: %s)", connection_id, agent_name)
+        return True
+
+    def _handle_github_synced(self, data: Dict[str, Any]) -> bool:
+        """Handle GitHub sync event."""
+        repo = data.get("repository") or data.get("repo", "unknown")
+        sync_type = data.get("sync_type", "unknown")
+        commit_count = data.get("commit_count", 0)
+        logger.info("[mc] GitHub sync: %s (%s) - %d commits", repo, sync_type, commit_count)
+        return True
+
+    def _handle_test_ping(self, data: Dict[str, Any]) -> bool:
+        """Handle test ping event."""
+        logger.info("[mc] Test ping received")
+        return True
+
     def _hash_payload(self, body: bytes) -> str:
         """Generate hash of payload for logging."""
         import hashlib

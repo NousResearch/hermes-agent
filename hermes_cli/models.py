@@ -20,6 +20,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-sonnet-4.5",     ""),
     ("openai/gpt-5.4-pro",              ""),
     ("openai/gpt-5.4",                  ""),
+    ("openai/gpt-5.4-mini",             ""),
+    ("openai/gpt-5.4-nano",             ""),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
@@ -34,6 +36,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("arcee-ai/trinity-large-preview:free", "free"),
     ("z-ai/glm-5-turbo",                ""),
     ("openrouter/hunter-alpha",          ""),
+    ("openrouter/healer-alpha",          ""),
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {

@@ -16,6 +16,9 @@ class FakeAgent:
         if getattr(self, "reasoning_callback", None):
             self.reasoning_callback("thinking one")
             self.reasoning_callback(" thinking two")
+        if stream_callback is not None:
+            stream_callback("runtime ")
+            stream_callback("ok")
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": "runtime ok"})
         return {
@@ -80,7 +83,7 @@ def test_runtime_turn_accepts_legacy_response_key():
     assert turn.json()["final_response"] == "legacy ok"
 
 
-def test_runtime_turn_stream_emits_reasoning_and_final(monkeypatch):
+def test_runtime_turn_stream_emits_reasoning_answer_and_final(monkeypatch):
     monkeypatch.setenv("MYNAH_RUNTIME_PROFILE", "tier1")
     monkeypatch.setenv("MYNAH_RUNTIME_TOOLSET", "mynah-tier1")
 
@@ -92,6 +95,8 @@ def test_runtime_turn_stream_emits_reasoning_and_final(monkeypatch):
 
     assert "event: reasoning" in payload
     assert "\"delta\": \"thinking one\"" in payload
+    assert "event: answer" in payload
+    assert "\"delta\": \"runtime \"" in payload
     assert "event: final" in payload
     assert "\"final_response\": \"runtime ok\"" in payload
 

@@ -172,7 +172,7 @@ def create_runtime_app(factory: RuntimeAgentFactory | None = None) -> FastAPI:
                     request.user_message,
                     system_message=request.system_message,
                     conversation_history=request.conversation_history,
-                    stream_callback=lambda _text: None,
+                    stream_callback=lambda text: event_queue.put(("answer", {"delta": text})),
                 )
                 response = RuntimeTurnResponse(
                     final_response=_normalize_final_response(result),

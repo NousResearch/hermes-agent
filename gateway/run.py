@@ -242,6 +242,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
     }
 
 
@@ -601,6 +603,8 @@ class GatewayRunner:
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
+            "command": runtime_kwargs.get("command"),
+            "args": list(runtime_kwargs.get("args") or []),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 

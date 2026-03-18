@@ -188,7 +188,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         toolset_requirements: Dict[str, dict] = None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -200,8 +201,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        toolset_requirements: Optional dict of toolset requirements (includes check_fn).
+                             If not provided, will be loaded from model_tools.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS as _DEFAULT_REQS
+    
+    # Use provided requirements or fall back to default
+    requirements = toolset_requirements or _DEFAULT_REQS
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -251,10 +257,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     for toolset in display_toolsets:
         tool_names = toolsets_dict[toolset]
+        # Check if this toolset has a check_fn (runtime-gated, not truly unavailable)
+        toolset_has_check_fn = bool(requirements.get(toolset, {}).get("check_fn"))
+        
         colored_names = []
         for name in sorted(tool_names):
             if name in disabled_tools:
-                colored_names.append(f"[red]{name}[/]")
+                if toolset_has_check_fn:
+                    # Tools with check_fn are lazy-initialized, not misconfigured
+                    # Show in yellow (pending) instead of red (error)
+                    colored_names.append(f"[yellow]{name}[/]")
+                else:
+                    colored_names.append(f"[red]{name}[/]")
             else:
                 colored_names.append(f"[#FFF8DC]{name}[/]")
 
@@ -273,7 +287,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 if name == "...":
                     colored_names.append("[dim]...[/]")
                 elif name in disabled_tools:
-                    colored_names.append(f"[red]{name}[/]")
+                    if toolset_has_check_fn:
+                        colored_names.append(f"[yellow]{name}[/]")
+                    else:
+                        colored_names.append(f"[red]{name}[/]")
                 else:
                     colored_names.append(f"[#FFF8DC]{name}[/]")
             tools_str = ", ".join(colored_names)

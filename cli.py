@@ -798,7 +798,7 @@ def _format_context_length(tokens: int) -> str:
     return str(tokens)
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None):
+def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None, toolset_requirements: dict = None):
     """
     Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
     
@@ -810,6 +810,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         enabled_toolsets: List of enabled toolset names
         session_id: Unique session identifier for logging
         context_length: Model's context window size in tokens
+        toolset_requirements: Optional dict of toolset requirements (includes check_fn).
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     
@@ -877,11 +878,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     
     for toolset in display_toolsets:
         tool_names = toolsets_dict[toolset]
-        # Color each tool name - red if disabled, normal if enabled
+        # Check if this toolset has a check_fn (runtime-gated, not truly unavailable)
+        toolset_has_check_fn = bool(TOOLSET_REQUIREMENTS.get(toolset, {}).get("check_fn"))
+        
+        # Color each tool name - red if disabled, yellow if lazy-initialized, normal if enabled
         colored_names = []
         for name in sorted(tool_names):
             if name in disabled_tools:
-                colored_names.append(f"[red]{name}[/]")
+                if toolset_has_check_fn:
+                    # Tools with check_fn are lazy-initialized, not misconfigured
+                    colored_names.append(f"[yellow]{name}[/]")
+                else:
+                    colored_names.append(f"[red]{name}[/]")
             else:
                 colored_names.append(f"[#FFF8DC]{name}[/]")
         
@@ -903,7 +911,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
                 if name == "...":
                     colored_names.append("[dim]...[/]")
                 elif name in disabled_tools:
-                    colored_names.append(f"[red]{name}[/]")
+                    if toolset_has_check_fn:
+                        colored_names.append(f"[yellow]{name}[/]")
+                    else:
+                        colored_names.append(f"[red]{name}[/]")
                 else:
                     colored_names.append(f"[#FFF8DC]{name}[/]")
             tools_str = ", ".join(colored_names)
@@ -1436,6 +1447,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                toolset_requirements=TOOLSET_REQUIREMENTS,
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -2440,6 +2452,7 @@ class HermesCLI:
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        toolset_requirements=TOOLSET_REQUIREMENTS,
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
             else:

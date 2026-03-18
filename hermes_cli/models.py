@@ -28,7 +28,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.5-flash",          ""),
     ("z-ai/glm-5",                      ""),
     ("moonshotai/kimi-k2.5",            ""),
-    ("minimax/minimax-m2.5",            ""),
+    ("minimax/minimax-m2.7",            ""),
+    ("x-ai/grok-4.20-beta",             ""),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+    ("arcee-ai/trinity-large-preview:free", "free"),
+    ("z-ai/glm-5-turbo",                ""),
+    ("openrouter/hunter-alpha",          ""),
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -61,11 +66,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",

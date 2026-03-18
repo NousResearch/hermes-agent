@@ -1,12 +1,12 @@
 ---
 name: agentcash
-description: Pay-per-call access to premium APIs via x402 micropayments (USDC on Base or Solana). No API keys or subscriptions required — call enrichment, scraping, email, phone, image/video generation, and dozens more services with automatic wallet authentication and payment.
+description: Pay-per-call access to premium APIs via x402 and MPP micropayments (USDC on Base, Solana, or Tempo). No API keys or subscriptions required — call enrichment, scraping, email, phone, image/video generation, and dozens more services with automatic wallet authentication and payment.
 version: 0.1.0
 author: fmhall
 license: MIT
 metadata:
   hermes:
-    tags: [x402, Payments, APIs, Micropayments, USDC, Base, Solana, Crypto, Web3]
+    tags: [x402, MPP, Payments, APIs, Micropayments, USDC, Base, Solana, Tempo, Crypto, Web3]
     related_skills: []
 ---
 

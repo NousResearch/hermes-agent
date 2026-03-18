@@ -59,9 +59,6 @@ class TestCliSkinPromptIntegration:
     def test_build_tui_style_dict_uses_skin_overrides(self):
         cli = _make_cli_stub()
 
-        from hermes_cli.skin_engine import set_theme_mode
-
-        set_theme_mode("dark")
         set_active_skin("ares")
         skin = get_active_skin()
         style_dict = cli._build_tui_style_dict()

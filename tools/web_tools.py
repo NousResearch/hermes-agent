@@ -616,7 +616,7 @@ def _get_exa_client():
 
 # ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
 
-def _exa_search(query: str, limit: int = 5) -> dict:
+def _exa_search(query: str, limit: int = 10) -> dict:
     """Search using the Exa SDK and return results as a dict."""
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -625,7 +625,7 @@ def _exa_search(query: str, limit: int = 5) -> dict:
     logger.info("Exa search: '%s' (limit=%d)", query, limit)
     response = _get_exa_client().search(
         query,
-        num_results=min(limit, 20),
+        num_results=limit,
         contents={
             "highlights": {"max_characters": 4000},
         },

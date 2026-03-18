@@ -118,14 +118,14 @@ class TestTryActivateFallback:
 
     def test_activates_minimax_fallback(self):
         agent = _make_agent(
-            fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
+            fallback_model={"provider": "minimax", "model": "MiniMax-M2.7"},
         )
         with (
             patch.dict("os.environ", {"MINIMAX_API_KEY": "sk-mm-key"}),
             patch("run_agent.OpenAI") as mock_openai,
         ):
             assert agent._try_activate_fallback() is True
-            assert agent.model == "MiniMax-M2.5"
+            assert agent.model == "MiniMax-M2.7"
             assert agent.provider == "minimax"
             call_kwargs = mock_openai.call_args[1]
             assert "minimax.io" in call_kwargs["base_url"]
@@ -145,7 +145,7 @@ class TestTryActivateFallback:
     def test_returns_false_when_no_api_key(self):
         """Fallback should fail gracefully when the API key env var is unset."""
         agent = _make_agent(
-            fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
+            fallback_model={"provider": "minimax", "model": "MiniMax-M2.7"},
         )
         # Ensure MINIMAX_API_KEY is not in the environment
         env = {k: v for k, v in os.environ.items() if k != "MINIMAX_API_KEY"}

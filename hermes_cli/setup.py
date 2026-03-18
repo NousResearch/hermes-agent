@@ -1198,7 +1198,7 @@ def setup_model_provider(config: dict):
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
         elif selected_provider in ("minimax", "minimax-cn"):
-            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
+            minimax_models = ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
             model_choices = list(minimax_models)
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

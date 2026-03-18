@@ -66,6 +66,8 @@ MODEL_PRICING = {
     "kimi-k2-turbo-preview": {"input": 0.0, "output": 0.0},
     "kimi-k2-0905-preview": {"input": 0.0, "output": 0.0},
     # MiniMax (direct provider — pricing not published externally, treat as local)
+    "MiniMax-M2.7": {"input": 0.0, "output": 0.0},
+    "MiniMax-M2.7-highspeed": {"input": 0.0, "output": 0.0},
     "MiniMax-M2.5": {"input": 0.0, "output": 0.0},
     "MiniMax-M2.5-highspeed": {"input": 0.0, "output": 0.0},
     "MiniMax-M2.1": {"input": 0.0, "output": 0.0},

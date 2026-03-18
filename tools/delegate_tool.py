@@ -233,6 +233,11 @@ def _build_child_agent(
         iteration_budget=shared_budget,
     )
 
+    # Preserve the parent's resolved tool names on the child so the worker
+    # thread can restore them safely in _run_single_child().
+    child._parent_saved_tool_names = list(_saved_tool_names)
+    child._model_tools_module = model_tools
+
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -372,7 +377,10 @@ def _run_single_child(
     finally:
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
-        model_tools._last_resolved_tool_names = _saved_tool_names
+        model_tools_module = getattr(child, '_model_tools_module', None) if child is not None else None
+        saved_tool_names = getattr(child, '_parent_saved_tool_names', None) if child is not None else None
+        if model_tools_module is not None and saved_tool_names is not None:
+            model_tools_module._last_resolved_tool_names = list(saved_tool_names)
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):

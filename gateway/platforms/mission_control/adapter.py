@@ -111,8 +111,8 @@ class MissionControlAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         
-        # Bind to localhost if MC is on same host, else 0.0.0.0
-        host = "127.0.0.1"  # MC on same machine
+        # Bind to all interfaces to allow external webhooks
+        host = os.getenv("MC_WEBHOOK_HOST", "0.0.0.0")
         self._site = web.TCPSite(self._runner, host, self._port)
         await self._site.start()
         

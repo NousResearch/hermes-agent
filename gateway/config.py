@@ -750,5 +750,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         except ValueError:
             pass
 
-
+    # Mission Control
+    mc_enabled = os.getenv("MC_WEBHOOK_ENABLED", "").lower() in ("true", "1", "yes")
+    mc_secret = os.getenv("MC_WEBHOOK_SECRET", "")
+    if mc_enabled or mc_secret:
+        if Platform.MISSION_CONTROL not in config.platforms:
+            config.platforms[Platform.MISSION_CONTROL] = PlatformConfig()
+        config.platforms[Platform.MISSION_CONTROL].enabled = True
+        if mc_secret:
+            config.platforms[Platform.MISSION_CONTROL].api_key = mc_secret
 

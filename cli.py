@@ -1044,11 +1044,17 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
-        self.model = model or _config_model or "anthropic/claude-opus-4.6"
+        _FALLBACK_MODEL = "anthropic/claude-opus-4.6"
+        self.model = model or _config_model or _FALLBACK_MODEL
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
-        self._model_is_default = not model
+        # A config model that matches the global fallback is NOT considered an
+        # explicit choice — the user just never changed it.  But a config model
+        # like "gpt-5.3-codex" IS explicit and must be preserved.
+        self._model_is_default = not model and (
+            not _config_model or _config_model == _FALLBACK_MODEL
+        )
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url

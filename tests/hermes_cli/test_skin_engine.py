@@ -260,9 +260,7 @@ class TestCliBrandingHelpers:
         assert get_active_goodbye() == "Farewell, warrior! ⚔"
 
     def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
-        from hermes_cli.skin_engine import set_active_skin, set_theme_mode, get_prompt_toolkit_style_overrides
-
-        set_theme_mode("dark")
+        from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
         set_active_skin("ares")
         overrides = get_prompt_toolkit_style_overrides()
         required = {
@@ -308,12 +306,10 @@ class TestCliBrandingHelpers:
     def test_prompt_toolkit_style_overrides_use_skin_colors(self):
         from hermes_cli.skin_engine import (
             set_active_skin,
-            set_theme_mode,
             get_active_skin,
             get_prompt_toolkit_style_overrides,
         )
 
-        set_theme_mode("dark")
         set_active_skin("ares")
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()

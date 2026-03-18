@@ -96,10 +96,13 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
+
+from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -513,14 +516,12 @@ _active_skin_name: str = "default"
 
 def _skins_dir() -> Path:
     """User skins directory."""
-    home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home / "skins"
+    return get_hermes_home() / "skins"
 
 
 def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """Load a skin definition from a YAML file."""
     try:
-        import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:
@@ -534,12 +535,9 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
-    colors = dict(default.get("colors", {}))
-    colors.update(data.get("colors", {}))
-    spinner = dict(default.get("spinner", {}))
-    spinner.update(data.get("spinner", {}))
-    branding = dict(default.get("branding", {}))
-    branding.update(data.get("branding", {}))
+    colors = {**default.get("colors", {}), **data.get("colors", {})}
+    spinner = {**default.get("spinner", {}), **data.get("spinner", {})}
+    branding = {**default.get("branding", {}), **data.get("branding", {})}
 
     return SkinConfig(
         name=data.get("name", "unknown"),
@@ -643,30 +641,28 @@ def init_skin_from_config(config: dict) -> None:
 # =============================================================================
 
 
-def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
-    """Get the interactive prompt symbol from the active skin."""
+def _get_active_branding(key: str, fallback: str) -> str:
+    """Get a branding value from the active skin with fallback."""
     try:
-        return get_active_skin().get_branding("prompt_symbol", fallback)
+        return get_active_skin().get_branding(key, fallback)
     except Exception:
+        logger.debug("Failed to get branding key '%s', using fallback", key)
         return fallback
 
+
+def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
+    """Get the interactive prompt symbol from the active skin."""
+    return _get_active_branding("prompt_symbol", fallback)
 
 
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     """Get the /help header from the active skin."""
-    try:
-        return get_active_skin().get_branding("help_header", fallback)
-    except Exception:
-        return fallback
-
+    return _get_active_branding("help_header", fallback)
 
 
 def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
     """Get the goodbye line from the active skin."""
-    try:
-        return get_active_skin().get_branding("goodbye", fallback)
-    except Exception:
-        return fallback
+    return _get_active_branding("goodbye", fallback)
 
 
 

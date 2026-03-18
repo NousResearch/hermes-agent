@@ -47,7 +47,6 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
@@ -115,6 +114,7 @@ def _get_firecrawl_client():
             kwargs["api_key"] = api_key
         if api_url:
             kwargs["api_url"] = api_url
+        from firecrawl import Firecrawl
         _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
 

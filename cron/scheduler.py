@@ -158,7 +158,9 @@ def _deliver_result(job: dict, content: str) -> None:
     # Run the async send in a fresh event loop (safe from any thread)
     try:
         result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
-    except RuntimeError:
+    except RuntimeError as e:
+        if "event loop" not in str(e).lower():
+            raise
         # asyncio.run() fails if there's already a running loop in this thread;
         # spin up a new thread to avoid that.
         import concurrent.futures
@@ -524,14 +526,15 @@ def tick(verbose: bool = True) -> int:
 
         return executed
     finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        if lock_fd is not None:
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            lock_fd.close()
 
 
 if __name__ == "__main__":

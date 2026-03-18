@@ -287,7 +287,10 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
         if tool_name in _PATH_SCOPED_TOOLS:
             scoped_path = _extract_parallel_scope_path(tool_name, function_args)
             if scoped_path is None:
-                return False
+                # Path couldn't be extracted; fall back to parallel-safe check
+                if tool_name not in _PARALLEL_SAFE_TOOLS:
+                    return False
+                continue
             if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
                 return False
             reserved_paths.append(scoped_path)
@@ -1718,7 +1721,6 @@ class AIAgent:
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
-        _set_interrupt(False)
     
     @property
     def is_interrupted(self) -> bool:
@@ -3555,8 +3557,16 @@ class AIAgent:
             "image/jpg": ".jpg",
         }.get(mime, ".jpg")
         tmp = tempfile.NamedTemporaryFile(prefix="anthropic_image_", suffix=suffix, delete=False)
-        with tmp:
-            tmp.write(base64.b64decode(data))
+        try:
+            with tmp:
+                tmp.write(base64.b64decode(data))
+        except Exception:
+            # Clean up the temp file on decode/write failure
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
         path = Path(tmp.name)
         return str(path), path
 

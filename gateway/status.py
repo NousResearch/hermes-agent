@@ -159,7 +159,10 @@ def _read_pid_record() -> Optional[dict]:
     if not pid_path.exists():
         return None
 
-    raw = pid_path.read_text().strip()
+    try:
+        raw = pid_path.read_text().strip()
+    except OSError:
+        return None
     if not raw:
         return None
 

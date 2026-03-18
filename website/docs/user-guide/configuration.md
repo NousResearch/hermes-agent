@@ -63,6 +63,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
+| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -116,6 +118,59 @@ model:
 :::tip Aliases
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
+
+### GitHub Copilot
+
+Hermes supports GitHub Copilot as a first-class provider with two modes:
+
+**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
+
+```bash
+hermes chat --provider copilot --model gpt-5.4
+```
+
+**Authentication options** (checked in this order):
+
+1. `COPILOT_GITHUB_TOKEN` environment variable
+2. `GH_TOKEN` environment variable
+3. `GITHUB_TOKEN` environment variable
+4. `gh auth token` CLI fallback
+
+If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
+
+:::warning Token types
+The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
+
+| Type | Prefix | How to get |
+|------|--------|------------|
+| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
+| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
+| GitHub App token | `ghu_` | Via GitHub App installation |
+
+If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
+:::
+
+**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
+
+**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
+
+```bash
+hermes chat --provider copilot-acp --model copilot-acp
+# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "copilot"
+  default: "gpt-5.4"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
+| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
+| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
 
 ### First-Class Chinese AI Providers
 
@@ -443,7 +498,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
@@ -766,7 +821,7 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers: `auto`, `openrouter`, `nous`, `codex`, `anthropic`, `main`, `zai`, `kimi-coding`, `minimax`, and any provider registered in the [provider registry](/docs/reference/environment-variables).
+Available providers: `auto`, `openrouter`, `nous`, `codex`, `copilot`, `anthropic`, `main`, `zai`, `kimi-coding`, `minimax`, and any provider registered in the [provider registry](/docs/reference/environment-variables).
 
 ### Full auxiliary config reference
 
@@ -1244,7 +1299,7 @@ delegation:
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 
-The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 

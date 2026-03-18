@@ -18,9 +18,12 @@ from hermes_cli.auth import (
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
+    get_external_process_provider_status,
+    resolve_external_process_provider_credentials,
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    _try_gh_cli_token,
     _resolve_kimi_base_url,
 )
 
@@ -33,6 +36,8 @@ class TestProviderRegistry:
     """Test that new providers are correctly registered."""
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
+        ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("copilot", "GitHub Copilot", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
@@ -51,6 +56,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["zai"]
         assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
+
+    def test_copilot_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["copilot"]
+        assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+        assert pconfig.base_url_env_var == ""
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
@@ -78,6 +88,8 @@ class TestProviderRegistry:
         assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
 
     def test_base_urls(self):
+        assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
+        assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
@@ -105,8 +117,9 @@ PROVIDER_ENV_VARS = (
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
-    "NOUS_API_KEY",
-    "OPENAI_BASE_URL",
+    "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+    "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
+    "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
 )
 
 
@@ -176,6 +189,16 @@ class TestResolveProvider:
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
+    def test_alias_github_copilot(self):
+        assert resolve_provider("github-copilot") == "copilot"
+
+    def test_alias_github_models(self):
+        assert resolve_provider("github-models") == "copilot"
+
+    def test_alias_github_copilot_acp(self):
+        assert resolve_provider("github-copilot-acp") == "copilot-acp"
+        assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
             resolve_provider("nonexistent-provider-xyz")
@@ -218,6 +241,10 @@ class TestResolveProvider:
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         assert resolve_provider("auto") == "openrouter"
 
+    def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
+        assert resolve_provider("auto") == "openrouter"
+
 
 # =============================================================================
 # API Key Provider Status tests
@@ -251,11 +278,40 @@ class TestApiKeyProviderStatus:
         status = get_api_key_provider_status("kimi-coding")
         assert status["base_url"] == "https://custom.kimi.example/v1"
 
+    def test_copilot_status_uses_gh_cli_token(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_gh_cli_token")
+        status = get_api_key_provider_status("copilot")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "gh auth token"
+        assert status["base_url"] == "https://api.githubcopilot.com"
+
     def test_get_auth_status_dispatches_to_api_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
         status = get_auth_status("minimax")
         assert status["configured"] is True
         assert status["provider"] == "minimax"
+
+    def test_copilot_acp_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        status = get_external_process_provider_status("copilot-acp")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "copilot"
+        assert status["resolved_command"] == "/usr/local/bin/copilot"
+        assert status["args"] == ["--acp", "--stdio", "--debug"]
+        assert status["base_url"] == "acp://copilot"
+
+    def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_auth_status("copilot-acp")
+
+        assert status["configured"] is True
+        assert status["provider"] == "copilot-acp"
 
     def test_non_api_key_provider(self):
         status = get_api_key_provider_status("nous")
@@ -275,6 +331,61 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "glm-secret-key"
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
         assert creds["source"] == "GLM_API_KEY"
+
+    def test_resolve_copilot_with_github_token(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "gh-env-secret")
+        creds = resolve_api_key_provider_credentials("copilot")
+        assert creds["provider"] == "copilot"
+        assert creds["api_key"] == "gh-env-secret"
+        assert creds["base_url"] == "https://api.githubcopilot.com"
+        assert creds["source"] == "GITHUB_TOKEN"
+
+    def test_resolve_copilot_with_gh_cli_fallback(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        creds = resolve_api_key_provider_credentials("copilot")
+        assert creds["provider"] == "copilot"
+        assert creds["api_key"] == "gho_cli_secret"
+        assert creds["base_url"] == "https://api.githubcopilot.com"
+        assert creds["source"] == "gh auth token"
+
+    def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: None)
+        monkeypatch.setattr(
+            "hermes_cli.auth.os.path.isfile",
+            lambda path: path == "/opt/homebrew/bin/gh",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.os.access",
+            lambda path, mode: path == "/opt/homebrew/bin/gh" and mode == os.X_OK,
+        )
+
+        calls = []
+
+        class _Result:
+            returncode = 0
+            stdout = "gh-cli-secret\n"
+
+        def _fake_run(cmd, capture_output, text, timeout):
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr("hermes_cli.auth.subprocess.run", _fake_run)
+
+        assert _try_gh_cli_token() == "gh-cli-secret"
+        assert calls == [["/opt/homebrew/bin/gh", "auth", "token"]]
+
+    def test_resolve_copilot_acp_with_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("copilot-acp")
+
+        assert creds["provider"] == "copilot-acp"
+        assert creds["api_key"] == "copilot-acp"
+        assert creds["base_url"] == "acp://copilot"
+        assert creds["command"] == "/usr/local/bin/copilot"
+        assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-secret-key")
@@ -403,6 +514,53 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
 
+    def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="copilot")
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gho_cli_secret"
+        assert result["base_url"] == "https://api.githubcopilot.com"
+
+    def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "gpt-5.4"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {
+                    "id": "gpt-5.4",
+                    "supported_endpoints": ["/responses"],
+                    "capabilities": {"type": "chat"},
+                }
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot")
+
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "codex_responses"
+
+    def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot-acp")
+
+        assert result["provider"] == "copilot-acp"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "copilot-acp"
+        assert result["base_url"] == "acp://copilot"
+        assert result["command"] == "/usr/local/bin/copilot"
+        assert result["args"] == ["--acp", "--stdio", "--debug"]
+
 
 # =============================================================================
 # _has_any_provider_configured tests
@@ -423,6 +581,16 @@ class TestHasAnyProviderConfigured:
     def test_minimax_key_counts(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_module
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_gh_cli_token_counts(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")

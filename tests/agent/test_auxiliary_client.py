@@ -248,6 +248,31 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_resolve_provider_client_copilot_uses_runtime_credentials(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "gh-cli-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "gh-cli-token"
+        assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
+        assert call_kwargs["default_headers"]["Editor-Version"]
+
     def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
         with (

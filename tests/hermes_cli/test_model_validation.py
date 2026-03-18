@@ -3,8 +3,12 @@
 from unittest.mock import patch
 
 from hermes_cli.models import (
+    copilot_model_api_mode,
+    fetch_github_model_catalog,
     curated_models_for_provider,
     fetch_api_models,
+    github_model_reasoning_efforts,
+    normalize_copilot_model_id,
     normalize_provider,
     parse_model_input,
     probe_api_models,
@@ -116,6 +120,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("github-copilot") == "copilot"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -125,6 +130,8 @@ class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
         assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("copilot") == "GitHub Copilot"
+        assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -144,6 +151,24 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_copilot_prefers_live_catalog(self):
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+            assert provider_model_ids("copilot") == ["gpt-5.4", "claude-sonnet-4.6"]
+
+    def test_copilot_acp_reuses_copilot_catalog(self):
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+            assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
+
+    def test_copilot_acp_falls_back_to_copilot_defaults(self):
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+             patch("hermes_cli.models._fetch_github_models", return_value=None):
+            ids = provider_model_ids("copilot-acp")
+
+        assert "gpt-5.4" in ids
+        assert "copilot-acp" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------
@@ -182,6 +207,112 @@ class TestFetchApiModels:
         assert probe["models"] == ["local-model"]
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
+
+    def test_probe_api_models_uses_copilot_catalog(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+            probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
+
+        assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
+        assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
+        assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
+        assert probe["used_fallback"] is False
+
+    def test_fetch_github_model_catalog_filters_non_chat_models(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            catalog = fetch_github_model_catalog("gh-token")
+
+        assert catalog is not None
+        assert [item["id"] for item in catalog] == ["gpt-5.4"]
+
+
+class TestGithubReasoningEfforts:
+    def test_gpt5_supports_minimal_to_high(self):
+        catalog = [{
+            "id": "gpt-5.4",
+            "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
+            "supported_endpoints": ["/responses"],
+        }]
+        assert github_model_reasoning_efforts("gpt-5.4", catalog=catalog) == [
+            "low",
+            "medium",
+            "high",
+        ]
+
+    def test_legacy_catalog_reasoning_still_supported(self):
+        catalog = [{"id": "openai/o3", "capabilities": ["reasoning"]}]
+        assert github_model_reasoning_efforts("openai/o3", catalog=catalog) == [
+            "low",
+            "medium",
+            "high",
+        ]
+
+    def test_non_reasoning_model_returns_empty(self):
+        catalog = [{"id": "gpt-4.1", "capabilities": {"type": "chat", "supports": {}}}]
+        assert github_model_reasoning_efforts("gpt-4.1", catalog=catalog) == []
+
+
+class TestCopilotNormalization:
+    def test_normalize_old_github_models_slug(self):
+        catalog = [{"id": "gpt-4.1"}, {"id": "gpt-5.4"}]
+        assert normalize_copilot_model_id("openai/gpt-4.1-mini", catalog=catalog) == "gpt-4.1"
+
+    def test_copilot_api_mode_gpt5_uses_responses(self):
+        """GPT-5+ models should use Responses API (matching opencode)."""
+        assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.4-mini") == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
+        assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
+
+    def test_copilot_api_mode_gpt5_mini_uses_chat(self):
+        """gpt-5-mini is the exception — uses Chat Completions."""
+        assert copilot_model_api_mode("gpt-5-mini") == "chat_completions"
+
+    def test_copilot_api_mode_non_gpt5_uses_chat(self):
+        """Non-GPT-5 models use Chat Completions."""
+        assert copilot_model_api_mode("gpt-4.1") == "chat_completions"
+        assert copilot_model_api_mode("gpt-4o") == "chat_completions"
+        assert copilot_model_api_mode("gpt-4o-mini") == "chat_completions"
+        assert copilot_model_api_mode("claude-sonnet-4.6") == "chat_completions"
+        assert copilot_model_api_mode("claude-opus-4.6") == "chat_completions"
+        assert copilot_model_api_mode("gemini-2.5-pro") == "chat_completions"
+
+    def test_copilot_api_mode_with_catalog_both_endpoints(self):
+        """When catalog shows both endpoints, model ID pattern wins."""
+        catalog = [{
+            "id": "gpt-5.4",
+            "supported_endpoints": ["/chat/completions", "/responses"],
+        }]
+        # GPT-5.4 should use responses even though chat/completions is listed
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+
+    def test_copilot_api_mode_with_catalog_only_responses(self):
+        catalog = [{
+            "id": "gpt-5.4",
+            "supported_endpoints": ["/responses"],
+            "capabilities": {"type": "chat"},
+        }]
+        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
 
 # -- validate — format checks -----------------------------------------------

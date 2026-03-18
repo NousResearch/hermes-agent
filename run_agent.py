@@ -270,9 +270,19 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
         try:
             function_args = json.loads(tool_call.function.arguments)
         except Exception:
-            function_args = {}
+            logging.debug(
+                "Could not parse args for %s — defaulting to sequential; raw=%s",
+                tool_name,
+                tool_call.function.arguments[:200],
+            )
+            return False
         if not isinstance(function_args, dict):
-            function_args = {}
+            logging.debug(
+                "Non-dict args for %s (%s) — defaulting to sequential",
+                tool_name,
+                type(function_args).__name__,
+            )
+            return False
 
         if tool_name in _PATH_SCOPED_TOOLS:
             scoped_path = _extract_parallel_scope_path(tool_name, function_args)
@@ -306,6 +316,9 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     """Return True when two paths may refer to the same subtree."""
     left_parts = left.parts
     right_parts = right.parts
+    if not left_parts or not right_parts:
+        # Empty paths shouldn't reach here (guarded upstream), but be safe.
+        return bool(left_parts) == bool(right_parts) and bool(left_parts)
     common_len = min(len(left_parts), len(right_parts))
     return left_parts[:common_len] == right_parts[:common_len]
 

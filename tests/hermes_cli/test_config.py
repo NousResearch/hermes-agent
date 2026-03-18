@@ -347,6 +347,34 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_whatsapp_reply_prefix_registered(self):
+        """WHATSAPP_REPLY_PREFIX is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "WHATSAPP_REPLY_PREFIX" in OPTIONAL_ENV_VARS
+
+    def test_whatsapp_reply_prefix_is_messaging_category(self):
+        """WHATSAPP_REPLY_PREFIX is a messaging setting."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["WHATSAPP_REPLY_PREFIX"]["category"] == "messaging"
+
+    def test_whatsapp_reply_prefix_is_advanced(self):
+        """WHATSAPP_REPLY_PREFIX is marked as advanced."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["WHATSAPP_REPLY_PREFIX"]["advanced"] is True
+
+    def test_whatsapp_reply_prefix_in_env_vars_by_version(self):
+        """WHATSAPP_REPLY_PREFIX is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "WHATSAPP_REPLY_PREFIX" in all_vars
+
+    def test_default_config_version_covers_env_var_versions(self):
+        """Latest config version is at least the newest env-var migration version."""
+        from hermes_cli.config import DEFAULT_CONFIG, ENV_VARS_BY_VERSION
+        assert DEFAULT_CONFIG["_config_version"] >= max(ENV_VARS_BY_VERSION)
+
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""

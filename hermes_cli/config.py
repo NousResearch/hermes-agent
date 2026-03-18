@@ -35,7 +35,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
-    "WHATSAPP_MODE", "WHATSAPP_ENABLED",
+    "WHATSAPP_MODE", "WHATSAPP_ENABLED", "WHATSAPP_REPLY_PREFIX",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
 })
@@ -372,7 +372,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -387,6 +387,8 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: ["WHATSAPP_REPLY_PREFIX"],
+    12: ["API_SERVER_ENABLED", "API_SERVER_KEY", "API_SERVER_PORT", "API_SERVER_HOST"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -770,6 +772,14 @@ OPTIONAL_ENV_VARS = {
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "WHATSAPP_REPLY_PREFIX": {
+        "description": "Optional WhatsApp reply prefix. Use an empty value to disable it. Supports \\n escapes.",
+        "prompt": "WhatsApp reply prefix",
         "url": None,
         "password": False,
         "category": "messaging",

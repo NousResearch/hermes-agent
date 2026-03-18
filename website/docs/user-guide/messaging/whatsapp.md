@@ -95,7 +95,23 @@ Add the following to your `~/.hermes/.env` file:
 WHATSAPP_ENABLED=true
 WHATSAPP_MODE=bot                          # "bot" or "self-chat"
 WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
+
+# Optional
+WHATSAPP_REPLY_PREFIX=                     # Empty disables the default "Hermes Agent" header
+# WHATSAPP_REPLY_PREFIX=Susie\\n\\n        # Example custom prefix with newlines
 ```
+
+Optional behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
+- `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
 Then start the gateway:
 
@@ -149,6 +165,8 @@ whatsapp:
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
 ```
 
+`WHATSAPP_REPLY_PREFIX` still works as an environment-variable override for backward compatibility, but `config.yaml` is the preferred path now.
+
 ---
 
 ## Troubleshooting
@@ -162,6 +180,7 @@ whatsapp:
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces). |
+| **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---
 
@@ -172,6 +191,13 @@ whatsapp:
 of authorized users. Without this setting, the gateway will **deny all incoming messages** as a
 safety measure.
 :::
+
+By default, unauthorized DMs still receive a pairing code reply. If you want a private WhatsApp number to stay completely silent to strangers, set:
+
+```yaml
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
 
 - The `~/.hermes/whatsapp/session` directory contains full session credentials — protect it like a password
 - Set file permissions: `chmod 700 ~/.hermes/whatsapp/session`

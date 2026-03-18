@@ -42,6 +42,26 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_accepts_script_style_gateway_cmdline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/venv/bin/python", "/repo/hermes_cli/main.py", "gateway", "run", "--replace"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "/venv/bin/python /repo/hermes_cli/main.py gateway run --replace",
+        )
+
+        assert status.get_running_pid() == os.getpid()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

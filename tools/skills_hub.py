@@ -1656,7 +1656,7 @@ class AgentSkillShSource(SkillSource):
         try:
             resp = httpx.get(
                 self.SEARCH_URL,
-                params={"q": query, "limit": min(limit, 20), "platform": "hermes"},
+                params={"q": query, "limit": min(limit, 20)},
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -1694,17 +1694,17 @@ class AgentSkillShSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        slug, owner = self._parse_identifier(identifier)
-        if not slug:
+        composite_slug = self._extract_slug(identifier)
+        if not composite_slug:
             return None
 
         try:
-            params: Dict[str, str] = {"platform": "hermes"}
-            if owner:
-                params["owner"] = owner
+            from urllib.parse import quote
+            encoded = quote(composite_slug, safe="")
             resp = httpx.get(
-                f"{self.INSTALL_URL}/{slug}/install",
-                params=params,
+                f"{self.INSTALL_URL}/{encoded}/install",
+                params={"platform": "hermes"},
+                follow_redirects=True,
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -1731,7 +1731,7 @@ class AgentSkillShSource(SkillSource):
             trust = "trusted"
 
         return SkillBundle(
-            name=data.get("slug", slug),
+            name=data.get("slug", composite_slug),
             files=files,
             source="agentskill.sh",
             identifier=identifier,
@@ -1742,22 +1742,22 @@ class AgentSkillShSource(SkillSource):
                 "install_count": data.get("installCount", 0),
                 "security_score": security_score,
                 "content_sha": data.get("contentSha", ""),
-                "source_url": f"{self.BASE_URL}/{slug}",
+                "source_url": f"{self.BASE_URL}/{composite_slug}",
             },
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        slug, owner = self._parse_identifier(identifier)
-        if not slug:
+        composite_slug = self._extract_slug(identifier)
+        if not composite_slug:
             return None
 
         try:
-            params: Dict[str, str] = {"platform": "hermes"}
-            if owner:
-                params["owner"] = owner
+            from urllib.parse import quote
+            encoded = quote(composite_slug, safe="")
             resp = httpx.get(
-                f"{self.INSTALL_URL}/{slug}/install",
-                params=params,
+                f"{self.INSTALL_URL}/{encoded}/install",
+                params={"platform": "hermes"},
+                follow_redirects=True,
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -1768,7 +1768,7 @@ class AgentSkillShSource(SkillSource):
             return None
 
         return SkillMeta(
-            name=data.get("slug", slug),
+            name=data.get("slug", composite_slug),
             description=data.get("description", "")[:200],
             source="agentskill.sh",
             identifier=identifier,
@@ -1778,7 +1778,7 @@ class AgentSkillShSource(SkillSource):
                 "install_count": data.get("installCount", 0),
                 "security_score": data.get("securityScore"),
                 "content_sha": data.get("contentSha", ""),
-                "detail_url": f"{self.BASE_URL}/{slug}",
+                "detail_url": f"{self.BASE_URL}/{composite_slug}",
                 "skill_md_preview": (data.get("skillMd", "") or "")[:500],
             },
         )
@@ -1828,8 +1828,32 @@ class AgentSkillShSource(SkillSource):
         return results
 
     @staticmethod
+    def _extract_slug(identifier: str) -> Optional[str]:
+        """Extract the composite slug from an identifier.
+
+        agentskill.sh uses composite slugs like 'owner/skill-name'.
+        Identifiers from search results look like 'agentskill-sh/owner/skill-name'.
+        We strip the source prefix and return the rest as-is for URL-encoded API calls.
+
+        Examples:
+            'agentskill-sh/anthropics/pdf'  -> 'anthropics/pdf'
+            'agentskill-sh/my-skill'        -> 'my-skill'
+            'anthropics/pdf'                -> 'anthropics/pdf'
+            'my-skill'                      -> 'my-skill'
+            ''                              -> None
+        """
+        path = identifier
+        if path.startswith("agentskill-sh/"):
+            path = path[len("agentskill-sh/"):]
+        path = path.strip("/")
+        return path if path else None
+
+    @staticmethod
     def _parse_identifier(identifier: str) -> Tuple[Optional[str], Optional[str]]:
-        """Parse agentskill-sh/<slug> or agentskill-sh/<owner>/<slug>."""
+        """Parse agentskill-sh/<slug> or agentskill-sh/<owner>/<slug>.
+
+        Kept for backward compatibility. Prefer _extract_slug for API calls.
+        """
         path = identifier
         if path.startswith("agentskill-sh/"):
             path = path[len("agentskill-sh/"):]

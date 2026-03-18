@@ -18,10 +18,11 @@ from typing import Any, Optional
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.6",       "recommended"),
     ("anthropic/claude-sonnet-4.5",     ""),
-    ("openai/gpt-5.4-pro",              ""),
+    ("anthropic/claude-haiku-4.5",      ""),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
-    ("openai/gpt-5.4-nano",             ""),
+    ("openrouter/hunter-alpha",          "free"),
+    ("openrouter/healer-alpha",          "free"),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
@@ -30,13 +31,13 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.5-flash",          ""),
     ("z-ai/glm-5",                      ""),
     ("moonshotai/kimi-k2.5",            ""),
-    ("minimax/minimax-m2.7",            ""),
+    ("minimax/minimax-m2.5",            ""),
     ("x-ai/grok-4.20-beta",             ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("arcee-ai/trinity-large-preview:free", "free"),
     ("z-ai/glm-5-turbo",                ""),
-    ("openrouter/hunter-alpha",          ""),
-    ("openrouter/healer-alpha",          ""),
+    ("openai/gpt-5.4-pro",              ""),
+    ("openai/gpt-5.4-nano",             ""),
 ]
 
 _PROVIDER_MODELS: dict[str, list[str]] = {

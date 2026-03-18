@@ -404,6 +404,7 @@ class AIAgent:
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        user_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
@@ -472,6 +473,7 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self._user_id = user_id
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
@@ -4358,6 +4360,7 @@ class AIAgent:
         """Common audit fields for this agent instance."""
         return {
             "session_id": self.session_id,
+            "user_id": getattr(self, "_user_id", None),
             "platform": getattr(self, "platform", None),
         }
 

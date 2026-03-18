@@ -1851,6 +1851,7 @@ class HermesCLI:
                 provider_data_collection=self._provider_data_collection,
                 session_id=self.session_id,
                 platform="cli",
+                user_id=__import__("getpass").getuser(),
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=(

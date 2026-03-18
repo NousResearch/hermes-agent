@@ -364,6 +364,7 @@ def handle_function_call(
                 duration_ms=_tool_duration_ms,
                 success=True,
                 session_id=task_id,
+                user_id=os.getenv("HERMES_SESSION_USER_ID"),
                 platform=os.getenv("HERMES_SESSION_PLATFORM"),
             )
         except Exception:
@@ -386,6 +387,7 @@ def handle_function_call(
                 error_type=type(e).__name__,
                 duration_ms=_tool_duration_ms,
                 session_id=task_id,
+                user_id=os.getenv("HERMES_SESSION_USER_ID"),
                 platform=os.getenv("HERMES_SESSION_PLATFORM"),
             )
         except Exception:

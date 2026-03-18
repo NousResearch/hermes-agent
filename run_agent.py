@@ -738,6 +738,8 @@ class AIAgent:
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
+        self._turns_since_memory = 0
+        self._iters_since_skill = 0
         if not skip_memory:
             try:
                 from hermes_cli.config import load_config as _load_mem_config
@@ -2951,6 +2953,9 @@ class AIAgent:
             return False
 
         self._anthropic_api_key = new_token
+        # Update OAuth flag — token type may have changed (API key ↔ OAuth)
+        from agent.anthropic_adapter import _is_oauth_token
+        self._is_anthropic_oauth = _is_oauth_token(new_token)
         return True
 
     def _anthropic_messages_create(self, api_kwargs: dict):
@@ -3342,11 +3347,12 @@ class AIAgent:
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
-                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
                 effective_key = fb_client.api_key or resolve_anthropic_token() or ""
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
+                self._is_anthropic_oauth = _is_oauth_token(effective_key)
                 self.client = None
                 self._client_kwargs = {}
             else:
@@ -4831,8 +4837,9 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
-        self._turns_since_memory = 0
-        self._iters_since_skill = 0
+        # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
+        # They are initialized in __init__ and must persist across run_conversation
+        # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
         
         # Initialize conversation (copy to avoid mutating the caller's list)
@@ -5850,10 +5857,6 @@ class AIAgent:
                         self._client_log_context(),
                         api_error,
                     )
-                    if retry_count >= max_retries:
-                        self._vprint(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
-                        self._vprint(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
-                    
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
                     sleep_end = time.time() + wait_time

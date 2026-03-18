@@ -263,11 +263,20 @@ def _inject_honcho_turn_context(content, turn_context: str):
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
-    
+
     This class manages the conversation flow, tool execution, and response handling
     for AI models that support function calling.
     """
-    
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        self._base_url = value
+        self._base_url_lower = value.lower() if value else ""
+
     def __init__(
         self,
         base_url: str = None,
@@ -383,10 +392,10 @@ class AIAgent:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
-        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self.base_url.lower():
+        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
-        elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self.base_url.lower()):
+        elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
         else:
@@ -395,7 +404,7 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or "openrouter" in self.base_url.lower():
+        if self.provider == "openrouter" or "openrouter" in self._base_url_lower:
             threading.Thread(
                 target=lambda: fetch_model_metadata(),
                 daemon=True,
@@ -439,7 +448,7 @@ class AIAgent:
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = "openrouter" in self.base_url.lower()
+        is_openrouter = "openrouter" in self._base_url_lower
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
@@ -555,6 +564,7 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             effective_key = api_key or resolve_anthropic_token() or ""
+            self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
@@ -609,6 +619,7 @@ class AIAgent:
                     }
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+            self.api_key = client_kwargs.get("api_key", "")
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:
@@ -732,6 +743,13 @@ class AIAgent:
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
+        # Load config once for memory, skills, and compression sections
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            _agent_cfg = _load_agent_config()
+        except Exception:
+            _agent_cfg = {}
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -742,8 +760,7 @@ class AIAgent:
         self._iters_since_skill = 0
         if not skip_memory:
             try:
-                from hermes_cli.config import load_config as _load_mem_config
-                mem_config = _load_mem_config().get("memory", {})
+                mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -831,21 +848,16 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            from hermes_cli.config import load_config as _load_skills_config
-            skills_config = _load_skills_config().get("skills", {})
+            skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
             pass
-        
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
-        try:
-            from hermes_cli.config import load_config as _load_compression_config
-            _compression_cfg = _load_compression_config().get("compression", {})
-            if not isinstance(_compression_cfg, dict):
-                _compression_cfg = {}
-        except ImportError:
+        _compression_cfg = _agent_cfg.get("compression", {})
+        if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
@@ -860,6 +872,7 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            api_key=getattr(self, "api_key", ""),
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -915,8 +928,8 @@ class AIAgent:
         OpenAI models use 'max_tokens'.
         """
         _is_direct_openai = (
-            "api.openai.com" in self.base_url.lower()
-            and "openrouter" not in self.base_url.lower()
+            "api.openai.com" in self._base_url_lower
+            and "openrouter" not in self._base_url_lower
         )
         if _is_direct_openai:
             return {"max_completion_tokens": value}
@@ -3643,7 +3656,7 @@ class AIAgent:
 
         extra_body = {}
 
-        _is_openrouter = "openrouter" in self.base_url.lower()
+        _is_openrouter = "openrouter" in self._base_url_lower
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
         # specific.  Only send to OpenRouter-compatible endpoints.
@@ -3651,7 +3664,7 @@ class AIAgent:
         # for _is_nous when their backend is updated.
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
-        _is_nous = "nousresearch" in self.base_url.lower()
+        _is_nous = "nousresearch" in self._base_url_lower
 
         if self._supports_reasoning_extra_body():
             if self.reasoning_config is not None:
@@ -3684,14 +3697,13 @@ class AIAgent:
         Some providers/routes reject `reasoning` with 400s, so gate it to
         known reasoning-capable model families and direct Nous Portal.
         """
-        base_url = (self.base_url or "").lower()
-        if "nousresearch" in base_url:
+        if "nousresearch" in self._base_url_lower:
             return True
-        if "ai-gateway.vercel.sh" in base_url:
+        if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
-        if "openrouter" not in base_url:
+        if "openrouter" not in self._base_url_lower:
             return False
-        if "api.mistral.ai" in base_url:
+        if "api.mistral.ai" in self._base_url_lower:
             return False
 
         model = (self.model or "").lower()
@@ -3877,7 +3889,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
-            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -4653,7 +4665,7 @@ class AIAgent:
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
-            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -4674,7 +4686,7 @@ class AIAgent:
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
-            _is_nous = "nousresearch" in self.base_url.lower()
+            _is_nous = "nousresearch" in self._base_url_lower
             if self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
@@ -5092,7 +5104,7 @@ class AIAgent:
                 # strict providers like Mistral that reject unknown fields with 422.
                 # Uses new dicts so the internal messages list retains the fields
                 # for Codex Responses compatibility.
-                if "api.mistral.ai" in self.base_url.lower():
+                if "api.mistral.ai" in self._base_url_lower:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
@@ -5464,6 +5476,7 @@ class AIAgent:
                             canonical_usage,
                             provider=self.provider,
                             base_url=self.base_url,
+                            api_key=getattr(self, "api_key", ""),
                         )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)

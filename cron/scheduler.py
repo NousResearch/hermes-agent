@@ -420,11 +420,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        try:
+            from agent.audit import log_cron_run
+            log_cron_run(job_id=job_id, job_name=job_name, success=True)
+        except Exception:
+            pass
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.error("Job '%s' failed: %s", job_name, error_msg)
+        try:
+            from agent.audit import log_cron_run
+            log_cron_run(job_id=job_id, job_name=job_name, success=False, error=error_msg)
+        except Exception:
+            pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

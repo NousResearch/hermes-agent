@@ -5602,6 +5602,13 @@ class HermesCLI:
             print(f"Session:        {self.session_id}")
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+            try:
+                from agent.audit import end_session as _audit_end
+                _audit_path = _audit_end(duration_s=elapsed.total_seconds())
+                if _audit_path:
+                    print(f"Audit log:      {_audit_path}")
+            except Exception:
+                pass
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
@@ -5710,6 +5717,55 @@ class HermesCLI:
                 sname = hcfg.resolve_session_name(session_id=self.session_id)
                 if sname:
                     write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")
+        except Exception:
+            pass
+
+        # ── Early audit log init ─────────────────────────────────────
+        # Start the structured audit log NOW so session.start and cli.launch
+        # events are captured during banner/init, not deferred until the
+        # first user message (which lazily creates AIAgent).  AIAgent.__init__
+        # also calls start_session, but audit.start_session is idempotent for
+        # the same session_id, so the second call is a harmless no-op.
+        try:
+            from agent.audit import configure as _audit_configure, start_session as _audit_start, emit as _audit_emit
+            _audit_cfg = {}
+            try:
+                from hermes_cli.config import load_config as _load_audit_config
+                _audit_cfg = _load_audit_config()
+            except Exception:
+                pass
+            _audit_block = _audit_cfg.get("audit", {})
+            if isinstance(_audit_block, dict) and _audit_block:
+                _audit_enabled = _audit_block.get("enabled", True)
+                _audit_redact = _audit_block.get("redact", True)
+                _audit_retention = _audit_block.get("retention_days", 30)
+                _audit_sources = _audit_block.get("sources")
+            else:
+                _audit_enabled = _audit_cfg.get("audit_log", True)
+                _audit_redact = _audit_cfg.get("audit_log_redact", True)
+                _audit_retention = _audit_cfg.get("audit_log_retention_days", 30)
+                _audit_sources = None
+            _audit_configure(
+                enabled=_audit_enabled,
+                redact=_audit_redact,
+                retention_days=_audit_retention,
+                platform="cli",
+                sources=_audit_sources,
+            )
+            _audit_start(
+                self.session_id,
+                platform="cli",
+                model=self.model,
+            )
+            # Emit a cli.launch event with startup context
+            _audit_emit(
+                "cli.launch",
+                model=self.model,
+                session_id=self.session_id,
+                resumed=self._resumed,
+                toolsets=self.enabled_toolsets or [],
+                provider=self.requested_provider or "",
+            )
         except Exception:
             pass
 

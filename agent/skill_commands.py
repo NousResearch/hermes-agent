@@ -157,9 +157,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         if not SKILLS_DIR.exists():
             return _skill_commands
+        disabled = _get_disabled_skill_names()
         for skill_md in SKILLS_DIR.rglob("SKILL.md"):
             if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                 continue
@@ -170,6 +171,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 if not skill_matches_platform(frontmatter):
                     continue
                 name = frontmatter.get('name', skill_md.parent.name)
+                # Respect user's disabled skills config
+                if name in disabled:
+                    continue
                 description = frontmatter.get('description', '')
                 if not description:
                     for line in body.strip().split('\n'):

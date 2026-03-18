@@ -151,6 +151,19 @@ For more flexible authorization, Hermes includes a code-based pairing system. In
 3. The bot owner runs `hermes pairing approve <platform> <code>` on the CLI
 4. The user is permanently approved for that platform
 
+Control how unauthorized direct messages are handled in `~/.hermes/config.yaml`:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `pair` is the default. Unauthorized DMs get a pairing code reply.
+- `ignore` silently drops unauthorized DMs.
+- Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
+
 **Security features** (based on OWASP + NIST SP 800-63-4 guidance):
 
 | Feature | Details |

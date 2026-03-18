@@ -34,6 +34,7 @@ HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
+ONESHOT_GRACE_SECONDS = 120
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -220,6 +221,33 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _recoverable_oneshot_run_at(
+    schedule: Dict[str, Any],
+    now: datetime,
+    *,
+    last_run_at: Optional[str] = None,
+) -> Optional[str]:
+    """Return a one-shot run time if it is still eligible to fire.
+
+    One-shot jobs get a small grace window so jobs created a few seconds after
+    their requested minute still run on the next tick. Once a one-shot has
+    already run, it is never eligible again.
+    """
+    if schedule.get("kind") != "once":
+        return None
+    if last_run_at:
+        return None
+
+    run_at = schedule.get("run_at")
+    if not run_at:
+        return None
+
+    run_at_dt = _ensure_aware(datetime.fromisoformat(run_at))
+    if run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
+        return run_at
+    return None
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -229,9 +257,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     now = _hermes_now()
 
     if schedule["kind"] == "once":
-        run_at = _ensure_aware(datetime.fromisoformat(schedule["run_at"]))
-        # If in the future, return it; if in the past, no more runs
-        return schedule["run_at"] if run_at > now else None
+        return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
 
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
@@ -555,7 +581,26 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
-            continue
+            recovered_next = _recoverable_oneshot_run_at(
+                job.get("schedule", {}),
+                now,
+                last_run_at=job.get("last_run_at"),
+            )
+            if not recovered_next:
+                continue
+
+            job["next_run_at"] = recovered_next
+            next_run = recovered_next
+            logger.info(
+                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                job.get("name", job["id"]),
+                recovered_next,
+            )
+            for rj in raw_jobs:
+                if rj["id"] == job["id"]:
+                    rj["next_run_at"] = recovered_next
+                    needs_save = True
+                    break
 
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:

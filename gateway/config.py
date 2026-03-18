@@ -32,6 +32,15 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return bool(value)
 
 
+def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
+    """Normalize unauthorized DM behavior to a supported value."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"pair", "ignore"}:
+            return normalized
+    return default
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -215,6 +224,9 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
 
+    # Unauthorized DM policy
+    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -289,6 +301,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
+            "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
         }
     
@@ -331,6 +344,10 @@ class GatewayConfig:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
         group_sessions_per_user = data.get("group_sessions_per_user")
+        unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
+            data.get("unauthorized_dm_behavior"),
+            "pair",
+        )
 
         return cls(
             platforms=platforms,
@@ -343,8 +360,20 @@ class GatewayConfig:
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
+
+    def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
+        """Return the effective unauthorized-DM behavior for a platform."""
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
+                return _normalize_unauthorized_dm_behavior(
+                    platform_cfg.extra.get("unauthorized_dm_behavior"),
+                    self.unauthorized_dm_behavior,
+                )
+        return self.unauthorized_dm_behavior
 
 
 def load_gateway_config() -> GatewayConfig:
@@ -415,6 +444,38 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            if "unauthorized_dm_behavior" in yaml_cfg:
+                gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
+                    yaml_cfg.get("unauthorized_dm_behavior"),
+                    "pair",
+                )
+
+            # Bridge per-platform unauthorized_dm_behavior from config.yaml
+            platforms_data = gw_data.setdefault("platforms", {})
+            if not isinstance(platforms_data, dict):
+                platforms_data = {}
+                gw_data["platforms"] = platforms_data
+            for plat in Platform:
+                if plat == Platform.LOCAL:
+                    continue
+                platform_cfg = yaml_cfg.get(plat.value)
+                if not isinstance(platform_cfg, dict):
+                    continue
+                if "unauthorized_dm_behavior" not in platform_cfg:
+                    continue
+                plat_data = platforms_data.setdefault(plat.value, {})
+                if not isinstance(plat_data, dict):
+                    plat_data = {}
+                    platforms_data[plat.value] = plat_data
+                extra = plat_data.setdefault("extra", {})
+                if not isinstance(extra, dict):
+                    extra = {}
+                    plat_data["extra"] = extra
+                extra["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
+                    platform_cfg.get("unauthorized_dm_behavior"),
+                    gw_data.get("unauthorized_dm_behavior", "pair"),
+                )
 
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})

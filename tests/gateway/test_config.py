@@ -115,6 +115,22 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
 
+    def test_roundtrip_preserves_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            unauthorized_dm_behavior="ignore",
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"unauthorized_dm_behavior": "pair"},
+                ),
+            },
+        )
+
+        restored = GatewayConfig.from_dict(config.to_dict())
+
+        assert restored.unauthorized_dm_behavior == "ignore"
+        assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
 
 class TestLoadGatewayConfig:
     def test_bridges_quick_commands_from_config_yaml(self, tmp_path, monkeypatch):
@@ -158,3 +174,21 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {}
+
+    def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "unauthorized_dm_behavior: ignore\n"
+            "whatsapp:\n"
+            "  unauthorized_dm_behavior: pair\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.unauthorized_dm_behavior == "ignore"
+        assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"

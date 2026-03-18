@@ -85,6 +85,21 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/generic-tool" in result
 
+    def test_excludes_disabled_skills(self, tmp_path):
+        """Disabled skills should not register slash commands."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool._get_disabled_skill_names",
+                return_value={"disabled-skill"},
+            ),
+        ):
+            _make_skill(tmp_path, "enabled-skill")
+            _make_skill(tmp_path, "disabled-skill")
+            result = scan_skill_commands()
+        assert "/enabled-skill" in result
+        assert "/disabled-skill" not in result
+
 
 class TestBuildPreloadedSkillsPrompt:
     def test_builds_prompt_for_multiple_named_skills(self, tmp_path):

@@ -31,6 +31,7 @@ def find_gateway_pids() -> list:
     pids = []
     patterns = [
         "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     ]
@@ -849,6 +850,46 @@ def launchd_stop():
     subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
     print("✓ Service stopped")
 
+def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
+    """Wait for the gateway process (by saved PID) to exit.
+
+    Uses the PID from the gateway.pid file — not launchd labels — so this
+    works correctly when multiple gateway instances run under separate
+    HERMES_HOME directories.
+
+    Args:
+        timeout: Total seconds to wait before giving up.
+        force_after: Seconds of graceful waiting before sending SIGKILL.
+    """
+    import time
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + timeout
+    force_deadline = time.monotonic() + force_after
+    force_sent = False
+
+    while time.monotonic() < deadline:
+        pid = get_running_pid()
+        if pid is None:
+            return  # Process exited cleanly.
+
+        if not force_sent and time.monotonic() >= force_deadline:
+            # Grace period expired — force-kill the specific PID.
+            try:
+                os.kill(pid, signal.SIGKILL)
+                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
+            except (ProcessLookupError, PermissionError):
+                return  # Already gone or we can't touch it.
+            force_sent = True
+
+        time.sleep(0.3)
+
+    # Timed out even after SIGKILL.
+    remaining_pid = get_running_pid()
+    if remaining_pid is not None:
+        print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
+
+
 def launchd_restart():
     try:
         launchd_stop()
@@ -856,6 +897,7 @@ def launchd_restart():
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; skipping stop")
+    _wait_for_gateway_exit()
     launchd_start()
 
 def launchd_status(deep: bool = False):
@@ -1753,10 +1795,9 @@ def gateway_command(args):
             killed = kill_gateway_processes()
             if killed:
                 print(f"✓ Stopped {killed} gateway process(es)")
-            
-            import time
-            time.sleep(2)
-            
+
+            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=False)

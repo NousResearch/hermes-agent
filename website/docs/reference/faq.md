@@ -372,8 +372,8 @@ hermes chat --continue
 
 **Solution:**
 ```bash
-# Ensure MCP dependencies are installed
-pip install hermes-agent[mcp]
+# Ensure MCP dependencies are installed (already included in standard install)
+cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
 
 # For npm-based servers, ensure Node.js is available
 node --version

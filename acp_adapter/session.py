@@ -194,6 +194,8 @@ class SessionManager:
                     "api_mode": runtime.get("api_mode"),
                     "base_url": runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
+                    "command": runtime.get("command"),
+                    "args": list(runtime.get("args") or []),
                 }
             )
         except Exception:

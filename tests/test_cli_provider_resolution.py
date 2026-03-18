@@ -162,6 +162,57 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "sk-primary"
+    shell._smart_model_routing = {"enabled": False}
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "gpt-5"
+    assert result["runtime"]["provider"] == "openrouter"
+    assert result["label"] is None
+
+
+def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        assert kwargs["requested"] == "zai"
+        return {
+            "provider": "zai",
+            "api_mode": "chat_completions",
+            "base_url": "https://open.z.ai/api/v1",
+            "api_key": "cheap-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "primary-key"
+    shell._smart_model_routing = {
+        "enabled": True,
+        "cheap_model": {"provider": "zai", "model": "glm-5-air"},
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+    }
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "glm-5-air"
+    assert result["runtime"]["provider"] == "zai"
+    assert result["runtime"]["api_key"] == "cheap-key"
+    assert result["label"] is not None
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 
@@ -259,6 +310,49 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert "codex" in shell.model.lower()
     # LLM_MODEL env var is NOT used
     assert shell.model != "should-be-ignored"
+
+
+def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
+    """When the user sets model.default in config.yaml to a specific codex
+    model, _normalize_model_for_provider must NOT replace it with the latest
+    available model from the API.  Regression test for #1887."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    # User explicitly configured gpt-5.3-codex in config.yaml
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "gpt-5.3-codex",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    })
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "fake-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    # API returns a DIFFERENT model than what the user configured
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
+    )
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    # Config model is NOT the global default — user made a deliberate choice
+    assert shell._model_is_default is False
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    # Model must stay as user configured, not replaced by gpt-5.4
+    assert shell.model == "gpt-5.3-codex"
 
 
 def test_codex_provider_preserves_explicit_codex_model(monkeypatch):

@@ -151,6 +151,19 @@ For more flexible authorization, Hermes includes a code-based pairing system. In
 3. The bot owner runs `hermes pairing approve <platform> <code>` on the CLI
 4. The user is permanently approved for that platform
 
+Control how unauthorized direct messages are handled in `~/.hermes/config.yaml`:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `pair` is the default. Unauthorized DMs get a pairing code reply.
+- `ignore` silently drops unauthorized DMs.
+- Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
+
 **Security features** (based on OWASP + NIST SP 800-63-4 guidance):
 
 | Feature | Details |
@@ -212,6 +225,7 @@ Container resources are configurable in `~/.hermes/config.yaml`:
 terminal:
   backend: docker
   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_forward_env: []  # Explicit allowlist only; empty keeps secrets out of the container
   container_cpu: 1        # CPU cores
   container_memory: 5120  # MB (default 5GB)
   container_disk: 51200   # MB (default 50GB, requires overlay2 on XFS)
@@ -225,6 +239,10 @@ terminal:
 
 :::tip
 For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+:::
+
+:::warning
+If you add names to `terminal.docker_forward_env`, those variables are intentionally injected into the container for terminal commands. This is useful for task-specific credentials like `GITHUB_TOKEN`, but it also means code running in the container can read and exfiltrate them.
 :::
 
 ## Terminal Backend Security Comparison
@@ -271,6 +289,25 @@ Error messages from MCP tools are sanitized before being returned to the LLM. Th
 - OpenAI-style keys (`sk-...`)
 - Bearer tokens
 - `token=`, `key=`, `API_KEY=`, `password=`, `secret=` parameters
+
+### Website Access Policy
+
+You can restrict which websites the agent can access through its web and browser tools. This is useful for preventing the agent from accessing internal services, admin panels, or other sensitive URLs.
+
+```yaml
+# In ~/.hermes/config.yaml
+website_blocklist:
+  enabled: true
+  domains:
+    - "*.internal.company.com"
+    - "admin.example.com"
+  shared_files:
+    - "/etc/hermes/blocked-sites.txt"
+```
+
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
+
+See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
 ### Context File Injection Protection
 

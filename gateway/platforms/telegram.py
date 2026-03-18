@@ -118,6 +118,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+        # Buffer rapid text messages so Telegram client-side splits of long
+        # messages are aggregated into a single MessageEvent.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
 
@@ -240,29 +245,13 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
             # Register bot commands so Telegram shows a hint menu when users type /
+            # List is derived from the central COMMAND_REGISTRY — adding a new
+            # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
+                from hermes_cli.commands import telegram_bot_commands
                 await self._bot.set_my_commands([
-                    BotCommand("new", "Start a new conversation"),
-                    BotCommand("reset", "Reset conversation history"),
-                    BotCommand("model", "Show or change the model"),
-                    BotCommand("reasoning", "Show or change reasoning effort"),
-                    BotCommand("personality", "Set a personality"),
-                    BotCommand("retry", "Retry your last message"),
-                    BotCommand("undo", "Remove the last exchange"),
-                    BotCommand("status", "Show session info"),
-                    BotCommand("stop", "Stop the running agent"),
-                    BotCommand("sethome", "Set this chat as the home channel"),
-                    BotCommand("compress", "Compress conversation context"),
-                    BotCommand("title", "Set or show the session title"),
-                    BotCommand("resume", "Resume a previously-named session"),
-                    BotCommand("usage", "Show token usage for this session"),
-                    BotCommand("provider", "Show available providers"),
-                    BotCommand("insights", "Show usage insights and analytics"),
-                    BotCommand("update", "Update Hermes to the latest version"),
-                    BotCommand("reload_mcp", "Reload MCP servers from config"),
-                    BotCommand("voice", "Toggle voice reply mode"),
-                    BotCommand("help", "Show available commands"),
+                    BotCommand(name, desc) for name, desc in telegram_bot_commands()
                 ])
             except Exception as e:
                 logger.warning(
@@ -425,7 +414,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
-            except Exception:
+            except Exception as fmt_err:
+                # "Message is not modified" is a no-op, not an error
+                if "not modified" in str(fmt_err).lower():
+                    return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -434,6 +426,46 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
+            err_str = str(e).lower()
+            # "Message is not modified" — content identical, treat as success
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            # Message too long — content exceeded 4096 chars (e.g. during
+            # streaming).  Truncate and succeed so the stream consumer can
+            # split the overflow into a new message instead of dying.
+            if "message_too_long" in err_str or "too long" in err_str:
+                truncated = content[: self.MAX_MESSAGE_LENGTH - 20] + "…"
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=truncated,
+                    )
+                except Exception:
+                    pass  # best-effort truncation
+                return SendResult(success=True, message_id=message_id)
+            # Flood control / RetryAfter — back off and retry once
+            retry_after = getattr(e, "retry_after", None)
+            if retry_after is not None or "retry after" in err_str:
+                wait = retry_after if retry_after else 1.0
+                logger.warning(
+                    "[%s] Telegram flood control, waiting %.1fs",
+                    self.name, wait,
+                )
+                await asyncio.sleep(wait)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=content,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_err:
+                    logger.error(
+                        "[%s] Edit retry failed after flood wait: %s",
+                        self.name, retry_err,
+                    )
+                    return SendResult(success=False, error=str(retry_err))
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
@@ -811,12 +843,17 @@ class TelegramAdapter(BasePlatformAdapter):
         return text
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages."""
+        """Handle incoming text messages.
+
+        Telegram clients split long messages into multiple updates.  Buffer
+        rapid successive text messages from the same user/chat and aggregate
+        them into a single MessageEvent before dispatching.
+        """
         if not update.message or not update.message.text:
             return
-        
+
         event = self._build_message_event(update.message, MessageType.TEXT)
-        await self.handle_message(event)
+        self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -860,6 +897,68 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION)
         event.text = "\n".join(parts)
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Telegram client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When Telegram splits a long user message into multiple updates,
+        they arrive within a few hundred milliseconds.  This method
+        concatenates them and waits for a short quiet period before
+        dispatching the combined message.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is None:
+            self._pending_text_batches[key] = event
+        else:
+            # Append text from the follow-up chunk
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        # Cancel any pending flush and restart the timer
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_seconds)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Telegram] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Photo batching
+    # ------------------------------------------------------------------
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
         """Return a batching key for Telegram photos/albums."""
@@ -1201,11 +1300,20 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(message.message_thread_id) if message.message_thread_id else None,
         )
         
+        # Extract reply context if this message is a reply
+        reply_to_id = None
+        reply_to_text = None
+        if message.reply_to_message:
+            reply_to_id = str(message.reply_to_message.message_id)
+            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
             timestamp=message.date,
         )

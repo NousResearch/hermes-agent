@@ -44,7 +44,7 @@ hermes-agent/
 │   ├── terminal_tool.py  # Terminal orchestration
 │   ├── process_registry.py # Background process management
 │   ├── file_tools.py     # File read/write/search/patch
-│   ├── web_tools.py      # Firecrawl search/extract
+│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
 │   ├── browser_tool.py   # Browserbase browser automation
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py  # Subagent delegation
@@ -129,14 +129,50 @@ Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Re
 - **KawaiiSpinner** (`agent/display.py`) — animated faces during API calls, `┊` activity feed for tool results
 - `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML
 - **Skin engine** (`hermes_cli/skin_engine.py`) — data-driven CLI theming; initialized from `display.skin` config key at startup; skins customize banner colors, spinner faces/verbs/wings, tool prefix, response box, branding text
-- `process_command()` is a method on `HermesCLI` (not in commands.py)
+- `process_command()` is a method on `HermesCLI` — dispatches on canonical command name resolved via `resolve_command()` from the central registry
 - Skill slash commands: `agent/skill_commands.py` scans `~/.hermes/skills/`, injects as **user message** (not system prompt) to preserve prompt caching
 
-### Adding CLI Commands
+### Slash Command Registry (`hermes_cli/commands.py`)
 
-1. Add to `COMMANDS` dict in `hermes_cli/commands.py`
-2. Add handler in `HermesCLI.process_command()` in `cli.py`
-3. For persistent settings, use `save_config_value()` in `cli.py`
+All slash commands are defined in a central `COMMAND_REGISTRY` list of `CommandDef` objects. Every downstream consumer derives from this registry automatically:
+
+- **CLI** — `process_command()` resolves aliases via `resolve_command()`, dispatches on canonical name
+- **Gateway** — `GATEWAY_KNOWN_COMMANDS` frozenset for hook emission, `resolve_command()` for dispatch
+- **Gateway help** — `gateway_help_lines()` generates `/help` output
+- **Telegram** — `telegram_bot_commands()` generates the BotCommand menu
+- **Slack** — `slack_subcommand_map()` generates `/hermes` subcommand routing
+- **Autocomplete** — `COMMANDS` flat dict feeds `SlashCommandCompleter`
+- **CLI help** — `COMMANDS_BY_CATEGORY` dict feeds `show_help()`
+
+### Adding a Slash Command
+
+1. Add a `CommandDef` entry to `COMMAND_REGISTRY` in `hermes_cli/commands.py`:
+```python
+CommandDef("mycommand", "Description of what it does", "Session",
+           aliases=("mc",), args_hint="[arg]"),
+```
+2. Add handler in `HermesCLI.process_command()` in `cli.py`:
+```python
+elif canonical == "mycommand":
+    self._handle_mycommand(cmd_original)
+```
+3. If the command is available in the gateway, add a handler in `gateway/run.py`:
+```python
+if canonical == "mycommand":
+    return await self._handle_mycommand(event)
+```
+4. For persistent settings, use `save_config_value()` in `cli.py`
+
+**CommandDef fields:**
+- `name` — canonical name without slash (e.g. `"background"`)
+- `description` — human-readable description
+- `category` — one of `"Session"`, `"Configuration"`, `"Tools & Skills"`, `"Info"`, `"Exit"`
+- `aliases` — tuple of alternative names (e.g. `("bg",)`)
+- `args_hint` — argument placeholder shown in help (e.g. `"<prompt>"`, `"[name]"`)
+- `cli_only` — only available in the interactive CLI
+- `gateway_only` — only available in messaging platforms
+
+**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
 
 ---
 
@@ -328,7 +364,7 @@ Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) inst
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
 
 ### `_last_resolved_tool_names` is a process-global in `model_tools.py`
-When subagents overwrite this global, `execute_code` calls after delegation may fail with missing tool imports. Known bug.
+`_run_single_child()` in `delegate_tool.py` saves and restores this global around subagent execution. If you add new code that reads this global, be aware it may be temporarily stale during child agent runs.
 
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.

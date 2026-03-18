@@ -55,11 +55,85 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
+    "copilot-acp": [
+        "copilot-acp",
+    ],
+    "copilot": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gemini-2.5-pro",
+        "grok-code-fast-1",
+    ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
-    "minimax-cn": ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
+    "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
 }
+
+
+def _current_reasoning_effort(config: Dict[str, Any]) -> str:
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
+    return ""
+
+
+def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
+    agent_cfg = config.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+        config["agent"] = agent_cfg
+    agent_cfg["reasoning_effort"] = effort
+
+
+def _setup_copilot_reasoning_selection(
+    config: Dict[str, Any],
+    model_id: str,
+    prompt_choice,
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: str = "",
+) -> None:
+    from hermes_cli.models import github_model_reasoning_efforts, normalize_copilot_model_id
+
+    normalized_model = normalize_copilot_model_id(
+        model_id,
+        catalog=catalog,
+        api_key=api_key,
+    ) or model_id
+    efforts = github_model_reasoning_efforts(normalized_model, catalog=catalog, api_key=api_key)
+    if not efforts:
+        return
+
+    current_effort = _current_reasoning_effort(config)
+    choices = list(efforts) + ["Disable reasoning", f"Keep current ({current_effort or 'default'})"]
+
+    if current_effort == "none":
+        default_idx = len(efforts)
+    elif current_effort in efforts:
+        default_idx = efforts.index(current_effort)
+    elif "medium" in efforts:
+        default_idx = efforts.index("medium")
+    else:
+        default_idx = len(choices) - 1
+
+    effort_idx = prompt_choice("Select reasoning effort:", choices, default_idx)
+    if effort_idx < len(efforts):
+        _set_reasoning_effort(config, efforts[effort_idx])
+    elif effort_idx == len(efforts):
+        _set_reasoning_effort(config, "none")
 
 
 def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
@@ -69,29 +143,60 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     hardcoded default list with a warning if the endpoint is unreachable.
     Always offers a 'Custom model' escape hatch.
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import (
+        copilot_model_api_mode,
+        fetch_api_models,
+        fetch_github_model_catalog,
+        normalize_copilot_model_id,
+    )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
+    is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
 
     # Resolve API key and base URL for the probe
-    api_key = ""
-    for ev in pconfig.api_key_env_vars:
-        api_key = get_env_value(ev) or os.getenv(ev, "")
-        if api_key:
-            break
-    base_url_env = pconfig.base_url_env_var or ""
-    base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+    if is_copilot_catalog_provider:
+        api_key = ""
+        if provider_id == "copilot":
+            creds = resolve_api_key_provider_credentials(provider_id)
+            api_key = creds.get("api_key", "")
+            base_url = creds.get("base_url", "") or pconfig.inference_base_url
+        else:
+            try:
+                creds = resolve_api_key_provider_credentials("copilot")
+                api_key = creds.get("api_key", "")
+            except Exception:
+                pass
+            base_url = pconfig.inference_base_url
+        catalog = fetch_github_model_catalog(api_key)
+        current_model = normalize_copilot_model_id(
+            current_model,
+            catalog=catalog,
+            api_key=api_key,
+        ) or current_model
+    else:
+        api_key = ""
+        for ev in pconfig.api_key_env_vars:
+            api_key = get_env_value(ev) or os.getenv(ev, "")
+            if api_key:
+                break
+        base_url_env = pconfig.base_url_env_var or ""
+        base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
+        catalog = None
 
     # Try live /models endpoint
-    live_models = fetch_api_models(api_key, base_url)
+    if is_copilot_catalog_provider and catalog:
+        live_models = [item.get("id", "") for item in catalog if item.get("id")]
+    else:
+        live_models = fetch_api_models(api_key, base_url)
 
     if live_models:
         provider_models = live_models
         print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
     else:
-        provider_models = _DEFAULT_PROVIDER_MODELS.get(provider_id, [])
+        fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
+        provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
         if provider_models:
             print_warning(
                 f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
@@ -105,12 +210,29 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     keep_idx = len(model_choices) - 1
     model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
 
+    selected_model = current_model
+
     if model_idx < len(provider_models):
-        _set_default_model(config, provider_models[model_idx])
+        selected_model = provider_models[model_idx]
+        if is_copilot_catalog_provider:
+            selected_model = normalize_copilot_model_id(
+                selected_model,
+                catalog=catalog,
+                api_key=api_key,
+            ) or selected_model
+        _set_default_model(config, selected_model)
     elif model_idx == len(provider_models):
         custom = prompt_fn("Enter model name")
         if custom:
-            _set_default_model(config, custom)
+            if is_copilot_catalog_provider:
+                selected_model = normalize_copilot_model_id(
+                    custom,
+                    catalog=catalog,
+                    api_key=api_key,
+                ) or custom
+            else:
+                selected_model = custom
+            _set_default_model(config, selected_model)
     else:
         # "Keep current" selected — validate it's compatible with the new
         # provider.  OpenRouter-formatted names (containing "/") won't work
@@ -121,7 +243,24 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 f"and won't work with {pconfig.name}. "
                 f"Switching to {provider_models[0]}."
             )
+            selected_model = provider_models[0]
             _set_default_model(config, provider_models[0])
+
+    if provider_id == "copilot" and selected_model:
+        model_cfg = _model_config_dict(config)
+        model_cfg["api_mode"] = copilot_model_api_mode(
+            selected_model,
+            catalog=catalog,
+            api_key=api_key,
+        )
+        config["model"] = model_cfg
+        _setup_copilot_reasoning_selection(
+            config,
+            selected_model,
+            prompt_choice,
+            catalog=catalog,
+            api_key=api_key,
+        )
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -442,11 +581,11 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
-    # Firecrawl (web tools)
-    if get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"):
+    # Web tools (Parallel, Firecrawl, or Tavily)
+    if get_env_value("PARALLEL_API_KEY") or get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL") or get_env_value("TAVILY_API_KEY"):
         tool_status.append(("Web Search & Extract", True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
+        tool_status.append(("Web Search & Extract", False, "PARALLEL_API_KEY, FIRECRAWL_API_KEY, or TAVILY_API_KEY"))
 
     # Browser tools (local Chromium or Browserbase cloud)
     import shutil
@@ -478,6 +617,16 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
     elif tts_provider == "openai" and get_env_value("VOICE_TOOLS_OPENAI_KEY"):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+    elif tts_provider == "neutts":
+        try:
+            import importlib.util
+            neutts_ok = importlib.util.find_spec("neutts") is not None
+        except Exception:
+            neutts_ok = False
+        if neutts_ok:
+            tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -661,6 +810,8 @@ def setup_model_provider(config: dict):
         resolve_codex_runtime_credentials,
         DEFAULT_CODEX_BASE_URL,
         detect_external_credentials,
+        get_auth_status,
+        resolve_api_key_provider_credentials,
     )
 
     print_header("Inference Provider")
@@ -670,6 +821,8 @@ def setup_model_provider(config: dict):
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
     existing_custom = get_env_value("OPENAI_BASE_URL")
+    copilot_status = get_auth_status("copilot")
+    copilot_acp_status = get_auth_status("copilot-acp")
 
     model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
     current_config_provider = str(model_cfg.get("provider") or "").strip().lower() or None
@@ -690,7 +843,12 @@ def setup_model_provider(config: dict):
 
     # Detect if any provider is already configured
     has_any_provider = bool(
-        current_config_provider or active_oauth or existing_custom or existing_or
+        current_config_provider
+        or active_oauth
+        or existing_custom
+        or existing_or
+        or copilot_status.get("logged_in")
+        or copilot_acp_status.get("logged_in")
     )
 
     # Build "keep current" label
@@ -723,7 +881,14 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
+        "AI Gateway (Vercel — 200+ models, pay-per-use)",
+        "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
+        "OpenCode Zen (35+ curated models, pay-as-you-go)",
+        "OpenCode Go (open models, $10/month subscription)",
+        "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)",
+        "GitHub Copilot ACP (spawns `copilot --acp --stdio`)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1128,7 +1293,40 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 8:  # Anthropic
+    elif provider_idx == 8:  # Kilo Code
+        selected_provider = "kilocode"
+        print()
+        print_header("Kilo Code API Key")
+        pconfig = PROVIDER_REGISTRY["kilocode"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://kilo.ai")
+        print()
+
+        existing_key = get_env_value("KILOCODE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  Kilo Code API key", password=True)
+                if api_key:
+                    save_env_value("KILOCODE_API_KEY", api_key)
+                    print_success("Kilo Code API key updated")
+        else:
+            api_key = prompt("  Kilo Code API key", password=True)
+            if api_key:
+                save_env_value("KILOCODE_API_KEY", api_key)
+                print_success("Kilo Code API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "kilocode", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 9:  # Anthropic
         selected_provider = "anthropic"
         print()
         print_header("Anthropic Authentication")
@@ -1232,7 +1430,186 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 10:  # AI Gateway
+        selected_provider = "ai-gateway"
+        print()
+        print_header("AI Gateway API Key")
+        pconfig = PROVIDER_REGISTRY["ai-gateway"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API key at: https://vercel.com/docs/ai-gateway")
+        print()
+
+        existing_key = get_env_value("AI_GATEWAY_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  AI Gateway API key", password=True)
+                if api_key:
+                    save_env_value("AI_GATEWAY_API_KEY", api_key)
+                    print_success("AI Gateway API key updated")
+        else:
+            api_key = prompt("  AI Gateway API key", password=True)
+            if api_key:
+                save_env_value("AI_GATEWAY_API_KEY", api_key)
+                print_success("AI Gateway API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
+        _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
+
+    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+        selected_provider = "alibaba"
+        print()
+        print_header("Alibaba Cloud / DashScope API Key")
+        pconfig = PROVIDER_REGISTRY["alibaba"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API key at: https://modelstudio.console.alibabacloud.com/")
+        print()
+
+        existing_key = get_env_value("DASHSCOPE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                new_key = prompt("  DashScope API key", password=True)
+                if new_key:
+                    save_env_value("DASHSCOPE_API_KEY", new_key)
+                    print_success("DashScope API key updated")
+        else:
+            new_key = prompt("  DashScope API key", password=True)
+            if new_key:
+                save_env_value("DASHSCOPE_API_KEY", new_key)
+                print_success("DashScope API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
+        _set_model_provider(config, "alibaba", pconfig.inference_base_url)
+
+    elif provider_idx == 12:  # OpenCode Zen
+        selected_provider = "opencode-zen"
+        print()
+        print_header("OpenCode Zen API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-zen"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://opencode.ai/auth")
+        print()
+
+        existing_key = get_env_value("OPENCODE_ZEN_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  OpenCode Zen API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_ZEN_API_KEY", api_key)
+                    print_success("OpenCode Zen API key updated")
+        else:
+            api_key = prompt("  OpenCode Zen API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_ZEN_API_KEY", api_key)
+                print_success("OpenCode Zen API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 13:  # OpenCode Go
+        selected_provider = "opencode-go"
+        print()
+        print_header("OpenCode Go API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-go"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://opencode.ai/auth")
+        print()
+
+        existing_key = get_env_value("OPENCODE_GO_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  OpenCode Go API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_GO_API_KEY", api_key)
+                    print_success("OpenCode Go API key updated")
+        else:
+            api_key = prompt("  OpenCode Go API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_GO_API_KEY", api_key)
+                print_success("OpenCode Go API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 14:  # GitHub Copilot
+        selected_provider = "copilot"
+        print()
+        print_header("GitHub Copilot")
+        pconfig = PROVIDER_REGISTRY["copilot"]
+        print_info("Hermes can use GITHUB_TOKEN, GH_TOKEN, or your gh CLI login.")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print()
+
+        copilot_creds = resolve_api_key_provider_credentials("copilot")
+        source = copilot_creds.get("source", "")
+        token = copilot_creds.get("api_key", "")
+        if token:
+            if source in ("GITHUB_TOKEN", "GH_TOKEN"):
+                print_info(f"Current: {token[:8]}... ({source})")
+            elif source == "gh auth token":
+                print_info("Current: authenticated via `gh auth token`")
+            else:
+                print_info("Current: GitHub token configured")
+        else:
+            api_key = prompt("  GitHub token", password=True)
+            if api_key:
+                save_env_value("GITHUB_TOKEN", api_key)
+                print_success("GitHub token saved")
+            else:
+                print_warning("Skipped - agent won't work without a GitHub token or gh auth login")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "copilot", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 15:  # GitHub Copilot ACP
+        selected_provider = "copilot-acp"
+        print()
+        print_header("GitHub Copilot ACP")
+        pconfig = PROVIDER_REGISTRY["copilot-acp"]
+        print_info("Hermes will start `copilot --acp --stdio` for each request.")
+        print_info("Use HERMES_COPILOT_ACP_COMMAND or COPILOT_CLI_PATH to override the command.")
+        print_info(f"Base marker: {pconfig.inference_base_url}")
+        print()
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 16 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1264,11 +1641,14 @@ def setup_model_provider(config: dict):
     if _vision_needs_setup:
         _prov_names = {
             "nous-api": "Nous Portal API key",
+            "copilot": "GitHub Copilot",
+            "copilot-acp": "GitHub Copilot ACP",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "minimax": "MiniMax",
             "minimax-cn": "MiniMax CN",
             "anthropic": "Anthropic",
+            "ai-gateway": "AI Gateway",
             "custom": "your custom endpoint",
         }
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
@@ -1402,7 +1782,15 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+        elif selected_provider == "copilot-acp":
+            _setup_provider_model_selection(
+                config, selected_provider, current_model,
+                prompt_choice, prompt,
+            )
+            model_cfg = _model_config_dict(config)
+            model_cfg["api_mode"] = "chat_completions"
+            config["model"] = model_cfg
+        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1463,10 +1851,168 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)
+
+    # Offer TTS provider selection at the end of model setup
+    _setup_tts_provider(config)
+
+
+# =============================================================================
+# Section 1b: TTS Provider Configuration
+# =============================================================================
+
+
+def _check_espeak_ng() -> bool:
+    """Check if espeak-ng is installed."""
+    import shutil
+    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
+
+
+def _install_neutts_deps() -> bool:
+    """Install NeuTTS dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    # Check espeak-ng
+    if not _check_espeak_ng():
+        print()
+        print_warning("NeuTTS requires espeak-ng for phonemization.")
+        if sys.platform == "darwin":
+            print_info("Install with: brew install espeak-ng")
+        elif sys.platform == "win32":
+            print_info("Install with: choco install espeak-ng")
+        else:
+            print_info("Install with: sudo apt install espeak-ng")
+        print()
+        if prompt_yes_no("Install espeak-ng now?", True):
+            try:
+                if sys.platform == "darwin":
+                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
+                elif sys.platform == "win32":
+                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                else:
+                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
+                print_success("espeak-ng installed")
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print_warning(f"Could not install espeak-ng automatically: {e}")
+                print_info("Please install it manually and re-run setup.")
+                return False
+        else:
+            print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
+
+    # Install neutts Python package
+    print()
+    print_info("Installing neutts Python package...")
+    print_info("This will also download the TTS model (~300MB) on first use.")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],
+            check=True, timeout=300,
+        )
+        print_success("neutts installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install neutts: {e}")
+        print_info("Try manually: python -m pip install -U neutts[all]")
+        return False
+
+
+def _setup_tts_provider(config: dict):
+    """Interactive TTS provider selection with install flow for NeuTTS."""
+    tts_config = config.get("tts", {})
+    current_provider = tts_config.get("provider", "edge")
+
+    provider_labels = {
+        "edge": "Edge TTS",
+        "elevenlabs": "ElevenLabs",
+        "openai": "OpenAI TTS",
+        "neutts": "NeuTTS",
+    }
+    current_label = provider_labels.get(current_provider, current_provider)
+
+    print()
+    print_header("Text-to-Speech Provider (optional)")
+    print_info(f"Current: {current_label}")
+    print()
+
+    choices = [
+        "Edge TTS (free, cloud-based, no setup needed)",
+        "ElevenLabs (premium quality, needs API key)",
+        "OpenAI TTS (good quality, needs API key)",
+        "NeuTTS (local on-device, free, ~300MB model download)",
+        f"Keep current ({current_label})",
+    ]
+    idx = prompt_choice("Select TTS provider:", choices, len(choices) - 1)
+
+    if idx == 4:  # Keep current
+        return
+
+    providers = ["edge", "elevenlabs", "openai", "neutts"]
+    selected = providers[idx]
+
+    if selected == "neutts":
+        # Check if already installed
+        try:
+            import importlib.util
+            already_installed = importlib.util.find_spec("neutts") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("NeuTTS is already installed")
+        else:
+            print()
+            print_info("NeuTTS requires:")
+            print_info("  • Python package: neutts (~50MB install + ~300MB model on first use)")
+            print_info("  • System package: espeak-ng (phonemizer)")
+            print()
+            if prompt_yes_no("Install NeuTTS dependencies now?", True):
+                if not _install_neutts_deps():
+                    print_warning("NeuTTS installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'neutts' after installing manually.")
+                selected = "edge"
+
+    elif selected == "elevenlabs":
+        existing = get_env_value("ELEVENLABS_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("ElevenLabs API key", password=True)
+            if api_key:
+                save_env_value("ELEVENLABS_API_KEY", api_key)
+                print_success("ElevenLabs API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "openai":
+        existing = get_env_value("VOICE_TOOLS_OPENAI_KEY")
+        if not existing:
+            print()
+            api_key = prompt("OpenAI API key for TTS", password=True)
+            if api_key:
+                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
+                print_success("OpenAI TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    # Save the selection
+    if "tts" not in config:
+        config["tts"] = {}
+    config["tts"]["provider"] = selected
+    save_config(config)
+    print_success(f"TTS provider set to: {provider_labels.get(selected, selected)}")
+
+
+def setup_tts(config: dict):
+    """Standalone TTS setup (for 'hermes setup tts')."""
+    _setup_tts_provider(config)
 
 
 # =============================================================================
@@ -2180,6 +2726,119 @@ def setup_gateway(config: dict):
                     "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
                 )
 
+    # ── Matrix ──
+    existing_matrix = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
+    if existing_matrix:
+        print_info("Matrix: already configured")
+        if prompt_yes_no("Reconfigure Matrix?", False):
+            existing_matrix = None
+
+    if not existing_matrix and prompt_yes_no("Set up Matrix?", False):
+        print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
+        print_info("   1. Create a bot user on your homeserver, or use your own account")
+        print_info("   2. Get an access token from Element, or provide user ID + password")
+        print()
+        homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
+        if homeserver:
+            save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
+
+        print()
+        print_info("Auth: provide an access token (recommended), or user ID + password.")
+        token = prompt("Access token (leave empty for password login)", password=True)
+        if token:
+            save_env_value("MATRIX_ACCESS_TOKEN", token)
+            user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
+            if user_id:
+                save_env_value("MATRIX_USER_ID", user_id)
+            print_success("Matrix access token saved")
+        else:
+            user_id = prompt("User ID (@bot:server)")
+            if user_id:
+                save_env_value("MATRIX_USER_ID", user_id)
+            password = prompt("Password", password=True)
+            if password:
+                save_env_value("MATRIX_PASSWORD", password)
+                print_success("Matrix credentials saved")
+
+        if token or get_env_value("MATRIX_PASSWORD"):
+            # E2EE
+            print()
+            if prompt_yes_no("Enable end-to-end encryption (E2EE)?", False):
+                save_env_value("MATRIX_ENCRYPTION", "true")
+                print_success("E2EE enabled")
+                print_info("   Requires: pip install 'matrix-nio[e2e]'")
+
+            # Allowed users
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   Matrix user IDs look like @username:server")
+            print()
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+            if allowed_users:
+                save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Matrix allowlist configured")
+            else:
+                print_info(
+                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
+                )
+
+            # Home room
+            print()
+            print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
+            print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
+            print_info("   You can also set this later by typing /set-home in a Matrix room.")
+            home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+            if home_room:
+                save_env_value("MATRIX_HOME_ROOM", home_room)
+
+    # ── Mattermost ──
+    existing_mattermost = get_env_value("MATTERMOST_TOKEN")
+    if existing_mattermost:
+        print_info("Mattermost: already configured")
+        if prompt_yes_no("Reconfigure Mattermost?", False):
+            existing_mattermost = None
+
+    if not existing_mattermost and prompt_yes_no("Set up Mattermost?", False):
+        print_info("Works with any self-hosted Mattermost instance.")
+        print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
+        print_info("   2. Copy the bot token")
+        print()
+        mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+        if mm_url:
+            save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
+        token = prompt("Bot token", password=True)
+        if token:
+            save_env_value("MATTERMOST_TOKEN", token)
+            print_success("Mattermost token saved")
+
+            # Allowed users
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   To find your user ID: click your avatar → Profile")
+            print_info("   or use the API: GET /api/v4/users/me")
+            print()
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+            if allowed_users:
+                save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Mattermost allowlist configured")
+            else:
+                print_info(
+                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
+                )
+
+            # Home channel
+            print()
+            print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+            print_info("   To get a channel ID: click channel name → View Info → copy the ID")
+            print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
+            home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+            if home_channel:
+                save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+
     # ── WhatsApp ──
     existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
@@ -2197,6 +2856,9 @@ def setup_gateway(config: dict):
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
         or get_env_value("SLACK_BOT_TOKEN")
+        or get_env_value("MATTERMOST_TOKEN")
+        or get_env_value("MATRIX_ACCESS_TOKEN")
+        or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
     )
     if any_messaging:
@@ -2445,6 +3107,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
+    ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.2.0"
+version = "0.4.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ dependencies = [
   "prompt_toolkit",
   # Tools
   "firecrawl-py",
+  "parallel-web>=0.4.2",
   "fal-client",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts",
@@ -46,6 +47,7 @@ dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
 messaging = ["python-telegram-bot>=20.0", "discord.py[voice]>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
+matrix = ["matrix-nio[e2e]>=0.24.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
 voice = ["sounddevice>=0.4.6", "numpy>=1.24.0"]
@@ -56,6 +58,7 @@ pty = [
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
+sms = ["aiohttp>=3.9.0"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
@@ -78,6 +81,7 @@ all = [
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
+  "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[voice]",
 ]

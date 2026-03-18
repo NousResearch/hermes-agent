@@ -35,7 +35,9 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("process_command called too many times")
             return original(self_inner, cmd)
 
-        with patch.object(type(cli_obj), 'process_command', counting_process_command):
+        # Mock show_config since the test is about recursion, not config display
+        with patch.object(type(cli_obj), 'process_command', counting_process_command), \
+             patch.object(cli_obj, 'show_config'):
             try:
                 cli_obj.process_command("/con set key value")
             except RecursionError:
@@ -57,7 +59,9 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("Infinite recursion detected")
             return original_pc(self_inner, cmd)
 
-        with patch.object(HermesCLI, 'process_command', guarded):
+        # Mock show_config since the test is about recursion, not config display
+        with patch.object(HermesCLI, 'process_command', guarded), \
+             patch.object(cli_obj, 'show_config'):
             try:
                 cli_obj.process_command("/config set key value")
             except RecursionError:
@@ -68,15 +72,17 @@ class TestSlashCommandPrefixMatching:
     def test_ambiguous_prefix_shows_suggestions(self):
         """/re matches multiple commands — should show ambiguous message."""
         cli_obj = _make_cli()
-        cli_obj.process_command("/re")
-        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj.process_command("/re")
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         assert "Ambiguous" in printed or "Did you mean" in printed
 
     def test_unknown_command_shows_error(self):
         """/xyz should show unknown command error."""
         cli_obj = _make_cli()
-        cli_obj.process_command("/xyz")
-        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj.process_command("/xyz")
+            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         assert "Unknown command" in printed
 
     def test_exact_command_still_works(self):
@@ -112,6 +118,43 @@ class TestSlashCommandPrefixMatching:
             cli_obj.process_command("/help")
 
         # /help is an exact match so should work normally, not show ambiguous
+        mock_help.assert_called_once()
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_shortest_match_preferred_over_longer_skill(self):
+        """/qui should dispatch to /quit (5 chars) not report ambiguous with /quint-pipeline (15 chars)."""
+        cli_obj = _make_cli()
+        fake_skill = {"/quint-pipeline": {"name": "Quint Pipeline", "description": "test"}}
+
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill):
+            # /quit is caught by the exact "/quit" branch → process_command returns False
+            result = cli_obj.process_command("/qui")
+
+        # Returns False because /quit was dispatched (exits chat loop)
+        assert result is False
+        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
+        assert "Ambiguous" not in printed
+
+    def test_tied_shortest_matches_still_ambiguous(self):
+        """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
+        cli_obj = _make_cli()
+        printed = []
+        import cli as cli_mod
+        with patch.object(cli_mod, '_cprint', side_effect=lambda t: printed.append(t)):
+            cli_obj.process_command("/re")
+        combined = " ".join(printed)
+        assert "Ambiguous" in combined or "Did you mean" in combined
+
+    def test_exact_typed_name_dispatches_over_longer_match(self):
+        """/help typed with /help-extra skill installed → exact match wins."""
+        cli_obj = _make_cli()
+        fake_skill = {"/help-extra": {"name": "Help Extra", "description": ""}}
+        import cli as cli_mod
+        with patch.object(cli_mod, '_skill_commands', fake_skill), \
+             patch.object(cli_obj, 'show_help') as mock_help:
+            cli_obj.process_command("/help")
         mock_help.assert_called_once()
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed

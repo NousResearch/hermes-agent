@@ -87,6 +87,7 @@ def _looks_like_gateway_process(pid: int) -> bool:
 
     patterns = (
         "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     )
@@ -105,6 +106,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     cmdline = " ".join(str(part) for part in argv)
     patterns = (
         "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     )
@@ -195,8 +197,8 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload.setdefault("kind", _GATEWAY_KIND)
-    payload.setdefault("pid", os.getpid())
-    payload.setdefault("start_time", _get_process_start_time(os.getpid()))
+    payload["pid"] = os.getpid()
+    payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not None:

@@ -294,6 +294,7 @@ class MessageEvent:
     
     # Reply context
     reply_to_message_id: Optional[str] = None
+    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -510,6 +511,7 @@ class BasePlatformAdapter(ABC):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an image natively via the platform API.
@@ -528,6 +530,7 @@ class BasePlatformAdapter(ABC):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
@@ -536,7 +539,7 @@ class BasePlatformAdapter(ABC):
         (e.g., Telegram send_animation) so they auto-play inline.
         Default falls back to send_image.
         """
-        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to)
+        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
     
     @staticmethod
     def _is_animation_url(url: str) -> bool:
@@ -726,7 +729,75 @@ class BasePlatformAdapter(ABC):
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned
-    
+
+    @staticmethod
+    def extract_local_files(content: str) -> Tuple[List[str], str]:
+        """
+        Detect bare local file paths in response text for native media delivery.
+
+        Matches absolute paths (/...) and tilde paths (~/) ending in common
+        image or video extensions.  Validates each candidate with
+        ``os.path.isfile()`` to avoid false positives from URLs or
+        non-existent paths.
+
+        Paths inside fenced code blocks (``` ... ```) and inline code
+        (`...`) are ignored so that code samples are never mutilated.
+
+        Returns:
+            Tuple of (list of expanded file paths, cleaned text with the
+            raw path strings removed).
+        """
+        _LOCAL_MEDIA_EXTS = (
+            '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            '.mp4', '.mov', '.avi', '.mkv', '.webm',
+        )
+        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
+
+        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
+        #             and relative paths (./foo.png)
+        # (?:~/|/)    anchors to absolute or home-relative paths
+        path_re = re.compile(
+            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            re.IGNORECASE,
+        )
+
+        # Build spans covered by fenced code blocks and inline code
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
+        found: list = []  # (raw_match_text, expanded_path)
+        for match in path_re.finditer(content):
+            if _in_code(match.start()):
+                continue
+            raw = match.group(0)
+            expanded = os.path.expanduser(raw)
+            if os.path.isfile(expanded):
+                found.append((raw, expanded))
+
+        # Deduplicate by expanded path, preserving discovery order
+        seen: set = set()
+        unique: list = []
+        for raw, expanded in found:
+            if expanded not in seen:
+                seen.add(expanded)
+                unique.append((raw, expanded))
+
+        paths = [expanded for _, expanded in unique]
+
+        cleaned = content
+        if unique:
+            for raw, _exp in unique:
+                cleaned = cleaned.replace(raw, '')
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+        return paths, cleaned
+
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -839,8 +910,17 @@ class BasePlatformAdapter(ABC):
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
+                # Strip any remaining internal directives from message body (fixes #1561)
+                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+
+                # Auto-detect bare local file paths for native media delivery
+                # (helps small models that don't use MEDIA: syntax)
+                local_files, text_content = self.extract_local_files(text_content)
+                if local_files:
+                    logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Skipped when the chat has voice mode disabled (/voice off)
@@ -934,7 +1014,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 for media_path, is_voice in media_files:
@@ -971,7 +1051,34 @@ class BasePlatformAdapter(ABC):
                             print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
                     except Exception as media_err:
                         print(f"[{self.name}] Error sending media: {media_err}")
-            
+
+                # Send auto-detected local files as native attachments
+                for file_path in local_files:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        ext = Path(file_path).suffix.lower()
+                        if ext in _IMAGE_EXTS:
+                            await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                    except Exception as file_err:
+                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
@@ -992,6 +1099,22 @@ class BasePlatformAdapter(ABC):
             print(f"[{self.name}] Error handling message: {e}")
             import traceback
             traceback.print_exc()
+            # Send the error to the user so they aren't left with radio silence
+            try:
+                error_type = type(e).__name__
+                error_detail = str(e)[:300] if str(e) else "no details available"
+                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=(
+                        f"Sorry, I encountered an error ({error_type}).\n"
+                        f"{error_detail}\n"
+                        "Try again or use /reset to start a fresh session."
+                    ),
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing indicator
             typing_task.cancel()
@@ -1077,7 +1200,8 @@ class BasePlatformAdapter(ABC):
         """
         return content
     
-    def truncate_message(self, content: str, max_length: int = 4096) -> List[str]:
+    @staticmethod
+    def truncate_message(content: str, max_length: int = 4096) -> List[str]:
         """
         Split a long message into chunks, preserving code block boundaries.
 
@@ -1128,6 +1252,27 @@ class BasePlatformAdapter(ABC):
                 split_at = region.rfind(" ")
             if split_at < 1:
                 split_at = headroom
+
+            # Avoid splitting inside an inline code span (`...`).
+            # If the text before split_at has an odd number of unescaped
+            # backticks, the split falls inside inline code — the resulting
+            # chunk would have an unpaired backtick and any special characters
+            # (like parentheses) inside the broken span would be unescaped,
+            # causing MarkdownV2 parse errors on Telegram.
+            candidate = remaining[:split_at]
+            backtick_count = candidate.count("`") - candidate.count("\\`")
+            if backtick_count % 2 == 1:
+                # Find the last unescaped backtick and split before it
+                last_bt = candidate.rfind("`")
+                while last_bt > 0 and candidate[last_bt - 1] == "\\":
+                    last_bt = candidate.rfind("`", 0, last_bt)
+                if last_bt > 0:
+                    # Try to find a space or newline just before the backtick
+                    safe_split = candidate.rfind(" ", 0, last_bt)
+                    nl_split = candidate.rfind("\n", 0, last_bt)
+                    safe_split = max(safe_split, nl_split)
+                    if safe_split > headroom // 4:
+                        split_at = safe_split
 
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()

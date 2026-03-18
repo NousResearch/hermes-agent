@@ -26,6 +26,20 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_ai_gateway(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-ai-gw-key")
+
+    resolved = rp.resolve_runtime_provider(requested="ai-gateway")
+
+    assert resolved["provider"] == "ai-gateway"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
+    assert resolved["api_key"] == "test-ai-gw-key"
+    assert resolved["requested_provider"] == "ai-gateway"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
@@ -312,3 +326,78 @@ def test_resolve_requested_provider_precedence(monkeypatch):
 
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     assert rp.resolve_requested_provider() == "auto"
+
+
+# ── api_mode config override tests ──────────────────────────────────────
+
+
+def test_model_config_api_mode(monkeypatch):
+    """model.api_mode in config.yaml should override the default chat_completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:9208/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9208/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
+
+
+def test_invalid_api_mode_ignored(monkeypatch):
+    """Invalid api_mode values should fall back to chat_completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "bogus_mode"})
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9208/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_named_custom_provider_api_mode(monkeypatch):
+    """custom_providers entries with api_mode should use it."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "sk-test",
+            "api_mode": "codex_responses",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "http://localhost:8000/v1"
+
+
+def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
+    """custom_providers entries without api_mode should default to chat_completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "sk-test",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["api_mode"] == "chat_completions"

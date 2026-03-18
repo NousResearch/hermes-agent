@@ -49,6 +49,27 @@ def _build_agent(monkeypatch):
     return agent
 
 
+def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="copilot",
+        api_mode="codex_responses",
+        base_url="https://api.githubcopilot.com",
+        api_key="gh-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -242,6 +263,28 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["model"] == "gpt-5.4"
+    assert kwargs["store"] is False
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
+    assert kwargs["reasoning"] == {"effort": "medium"}
+    assert "prompt_cache_key" not in kwargs
+    assert "include" not in kwargs
+
+
+def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch, model="gpt-4.1")
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert "reasoning" not in kwargs
+    assert "include" not in kwargs
+    assert "prompt_cache_key" not in kwargs
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
@@ -750,3 +793,40 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
+    """Debug dumps should show /responses URL when in codex_responses mode."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
+
+
+def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):
+    """Debug dumps should show /chat/completions URL for chat_completions mode."""
+    import json
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"

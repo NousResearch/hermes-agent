@@ -2,14 +2,9 @@
 
 Post-processing effects applied to the pixel canvas (`numpy uint8 array, shape (H,W,3)`) after character rendering and before encoding. Also covers **pixel-level blend modes**, **feedback buffers**, and the **ShaderChain** compositor.
 
-**Cross-references:**
-- Grid system, palettes, color (HSV + OKLAB): `architecture.md`
-- Effect building blocks (value fields, noise, SDFs): `effects.md`
-- `_render_vf()`, blend modes, tonemap, masking: `composition.md`
-- Scene protocol, render_clip, SCENES table: `scenes.md`
-- Complete scene examples with shader usage: `examples.md`
-- Performance tuning (frame budget, worker count): `optimization.md`
-- Encoding pitfalls (ffmpeg flags, color space): `troubleshooting.md`
+> **See also:** composition.md (blend modes, tonemap) · effects.md · scenes.md · architecture.md · optimization.md · troubleshooting.md
+>
+> **Blend modes:** For the 20 pixel blend modes and `blend_canvas()`, see `composition.md`. All blending uses `blend_canvas(base, top, mode, opacity)`.
 
 ## Design Philosophy
 

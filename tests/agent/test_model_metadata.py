@@ -110,10 +110,16 @@ class TestDefaultContextLengths:
             if "claude" in key:
                 assert value == 200000, f"{key} should be 200000"
 
-    def test_gpt4_models_128k(self):
+    def test_gpt4_models_128k_or_1m(self):
+        # gpt-4.1 and gpt-4.1-mini have 1M context; other gpt-4* have 128k
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "gpt-4" in key:
+            if "gpt-4" in key and "gpt-4.1" not in key:
                 assert value == 128000, f"{key} should be 128000"
+
+    def test_gpt41_models_1m(self):
+        for key, value in DEFAULT_CONTEXT_LENGTHS.items():
+            if "gpt-4.1" in key:
+                assert value == 1047576, f"{key} should be 1047576"
 
     def test_gemini_models_1m(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
@@ -181,6 +187,36 @@ class TestGetModelContextLength:
             # No base_url → cache skipped → falls to probe tier
             result = get_model_context_length("custom/model")
             assert result == CONTEXT_PROBE_TIERS[0]
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_metadata_beats_fuzzy_default(self, mock_endpoint_fetch, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "zai-org/GLM-5-TEE": {"context_length": 65536}
+        }
+
+        result = get_model_context_length(
+            "zai-org/GLM-5-TEE",
+            base_url="https://llm.chutes.ai/v1",
+            api_key="test-key",
+        )
+
+        assert result == 65536
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "zai-org/GLM-5-TEE",
+            base_url="https://llm.chutes.ai/v1",
+            api_key="test-key",
+        )
+
+        assert result == CONTEXT_PROBE_TIERS[0]
 
 
 # =========================================================================
@@ -251,6 +287,25 @@ class TestFetchModelMetadata:
         assert "anthropic/claude-3.5-sonnet:beta" in result
         assert "anthropic/claude-3.5-sonnet" in result
         assert result["anthropic/claude-3.5-sonnet"]["context_length"] == 200000
+
+    @patch("agent.model_metadata.requests.get")
+    def test_provider_prefixed_models_get_bare_aliases(self, mock_get):
+        self._reset_cache()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{
+                "id": "provider/test-model",
+                "context_length": 123456,
+                "name": "Provider: Test Model",
+            }]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = fetch_model_metadata(force_refresh=True)
+
+        assert result["provider/test-model"]["context_length"] == 123456
+        assert result["test-model"]["context_length"] == 123456
 
     @patch("agent.model_metadata.requests.get")
     def test_ttl_expiry_triggers_refetch(self, mock_get):

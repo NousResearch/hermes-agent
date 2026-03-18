@@ -631,6 +631,28 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
+    def test_reasoning_sent_for_copilot_gpt5(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-4.1"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
@@ -806,7 +828,7 @@ class TestConcurrentToolExecution:
                 mock_con.assert_not_called()
 
     def test_multiple_tools_uses_concurrent_path(self, agent):
-        """Multiple non-interactive tools should use concurrent path."""
+        """Multiple read-only tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -816,6 +838,94 @@ class TestConcurrentToolExecution:
                 agent._execute_tool_calls(mock_msg, messages, "task-1")
                 mock_con.assert_called_once()
                 mock_seq.assert_not_called()
+
+    def test_terminal_batch_forces_sequential(self, agent):
+        """Stateful tools should not share the concurrent execution path."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_write_batch_forces_sequential(self, agent):
+        """File mutations should stay ordered within a turn."""
+        tc1 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c1")
+        tc2 = _mock_tool_call(name="write_file", arguments='{"path":"x.py","content":"print(1)"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_disjoint_write_batch_uses_concurrent_path(self, agent):
+        """Independent file writes should still run concurrently."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/b.py","content":"print(2)"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_con.assert_called_once()
+                mock_seq.assert_not_called()
+
+    def test_overlapping_write_batch_forces_sequential(self, agent):
+        """Writes to the same file must stay ordered."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/a.py","old_string":"1","new_string":"2"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_malformed_json_args_forces_sequential(self, agent):
+        """Unparseable tool arguments should fall back to sequential."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments="NOT JSON {{{", call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_non_dict_args_forces_sequential(self, agent):
+        """Tool arguments that parse to a non-dict type should fall back to sequential."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""
@@ -941,6 +1051,39 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+
+class TestPathsOverlap:
+    """Unit tests for the _paths_overlap helper."""
+
+    def test_same_path_overlaps(self):
+        from run_agent import _paths_overlap
+        assert _paths_overlap(Path("src/a.py"), Path("src/a.py"))
+
+    def test_siblings_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/a.py"), Path("src/b.py"))
+
+    def test_parent_child_overlap(self):
+        from run_agent import _paths_overlap
+        assert _paths_overlap(Path("src"), Path("src/sub/a.py"))
+
+    def test_different_roots_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/a.py"), Path("other/a.py"))
+
+    def test_nested_vs_flat_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/sub/a.py"), Path("src/a.py"))
+
+    def test_empty_paths_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path(""), Path(""))
+
+    def test_one_empty_path_does_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path(""), Path("src/a.py"))
+        assert not _paths_overlap(Path("src/a.py"), Path(""))
 
 
 class TestHandleMaxIterations:
@@ -2172,6 +2315,41 @@ class TestFallbackAnthropicProvider:
         assert agent.client is mock_client
 
 
+def test_aiagent_uses_copilot_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_is_openai_client_closed_honors_custom_client_flag():
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=True)) is True
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False
+
+
 class TestAnthropicBaseUrlPassthrough:
     """Bug fix: base_url was filtered with 'anthropic in base_url', blocking proxies."""
 
@@ -2329,8 +2507,9 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
         callback = MagicMock()
+        agent.stream_delta_callback = callback
 
-        resp = agent._streaming_api_call({"messages": []}, callback)
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello World"
         assert resp.choices[0].finish_reason == "stop"
@@ -2347,7 +2526,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 1
@@ -2363,7 +2542,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 2
@@ -2378,7 +2557,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "I'll search"
         assert len(resp.choices[0].message.tool_calls) == 1
@@ -2387,7 +2566,7 @@ class TestStreamingApiCall:
         chunks = [_make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content is None
         assert resp.choices[0].message.tool_calls is None
@@ -2399,9 +2578,9 @@ class TestStreamingApiCall:
             _make_chunk(finish_reason="stop"),
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
-        callback = MagicMock(side_effect=ValueError("boom"))
+        agent.stream_delta_callback = MagicMock(side_effect=ValueError("boom"))
 
-        resp = agent._streaming_api_call({"messages": []}, callback)
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello World"
 
@@ -2412,7 +2591,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.model == "gpt-4o"
 
@@ -2420,22 +2599,23 @@ class TestStreamingApiCall:
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        agent._streaming_api_call({"messages": [], "model": "test"}, MagicMock())
+        agent._interruptible_streaming_api_call({"messages": [], "model": "test"})
 
         call_kwargs = agent.client.chat.completions.create.call_args
         assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
 
-    def test_api_exception_propagated(self, agent):
+    def test_api_exception_falls_back_to_non_streaming(self, agent):
+        """When streaming fails before any deltas, fallback to non-streaming is attempted."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
-
+        # The fallback also uses the same client, so it'll fail too
         with pytest.raises(ConnectionError, match="fail"):
-            agent._streaming_api_call({"messages": []}, MagicMock())
+            agent._interruptible_streaming_api_call({"messages": []})
 
     def test_response_has_uuid_id(self, agent):
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.id.startswith("stream-")
         assert len(resp.id) > len("stream-")
@@ -2449,7 +2629,7 @@ class TestStreamingApiCall:
         ]
         agent.client.chat.completions.create.return_value = iter(chunks)
 
-        resp = agent._streaming_api_call({"messages": []}, MagicMock())
+        resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == "Hello"
         assert resp.model == "gpt-4"
@@ -2505,7 +2685,7 @@ class TestAnthropicInterruptHandler:
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""
         import inspect
-        source = inspect.getsource(AIAgent._streaming_api_call)
+        source = inspect.getsource(AIAgent._interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
             "_streaming_api_call must handle Anthropic interrupt"
 
@@ -2715,3 +2895,135 @@ class TestNormalizeCodexDictArguments:
         msg, _ = agent._normalize_codex_response(response)
         tc = msg.tool_calls[0]
         assert tc.function.arguments == args_str
+
+
+# ---------------------------------------------------------------------------
+# OAuth flag and nudge counter fixes (salvaged from PR #1797)
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthFlagAfterCredentialRefresh:
+    """_is_anthropic_oauth must update when token type changes during refresh."""
+
+    def test_oauth_flag_updates_api_key_to_oauth(self, agent):
+        """Refreshing from API key to OAuth token must set flag to True."""
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-api-old"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value="sk-ant-setup-oauth-token"),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is True
+
+    def test_oauth_flag_updates_oauth_to_api_key(self, agent):
+        """Refreshing from OAuth to API key must set flag to False."""
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_api_key = "sk-ant-setup-old"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value="sk-ant-api03-new-key"),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is False
+
+
+class TestFallbackSetsOAuthFlag:
+    """_try_activate_fallback must set _is_anthropic_oauth for Anthropic fallbacks."""
+
+    def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-setup-oauth-token"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is True
+
+    def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.anthropic.com/v1"
+        mock_client.api_key = "sk-ant-api03-regular-key"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token",
+                  return_value=None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._is_anthropic_oauth is False
+
+
+class TestMemoryNudgeCounterPersistence:
+    """_turns_since_memory must persist across run_conversation calls."""
+
+    def test_counters_initialized_in_init(self):
+        """Counters must exist on the agent after __init__."""
+        with patch("run_agent.get_tool_definitions", return_value=[]):
+            a = AIAgent(
+                model="test", api_key="test-key", provider="openrouter",
+                skip_context_files=True, skip_memory=True,
+            )
+        assert hasattr(a, "_turns_since_memory")
+        assert hasattr(a, "_iters_since_skill")
+        assert a._turns_since_memory == 0
+        assert a._iters_since_skill == 0
+
+    def test_counters_not_reset_in_preamble(self):
+        """The run_conversation preamble must not zero the nudge counters."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        # The preamble resets many fields (retry counts, budget, etc.)
+        # before the main loop. Find that reset block and verify our
+        # counters aren't in it. The reset block ends at iteration_budget.
+        preamble_end = src.index("self.iteration_budget = IterationBudget")
+        preamble = src[:preamble_end]
+        assert "self._turns_since_memory = 0" not in preamble
+        assert "self._iters_since_skill = 0" not in preamble
+
+
+class TestDeadRetryCode:
+    """Unreachable retry_count >= max_retries after raise must not exist."""
+
+    def test_no_unreachable_max_retries_after_backoff(self):
+        import inspect
+        source = inspect.getsource(AIAgent.run_conversation)
+        occurrences = source.count("if retry_count >= max_retries:")
+        assert occurrences == 2, (
+            f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
+            f"but found {occurrences}"
+        )

@@ -7,6 +7,7 @@ persistence via bind mounts.
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,42 @@ _DOCKER_SEARCH_PATHS = [
 ]
 
 _docker_executable: Optional[str] = None  # resolved once, cached
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
+    """Return a deduplicated list of valid environment variable names."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for item in forward_env or []:
+        if not isinstance(item, str):
+            logger.warning("Ignoring non-string docker_forward_env entry: %r", item)
+            continue
+
+        key = item.strip()
+        if not key:
+            continue
+        if not _ENV_VAR_NAME_RE.match(key):
+            logger.warning("Ignoring invalid docker_forward_env entry: %r", item)
+            continue
+        if key in seen:
+            continue
+
+        seen.add(key)
+        normalized.append(key)
+
+    return normalized
+
+
+def _load_hermes_env_vars() -> dict[str, str]:
+    """Load ~/.hermes/.env values without failing Docker command execution."""
+    try:
+        from hermes_cli.config import load_env
+
+        return load_env() or {}
+    except Exception:
+        return {}
 
 
 def find_docker() -> Optional[str]:
@@ -171,6 +208,7 @@ class DockerEnvironment(BaseEnvironment):
         persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
+        forward_env: list[str] | None = None,
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
@@ -181,6 +219,7 @@ class DockerEnvironment(BaseEnvironment):
         self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
+        self._forward_env = _normalize_forward_env_names(forward_env)
         self._container_id: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
@@ -355,8 +394,12 @@ class DockerEnvironment(BaseEnvironment):
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
-        for key in self._inner.config.forward_env:
-            if (value := os.getenv(key)) is not None:
+        hermes_env = _load_hermes_env_vars() if self._forward_env else {}
+        for key in self._forward_env:
+            value = os.getenv(key)
+            if value is None:
+                value = hermes_env.get(key)
+            if value is not None:
                 cmd.extend(["-e", f"{key}={value}"])
         for key, value in self._inner.config.env.items():
             cmd.extend(["-e", f"{key}={value}"])
@@ -414,6 +457,20 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         self._inner.cleanup()
+
+        if not self._persistent and self._container_id:
+            # Inner cleanup only runs `docker stop` in background; container is left
+            # as stopped. When container_persistent=false we must remove it.
+            docker_exe = find_docker() or self._inner.config.executable
+            try:
+                subprocess.run(
+                    [docker_exe, "rm", "-f", self._container_id],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except Exception as e:
+                logger.warning("Failed to remove non-persistent container %s: %s", self._container_id, e)
+            self._container_id = None
 
         if not self._persistent:
             import shutil

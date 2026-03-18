@@ -1579,7 +1579,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars or ``gh auth token``."""
+    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -1605,18 +1605,63 @@ def _model_flow_copilot(config, current_model=""):
 
     if not api_key:
         print("No GitHub token configured for GitHub Copilot.")
-        print("  Hermes can use GITHUB_TOKEN, GH_TOKEN, or your gh CLI login.")
+        print()
+        print("  Supported token types:")
+        print("    → OAuth token (gho_*)          via `copilot login` or device code flow")
+        print("    → Fine-grained PAT (github_pat_*)  with Copilot Requests permission")
+        print("    → GitHub App token (ghu_*)     via environment variable")
+        print("    ✗ Classic PAT (ghp_*)          NOT supported by Copilot API")
+        print()
+        print("  Options:")
+        print("    1. Login with GitHub (OAuth device code flow)")
+        print("    2. Enter a token manually")
+        print("    3. Cancel")
+        print()
         try:
-            new_key = input("GITHUB_TOKEN (or Enter to cancel): ").strip()
+            choice = input("  Choice [1-3]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
-        if not new_key:
-            print("Cancelled.")
+
+        if choice == "1":
+            try:
+                from hermes_cli.copilot_auth import copilot_device_code_login
+                token = copilot_device_code_login()
+                if token:
+                    save_env_value("COPILOT_GITHUB_TOKEN", token)
+                    print("  Copilot token saved.")
+                    print()
+                else:
+                    print("  Login cancelled or failed.")
+                    return
+            except Exception as exc:
+                print(f"  Login failed: {exc}")
+                return
+        elif choice == "2":
+            try:
+                new_key = input("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("  Cancelled.")
+                return
+            # Validate token type
+            try:
+                from hermes_cli.copilot_auth import validate_copilot_token
+                valid, msg = validate_copilot_token(new_key)
+                if not valid:
+                    print(f"  ✗ {msg}")
+                    return
+            except ImportError:
+                pass
+            save_env_value("COPILOT_GITHUB_TOKEN", new_key)
+            print("  Token saved.")
+            print()
+        else:
+            print("  Cancelled.")
             return
-        save_env_value("GITHUB_TOKEN", new_key)
-        print("GitHub token saved.")
-        print()
+
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = creds.get("api_key", "")
         source = creds.get("source", "")

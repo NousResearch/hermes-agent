@@ -617,10 +617,21 @@ def _extract_model_ids(payload: Any) -> list[str]:
 
 
 def copilot_default_headers() -> dict[str, str]:
-    return {
-        "Editor-Version": COPILOT_EDITOR_VERSION,
-        "User-Agent": "HermesAgent/1.0",
-    }
+    """Standard headers for Copilot API requests.
+
+    Includes Openai-Intent and x-initiator headers that opencode and the
+    Copilot CLI send on every request.
+    """
+    try:
+        from hermes_cli.copilot_auth import copilot_request_headers
+        return copilot_request_headers(is_agent_turn=True)
+    except ImportError:
+        return {
+            "Editor-Version": COPILOT_EDITOR_VERSION,
+            "User-Agent": "HermesAgent/1.0",
+            "Openai-Intent": "conversation-edits",
+            "x-initiator": "agent",
+        }
 
 
 def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:

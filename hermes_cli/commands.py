@@ -119,6 +119,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("audit", "Query the structured audit log", "Info",
+               args_hint="[sessions|summary|problems|--type|--tool|--source|--session|--keyword] [count]",
+               subcommands=("sessions", "summary", "problems")),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",

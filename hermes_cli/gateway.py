@@ -849,6 +849,32 @@ def launchd_stop():
     subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
     print("✓ Service stopped")
 
+
+def _wait_for_launchd_job_exit(label: str, timeout: float = 10.0):
+    """Block until the launchd job has no running PID, or timeout."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            # Job is no longer loaded — definitely not running.
+            return
+        # launchctl list output includes a "PID" line when the process is
+        # alive.  Once the process exits the PID field becomes '-' or 0, or
+        # the entire key disappears.
+        for line in result.stdout.splitlines():
+            if '"PID"' in line or line.strip().startswith('"PID"'):
+                # PID key still present — process is still alive.
+                break
+        else:
+            # No PID key found — process has exited.
+            return
+        time.sleep(0.3)
+
+
 def launchd_restart():
     try:
         launchd_stop()
@@ -856,6 +882,7 @@ def launchd_restart():
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; skipping stop")
+    _wait_for_launchd_job_exit("ai.hermes.gateway")
     launchd_start()
 
 def launchd_status(deep: bool = False):

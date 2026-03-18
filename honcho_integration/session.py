@@ -270,6 +270,15 @@ class HonchoSessionManager:
         self._cache[key] = session
         return session
 
+    def ensure_session(self, key: str) -> HonchoSession:
+        """Lazily ensure a session exists, creating it on first access.
+
+        Identical to get_or_create() but intended for deferred init paths
+        (e.g. recallMode=tools) where session creation is postponed until
+        the first tool invocation.
+        """
+        return self.get_or_create(key)
+
     def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
         if not session.messages:

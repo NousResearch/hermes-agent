@@ -50,9 +50,15 @@ def _check_honcho_available() -> bool:
 
 
 def _resolve_session_context(**kwargs):
-    """Prefer the calling agent's session context over module-global fallback."""
+    """Prefer the calling agent's session context over module-global fallback.
+
+    Lazily ensures the Honcho session exists on first tool invocation,
+    supporting deferred init when recallMode=tools.
+    """
     session_manager = kwargs.get("honcho_manager") or _session_manager
     session_key = kwargs.get("honcho_session_key") or _session_key
+    if session_manager and session_key:
+        session_manager.ensure_session(session_key)
     return session_manager, session_key
 
 

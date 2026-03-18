@@ -564,6 +564,7 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             effective_key = api_key or resolve_anthropic_token() or ""
+            self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
@@ -618,6 +619,7 @@ class AIAgent:
                     }
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+            self.api_key = client_kwargs.get("api_key", "")
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:
@@ -868,6 +870,7 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            api_key=getattr(self, "api_key", ""),
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -5466,6 +5469,7 @@ class AIAgent:
                             canonical_usage,
                             provider=self.provider,
                             base_url=self.base_url,
+                            api_key=getattr(self, "api_key", ""),
                         )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)

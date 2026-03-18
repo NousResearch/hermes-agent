@@ -1099,6 +1099,22 @@ class BasePlatformAdapter(ABC):
             print(f"[{self.name}] Error handling message: {e}")
             import traceback
             traceback.print_exc()
+            # Send the error to the user so they aren't left with radio silence
+            try:
+                error_type = type(e).__name__
+                error_detail = str(e)[:300] if str(e) else "no details available"
+                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=(
+                        f"Sorry, I encountered an error ({error_type}).\n"
+                        f"{error_detail}\n"
+                        "Try again or use /reset to start a fresh session."
+                    ),
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing indicator
             typing_task.cancel()

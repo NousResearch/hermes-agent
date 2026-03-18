@@ -146,6 +146,9 @@ _MAX_COMPLETION_KEYS = (
     "max_tokens",
 )
 
+# Local server hostnames / address patterns
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
 
 def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
@@ -176,6 +179,92 @@ def _is_known_provider_base_url(base_url: str) -> bool:
         "api.minimax",
     )
     return any(known_host in host for known_host in known_hosts)
+
+
+def is_local_endpoint(base_url: str) -> bool:
+    """Return True if base_url points to a local machine (localhost / RFC-1918 / WSL)."""
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return False
+    url = normalized if "://" in normalized else f"http://{normalized}"
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except Exception:
+        return False
+    if host in _LOCAL_HOSTS:
+        return True
+    # RFC-1918 private ranges and link-local
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        pass
+    # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
+    parts = host.split(".")
+    if len(parts) == 4:
+        try:
+            first, second = int(parts[0]), int(parts[1])
+            if first == 10:
+                return True
+            if first == 172 and 16 <= second <= 31:
+                return True
+            if first == 192 and second == 168:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def detect_local_server_type(base_url: str) -> Optional[str]:
+    """Detect which local server is running at base_url by probing known endpoints.
+
+    Returns one of: "ollama", "lmstudio", "vllm", "llamacpp", or None.
+    """
+    import httpx
+
+    normalized = _normalize_base_url(base_url)
+    server_url = normalized
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            # Ollama exposes /api/tags
+            try:
+                r = client.get(f"{server_url}/api/tags")
+                if r.status_code == 200:
+                    return "ollama"
+            except Exception:
+                pass
+            # LM Studio exposes /api/v0/models
+            try:
+                r = client.get(f"{server_url}/api/v0/models")
+                if r.status_code == 200:
+                    return "lmstudio"
+            except Exception:
+                pass
+            # llama.cpp exposes /props
+            try:
+                r = client.get(f"{server_url}/props")
+                if r.status_code == 200 and "default_generation_settings" in r.text:
+                    return "llamacpp"
+            except Exception:
+                pass
+            # vLLM: /version
+            try:
+                r = client.get(f"{server_url}/version")
+                if r.status_code == 200:
+                    data = r.json()
+                    if "version" in data:
+                        return "vllm"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return None
 
 
 def _iter_nested_dicts(value: Any):
@@ -383,7 +472,7 @@ def _get_context_cache_path() -> Path:
 
 
 def _load_context_cache() -> Dict[str, int]:
-    """Load the model+provider → context_length cache from disk."""
+    """Load the model+provider -> context_length cache from disk."""
     path = _get_context_cache_path()
     if not path.exists():
         return {}
@@ -412,7 +501,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
-        logger.info("Cached context length %s → %s tokens", key, f"{length:,}")
+        logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
 
@@ -460,6 +549,69 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
+    """Query a local server for the model's context length."""
+    import httpx
+
+    # Strip /v1 suffix to get the server root
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        server_type = detect_local_server_type(base_url)
+    except Exception:
+        server_type = None
+
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            # Ollama: /api/show returns model details with context info
+            if server_type == "ollama":
+                resp = client.post(f"{server_url}/api/show", json={"name": model})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Check model_info for context length
+                    model_info = data.get("model_info", {})
+                    for key, value in model_info.items():
+                        if "context_length" in key and isinstance(value, (int, float)):
+                            return int(value)
+                    # Check parameters string for num_ctx
+                    params = data.get("parameters", "")
+                    if "num_ctx" in params:
+                        for line in params.split("\n"):
+                            if "num_ctx" in line:
+                                parts = line.strip().split()
+                                if len(parts) >= 2:
+                                    try:
+                                        return int(parts[-1])
+                                    except ValueError:
+                                        pass
+
+            # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
+            resp = client.get(f"{server_url}/v1/models/{model}")
+            if resp.status_code == 200:
+                data = resp.json()
+                # vLLM returns max_model_len
+                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
+                if ctx and isinstance(ctx, (int, float)):
+                    return int(ctx)
+
+            # Try /v1/models and find the model in the list
+            resp = client.get(f"{server_url}/v1/models")
+            if resp.status_code == 200:
+                data = resp.json()
+                models_list = data.get("data", [])
+                for m in models_list:
+                    if m.get("id") == model:
+                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
+                        if ctx and isinstance(ctx, (int, float)):
+                            return int(ctx)
+    except Exception:
+        pass
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
@@ -472,9 +624,10 @@ def get_model_context_length(
     0. Explicit config override (model.context_length in config.yaml)
     1. Persistent cache (previously discovered via probing)
     2. Active endpoint metadata (/models for explicit custom endpoints)
-    3. OpenRouter API metadata
-    4. Hardcoded DEFAULT_CONTEXT_LENGTHS (fuzzy match for hosted routes only)
-    5. First probe tier (2M) — will be narrowed on first context error
+    3. Local server query (for local endpoints when model not in /models list)
+    4. OpenRouter API metadata
+    5. Hardcoded DEFAULT_CONTEXT_LENGTHS (fuzzy match for hosted routes only)
+    6. First probe tier (2M) — will be narrowed on first context error
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -507,6 +660,12 @@ def get_model_context_length(
         if not _is_known_provider_base_url(base_url):
             # Explicit third-party endpoints should not borrow fuzzy global
             # defaults from unrelated providers with similarly named models.
+            # But first try querying the local server directly.
+            if is_local_endpoint(base_url):
+                local_ctx = _query_local_context_length(model, base_url)
+                if local_ctx and local_ctx > 0:
+                    save_context_length(model, base_url, local_ctx)
+                    return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
@@ -527,7 +686,14 @@ def get_model_context_length(
         if default_model in model or model in default_model:
             return length
 
-    # 5. Unknown model — start at highest probe tier
+    # 5. Query local server for unknown models before defaulting to 2M
+    if base_url and is_local_endpoint(base_url):
+        local_ctx = _query_local_context_length(model, base_url)
+        if local_ctx and local_ctx > 0:
+            save_context_length(model, base_url, local_ctx)
+            return local_ctx
+
+    # 6. Unknown model — start at highest probe tier
     return CONTEXT_PROBE_TIERS[0]
 
 

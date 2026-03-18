@@ -154,9 +154,15 @@ hermes-agent/
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
+│   ├── hindsight_tools.py        # hindsight_retain / hindsight_recall / hindsight_reflect
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
+│
+├── hindsight_integration/    # Hindsight long-term memory integration
+│   ├── client.py                 # HindsightClientConfig + client factory (cloud & local modes)
+│   ├── cli.py                    # hermes hindsight setup|status|bank|budget commands
+│   └── session.py                # HindsightSessionManager (per-turn recall prefetch + inject)
 │
 ├── gateway/                  # Messaging gateway
 │   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron

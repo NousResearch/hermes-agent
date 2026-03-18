@@ -1870,6 +1870,33 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
+                # If STT failed, send a direct message to the user so they
+                # know voice isn't configured — don't rely on the agent to
+                # relay the error clearly.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(m in message_text for m in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _stt_adapter:
+                        try:
+                            await _stt_adapter.send(
+                                source.chat_id,
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway.\n\n"
+                                "For full setup instructions, type: `/skill hermes-agent-setup`",
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
 
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent

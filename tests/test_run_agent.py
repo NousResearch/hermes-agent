@@ -1762,6 +1762,38 @@ class TestSystemPromptStability:
         mock_prefetch.assert_not_called()
 
 
+class TestExtractAgentNameFromSoul:
+    """Tests for AIAgent._extract_agent_name_from_soul()."""
+
+    def test_standard_identity(self):
+        assert AIAgent._extract_agent_name_from_soul(
+            "You are Atlas Agent, an intelligent AI assistant."
+        ) == "atlas-agent"
+
+    def test_single_word_name(self):
+        assert AIAgent._extract_agent_name_from_soul(
+            "You are Sentinel, a protective agent."
+        ) == "sentinel"
+
+    def test_case_insensitive(self):
+        assert AIAgent._extract_agent_name_from_soul(
+            "you are My Custom Bot and you help people"
+        ) == "my-custom-bot"
+
+    def test_no_match(self):
+        assert AIAgent._extract_agent_name_from_soul(
+            "This is an AI assistant that helps with tasks."
+        ) is None
+
+    def test_hermes_default(self):
+        assert AIAgent._extract_agent_name_from_soul(
+            "You are Hermes Agent, an intelligent AI assistant created by Nous Research."
+        ) == "hermes-agent"
+
+    def test_empty_string(self):
+        assert AIAgent._extract_agent_name_from_soul("") is None
+
+
 class TestHonchoActivation:
     def test_disabled_config_skips_honcho_init(self):
         hcfg = HonchoClientConfig(

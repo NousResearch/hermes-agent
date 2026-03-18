@@ -14,6 +14,16 @@ import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
+COPILOT_BASE_URL = "https://api.githubcopilot.com"
+COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
+COPILOT_EDITOR_VERSION = "vscode/1.104.1"
+COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
+COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+
+# Backward-compatible aliases for the earlier GitHub Models-backed Copilot work.
+GITHUB_MODELS_BASE_URL = COPILOT_BASE_URL
+GITHUB_MODELS_CATALOG_URL = COPILOT_MODELS_URL
+
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.6",       "recommended"),
@@ -54,6 +64,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5.2-codex",
         "gpt-5.1-codex-mini",
         "gpt-5.1-codex-max",
+    ],
+    "copilot-acp": [
+        "copilot-acp",
+    ],
+    "copilot": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gemini-2.5-pro",
+        "grok-code-fast-1",
     ],
     "zai": [
         "glm-5",
@@ -173,7 +202,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
 _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",
+    "copilot-acp": "GitHub Copilot ACP",
     "nous": "Nous Portal",
+    "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -193,6 +224,12 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "github": "copilot",
+    "github-copilot": "copilot",
+    "github-models": "copilot",
+    "github-model": "copilot",
+    "github-copilot-acp": "copilot-acp",
+    "copilot-acp-agent": "copilot-acp",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -246,7 +283,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex",
+        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
@@ -467,6 +504,17 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
+def _resolve_copilot_catalog_api_key() -> str:
+    """Best-effort GitHub token for fetching the Copilot model catalog."""
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("copilot")
+        return str(creds.get("api_key") or "").strip()
+    except Exception:
+        return ""
+
+
 def provider_model_ids(provider: Optional[str]) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -480,6 +528,15 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         from hermes_cli.codex_models import get_codex_model_ids
 
         return get_codex_model_ids()
+    if normalized in {"copilot", "copilot-acp"}:
+        try:
+            live = _fetch_github_models(_resolve_copilot_catalog_api_key())
+            if live:
+                return live
+        except Exception:
+            pass
+        if normalized == "copilot-acp":
+            return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
@@ -558,6 +615,306 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         return None
 
 
+def _payload_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        data = payload.get("data", [])
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def _extract_model_ids(payload: Any) -> list[str]:
+    return [item.get("id", "") for item in _payload_items(payload) if item.get("id")]
+
+
+def copilot_default_headers() -> dict[str, str]:
+    """Standard headers for Copilot API requests.
+
+    Includes Openai-Intent and x-initiator headers that opencode and the
+    Copilot CLI send on every request.
+    """
+    try:
+        from hermes_cli.copilot_auth import copilot_request_headers
+        return copilot_request_headers(is_agent_turn=True)
+    except ImportError:
+        return {
+            "Editor-Version": COPILOT_EDITOR_VERSION,
+            "User-Agent": "HermesAgent/1.0",
+            "Openai-Intent": "conversation-edits",
+            "x-initiator": "agent",
+        }
+
+
+def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
+    model_id = str(item.get("id") or "").strip()
+    if not model_id:
+        return False
+
+    if item.get("model_picker_enabled") is False:
+        return False
+
+    capabilities = item.get("capabilities")
+    if isinstance(capabilities, dict):
+        model_type = str(capabilities.get("type") or "").strip().lower()
+        if model_type and model_type != "chat":
+            return False
+
+    supported_endpoints = item.get("supported_endpoints")
+    if isinstance(supported_endpoints, list):
+        normalized_endpoints = {
+            str(endpoint).strip()
+            for endpoint in supported_endpoints
+            if str(endpoint).strip()
+        }
+        if normalized_endpoints and not normalized_endpoints.intersection(
+            {"/chat/completions", "/responses", "/v1/messages"}
+        ):
+            return False
+
+    return True
+
+
+def fetch_github_model_catalog(
+    api_key: Optional[str] = None, timeout: float = 5.0
+) -> Optional[list[dict[str, Any]]]:
+    """Fetch the live GitHub Copilot model catalog for this account."""
+    attempts: list[dict[str, str]] = []
+    if api_key:
+        attempts.append({
+            **copilot_default_headers(),
+            "Authorization": f"Bearer {api_key}",
+        })
+    attempts.append(copilot_default_headers())
+
+    for headers in attempts:
+        req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                items = _payload_items(data)
+                models: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for item in items:
+                    if not _copilot_catalog_item_is_text_model(item):
+                        continue
+                    model_id = str(item.get("id") or "").strip()
+                    if not model_id or model_id in seen_ids:
+                        continue
+                    seen_ids.add(model_id)
+                    models.append(item)
+                if models:
+                    return models
+        except Exception:
+            continue
+    return None
+
+
+def _is_github_models_base_url(base_url: Optional[str]) -> bool:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return (
+        normalized.startswith(COPILOT_BASE_URL)
+        or normalized.startswith("https://models.github.ai/inference")
+    )
+
+
+def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
+    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
+    if not catalog:
+        return None
+    return [item.get("id", "") for item in catalog if item.get("id")]
+
+
+_COPILOT_MODEL_ALIASES = {
+    "openai/gpt-5": "gpt-5-mini",
+    "openai/gpt-5-chat": "gpt-5-mini",
+    "openai/gpt-5-mini": "gpt-5-mini",
+    "openai/gpt-5-nano": "gpt-5-mini",
+    "openai/gpt-4.1": "gpt-4.1",
+    "openai/gpt-4.1-mini": "gpt-4.1",
+    "openai/gpt-4.1-nano": "gpt-4.1",
+    "openai/gpt-4o": "gpt-4o",
+    "openai/gpt-4o-mini": "gpt-4o-mini",
+    "openai/o1": "gpt-5.2",
+    "openai/o1-mini": "gpt-5-mini",
+    "openai/o1-preview": "gpt-5.2",
+    "openai/o3": "gpt-5.3-codex",
+    "openai/o3-mini": "gpt-5-mini",
+    "openai/o4-mini": "gpt-5-mini",
+    "anthropic/claude-opus-4.6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
+    "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
+    "anthropic/claude-haiku-4.5": "claude-haiku-4.5",
+}
+
+
+def _copilot_catalog_ids(
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+) -> set[str]:
+    if catalog is None and api_key:
+        catalog = fetch_github_model_catalog(api_key=api_key)
+    if not catalog:
+        return set()
+    return {
+        str(item.get("id") or "").strip()
+        for item in catalog
+        if str(item.get("id") or "").strip()
+    }
+
+
+def normalize_copilot_model_id(
+    model_id: Optional[str],
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+) -> str:
+    raw = str(model_id or "").strip()
+    if not raw:
+        return ""
+
+    catalog_ids = _copilot_catalog_ids(catalog=catalog, api_key=api_key)
+    alias = _COPILOT_MODEL_ALIASES.get(raw)
+    if alias:
+        return alias
+
+    candidates = [raw]
+    if "/" in raw:
+        candidates.append(raw.split("/", 1)[1].strip())
+
+    if raw.endswith("-mini"):
+        candidates.append(raw[:-5])
+    if raw.endswith("-nano"):
+        candidates.append(raw[:-5])
+    if raw.endswith("-chat"):
+        candidates.append(raw[:-5])
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate in _COPILOT_MODEL_ALIASES:
+            return _COPILOT_MODEL_ALIASES[candidate]
+        if candidate in catalog_ids:
+            return candidate
+
+    if "/" in raw:
+        return raw.split("/", 1)[1].strip()
+    return raw
+
+
+def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
+    raw = (model_id or "").strip().lower()
+    if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
+        return list(COPILOT_REASONING_EFFORTS_O_SERIES)
+    normalized = normalize_copilot_model_id(model_id).lower()
+    if normalized.startswith("gpt-5"):
+        return list(COPILOT_REASONING_EFFORTS_GPT5)
+    return []
+
+
+def _should_use_copilot_responses_api(model_id: str) -> bool:
+    """Decide whether a Copilot model should use the Responses API.
+
+    Replicates opencode's ``shouldUseCopilotResponsesApi`` logic:
+    GPT-5+ models use Responses API, except ``gpt-5-mini`` which uses
+    Chat Completions.  All non-GPT models (Claude, Gemini, etc.) use
+    Chat Completions.
+    """
+    import re
+
+    match = re.match(r"^gpt-(\d+)", model_id)
+    if not match:
+        return False
+    major = int(match.group(1))
+    return major >= 5 and not model_id.startswith("gpt-5-mini")
+
+
+def copilot_model_api_mode(
+    model_id: Optional[str],
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+) -> str:
+    """Determine the API mode for a Copilot model.
+
+    Uses the model ID pattern (matching opencode's approach) as the
+    primary signal.  Falls back to the catalog's ``supported_endpoints``
+    only for models not covered by the pattern check.
+    """
+    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
+    if not normalized:
+        return "chat_completions"
+
+    # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
+    if _should_use_copilot_responses_api(normalized):
+        return "codex_responses"
+
+    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
+    if catalog is None and api_key:
+        catalog = fetch_github_model_catalog(api_key=api_key)
+
+    if catalog:
+        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
+        if isinstance(catalog_entry, dict):
+            supported_endpoints = {
+                str(endpoint).strip()
+                for endpoint in (catalog_entry.get("supported_endpoints") or [])
+                if str(endpoint).strip()
+            }
+            # For non-GPT-5 models, check if they only support messages API
+            if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
+                return "anthropic_messages"
+
+    return "chat_completions"
+
+
+def github_model_reasoning_efforts(
+    model_id: Optional[str],
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+) -> list[str]:
+    """Return supported reasoning-effort levels for a Copilot-visible model."""
+    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
+    if not normalized:
+        return []
+
+    catalog_entry = None
+    if catalog is not None:
+        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
+    elif api_key:
+        fetched_catalog = fetch_github_model_catalog(api_key=api_key)
+        if fetched_catalog:
+            catalog_entry = next((item for item in fetched_catalog if item.get("id") == normalized), None)
+
+    if catalog_entry is not None:
+        capabilities = catalog_entry.get("capabilities")
+        if isinstance(capabilities, dict):
+            supports = capabilities.get("supports")
+            if isinstance(supports, dict):
+                efforts = supports.get("reasoning_effort")
+                if isinstance(efforts, list):
+                    normalized_efforts = [
+                        str(effort).strip().lower()
+                        for effort in efforts
+                        if str(effort).strip()
+                    ]
+                    return list(dict.fromkeys(normalized_efforts))
+            return []
+        legacy_capabilities = {
+            str(capability).strip().lower()
+            for capability in catalog_entry.get("capabilities", [])
+            if str(capability).strip()
+        }
+        if "reasoning" not in legacy_capabilities:
+            return []
+
+    return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -570,6 +927,16 @@ def probe_api_models(
             "models": None,
             "probed_url": None,
             "resolved_base_url": "",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    if _is_github_models_base_url(normalized):
+        models = _fetch_github_models(api_key=api_key, timeout=timeout)
+        return {
+            "models": models,
+            "probed_url": COPILOT_MODELS_URL,
+            "resolved_base_url": COPILOT_BASE_URL,
             "suggested_base_url": None,
             "used_fallback": False,
         }
@@ -587,6 +954,8 @@ def probe_api_models(
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if normalized.startswith(COPILOT_BASE_URL):
+        headers.update(copilot_default_headers())
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -677,6 +1046,12 @@ def validate_requested_model(
     normalized = normalize_provider(provider)
     if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
         normalized = "custom"
+    requested_for_lookup = requested
+    if normalized == "copilot":
+        requested_for_lookup = normalize_copilot_model_id(
+            requested,
+            api_key=api_key,
+        ) or requested
 
     if not requested:
         return {
@@ -698,7 +1073,7 @@ def validate_requested_model(
         probe = probe_api_models(api_key, base_url)
         api_models = probe.get("models")
         if api_models is not None:
-            if requested in set(api_models):
+            if requested_for_lookup in set(api_models):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -747,7 +1122,7 @@ def validate_requested_model(
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
-        if requested in set(api_models):
+        if requested_for_lookup in set(api_models):
             # API confirmed the model exists
             return {
                 "accepted": True,

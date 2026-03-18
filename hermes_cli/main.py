@@ -2362,9 +2362,13 @@ def cmd_audit(args):
         print(f"  API calls:     {summary['api_calls']:,}")
         print(f"  API errors:    {summary['api_errors']:,}")
         if summary.get("total_input_tokens") or summary.get("total_output_tokens"):
-            inp = summary.get("total_input_tokens", 0)
+            inp = summary.get("total_new_input_tokens", 0)
             out = summary.get("total_output_tokens", 0)
-            print(f"  Tokens:        {inp + out:,} ({inp:,} in / {out:,} out)")
+            cache_r = summary.get("total_cache_read_tokens", 0)
+            cache_w = summary.get("total_cache_write_tokens", 0)
+            print(f"  Tokens:        {inp + out:,} new ({inp:,} in / {out:,} out)")
+            if cache_r or cache_w:
+                print(f"  Cache:         {cache_r + cache_w:,} ({cache_r:,} read / {cache_w:,} write)")
         if summary.get("total_cost_usd"):
             print(f"  Est. cost:     ${summary['total_cost_usd']:.4f}")
 

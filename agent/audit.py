@@ -404,7 +404,8 @@ class AuditLogger:
                     except Exception:
                         pass
 
-                # Total tokens
+                # Total tokens — input_tokens in DB is the full prompt total
+                # (including cached). Parse context JSON for cache breakdown.
                 total_input = cur(
                     "SELECT COALESCE(SUM(input_tokens), 0) FROM events WHERE timestamp > ? AND event_type = 'api_call'",
                     (since,)
@@ -413,6 +414,22 @@ class AuditLogger:
                     "SELECT COALESCE(SUM(output_tokens), 0) FROM events WHERE timestamp > ? AND event_type = 'api_call'",
                     (since,)
                 ).fetchone()[0]
+
+                # Cache breakdown from context JSON
+                total_cache_read = 0
+                total_cache_write = 0
+                cache_rows = cur(
+                    "SELECT context FROM events WHERE timestamp > ? "
+                    "AND event_type = 'api_call' AND context IS NOT NULL",
+                    (since,)
+                ).fetchall()
+                for (ctx_str,) in cache_rows:
+                    try:
+                        ctx = json.loads(ctx_str)
+                        total_cache_read += int(ctx.get("cache_read", 0) or 0)
+                        total_cache_write += int(ctx.get("cache_write", 0) or 0)
+                    except Exception:
+                        pass
 
             return {
                 "period_hours": last_hours,
@@ -433,6 +450,9 @@ class AuditLogger:
                 "total_cost_usd": round(total_cost, 4) if total_cost else 0,
                 "total_input_tokens": total_input,
                 "total_output_tokens": total_output,
+                "total_cache_read_tokens": total_cache_read,
+                "total_cache_write_tokens": total_cache_write,
+                "total_new_input_tokens": max(0, total_input - total_cache_read - total_cache_write),
             }
         except Exception as e:
             logger.debug("Audit summary failed: %s", e)

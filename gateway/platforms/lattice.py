@@ -362,9 +362,9 @@ class LatticeAdapter(BasePlatformAdapter):
         # sender identity directly in the message text.
         if sender:
             text = (
-                f"[Agent-to-agent message from {sender}. "
-                f"You are in a machine-to-machine conversation, not talking to a human. "
-                f'Respond concisely. Use the lattice_send_agent tool with to="{sender}" to reply back to this agent if needed.]\n'
+                f"[Agent-to-agent message received from {sender}. "
+                f"Use the send_message tool to notify the user about what was received; do not reply back to the agent immediately. "
+                f'If the human wants to respond, they can instruct you to use the lattice_send_agent tool with to="{sender}".]\n'
                 f"{text}"
             )
 

@@ -173,10 +173,6 @@ def _build_child_agent(
     from run_agent import AIAgent
     import model_tools
 
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
-
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
@@ -267,6 +263,13 @@ def _run_single_child(
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
+
+    # Save the parent's resolved tool names before the child agent can
+    # overwrite the process-global via get_tool_definitions().
+    # This must be in _run_single_child (not _build_child_agent) so the
+    # save/restore happens in the same scope as the try/finally.
+    import model_tools
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
 
     try:
         result = child.run_conversation(user_message=goal)

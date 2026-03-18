@@ -309,6 +309,35 @@ class TestBuildSkillsSystemPrompt:
         assert "imessage" in result
         assert "Send iMessages" in result
 
+    def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
+        """Skills in the user's disabled list should not appear in the system prompt."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        enabled_skill = skills_dir / "web-search"
+        enabled_skill.mkdir()
+        (enabled_skill / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web\n---\n"
+        )
+
+        disabled_skill = skills_dir / "old-tool"
+        disabled_skill.mkdir()
+        (disabled_skill / "SKILL.md").write_text(
+            "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        with patch(
+            "tools.skills_tool._get_disabled_skill_names",
+            return_value={"old-tool"},
+        ):
+            result = build_skills_system_prompt()
+
+        assert "web-search" in result
+        assert "old-tool" not in result
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

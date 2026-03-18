@@ -1217,6 +1217,9 @@ class HermesCLI:
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
+        # Status bar visibility (toggled via /statusbar)
+        self._status_bar_visible = True
+
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
@@ -1324,6 +1327,8 @@ class HermesCLI:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
+        if not self._status_bar_visible:
+            return []
         try:
             snapshot = self._get_status_bar_snapshot()
             width = shutil.get_terminal_size((80, 24)).columns
@@ -3575,6 +3580,10 @@ class HermesCLI:
                 self._handle_skills_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
+        elif canonical == "statusbar":
+            self._status_bar_visible = not self._status_bar_visible
+            state = "visible" if self._status_bar_visible else "hidden"
+            self.console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "reasoning":
@@ -6613,9 +6622,12 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
-        status_bar = Window(
-            content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
-            height=1,
+        status_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
+                height=1,
+            ),
+            filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
         # Layout: interactive prompt widgets + ruled input at bottom.

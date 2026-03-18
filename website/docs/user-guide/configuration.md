@@ -186,11 +186,11 @@ hermes chat --provider kimi-coding --model moonshot-v1-auto
 # Requires: KIMI_API_KEY in ~/.hermes/.env
 
 # MiniMax (global endpoint)
-hermes chat --provider minimax --model MiniMax-Text-01
+hermes chat --provider minimax --model MiniMax-M2.7
 # Requires: MINIMAX_API_KEY in ~/.hermes/.env
 
 # MiniMax (China endpoint)
-hermes chat --provider minimax-cn --model MiniMax-Text-01
+hermes chat --provider minimax-cn --model MiniMax-M2.7
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
 
 # Alibaba Cloud / DashScope (Qwen models)
@@ -984,7 +984,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
   elevenlabs:
@@ -993,6 +993,11 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
 ```
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
@@ -1139,6 +1144,21 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 - Threads stay isolated from their parent channel either way; with `true`, each participant also gets their own session inside the thread.
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
+
+## Unauthorized DM Behavior
+
+Control what Hermes does when an unknown user sends a direct message:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `pair` is the default. Hermes denies access, but replies with a one-time pairing code in DMs.
+- `ignore` silently drops unauthorized DMs.
+- Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
 
 ## Quick Commands
 

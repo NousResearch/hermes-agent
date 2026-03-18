@@ -1257,6 +1257,13 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform."""
+        config = getattr(self, "config", None)
+        if config and hasattr(config, "get_unauthorized_dm_behavior"):
+            return config.get_unauthorized_dm_behavior(platform)
+        return "pair"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1277,7 +1284,7 @@ class GatewayRunner:
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm":
+            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""

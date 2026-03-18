@@ -136,12 +136,6 @@ TOOLSETS = {
         "includes": []
     },
     
-    "autoresearch": {
-        "description": "Workspace-defined bounded AutoResearch cycles for optional research automation",
-        "tools": ["autoresearch"],
-        "includes": []
-    },
-    
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

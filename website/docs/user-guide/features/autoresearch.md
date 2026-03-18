@@ -1,12 +1,12 @@
----
+Ôªø---
 sidebar_position: 6
 title: "AutoResearch"
-description: "Run bounded, manifest-driven research cycles inside Hermes and generate reports only for interesting runs"
+description: "Install the AutoResearch optional skill to run bounded, manifest-driven research cycles and generate reports only for interesting runs"
 ---
 
 # AutoResearch
 
-AutoResearch is an optional Hermes feature for running structured research loops against a workspace-defined project.
+AutoResearch is an official optional Hermes skill for running structured research loops against a workspace-defined project.
 
 It is designed for cases where you want Hermes to:
 
@@ -18,11 +18,17 @@ It is designed for cases where you want Hermes to:
 - write a Markdown report only when the run is interesting
 - optionally prepare or send a short summary for Telegram or other Hermes messaging targets
 
-AutoResearch is built into Hermes as an optional toolset, so nothing happens unless you enable it and define a project manifest in your workspace.
+AutoResearch is no longer a native toolset. Users opt into it by installing the skill:
+
+```bash
+hermes skills install official/research/autoresearch
+```
+
+Once installed, Hermes can load the `autoresearch` skill when relevant, and you can also run its bundled helper script directly.
 
 ## What AutoResearch does
 
-The built-in research loop is:
+The bounded research loop is:
 
 `anchor -> generate -> review -> evaluate -> select -> report -> publish summary`
 
@@ -59,23 +65,34 @@ What it gives you back:
 - optional Markdown reports under `research/YYYY-MM-DD/`
 - a short summary string suitable for `send_message`
 
-## Enabling the tool
+## Install and Entry Point
 
-AutoResearch is an optional toolset and is off by default for new installs.
-
-You can enable it with the normal Hermes tools flow:
+Install the skill from the official optional catalog:
 
 ```bash
-hermes tools
+hermes skills install official/research/autoresearch
 ```
 
-Or with the CLI tool toggles:
+The skill installs a helper script at:
 
-```bash
-hermes tools enable autoresearch --platform cli
+```text
+~/.hermes/skills/research/autoresearch/scripts/autoresearch.py
 ```
 
-Once enabled, Hermes can use the `autoresearch` tool.
+That script prints JSON and exposes the same bounded workflow actions the old native tool used.
+
+## Recommended workflow
+
+Always inspect the manifests before running a research cycle. The validation and evaluator commands come from the workspace and will be executed directly.
+
+A reliable sequence is:
+
+1. read `.hermes/autoresearch/project.yaml` and the target family manifest
+2. run `inspect-project`
+3. run `validate-project`
+4. run `research-cycle`
+5. run `inspect-run`
+6. run `publish-summary` if you want a digest or delivery target
 
 ## Workspace contract
 
@@ -229,28 +246,38 @@ Those paths are used by:
 - `selection.secondary_metrics`
 - `interesting_if.rules`
 
-## Tool actions
+## Helper script actions
 
-Hermes exposes AutoResearch through one action-style tool:
+Use the helper script from the project root unless you pass `--project-root`:
 
-```python
-autoresearch(action="list_projects")
-autoresearch(action="inspect_project")
-autoresearch(action="validate_project")
-autoresearch(action="research_cycle", family_id="threshold-sweep")
-autoresearch(action="status", run_id="ar-...")
-autoresearch(action="list_runs")
-autoresearch(action="inspect_run", run_id="ar-...")
-autoresearch(action="publish_summary", run_id="ar-...")
+```bash
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py list-projects
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py inspect-project
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py validate-project
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py research-cycle --family-id threshold-sweep
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py status --run-id ar-...
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py list-runs
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py inspect-run --run-id ar-...
+python ~/.hermes/skills/research/autoresearch/scripts/autoresearch.py publish-summary --run-id ar-...
 ```
 
-### `list_projects`
+Useful flags:
+
+- `--project-root /path/to/project`
+- `--population N`
+- `--survivors N`
+- `--seed N`
+- `--model provider/model` for `agent_patch`
+- `--target telegram` or another Hermes messaging target for `publish-summary`
+- `--send` to send the prepared summary immediately
+
+### `list-projects`
 
 Finds discoverable AutoResearch projects and their family IDs.
 
 Use this first when you are not sure which workspace Hermes should target.
 
-### `inspect_project`
+### `inspect-project`
 
 Returns the parsed project manifest and family definitions.
 
@@ -261,23 +288,23 @@ Use this to confirm:
 - mutation mode
 - metrics used for selection
 
-### `validate_project`
+### `validate-project`
 
 Validates the manifests before you run anything.
 
 Use this before every first run in a new workspace or after editing manifests.
 
-### `research_cycle`
+### `research-cycle`
 
 Runs the full bounded loop for one family.
 
 Useful parameters:
 
-- `family_id`
-- `population`
-- `survivors`
-- `seed`
-- `model` for `agent_patch`
+- `--family-id`
+- `--population`
+- `--survivors`
+- `--seed`
+- `--model` for `agent_patch`
 
 ### `status`
 
@@ -289,19 +316,19 @@ Returns a compact run status:
 - `report_path`
 - `summary`
 
-### `list_runs`
+### `list-runs`
 
 Shows recent runs for the current AutoResearch workspace.
 
-### `inspect_run`
+### `inspect-run`
 
 Returns the full run record and a preview of the generated report if one exists.
 
-### `publish_summary`
+### `publish-summary`
 
 Builds a short messaging-ready summary for a completed run.
 
-It can also send the summary if you provide `send=true` and a valid messaging target is configured.
+It can also send the summary if you provide `--send` and a valid messaging target is configured.
 
 ## Reports
 
@@ -337,7 +364,7 @@ This keeps candidate evaluation away from the live working tree.
 
 ## Selection and interestingness
 
-Selection is not just ìbest score winsî.
+Selection is not just ‚Äúbest score wins‚Äù.
 
 By default, AutoResearch requires:
 
@@ -358,29 +385,16 @@ AutoResearch does not implement its own scheduler.
 
 Use existing Hermes features for that:
 
-- `publish_summary` for one-off summaries
+- `publish-summary` for one-off summaries
 - `send_message` for delivery
 - `cronjob` for recurring research runs or recurring digests
 
 Recommended pattern:
 
-1. run `autoresearch(action="research_cycle", ...)`
-2. call `autoresearch(action="publish_summary", ...)`
+1. run `research-cycle`
+2. run `publish-summary`
 3. optionally deliver through Hermes messaging
 4. if you want automation, schedule that workflow with `cronjob`
-
-## Good usage pattern
-
-A reliable workflow looks like this:
-
-1. `list_projects`
-2. `inspect_project`
-3. `validate_project`
-4. `research_cycle`
-5. `inspect_run`
-6. `publish_summary`
-
-That keeps the feature predictable and easier to debug.
 
 ## Limitations in v1
 

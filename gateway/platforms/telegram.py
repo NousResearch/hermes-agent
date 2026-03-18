@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -867,23 +868,23 @@ class TelegramAdapter(BasePlatformAdapter):
             raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
             if raw:
                 try:
-                    import json
                     loaded = json.loads(raw)
-                    if isinstance(loaded, list):
-                        patterns = loaded
-                    elif isinstance(loaded, str):
-                        patterns = [loaded]
                 except Exception:
-                    patterns = [part.strip() for part in raw.splitlines() if part.strip()]
-                    if not patterns:
-                        patterns = [part.strip() for part in raw.split(",") if part.strip()]
+                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not loaded:
+                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                patterns = loaded
 
         if patterns is None:
             return []
         if isinstance(patterns, str):
             patterns = [patterns]
         if not isinstance(patterns, list):
-            logger.warning("[%s] telegram mention_patterns must be a list or string; got %s", self.name, type(patterns).__name__)
+            logger.warning(
+                "[%s] telegram mention_patterns must be a list or string; got %s",
+                self.name,
+                type(patterns).__name__,
+            )
             return []
 
         compiled: List[re.Pattern] = []
@@ -956,11 +957,15 @@ class TelegramAdapter(BasePlatformAdapter):
         return cleaned or text
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-        """Apply group gating for Telegram chats.
+        """Apply Telegram group trigger rules.
 
-        When require_mention is enabled, group/supergroup traffic is ignored
-        unless the bot is directly addressed via a command, an @mention, or a
-        reply to one of the bot's messages. DMs remain unrestricted.
+        DMs remain unrestricted. Group/supergroup messages are accepted when:
+        - the chat is explicitly allowlisted in ``free_response_chats``
+        - ``require_mention`` is disabled
+        - the message is a command
+        - the message replies to the bot
+        - the bot is @mentioned
+        - the text/caption matches a configured regex wake-word pattern
         """
         if not self._is_group_chat(message):
             return True

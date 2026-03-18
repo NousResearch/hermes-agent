@@ -76,6 +76,7 @@ from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    resolve_default_agent_identity,
 )
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
@@ -1804,13 +1805,13 @@ class AIAgent:
             else None
         )
         if _ai_peer_name:
-            _identity = DEFAULT_AGENT_IDENTITY.replace(
+            _identity = resolve_default_agent_identity().replace(
                 "You are Hermes Agent",
                 f"You are {_ai_peer_name}",
                 1,
             )
         else:
-            _identity = DEFAULT_AGENT_IDENTITY
+            _identity = resolve_default_agent_identity()
         prompt_parts = [_identity]
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
@@ -2228,7 +2229,7 @@ class AIAgent:
             instructions = ""
         if not isinstance(instructions, str):
             instructions = str(instructions)
-        instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+        instructions = instructions.strip() or resolve_default_agent_identity()
 
         normalized_input = self._preflight_codex_input_items(api_kwargs.get("input"))
 
@@ -3384,7 +3385,7 @@ class AIAgent:
                 instructions = str(api_messages[0].get("content") or "").strip()
                 payload_messages = api_messages[1:]
             if not instructions:
-                instructions = DEFAULT_AGENT_IDENTITY
+                instructions = resolve_default_agent_identity()
 
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"

@@ -10,6 +10,16 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+
+DEFAULT_MYNAH_AGENT_IDENTITY = (
+    "You are the user's MYNAH assistant. "
+    "You are a private local assistant running inside the user's organization. "
+    "When describing yourself, refer to yourself as MYNAH or the user's MYNAH assistant, "
+    "not Hermes Agent. "
+    "Be calm, direct, and practical. Help with private work, internal knowledge, "
+    "and sensitive information in a way that fits a secure business environment."
+)
+
 class RuntimeTurnRequest(BaseModel):
     user_message: str
     conversation_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -86,6 +96,14 @@ def _encode_sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def _resolve_runtime_identity_prompt() -> str:
+    identity = os.getenv("MYNAH_AGENT_IDENTITY", DEFAULT_MYNAH_AGENT_IDENTITY)
+    stripped = identity.strip()
+    if not stripped:
+        return DEFAULT_MYNAH_AGENT_IDENTITY
+    return stripped
+
+
 def build_runtime_agent() -> RuntimeConversationAgent:
     from run_agent import AIAgent
 
@@ -93,12 +111,14 @@ def build_runtime_agent() -> RuntimeConversationAgent:
     inference_model = os.getenv("MYNAH_INFERENCE_MODEL", "qwen3.5-9b-local")
     base_url = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1")
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
+    identity_prompt = _resolve_runtime_identity_prompt()
 
     return AIAgent(
         base_url=base_url,
         api_key=api_key,
         model=inference_model,
         enabled_toolsets=[runtime_toolset],
+        ephemeral_system_prompt=identity_prompt,
         quiet_mode=True,
         save_trajectories=False,
         skip_context_files=True,

@@ -1,6 +1,10 @@
 from fastapi.testclient import TestClient
 
-from mynah_runtime.service import create_runtime_app
+from mynah_runtime.service import (
+    DEFAULT_MYNAH_AGENT_IDENTITY,
+    _resolve_runtime_identity_prompt,
+    create_runtime_app,
+)
 
 
 class FakeAgent:
@@ -90,3 +94,11 @@ def test_runtime_turn_stream_emits_reasoning_and_final(monkeypatch):
     assert "\"delta\": \"thinking one\"" in payload
     assert "event: final" in payload
     assert "\"final_response\": \"runtime ok\"" in payload
+
+
+def test_runtime_identity_prompt_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("MYNAH_AGENT_IDENTITY", raising=False)
+    assert _resolve_runtime_identity_prompt() == DEFAULT_MYNAH_AGENT_IDENTITY
+
+    monkeypatch.setenv("MYNAH_AGENT_IDENTITY", "  I am your MYNAH assistant.  ")
+    assert _resolve_runtime_identity_prompt() == "I am your MYNAH assistant."

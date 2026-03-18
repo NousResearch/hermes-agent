@@ -70,6 +70,15 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+
+def resolve_default_agent_identity() -> str:
+    """Return the default agent identity, allowing runtime-specific branding override."""
+    for env_name in ("MYNAH_AGENT_IDENTITY", "HERMES_AGENT_IDENTITY"):
+        override = os.getenv(env_name)
+        if override and override.strip():
+            return override.strip()
+    return DEFAULT_AGENT_IDENTITY
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "

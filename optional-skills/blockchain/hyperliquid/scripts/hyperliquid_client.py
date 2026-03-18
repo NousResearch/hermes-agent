@@ -604,7 +604,7 @@ def _average(values: Iterable[Optional[float]]) -> Optional[float]:
     clean_values = [value for value in values if value is not None]
     if not clean_values:
         return None
-    return sum(clean_values) / len(clean_values)
+    return round(sum(clean_values) / len(clean_values), 12)
 
 
 def _is_spot_coin(coin: str) -> bool:

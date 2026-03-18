@@ -205,8 +205,10 @@ def test_resolve_user_uses_env_fallback(monkeypatch):
     assert mod._resolve_user("0xcli456") == "0xcli456"
 
 
-def test_resolve_user_errors_when_missing(monkeypatch):
+def test_resolve_user_errors_when_missing(monkeypatch, tmp_path):
     mod = load_module()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.delenv("HYPERLIQUID_USER_ADDRESS", raising=False)
 
     try:

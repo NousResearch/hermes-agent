@@ -59,6 +59,9 @@ class TestCliSkinPromptIntegration:
     def test_build_tui_style_dict_uses_skin_overrides(self):
         cli = _make_cli_stub()
 
+        from hermes_cli.skin_engine import set_theme_mode
+
+        set_theme_mode("dark")
         set_active_skin("ares")
         skin = get_active_skin()
         style_dict = cli._build_tui_style_dict()
@@ -66,6 +69,9 @@ class TestCliSkinPromptIntegration:
         assert style_dict["prompt"] == skin.get_color("prompt")
         assert style_dict["input-rule"] == skin.get_color("input_rule")
         assert style_dict["prompt-working"] == f"{skin.get_color('banner_dim')} italic"
+        assert style_dict["status-bar"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
+        )
         assert style_dict["approval-title"] == f"{skin.get_color('ui_warn')} bold"
 
     def test_apply_tui_skin_style_updates_running_app(self):

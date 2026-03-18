@@ -171,6 +171,12 @@ def _resolve_openrouter_runtime(
     model_cfg = _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
+    cfg_api_key = ""
+    for k in ("api_key", "api"):
+        v = model_cfg.get(k)
+        if isinstance(v, str) and v.strip():
+            cfg_api_key = v.strip()
+            break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
 
@@ -178,26 +184,24 @@ def _resolve_openrouter_runtime(
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
     use_config_base_url = False
-    if cfg_base_url.strip() and not explicit_base_url and not env_openai_base_url:
+    if cfg_base_url.strip() and not explicit_base_url:
         if requested_norm == "auto":
-            if not cfg_provider or cfg_provider == "auto":
+            if (not cfg_provider or cfg_provider == "auto") and not env_openai_base_url:
                 use_config_base_url = True
-        elif requested_norm == "custom":
-            # Persisted custom endpoints store their base URL in config.yaml.
-            # If OPENAI_BASE_URL is not currently set in the environment, keep
-            # honoring that saved endpoint instead of falling back to OpenRouter.
-            if cfg_provider == "custom":
-                use_config_base_url = True
+        elif requested_norm == "custom" and cfg_provider == "custom":
+            # provider: custom — use base_url from config (Fixes #1760).
+            use_config_base_url = True
 
     # When the user explicitly requested the openrouter provider, skip
     # OPENAI_BASE_URL — it typically points to a custom / non-OpenRouter
     # endpoint and would prevent switching back to OpenRouter (#874).
     skip_openai_base = requested_norm == "openrouter"
 
+    # For custom, prefer config base_url over env so config.yaml is honored (#1760).
     base_url = (
         (explicit_base_url or "").strip()
-        or ("" if skip_openai_base else env_openai_base_url)
         or (cfg_base_url.strip() if use_config_base_url else "")
+        or ("" if skip_openai_base else env_openai_base_url)
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
@@ -216,8 +220,10 @@ def _resolve_openrouter_runtime(
             or ""
         )
     else:
+        # Custom endpoint: use api_key from config when using config base_url (#1760).
         api_key = (
             explicit_api_key
+            or (cfg_api_key if use_config_base_url else "")
             or os.getenv("OPENAI_API_KEY")
             or os.getenv("OPENROUTER_API_KEY")
             or ""

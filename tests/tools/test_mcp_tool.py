@@ -505,6 +505,42 @@ class TestToolsetInjection:
         assert "mcp_fs_list_files" not in fake_toolsets["non-hermes"]["tools"]
         # Original tools preserved
         assert "terminal" in fake_toolsets["hermes-cli"]["tools"]
+        # Server name becomes a standalone toolset
+        assert "fs" in fake_toolsets
+        assert "mcp_fs_list_files" in fake_toolsets["fs"]["tools"]
+        assert fake_toolsets["fs"]["description"].startswith("MCP server '")
+
+    def test_server_toolset_skips_builtin_collision(self):
+        """MCP server named after a built-in toolset shouldn't overwrite it."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_tools = [_make_mcp_tool("run", "Run command")]
+        mock_session = MagicMock()
+        fresh_servers = {}
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_toolsets = {
+            "hermes-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
+            # Built-in toolset named "terminal" — must not be overwritten
+            "terminal": {"tools": ["terminal"], "description": "Terminal tools", "includes": []},
+        }
+        fake_config = {"terminal": {"command": "npx", "args": []}}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("toolsets.TOOLSETS", fake_toolsets):
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+
+        # Built-in toolset preserved — description unchanged
+        assert fake_toolsets["terminal"]["description"] == "Terminal tools"
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""

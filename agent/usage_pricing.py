@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_model_metadata
+from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -335,8 +335,21 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
-    metadata = fetch_model_metadata()
-    model_id = route.model
+    return _pricing_entry_from_metadata(
+        fetch_model_metadata(),
+        route.model,
+        source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
+        pricing_version="openrouter-models-api",
+    )
+
+
+def _pricing_entry_from_metadata(
+    metadata: Dict[str, Dict[str, Any]],
+    model_id: str,
+    *,
+    source_url: str,
+    pricing_version: str,
+) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None
     pricing = metadata[model_id].get("pricing") or {}
@@ -355,6 +368,7 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
     if prompt is None and completion is None and request is None:
         return None
+
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
         if value is None:
             return None
@@ -367,8 +381,8 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
         cache_write_cost_per_million=_per_token_to_per_million(cache_write),
         request_cost=request,
         source="provider_models_api",
-        source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
-        pricing_version="openrouter-models-api",
+        source_url=source_url,
+        pricing_version=pricing_version,
         fetched_at=_UTC_NOW(),
     )
 
@@ -377,6 +391,7 @@ def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
@@ -390,6 +405,15 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+    if route.base_url:
+        entry = _pricing_entry_from_metadata(
+            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            route.model,
+            source_url=f"{route.base_url.rstrip('/')}/models",
+            pricing_version="openai-compatible-models-api",
+        )
+        if entry:
+            return entry
     return _lookup_official_docs_pricing(route)
 
 
@@ -460,6 +484,7 @@ def estimate_usage_cost(
     *,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> CostResult:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
@@ -471,7 +496,7 @@ def estimate_usage_cost(
             pricing_version="included-route",
         )
 
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url)
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if not entry:
         return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
 
@@ -536,6 +561,7 @@ def has_known_pricing(
     model_name: str,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> bool:
     """Check whether we have pricing data for this model+route.
 
@@ -545,7 +571,7 @@ def has_known_pricing(
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return True
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url)
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     return entry is not None
 
 
@@ -553,13 +579,14 @@ def get_pricing(
     model_name: str,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, float]:
     """Backward-compatible thin wrapper for legacy callers.
 
     Returns only non-cache input/output fields when a pricing entry exists.
     Unknown routes return zeroes.
     """
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url)
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if not entry:
         return {"input": 0.0, "output": 0.0}
     return {
@@ -575,6 +602,7 @@ def estimate_cost_usd(
     *,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> float:
     """Backward-compatible helper for legacy callers.
 
@@ -586,6 +614,7 @@ def estimate_cost_usd(
         CanonicalUsage(input_tokens=input_tokens, output_tokens=output_tokens),
         provider=provider,
         base_url=base_url,
+        api_key=api_key,
     )
     return float(result.amount_usd or _ZERO)
 

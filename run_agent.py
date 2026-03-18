@@ -845,7 +845,48 @@ class AIAgent:
                 )
             except Exception as e:
                 logger.debug("Session DB create_session failed: %s", e)
-        
+
+        # Structured audit log (JSONL + SQLite, tailable via hermes tail)
+        try:
+            from agent.audit import configure as _audit_configure, start_session as _audit_start
+            _audit_cfg = {}
+            try:
+                from hermes_cli.config import load_config as _load_audit_config
+                _audit_cfg = _load_audit_config()
+            except Exception:
+                pass
+            # Read from nested audit block (v10+), fall back to old flat keys
+            _audit_platform = self.platform or "cli"
+            _audit_block = _audit_cfg.get("audit", {})
+            if isinstance(_audit_block, dict) and _audit_block:
+                _audit_enabled = _audit_block.get("enabled", True)
+                _audit_redact = _audit_block.get("redact", True)
+                _audit_retention = _audit_block.get("retention_days", 7)
+                _audit_sources = _audit_block.get("sources")
+            else:
+                _audit_enabled = _audit_cfg.get("audit_log", True)
+                _audit_redact = _audit_cfg.get("audit_log_redact", True)
+                _audit_retention = _audit_cfg.get("audit_log_retention_days", 7)
+                _audit_sources = None
+            _audit_configure(
+                enabled=_audit_enabled,
+                redact=_audit_redact,
+                retention_days=_audit_retention,
+                user_id=None,
+                platform=_audit_platform,
+                sources=_audit_sources,
+            )
+            _audit_start(
+                self.session_id,
+                model=self.model,
+                provider=self.provider or "",
+                platform=_audit_platform,
+                base_url=self.base_url or "",
+                tools=sorted(self.valid_tool_names) if hasattr(self, 'valid_tool_names') else [],
+            )
+        except Exception:
+            pass
+
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
@@ -879,6 +920,22 @@ class AIAgent:
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
                     self._memory_store.load_from_disk()
+                    # Audit: log memory loaded
+                    try:
+                        from agent.audit import emit
+                        _mem_chars = len(self._memory_store.format_for_system_prompt("memory") or "")
+                        _user_chars = len(self._memory_store.format_for_system_prompt("user") or "")
+                        emit(
+                            "memory.loaded",
+                            memory_enabled=self._memory_enabled,
+                            user_profile_enabled=self._user_profile_enabled,
+                            memory_chars=_mem_chars,
+                            user_profile_chars=_user_chars,
+                            memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                            user_char_limit=mem_config.get("user_char_limit", 1375),
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -931,6 +988,32 @@ class AIAgent:
                 print(f"  Honcho init failed: {e}")
                 print("  Run 'hermes honcho setup' to reconfigure.")
                 self._honcho = None
+
+        # Audit: log honcho/memory state after init
+        try:
+            from agent.audit import emit
+            _honcho_enabled = self._honcho is not None
+            _honcho_ws = ""
+            _honcho_session = ""
+            _honcho_mode = ""
+            _honcho_recall = ""
+            if _honcho_enabled and hasattr(self, '_honcho_config'):
+                _honcho_ws = getattr(self._honcho_config, 'workspace_id', '') or ''
+                _honcho_session = getattr(self._honcho_config, 'session_name', '') or ''
+                _honcho_mode = getattr(self._honcho_config, 'memory_mode', '') or ''
+                _honcho_recall = getattr(self._honcho_config, 'recall_mode', '') or ''
+            emit(
+                "honcho.init",
+                enabled=_honcho_enabled,
+                workspace=_honcho_ws,
+                session=_honcho_session,
+                memory_mode=_honcho_mode,
+                recall_mode=_honcho_recall,
+                memory_enabled=getattr(self, '_memory_enabled', False),
+                user_profile_enabled=getattr(self, '_user_profile_enabled', False),
+            )
+        except Exception:
+            pass
 
         # Tools are initially discovered before Honcho activation. If Honcho
         # stays inactive, remove any stale honcho_* tools from prior process state.
@@ -1799,6 +1882,11 @@ class AIAgent:
                     self._honcho_session_key,
                     mem_dir,
                 )
+                try:
+                    from agent.audit import emit
+                    emit("honcho.migrate", source_dir=mem_dir)
+                except Exception:
+                    pass
             except Exception as exc:
                 logger.debug("Memory files migration failed (non-fatal): %s", exc)
 
@@ -1915,7 +2003,31 @@ class AIAgent:
                 "and what you were working on together. Do not call tools to "
                 "look up information that is already present here.\n"
             )
-            return header + "\n\n".join(parts)
+            full_block = header + "\n\n".join(parts)
+
+            # Audit: log what honcho context was injected
+            try:
+                from agent.audit import emit
+                sections = []
+                if ctx:
+                    if ctx.get("representation"):
+                        sections.append(f"user_representation({len(ctx['representation'])} chars)")
+                    if ctx.get("card"):
+                        sections.append(f"peer_card({len(ctx['card'])} chars)")
+                    if ctx.get("ai_representation"):
+                        sections.append(f"ai_representation({len(ctx['ai_representation'])} chars)")
+                if dialectic:
+                    sections.append(f"dialectic({len(dialectic)} chars)")
+                emit(
+                    "honcho.context_injected",
+                    sections=sections,
+                    total_chars=len(full_block),
+                    session_key=self._honcho_session_key or "",
+                )
+            except Exception:
+                pass
+
+            return full_block
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
@@ -1932,6 +2044,11 @@ class AIAgent:
             session = self._honcho.get_or_create(self._honcho_session_key)
             session.add_message("user", f"[observation] {content.strip()}")
             self._honcho.save(session)
+            try:
+                from agent.audit import emit
+                emit("honcho.observe", content_chars=len(content.strip()))
+            except Exception:
+                pass
             return json.dumps({
                 "success": True,
                 "target": "user",
@@ -1950,6 +2067,13 @@ class AIAgent:
             session.add_message("user", user_content)
             session.add_message("assistant", assistant_content)
             self._honcho.save(session)
+            try:
+                from agent.audit import emit
+                emit("honcho.sync", user_chars=len(user_content),
+                     assistant_chars=len(assistant_content),
+                     message_count=len(session.messages))
+            except Exception:
+                pass
             logger.info("Honcho sync queued for session %s (%d messages)",
                         self._honcho_session_key, len(session.messages))
         except Exception as e:
@@ -2112,7 +2236,41 @@ class AIAgent:
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(prompt_parts)
+        full_prompt = "\n\n".join(prompt_parts)
+
+        # Audit: log what was assembled into the system prompt
+        try:
+            from agent.audit import emit
+            layers = []
+            if system_message is not None:
+                layers.append("system_message")
+            if self._memory_store and self._memory_enabled:
+                mem_block = self._memory_store.format_for_system_prompt("memory")
+                if mem_block:
+                    layers.append(f"memory({len(mem_block)} chars)")
+            if self._memory_store and self._user_profile_enabled:
+                user_block = self._memory_store.format_for_system_prompt("user")
+                if user_block:
+                    layers.append(f"user_profile({len(user_block)} chars)")
+            if self._honcho and self._honcho_session_key:
+                layers.append("honcho")
+            if skills_prompt:
+                layers.append(f"skills({len(skills_prompt)} chars)")
+            if not self.skip_context_files:
+                if context_files_prompt:
+                    layers.append(f"context_files({len(context_files_prompt)} chars)")
+            if platform_key in PLATFORM_HINTS:
+                layers.append(f"platform_hint({platform_key})")
+            emit(
+                "context.assembled",
+                layers=layers,
+                total_chars=len(full_prompt),
+                model=self.model or "",
+            )
+        except Exception:
+            pass
+
+        return full_prompt
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -4242,6 +4400,18 @@ class AIAgent:
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        # Audit: log compression start
+        try:
+            from agent.audit import emit
+            emit(
+                "context.compression",
+                phase="start",
+                message_count=len(messages),
+                approx_tokens_before=approx_tokens,
+            )
+        except Exception:
+            pass
+
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
@@ -4299,6 +4469,19 @@ class AIAgent:
                 self._last_flushed_db_idx = 0
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
+
+        # Audit: log compression result
+        try:
+            from agent.audit import emit
+            emit(
+                "context.compression",
+                phase="end",
+                messages_before=len(messages),
+                messages_after=len(compressed),
+                new_prompt_chars=len(new_system_prompt),
+            )
+        except Exception:
+            pass
 
         return compressed, new_system_prompt
 
@@ -5099,6 +5282,14 @@ class AIAgent:
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+        # Audit: log user message received
+        try:
+            from agent.audit import emit
+            emit("user.message", chars=len(original_user_message),
+                 turn=self._user_turn_count)
+        except Exception:
+            pass
+
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
         if (self._memory_nudge_interval > 0
@@ -5706,6 +5897,36 @@ class AIAgent:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
+
+                        # Audit log: record every API request with tokens and cost
+                        try:
+                            from agent.audit import log_api_request
+                            _finish = ""
+                            _tc_count = 0
+                            try:
+                                _choice = response.choices[0] if response.choices else None
+                                if _choice:
+                                    _finish = getattr(_choice, "finish_reason", "") or ""
+                                    _tc = getattr(_choice.message, "tool_calls", None)
+                                    _tc_count = len(_tc) if _tc else 0
+                            except Exception:
+                                pass
+                            log_api_request(
+                                model=self.model,
+                                provider=self.provider or "",
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=total_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                reasoning_tokens=canonical_usage.reasoning_tokens,
+                                cost_usd=float(cost_result.amount_usd)
+                                if cost_result.amount_usd is not None else None,
+                                duration_ms=round(api_duration * 1000, 1),
+                                finish_reason=_finish,
+                                tool_calls_count=_tc_count,
+                            )
+                        except Exception:
+                            pass
 
                         # Persist token counts to session DB for /insights.
                         # Gateway sessions persist via session_store.update_session()

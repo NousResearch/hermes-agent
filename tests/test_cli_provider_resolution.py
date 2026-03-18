@@ -312,6 +312,49 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert shell.model != "should-be-ignored"
 
 
+def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
+    """When the user sets model.default in config.yaml to a specific codex
+    model, _normalize_model_for_provider must NOT replace it with the latest
+    available model from the API.  Regression test for #1887."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    # User explicitly configured gpt-5.3-codex in config.yaml
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "default": "gpt-5.3-codex",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    })
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "fake-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    # API returns a DIFFERENT model than what the user configured
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
+    )
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    # Config model is NOT the global default — user made a deliberate choice
+    assert shell._model_is_default is False
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    # Model must stay as user configured, not replaced by gpt-5.4
+    assert shell.model == "gpt-5.3-codex"
+
+
 def test_codex_provider_preserves_explicit_codex_model(monkeypatch):
     """If the user explicitly passes a Codex-compatible model, it must be
     preserved even when the provider resolves to openai-codex."""

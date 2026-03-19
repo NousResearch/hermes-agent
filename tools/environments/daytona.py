@@ -68,11 +68,13 @@ class DaytonaEnvironment(BaseEnvironment):
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
         labels = {"hermes_task_id": task_id}
+        sandbox_name = f"hermes-{task_id}"
 
-        # Try to resume an existing stopped sandbox for this task
+        # Try to resume an existing sandbox for this task
         if self._persistent:
+            # 1. Try name-based lookup (new path)
             try:
-                self._sandbox = self._daytona.find_one(labels=labels)
+                self._sandbox = self._daytona.get(sandbox_name)
                 self._sandbox.start()
                 logger.info("Daytona: resumed sandbox %s for task %s",
                             self._sandbox.id, task_id)
@@ -83,11 +85,26 @@ class DaytonaEnvironment(BaseEnvironment):
                                task_id, e)
                 self._sandbox = None
 
+            # 2. Legacy fallback: find sandbox created before the naming migration
+            if self._sandbox is None:
+                try:
+                    page = self._daytona.list(labels=labels, page=1, limit=1)
+                    if page.items:
+                        self._sandbox = page.items[0]
+                        self._sandbox.start()
+                        logger.info("Daytona: resumed legacy sandbox %s for task %s",
+                                    self._sandbox.id, task_id)
+                except Exception as e:
+                    logger.debug("Daytona: no legacy sandbox found for task %s: %s",
+                                 task_id, e)
+                    self._sandbox = None
+
         # Create a fresh sandbox if we don't have one
         if self._sandbox is None:
             self._sandbox = self._daytona.create(
                 CreateSandboxFromImageParams(
                     image=image,
+                    name=sandbox_name,
                     labels=labels,
                     auto_stop_interval=0,
                     resources=resources,

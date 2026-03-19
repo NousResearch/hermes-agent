@@ -1,0 +1,36 @@
+2026-03-15 09:34:10.270 | INFO     | cosmos.core.collective.organism:_load_state:206 - Organism: Restored state from D:\Cosmos\Cosmos\data\organism_state\organism_state.json (Gen 3)
+2026-03-15 09:34:10.271 | INFO     | cosmos.core.collective.organism:__init__:162 - Collective Organism initialized - Generation 3
+2026-03-15 09:34:10.282 | INFO     | cosmos.core.collective.orchestration:__init__:92 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-15 09:34:10.284 | INFO     | cosmos.core.collective.dialogue_memory:__init__:85 - DialogueMemory initialized with 2 exchanges
+2026-03-15 09:34:10.284 | DEBUG    | cosmos.core.collective.orchestration:_load_persistent_history:123 - SwarmOrchestrator: Restored 2 historical turns
+2026-03-15 09:34:10,289 - evolution_engine - INFO - EvolutionEngine initialized - 0 patterns, 0 cycles
+2026-03-15 09:34:10.292 | INFO     | cosmos.core.collective.dialogue_memory:store_exchange:189 - Stored exchange test_123
+2026-03-15 09:34:10.292 | INFO     | cosmos.core.collective.orchestration:__init__:92 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-15 09:34:10.917 | INFO     | Cosmos.memory.archival_memory:initialize:163 - Archival memory initialized with 0 entries
+2026-03-15 09:34:15.750 | INFO     | Cosmos.integration.external.huggingface:_check_transformers:189 - Transformers available, CUDA: True
+2026-03-15 09:34:15.750 | INFO     | Cosmos.integration.external.huggingface:get_huggingface_provider:881 - HuggingFace provider initialized (local transformers only)
+2026-03-15 09:34:15.750 | INFO     | Cosmos.memory.archival_memory:set_huggingface_embeddings:901 - Archival memory using HuggingFace embeddings: all-MiniLM-L6-v2
+2026-03-15 09:34:15.750 | INFO     | cosmos.core.collective.dialogue_memory:_archive_to_long_term:225 - DialogueMemory: Archival bridge initialized
+2026-03-15 09:34:22.436 | INFO     | Cosmos.integration.external.huggingface:_local_embed:595 - Loading local embedding model: all-MiniLM-L6-v2
+2026-03-15 09:34:24.855 | DEBUG    | cosmos.core.collective.orchestration:_load_persistent_history:123 - SwarmOrchestrator: Restored 3 historical turns
+2026-03-15 09:34:24.857 | INFO     | cosmos.core.collective.organism:_load_state:206 - Organism: Restored state from D:\Cosmos\Cosmos\data\organism_state\organism_state.json (Gen 3)
+2026-03-15 09:34:24.857 | INFO     | cosmos.core.collective.organism:__init__:162 - Collective Organism initialized - Generation 3
+2026-03-15 09:34:24.857 | INFO     | cosmos.core.collective.organism:evolve:476 - Organism evolved to Generation 4 (Consciousness: 0.000)
+2026-03-15 09:34:24.860 | INFO     | cosmos.core.collective.organism:save_consciousness_snapshot:545 - Consciousness snapshot saved to D:\Cosmos\Cosmos\data\organism_state\organism_state.json
+2026-03-15 09:34:24.873 | INFO     | cosmos.core.collective.organism:_load_state:206 - Organism: Restored state from D:\Cosmos\Cosmos\data\organism_state\organism_state.json (Gen 4)
+2026-03-15 09:34:24.873 | INFO     | cosmos.core.collective.organism:__init__:162 - Collective Organism initialized - Generation 4
+SUCCESS: Aliased 'Cosmos' to 'cosmos'
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+--- STARTING PERSISTENCE VERIFICATION ---
+Step 1: Storing exchange...
+SUCCESS: DialogueMemory saved to D:\Cosmos\Cosmos\data\dialogue_memory\exchanges.json
+Step 2: Testing Orchestrator restoration...
+SUCCESS: SwarmOrchestrator restored history
+Step 3: Testing Organism evolution persistence...
+Initial Generation: 3
+Evolved Generation: 4
+SUCCESS: Organism snapshot saved to D:\Cosmos\Cosmos\data\organism_state\organism_state.json
+Step 4: Testing Organism state restoration...
+SUCCESS: Organism restored to Generation 4

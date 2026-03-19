@@ -1,0 +1,26 @@
+W0000 00:00:1773134311.595279    1048 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1773134311.635219   19220 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1773134311.652954   22160 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+Traceback (most recent call last):
+  File "D:\Cosmos\emotional_api\full_system.py", line 106, in __init__
+    print("\U0001f3a4 Real-Time Audio Pipeline Started")
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f3a4' in position 0: character maps to <undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\Cosmos\emotional_api\full_system.py", line 501, in <module>
+    main()
+  File "D:\Cosmos\emotional_api\full_system.py", line 496, in main
+    controller = FullSystemController()
+                 ^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Cosmos\emotional_api\full_system.py", line 108, in __init__
+    print(f"\u26a0\ufe0f Audio Pipeline Failed: {e}")
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 0-1: character maps to <undefined>

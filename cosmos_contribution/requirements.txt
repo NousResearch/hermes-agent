@@ -1,0 +1,82 @@
+# Core LLM
+ollama>=0.4.0
+llama-cpp-python>=0.3.0
+
+# Memory
+faiss-cpu>=1.8.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+networkx>=3.0
+
+# Agents
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+
+# RAG
+llama-index>=0.11.0
+rank-bm25>=0.2.0
+
+# Evolution
+deap>=1.4.0
+stable-baselines3>=2.3.0
+peft>=0.13.0
+
+# MCP Server
+mcp>=1.0.0
+
+# UI
+streamlit>=1.38.0
+
+# Web Server
+fastapi>=0.115.0
+uvicorn>=0.32.0
+jinja2>=3.1.0
+python-multipart>=0.0.9
+
+# Utilities
+pyyaml>=6.0
+pytest>=8.0.0
+loguru>=0.7.0
+numpy>=1.24.0
+pydantic>=2.0.0
+aiohttp>=3.9.0
+httpx>=0.27.0
+transformers>=4.38.0
+torch>=2.2.0
+playwright>=1.41.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+scipy>=1.10.0
+
+# --- v2.1.0 Skill Swarm ---
+psutil>=5.9.0
+discord.py>=2.3.0
+youtube-transcript-api>=0.6.0
+pyttsx3>=2.90
+questionary>=2.0.0
+sounddevice>=0.4.6
+torchaudio>=2.2.0
+
+# --- Audio (Optional - requires Python <3.12) ---
+# Uncomment these if using Python 3.11 or earlier:
+# openai-whisper>=20231117
+# TTS>=0.22.0
+# pyannote.audio>=3.1.0
+
+# --- Solana Trading ---
+solana>=0.30.0
+solders>=0.18.0
+base58>=2.1.0
+
+# --- Health Tracking ---
+pillow>=10.0.0
+python-dateutil>=2.8.0
+websockets>=12.0
+
+# --- n8n Integration ---
+requests>=2.31.0
+
+# --- Emotional API (Added) ---
+opencv-python>=4.8.0
+pyaudio>=0.2.14

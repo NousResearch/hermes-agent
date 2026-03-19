@@ -1,0 +1,34 @@
+{
+    "name": "cosmos-vscode",
+    "displayName": "Cosmos Companion",
+    "description": "Connects VS Code to the local Cosmos Agent Swarm.",
+    "version": "2.0.0",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "cosmos.activate",
+                "title": "Cosmos: Activate Swarm"
+            },
+            {
+                "command": "cosmos.explain",
+                "title": "Cosmos: Explain Selection"
+            }
+        ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "cosmos-sidebar",
+                    "title": "Cosmos",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        }
+    }
+}

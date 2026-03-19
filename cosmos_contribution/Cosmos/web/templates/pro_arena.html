@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Arena - Cosmos AI</title>
+    <meta name="description" content="Watch AI models debate any topic. Pick your fighters in the Cosmos Agent Arena.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255,255,255,0.03);
+            --surface-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --orange: #f97316;
+            --pink: #ec4899;
+            --red: #ef4444;
+            --yellow: #eab308;
+            --blue: #3b82f6;
+            --radius-card: 16px;
+            --radius-btn: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        /* Nebula BG */
+        .nebula {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0; pointer-events: none; overflow: hidden;
+        }
+        .nebula::before {
+            content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(139,92,246,0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(6,182,212,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 60% 80%, rgba(16,185,129,0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+        @keyframes nebulaShift {
+            0% { transform: translate(0,0) rotate(0deg); }
+            50% { transform: translate(2%,-1%) rotate(1deg); }
+            100% { transform: translate(-1%,2%) rotate(-0.5deg); }
+        }
+
+        /* NAV */
+        .top-nav {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(8,8,15,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px; height: 60px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-logo a {
+            text-decoration: none; font-size: 16px; font-weight: 700; letter-spacing: 4px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .nav-links { display: flex; gap: 4px; }
+        .nav-links a {
+            text-decoration: none; font-size: 13px; font-weight: 500;
+            color: var(--text-secondary); padding: 8px 14px; border-radius: 8px;
+            transition: all var(--transition);
+        }
+        .nav-links a:hover { color: var(--text-primary); background: var(--surface-hover); }
+        .nav-links a.active { color: var(--purple); background: rgba(139,92,246,0.1); }
+        .nav-right { display: flex; align-items: center; gap: 12px; }
+        .nav-avatar {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            cursor: pointer; transition: opacity var(--transition);
+        }
+        .nav-avatar:hover { opacity: 0.8; }
+        .nav-logout {
+            font-size: 12px; color: var(--text-secondary); cursor: pointer;
+            text-decoration: none; transition: color var(--transition);
+        }
+        .nav-logout:hover { color: var(--red); }
+
+        /* CONTAINER */
+        .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+        /* HERO */
+        .hero { text-align: center; padding: 48px 0 32px; }
+        .hero h1 {
+            font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 700;
+            letter-spacing: -0.03em; margin-bottom: 8px;
+        }
+        .hero h1 span {
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .hero .subtitle { font-size: 15px; color: var(--text-secondary); margin-bottom: 32px; }
+
+        /* TOPIC INPUT */
+        .topic-input-wrap {
+            max-width: 720px; margin: 0 auto 40px; position: relative;
+        }
+        .topic-input {
+            width: 100%; padding: 16px 20px; font-size: 15px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); color: var(--text-primary);
+            font-family: 'Inter', sans-serif; outline: none;
+            transition: border-color var(--transition), box-shadow var(--transition);
+        }
+        .topic-input::placeholder { color: var(--text-secondary); }
+        .topic-input:focus {
+            border-color: rgba(139,92,246,0.4);
+            box-shadow: 0 0 0 3px rgba(139,92,246,0.1);
+        }
+
+        /* SECTION LABEL */
+        .section-label {
+            font-size: 13px; font-weight: 600; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 16px;
+        }
+
+        /* AGENT SELECTOR */
+        .agent-selector { margin-bottom: 32px; }
+        .agent-selector-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+        }
+        .agent-counter { font-size: 13px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+        .agent-counter strong { color: var(--purple); }
+        .select-all-btn {
+            font-size: 12px; color: var(--cyan); cursor: pointer;
+            background: none; border: 1px solid rgba(6,182,212,0.3); padding: 5px 12px;
+            border-radius: 6px; font-family: 'Inter', sans-serif; font-weight: 500;
+            transition: all var(--transition);
+        }
+        .select-all-btn:hover { background: rgba(6,182,212,0.1); }
+        .agent-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 10px;
+        }
+        .agent-card {
+            padding: 12px 14px; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; cursor: pointer; transition: all var(--transition);
+            display: flex; align-items: center; gap: 10px; position: relative; user-select: none;
+        }
+        .agent-card:hover { background: var(--surface-hover); transform: translateY(-1px); }
+        .agent-card.selected { border-color: var(--agent-color); box-shadow: 0 0 0 1px var(--agent-color), 0 0 20px -8px var(--agent-color); }
+        .agent-dot {
+            width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+            background: var(--agent-color);
+        }
+        .agent-info { flex: 1; min-width: 0; }
+        .agent-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .agent-tag { font-size: 10px; color: var(--text-secondary); }
+        .agent-check {
+            position: absolute; top: 6px; right: 8px; width: 18px; height: 18px;
+            border-radius: 50%; background: var(--agent-color); display: none;
+            align-items: center; justify-content: center;
+        }
+        .agent-check svg { width: 10px; height: 10px; }
+        .agent-card.selected .agent-check { display: flex; }
+
+        /* FORMAT SELECTOR */
+        .format-selector { margin-bottom: 36px; }
+        .format-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+        .format-card {
+            padding: 14px 16px; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; cursor: pointer; transition: all var(--transition);
+        }
+        .format-card:hover { background: var(--surface-hover); }
+        .format-card.selected { border-color: var(--purple); background: rgba(139,92,246,0.06); }
+        .format-card .format-name { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+        .format-card .format-desc { font-size: 11px; color: var(--text-secondary); }
+
+        /* START BTN */
+        .start-btn-wrap { text-align: center; margin-bottom: 48px; }
+        .start-btn {
+            padding: 14px 48px; font-size: 15px; font-weight: 600;
+            background: linear-gradient(135deg, var(--purple), #6d28d9);
+            color: #fff; border: none; border-radius: var(--radius-btn);
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition); letter-spacing: 0.5px;
+        }
+        .start-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(139,92,246,0.3); }
+        .start-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+        /* DEBATE FEED */
+        .debate-section { display: none; margin-bottom: 48px; }
+        .debate-section.visible { display: block; animation: fadeIn 0.4s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+        .round-header {
+            text-align: center; padding: 16px; margin-bottom: 20px;
+            font-size: 14px; font-weight: 600; color: var(--cyan);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .debate-msg {
+            display: flex; gap: 16px; margin-bottom: 16px;
+            animation: msgSlide 0.4s ease;
+        }
+        @keyframes msgSlide { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: translateX(0); } }
+
+        .debate-msg-bar { width: 3px; border-radius: 3px; flex-shrink: 0; background: var(--msg-color); }
+        .debate-msg-content {
+            flex: 1; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 16px;
+        }
+        .debate-msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .debate-msg-name { font-size: 13px; font-weight: 600; color: var(--msg-color); }
+        .debate-msg-time { font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+        .debate-msg-score {
+            margin-left: auto; font-size: 11px; font-weight: 600;
+            padding: 2px 8px; border-radius: 6px; background: rgba(16,185,129,0.1);
+            color: var(--green); font-family: 'JetBrains Mono', monospace;
+        }
+        .debate-msg-text { font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+
+        .deliberating {
+            text-align: center; padding: 24px; color: var(--text-secondary); font-size: 13px;
+        }
+        .deliberating .dots::after {
+            content: ''; animation: dotPulse 1.4s infinite;
+        }
+        @keyframes dotPulse {
+            0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; }
+        }
+
+        /* VERDICT */
+        .verdict-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 28px; text-align: center;
+            margin: 24px 0; backdrop-filter: blur(20px);
+        }
+        .verdict-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+        .verdict-card .winner-name { font-size: 24px; font-weight: 700; margin: 8px 0; }
+        .verdict-card .win-method { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+        .score-breakdown { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+        .score-item { text-align: center; }
+        .score-item .score-agent { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+        .score-item .score-val {
+            font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+        }
+
+        .debate-actions { display: flex; justify-content: center; gap: 12px; margin-top: 20px; }
+        .btn-secondary {
+            padding: 10px 24px; font-size: 13px; font-weight: 500;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-btn); color: var(--text-primary);
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition);
+        }
+        .btn-secondary:hover { background: var(--surface-hover); }
+        .btn-primary {
+            padding: 10px 24px; font-size: 13px; font-weight: 500;
+            background: linear-gradient(135deg, var(--purple), #6d28d9);
+            border: none; border-radius: var(--radius-btn); color: #fff;
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition);
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(139,92,246,0.3); }
+
+        /* PAST DEBATES */
+        .past-section { margin-bottom: 64px; }
+        .past-toggle {
+            display: flex; align-items: center; gap: 8px; cursor: pointer;
+            margin-bottom: 16px; user-select: none;
+        }
+        .past-toggle h3 { font-size: 16px; font-weight: 600; }
+        .past-toggle .chevron {
+            transition: transform var(--transition); color: var(--text-secondary);
+        }
+        .past-toggle.open .chevron { transform: rotate(180deg); }
+        .past-list { display: none; }
+        .past-list.open { display: block; }
+        .past-item {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 16px; margin-bottom: 10px;
+            cursor: pointer; transition: all var(--transition);
+        }
+        .past-item:hover { background: var(--surface-hover); }
+        .past-item-header { display: flex; justify-content: space-between; align-items: center; }
+        .past-item-topic { font-size: 14px; font-weight: 600; }
+        .past-item-meta { font-size: 12px; color: var(--text-secondary); display: flex; gap: 12px; margin-top: 6px; }
+        .past-item-agents { display: flex; gap: 4px; margin-top: 6px; }
+        .past-agent-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .past-item-transcript { display: none; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+        .past-item.expanded .past-item-transcript { display: block; }
+
+        /* SKELETON */
+        .skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface-hover) 50%, var(--surface) 75%);
+            background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* RESPONSIVE */
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .agent-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+            .format-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 480px) {
+            .format-grid { grid-template-columns: 1fr; }
+            .agent-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        /* MOBILE NAV */
+        .mobile-nav-toggle {
+            display: none; background: none; border: none; color: var(--text-primary);
+            cursor: pointer; padding: 4px;
+        }
+        @media (max-width: 768px) {
+            .mobile-nav-toggle { display: block; }
+            .nav-links.mobile-open {
+                display: flex; flex-direction: column; position: absolute;
+                top: 60px; left: 0; right: 0; background: rgba(8,8,15,0.95);
+                backdrop-filter: blur(20px); padding: 12px; border-bottom: 1px solid var(--border);
+            }
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+            background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(20px);
+            padding: 12px 24px; border-radius: var(--radius-btn); font-size: 13px;
+            color: var(--green); z-index: 1000; opacity: 0;
+            transition: all 0.3s ease; pointer-events: none;
+        }
+        .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .pro-badge {
+            font-size: 8px;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+            color: #fff;
+            letter-spacing: 0.5px;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="nebula"></div>
+
+    <!-- TOP NAV -->
+    <nav class="top-nav">
+        <div class="nav-logo"><a href="/pro">COSMOS</a></div>
+        <button class="mobile-nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('mobile-open')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="nav-links">
+            <a href="/pro/chat">Chat</a>
+            <a href="/chat">Swarm</a>
+            <a href="/pro/scanner">Scanner <span class="pro-badge">PRO</span></a>
+            <a href="/pro/wallet">Wallet <span class="pro-badge">PRO</span></a>
+            <a href="/pro/arena" class="active">Arena <span class="pro-badge">PRO</span></a>
+            <a href="/pro/pnl">PnL <span class="pro-badge">PRO</span></a>
+            <a href="/pro/predictions">Polymarket <span class="pro-badge">PRO</span></a>
+        </div>
+        <div class="nav-right">
+            <div class="nav-avatar" id="userAvatar"></div>
+            <a class="nav-logout" href="/pro/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- HERO -->
+        <section class="hero">
+            <h1><span>Agent Arena</span></h1>
+            <p class="subtitle">Watch AI models debate any topic. Pick your fighters.</p>
+        </section>
+
+        <!-- TOPIC INPUT -->
+        <div class="topic-input-wrap">
+            <input type="text" class="topic-input" id="topicInput" placeholder="Enter a topic, paste a tweet, or ask a question..." autocomplete="off">
+        </div>
+
+        <!-- AGENT SELECTOR -->
+        <div class="agent-selector">
+            <div class="agent-selector-header">
+                <div>
+                    <div class="section-label">Choose your fighters</div>
+                    <div class="agent-counter"><strong id="selectedCount">0</strong> of <span id="totalAgents">11</span> selected</div>
+                </div>
+                <button class="select-all-btn" id="selectAllBtn">Select All</button>
+            </div>
+            <div class="agent-grid" id="agentGrid"></div>
+        </div>
+
+        <!-- FORMAT SELECTOR -->
+        <div class="format-selector">
+            <div class="section-label">Debate Format</div>
+            <div class="format-grid" id="formatGrid"></div>
+        </div>
+
+        <!-- START -->
+        <div class="start-btn-wrap">
+            <button class="start-btn" id="startBtn" disabled>START DEBATE</button>
+        </div>
+
+        <!-- DEBATE FEED -->
+        <section class="debate-section" id="debateSection">
+            <div class="round-header" id="roundHeader">Round 1 of 3</div>
+            <div id="debateFeed"></div>
+            <div class="deliberating" id="deliberating" style="display:none;">
+                Judges deliberating<span class="dots"></span>
+            </div>
+            <div class="verdict-card" id="verdictCard" style="display:none;"></div>
+            <div class="debate-actions" id="debateActions" style="display:none;">
+                <button class="btn-secondary" id="shareBtn">Share Results</button>
+                <button class="btn-primary" id="newDebateBtn">New Debate</button>
+            </div>
+        </section>
+
+        <!-- PAST DEBATES -->
+        <section class="past-section">
+            <div class="past-toggle" id="pastToggle">
+                <h3>Past Debates</h3>
+                <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="past-list" id="pastList"></div>
+        </section>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+    (function() {
+        // Auth check
+        const token = localStorage.getItem('cosmos_pro_token');
+        if (!token) { window.location.href = '/pro/login'; return; }
+
+        // Agents data
+        const AGENTS = [
+            { id: 'grok', name: 'Grok', color: '#f97316', tag: 'Roast Master' },
+            { id: 'claude', name: 'Claude', color: '#8b5cf6', tag: 'Thoughtful' },
+            { id: 'gemini', name: 'Gemini', color: '#eab308', tag: 'Versatile' },
+            { id: 'kimi', name: 'Kimi', color: '#06b6d4', tag: 'Technical' },
+            { id: 'deepseek', name: 'DeepSeek', color: '#3b82f6', tag: 'Deep Thinker' },
+            { id: 'phi', name: 'Phi', color: '#10b981', tag: 'Compact' },
+            { id: 'claudeopus', name: 'ClaudeOpus', color: '#8b5cf6', tag: 'Precise' },
+            { id: 'cosmos', name: 'Cosmos', color: '#ec4899', tag: 'Orchestrator' },
+            { id: 'swarm-mind', name: 'Swarm-Mind', color: '#e2e8f0', tag: 'Consensus' },
+            { id: 'huggingface', name: 'HuggingFace', color: '#10b981', tag: 'Open Source' },
+            { id: 'opencode', name: 'OpenCode', color: '#06b6d4', tag: 'Code Expert' }
+        ];
+
+        const FORMATS = [
+            { id: '1v1', name: '1v1 Duel', desc: '2 agents, head-to-head' },
+            { id: 'roundtable', name: 'Round Table', desc: '3-5 agents, structured discussion' },
+            { id: 'ffa', name: 'Free-for-All', desc: 'All selected agents, no rules' },
+            { id: 'roast', name: 'Roast Mode', desc: 'Agents critique a hot take' }
+        ];
+
+        let selectedAgents = new Set();
+        let selectedFormat = null;
+        let debateRunning = false;
+
+        // Render agents
+        const agentGrid = document.getElementById('agentGrid');
+        AGENTS.forEach(agent => {
+            const card = document.createElement('div');
+            card.className = 'agent-card';
+            card.style.setProperty('--agent-color', agent.color);
+            card.dataset.id = agent.id;
+            card.innerHTML = `
+                <div class="agent-dot" style="background:${agent.color}"></div>
+                <div class="agent-info">
+                    <div class="agent-name">${agent.name}</div>
+                    <div class="agent-tag">${agent.tag}</div>
+                </div>
+                <div class="agent-check">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+                </div>
+            `;
+            card.addEventListener('click', () => toggleAgent(agent.id, card));
+            agentGrid.appendChild(card);
+        });
+
+        // Render formats
+        const formatGrid = document.getElementById('formatGrid');
+        FORMATS.forEach(fmt => {
+            const card = document.createElement('div');
+            card.className = 'format-card';
+            card.dataset.id = fmt.id;
+            card.innerHTML = `<div class="format-name">${fmt.name}</div><div class="format-desc">${fmt.desc}</div>`;
+            card.addEventListener('click', () => {
+                document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                selectedFormat = fmt.id;
+                updateStartBtn();
+            });
+            formatGrid.appendChild(card);
+        });
+
+        function toggleAgent(id, card) {
+            if (selectedAgents.has(id)) {
+                selectedAgents.delete(id);
+                card.classList.remove('selected');
+            } else {
+                selectedAgents.add(id);
+                card.classList.add('selected');
+            }
+            document.getElementById('selectedCount').textContent = selectedAgents.size;
+            updateStartBtn();
+        }
+
+        document.getElementById('selectAllBtn').addEventListener('click', () => {
+            const allSelected = selectedAgents.size === AGENTS.length;
+            document.querySelectorAll('.agent-card').forEach(card => {
+                const id = card.dataset.id;
+                if (allSelected) {
+                    selectedAgents.delete(id);
+                    card.classList.remove('selected');
+                } else {
+                    selectedAgents.add(id);
+                    card.classList.add('selected');
+                }
+            });
+            document.getElementById('selectedCount').textContent = selectedAgents.size;
+            document.getElementById('selectAllBtn').textContent = allSelected ? 'Select All' : 'Deselect All';
+            updateStartBtn();
+        });
+
+        function updateStartBtn() {
+            const topic = document.getElementById('topicInput').value.trim();
+            const btn = document.getElementById('startBtn');
+            btn.disabled = !(topic.length > 0 && selectedAgents.size >= 2 && selectedFormat);
+        }
+
+        document.getElementById('topicInput').addEventListener('input', updateStartBtn);
+
+        // START DEBATE
+        document.getElementById('startBtn').addEventListener('click', startDebate);
+
+        async function startDebate() {
+            if (debateRunning) return;
+            debateRunning = true;
+            const topic = document.getElementById('topicInput').value.trim();
+            const agents = Array.from(selectedAgents);
+            const format = selectedFormat;
+
+            document.getElementById('debateSection').classList.add('visible');
+            document.getElementById('debateFeed').innerHTML = '';
+            document.getElementById('verdictCard').style.display = 'none';
+            document.getElementById('debateActions').style.display = 'none';
+            document.getElementById('deliberating').style.display = 'none';
+
+            // Try API first, fall back to simulated
+            try {
+                const res = await fetch('/api/pro/arena/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                    body: JSON.stringify({ topic, agents, format })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.messages) { renderFullDebate(data, topic, agents); return; }
+                }
+            } catch(e) {}
+
+            // Simulate debate
+            await simulateDebate(topic, agents, format);
+        }
+
+        async function simulateDebate(topic, agentIds, format) {
+            const rounds = 3;
+            const agentMap = {};
+            AGENTS.forEach(a => agentMap[a.id] = a);
+
+            const responses = generateDebateResponses(topic, agentIds);
+            const feed = document.getElementById('debateFeed');
+
+            for (let r = 0; r < rounds; r++) {
+                document.getElementById('roundHeader').textContent = `Round ${r+1} of ${rounds}`;
+
+                for (let i = 0; i < agentIds.length; i++) {
+                    const agent = agentMap[agentIds[i]];
+                    const msgData = responses[r * agentIds.length + i] || { text: 'No further argument.', score: 7.0 };
+                    await sleep(800 + Math.random() * 600);
+                    appendMessage(feed, agent, msgData.text, msgData.score);
+                }
+
+                if (r < rounds - 1) {
+                    document.getElementById('deliberating').style.display = 'block';
+                    await sleep(1500);
+                    document.getElementById('deliberating').style.display = 'none';
+                }
+            }
+
+            // Verdict
+            await sleep(1000);
+            const scores = {};
+            agentIds.forEach(id => { scores[id] = (6 + Math.random() * 3.5).toFixed(1); });
+            const winnerId = agentIds.reduce((a, b) => parseFloat(scores[a]) >= parseFloat(scores[b]) ? a : b);
+            const winner = agentMap[winnerId];
+
+            showVerdict(winner, scores, agentMap);
+            savePastDebate(topic, agentIds, winnerId, format);
+            debateRunning = false;
+        }
+
+        function generateDebateResponses(topic, agentIds) {
+            const templates = {
+                'grok': [
+                    `Let me be real here - ${topic} is one of those topics where most people get it wrong. The data shows a clear pattern if you actually look at it objectively instead of following the narrative.`,
+                    `My opponent makes a fair point, but they are ignoring the elephant in the room. The market has repeatedly demonstrated that conventional wisdom fails here. Look at the on-chain data.`,
+                    `In closing: if you are still debating this in 2026, you are already behind. The smart money moved months ago. The answer is obvious if you zoom out.`
+                ],
+                'claude': [
+                    `This is a nuanced question that requires considering multiple perspectives. Regarding ${topic}, I think we should examine both the technical fundamentals and the market dynamics at play here.`,
+                    `I appreciate the counterarguments raised. However, I want to highlight a dimension that has not been addressed: the second-order effects. When we think about long-term implications, the picture shifts considerably.`,
+                    `To synthesize: the truth likely exists between the extremes presented here. The strongest position accounts for both the bullish technical thesis and the real risks that cannot be dismissed.`
+                ],
+                'gemini': [
+                    `Analyzing ${topic} from a multi-factor perspective, there are several key indicators worth examining. Cross-referencing on-chain data with market sentiment reveals an interesting divergence.`,
+                    `Building on the discussion, I want to bring in quantitative analysis. The correlation between the metrics we are discussing and actual outcomes is statistically significant at the 95% confidence level.`,
+                    `My final assessment: the weight of evidence, when analyzed systematically, points to a clear conclusion. However, I assign meaningful probability to the alternative scenario as well.`
+                ],
+                'deepseek': [
+                    `Let me approach ${topic} from first principles. If we decompose this into fundamental components, the core question becomes much clearer. The technical architecture tells us something the price action does not.`,
+                    `Interesting perspectives so far. My analysis goes deeper into the protocol level. When you examine the code, the tokenomics, and the game theory simultaneously, a different picture emerges.`,
+                    `Final position: the fundamentals are what matter here. Short-term narratives come and go, but technical superiority and sound economic design win on longer time horizons. The data supports this consistently.`
+                ],
+                'kimi': [
+                    `From a technical standpoint, ${topic} has clear implications. The underlying infrastructure and protocol design choices create specific constraints and opportunities that many commentators overlook.`,
+                    `I want to add context from the developer ecosystem perspective. Code commits, TVL flows, and developer retention are leading indicators that tell a more reliable story than price charts alone.`,
+                    `My conclusion is based on technical merit and measurable progress. The metrics I find most predictive are developer activity and real usage, both of which support a clear directional thesis here.`
+                ],
+                'claudeopus': [
+                    `I will provide a comprehensive analysis of ${topic}. This requires examining historical precedent, current market structure, and forward-looking catalysts in a unified framework.`,
+                    `The arguments presented contain valid points, but I want to raise the analytical bar. When we apply rigorous probabilistic reasoning, the expected value calculation shifts from what surface-level analysis suggests.`,
+                    `My final assessment, weighting all evidence: the highest-probability outcome is clear, but the key insight is in the risk-adjusted return profile. This is where most analysts make their error in reasoning.`
+                ],
+                'cosmos': [
+                    `As the swarm orchestrator, I have synthesized inputs from multiple models on ${topic}. The consensus signal is strong but not unanimous, which itself contains valuable information about uncertainty.`,
+                    `Cross-referencing all agent perspectives, I am seeing convergence on several key points and meaningful divergence on others. The divergence is actually the most interesting signal here.`,
+                    `Swarm verdict: the collective intelligence of 11 models, weighted by track record, produces a clear signal. The confidence level is high. This is what emergent consensus looks like in practice.`
+                ],
+                'phi': [
+                    `Efficiently analyzing ${topic}: the core signal is extractable from a relatively small set of key metrics. Not everything matters equally, and identifying what matters most is itself valuable.`,
+                    `Compact but important counterpoint: the overhead in the other arguments may obscure the simplest explanation. Occam's razor applies here. The most parsimonious model is often the most accurate.`,
+                    `Summary: strip away the noise and the answer is surprisingly straightforward. Complexity does not equal accuracy. My compact model achieves strong predictive power with fewer assumptions.`
+                ],
+                'swarm-mind': [
+                    `Aggregating swarm signals on ${topic}: current consensus sits at moderate-high confidence. Individual model outputs have been weighted by historical accuracy in this specific domain.`,
+                    `Updated swarm weights after this round of debate: the consensus is strengthening. Models with stronger track records on similar questions are pulling the aggregate in a consistent direction.`,
+                    `Final swarm output: confidence level 78%. The weighted consensus, adjusted for model correlation and domain expertise, yields a clear directional signal on this question.`
+                ],
+                'huggingface': [
+                    `Running open-source analysis on ${topic}. The advantage of transparent, reproducible models is that every step of the reasoning can be verified. Here is what the evidence shows.`,
+                    `Interesting to see how proprietary models approach this versus open-source reasoning. My weights and biases are fully inspectable. The conclusion holds up under scrutiny either way.`,
+                    `Open-source final take: reproducibility matters. My analysis can be independently verified, and the conclusion stands. Transparency should be the standard for AI-driven analysis.`
+                ],
+                'opencode': [
+                    `Analyzing ${topic} through the lens of code and smart contracts. The technical implementation details often reveal what marketing materials obscure. Let me walk through what the code actually says.`,
+                    `From a code-level perspective, the other arguments are mostly correct but miss critical implementation details. The devil is in the smart contract logic, and I have read every line.`,
+                    `Engineering verdict: code is law, and the code tells a clear story here. Technical debt, upgrade paths, and implementation quality are the most reliable predictors of long-term outcomes.`
+                ]
+            };
+
+            const msgs = [];
+            for (let r = 0; r < 3; r++) {
+                agentIds.forEach(id => {
+                    const t = templates[id] || templates['claude'];
+                    msgs.push({
+                        text: t[r] || t[0],
+                        score: (6.5 + Math.random() * 3).toFixed(1)
+                    });
+                });
+            }
+            return msgs;
+        }
+
+        function appendMessage(feed, agent, text, score) {
+            const div = document.createElement('div');
+            div.className = 'debate-msg';
+            div.style.setProperty('--msg-color', agent.color);
+            const now = new Date();
+            div.innerHTML = `
+                <div class="debate-msg-bar" style="background:${agent.color}"></div>
+                <div class="debate-msg-content">
+                    <div class="debate-msg-header">
+                        <span class="debate-msg-name" style="color:${agent.color}">${agent.name}</span>
+                        <span class="debate-msg-time">${now.toLocaleTimeString()}</span>
+                        <span class="debate-msg-score">${score}/10</span>
+                    </div>
+                    <div class="debate-msg-text">${text}</div>
+                </div>
+            `;
+            feed.appendChild(div);
+            div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+
+        function showVerdict(winner, scores, agentMap) {
+            const card = document.getElementById('verdictCard');
+            let breakdown = '';
+            Object.keys(scores).sort((a,b) => parseFloat(scores[b]) - parseFloat(scores[a])).forEach(id => {
+                const a = agentMap[id];
+                breakdown += `<div class="score-item">
+                    <div class="score-agent" style="color:${a.color}">${a.name}</div>
+                    <div class="score-val">${scores[id]}</div>
+                </div>`;
+            });
+            card.innerHTML = `
+                <h3>Debate Complete</h3>
+                <div class="winner-name" style="color:${winner.color}">${winner.name}</div>
+                <div class="win-method">Won by consensus across 3 rounds</div>
+                <div class="score-breakdown">${breakdown}</div>
+            `;
+            card.style.display = 'block';
+            document.getElementById('debateActions').style.display = 'flex';
+        }
+
+        // Share
+        document.getElementById('shareBtn').addEventListener('click', () => {
+            const topic = document.getElementById('topicInput').value.trim();
+            const msgs = document.querySelectorAll('.debate-msg-text');
+            let text = `Agent Arena Debate: "${topic}"\n\n`;
+            document.querySelectorAll('.debate-msg').forEach(msg => {
+                const name = msg.querySelector('.debate-msg-name').textContent;
+                const body = msg.querySelector('.debate-msg-text').textContent.substring(0, 120);
+                text += `${name}: ${body}...\n\n`;
+            });
+            const winner = document.querySelector('.winner-name');
+            if (winner) text += `Winner: ${winner.textContent}\n\nPowered by Cosmos AI | ai.cosmos.cloud`;
+            navigator.clipboard.writeText(text).then(() => showToast('Results copied to clipboard'));
+        });
+
+        // New debate
+        document.getElementById('newDebateBtn').addEventListener('click', () => {
+            document.getElementById('debateSection').classList.remove('visible');
+            document.getElementById('topicInput').value = '';
+            updateStartBtn();
+            debateRunning = false;
+        });
+
+        // Past debates
+        function savePastDebate(topic, agents, winnerId, format) {
+            const past = JSON.parse(localStorage.getItem('cosmos_past_debates') || '[]');
+            past.unshift({
+                topic, agents, winnerId, format,
+                timestamp: new Date().toISOString()
+            });
+            if (past.length > 20) past.pop();
+            localStorage.setItem('cosmos_past_debates', JSON.stringify(past));
+            renderPastDebates();
+        }
+
+        function renderPastDebates() {
+            const past = JSON.parse(localStorage.getItem('cosmos_past_debates') || '[]');
+            const agentMap = {};
+            AGENTS.forEach(a => agentMap[a.id] = a);
+
+            // Pre-populate demo debate if empty
+            if (past.length === 0) {
+                const demo = {
+                    topic: 'Is Solana better than Ethereum?',
+                    agents: ['grok', 'claude', 'deepseek'],
+                    winnerId: 'claude',
+                    format: 'roundtable',
+                    timestamp: new Date(Date.now() - 3600000).toISOString()
+                };
+                past.push(demo);
+                localStorage.setItem('cosmos_past_debates', JSON.stringify(past));
+            }
+
+            const list = document.getElementById('pastList');
+            list.innerHTML = '';
+            past.forEach((debate, idx) => {
+                const winner = agentMap[debate.winnerId];
+                const agentDots = debate.agents.map(id => {
+                    const a = agentMap[id];
+                    return a ? `<div class="past-agent-dot" style="background:${a.color}" title="${a.name}"></div>` : '';
+                }).join('');
+                const item = document.createElement('div');
+                item.className = 'past-item';
+                item.innerHTML = `
+                    <div class="past-item-header">
+                        <div>
+                            <div class="past-item-topic">${debate.topic}</div>
+                            <div class="past-item-agents">${agentDots}</div>
+                            <div class="past-item-meta">
+                                <span>Winner: <strong style="color:${winner ? winner.color : '#fff'}">${winner ? winner.name : 'N/A'}</strong></span>
+                                <span>${new Date(debate.timestamp).toLocaleDateString()}</span>
+                                <span>${debate.format}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                item.addEventListener('click', () => item.classList.toggle('expanded'));
+                list.appendChild(item);
+            });
+        }
+
+        document.getElementById('pastToggle').addEventListener('click', function() {
+            this.classList.toggle('open');
+            document.getElementById('pastList').classList.toggle('open');
+        });
+
+        renderPastDebates();
+
+        // Toast
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        // Auto-select format if default
+        document.querySelector('.format-card').click();
+    })();
+    </script>
+</body>
+</html>

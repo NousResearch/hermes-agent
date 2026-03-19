@@ -1,0 +1,130 @@
+{
+  "name": "Image Generation API Reference",
+  "version": "2025-01",
+  "last_updated": "2026-01-31",
+  "grok_xai": {
+    "name": "Grok Image Generation (xAI)",
+    "documentation": "https://docs.x.ai/docs/guides/image-generation",
+    "endpoint": "https://api.x.ai/v1/images/generations",
+    "edit_endpoint": "https://api.x.ai/v1/images/edits",
+    "authentication": {
+      "method": "Bearer Token",
+      "header": "Authorization: Bearer {XAI_API_KEY}",
+      "env_vars": [
+        "GROK_API_KEY",
+        "XAI_API_KEY"
+      ]
+    },
+    "model": "grok-2-image",
+    "request_format": {
+      "model": "grok-2-image (required)",
+      "prompt": "string - text description of image (required)",
+      "n": "1-10 - number of images to generate",
+      "response_format": "url | b64_json (default: url)",
+      "aspect_ratio": "e.g., 1:1, 4:3, 16:9"
+    },
+    "response_format": {
+      "url_mode": {
+        "data": [
+          {
+            "url": "https://..."
+          }
+        ]
+      },
+      "b64_mode": {
+        "data": [
+          {
+            "b64_json": "base64_encoded_image"
+          }
+        ]
+      }
+    },
+    "notes": [
+      "Quality parameter not supported",
+      "URLs expire after some time - use b64_json for persistence",
+      "Supports image editing with original image + edit prompt"
+    ]
+  },
+  "gemini_google": {
+    "name": "Gemini Image Generation (Google AI)",
+    "documentation": "https://ai.google.dev/gemini-api/docs/image-generation",
+    "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    "authentication": {
+      "method": "API Key Header",
+      "header": "x-goog-api-key: {GEMINI_API_KEY}",
+      "env_vars": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY"
+      ]
+    },
+    "models": {
+      "gemini-2.0-flash-exp": "Fast, supports image output",
+      "gemini-2.5-flash-image": "Nano Banana - optimized for speed",
+      "gemini-3-pro-image-preview": "Nano Banana Pro - highest quality"
+    },
+    "request_format": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "prompt"
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "responseModalities": [
+          "IMAGE"
+        ],
+        "aspectRatio": "1:1, 2:3, 3:2, 16:9, etc."
+      }
+    },
+    "response_format": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "inlineData": {
+                  "mimeType": "image/png",
+                  "data": "base64_encoded_image"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "notes": [
+      "All images include SynthID watermark",
+      "Supports multi-turn conversations with image context",
+      "Pro model supports up to 14 reference images"
+    ]
+  },
+  "cosmos_meme_prompts": [
+    "Professor Cosmos from Futurama saying 'Good news everyone!' cartoon style",
+    "Mad scientist Professor Cosmos in lab with glowing experiments",
+    "Professor Cosmos excited about AI and robots, Futurama style",
+    "Cartoon Cosmos with neural network diagrams, excited expression",
+    "Professor Cosmos holding crypto coin, 'To the moon!' vibes"
+  ],
+  "usage_example": {
+    "python": {
+      "grok": "from cosmos.integration.image_gen import generate_meme\nimage_bytes, prompt, caption = await generate_meme()",
+      "direct": "gen = ImageGenerator()\nimage = await gen.generate('your prompt here')"
+    }
+  },
+  "best_practices": {
+    "prompt_tips": [
+      "Be specific about art style (cartoon, Futurama style)",
+      "Include character details (lab coat, glasses, white hair)",
+      "Mention 'meme format' or 'meme ready' for social media use",
+      "Keep prompts under 1000 characters"
+    ],
+    "error_handling": [
+      "Always have fallback provider",
+      "Cache successful images locally",
+      "Respect rate limits"
+    ]
+  }
+}

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>cosmos DeGen Swarm HUD</title>
+    <link rel="stylesheet" href="style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="dashboard-container">
+
+        <!-- TOP NAVIGATION -->
+        <nav class="glass-card top-nav">
+            <div class="logo-group">
+                <div class="logo-icon">🦉</div>
+                <div style="font-weight: 800; font-size: 20px; letter-spacing: -0.5px;">cosmos <span
+                        style="font-weight: 300; opacity: 0.5;">SWARM</span></div>
+            </div>
+
+            <div class="nav-metrics">
+                <div class="nav-metric-item">
+                    <div class="label">System Load</div>
+                    <div class="val" id="sys-load">12.4%</div>
+                </div>
+                <div class="nav-metric-item">
+                    <div class="label">Solana RPC</div>
+                    <div class="val" style="color: var(--accent-cyan);">14ms</div>
+                </div>
+                <div class="nav-metric-item">
+                    <div class="label">Swarm Health</div>
+                    <div class="val">99.8%</div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- LEFT SIDEBAR: MACRO -->
+        <aside class="sidebar-left">
+            <div class="glass-card" style="flex: 1;">
+                <div style="font-size: 14px; font-weight: 700; color: var(--text-secondary);">MARKET MACRO</div>
+
+                <div style="margin-top: 30px;">
+                    <div style="font-size: 11px; color: #555;">FEAR & GREED</div>
+                    <div style="font-size: 24px; font-weight: 800; color: var(--accent-green);" id="fng-val">74</div>
+                    <div style="font-size: 11px; color: var(--accent-green);">GREED ENGINE ACTIVE</div>
+                </div>
+
+                <div class="macro-chart">
+                    <canvas id="macroChart"></canvas>
+                </div>
+
+                <div style="margin-top: 40px;">
+                    <div style="font-size: 14px; font-weight: 700; color: var(--text-secondary);">TOP NARRATIVES</div>
+                    <div id="narrative-list" style="margin-top: 15px;">
+                        <!-- JS Populated -->
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- MAIN VIEW -->
+        <main class="main-view">
+            <div class="hero-stats">
+                <div class="glass-card big-stat">
+                    <div class="label">Total Portfolio</div>
+                    <div class="value" id="port-total">$44,818.59</div>
+                    <div class="sub" style="color: var(--accent-green);">+$3,438.70 (Today)</div>
+                </div>
+                <div class="glass-card big-stat">
+                    <div class="label">24h Trades</div>
+                    <div class="value" id="trade-count">142</div>
+                    <div class="sub" style="color: var(--accent-cyan);">Aggressive Mode</div>
+                </div>
+                <div class="glass-card big-stat">
+                    <div class="label">Rugs Avoided</div>
+                    <div class="value" id="rug-count">7</div>
+                    <div class="sub" style="color: var(--accent-orange);">Shield active</div>
+                </div>
+            </div>
+
+            <div class="glass-card" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <div style="font-size: 16px; font-weight: 700;">LIVE TOKEN SCOUT</div>
+                    <div style="font-size: 10px; color: var(--accent-green);">SCANNING 10k TWEETS/M</div>
+                </div>
+                <div class="token-scout-grid" id="token-grid">
+                    <!-- JS Generated Token Cards -->
+                </div>
+            </div>
+        </main>
+
+        <!-- RIGHT SIDEBAR: CONSOLE -->
+        <aside class="sidebar-right">
+            <div class="glass-card" style="flex: 1; display: flex; flex-direction: column;">
+                <div style="font-size: 14px; font-weight: 700; margin-bottom: 15px;">SWARM COGNITION LOG</div>
+                <div class="swarm-console" id="console-logs">
+                    <!-- JS Live Logs -->
+                </div>
+            </div>
+
+            <div class="glass-card" style="height: 180px;">
+                <div style="font-size: 14px; font-weight: 700;">WHALE RADAR</div>
+                <div id="whale-list" style="margin-top: 10px;">
+                    <!-- Whale alerts -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- PERFORMANCE (BOTTOM) -->
+        <footer class="glass-card performance-chart">
+            <div style="font-size: 14px; font-weight: 700; margin-bottom: 15px;">PNL PERFORMANCE (72H)</div>
+            <canvas id="pnlChart" style="max-height: 180px;"></canvas>
+        </footer>
+
+    </div>
+
+    <script>
+        // --- REAL-TIME SIMULATION ENGINE ---
+
+        const logs = document.getElementById('console-logs');
+        const tokenGrid = document.getElementById('token-grid');
+        const whaleList = document.getElementById('whale-list');
+
+        const AGENTS = [
+            { name: 'SCOUT', color: '#00ff88' },
+            { name: 'SNIPER', color: '#ff3333' },
+            { name: 'WHALE', color: '#00f2ff' },
+            { name: 'SAFETY', color: '#bc00ff' },
+            { name: 'ALPHA', color: '#ffaa00' }
+        ];
+
+        const logMessages = [
+            "New pump.fun launch detected: $PROJECT_X",
+            "Whale 0x72a... rotating $SOL to $STABLES",
+            "High sentiment spike on 'DePIN' narratives",
+            "Rug risk detected on $FAKE_BONK. Authorities not renounced.",
+            "Jupiter swap executed: 1.5 SOL -> $WIF",
+            "Meteora vault yield optimizing...",
+            "Sentiment scan complete: 12,402 tweets processed",
+            "Helius metadata check: $ALPHA verified",
+            "Bonding curve for $TKN at 84%. Potential migration in T-10m."
+        ];
+
+        function addLog() {
+            const agent = AGENTS[Math.floor(Math.random() * AGENTS.length)];
+            const msg = logMessages[Math.floor(Math.random() * logMessages.length)];
+            const div = document.createElement('div');
+            div.className = 'log-line';
+            div.innerHTML = `<span style="color: ${agent.color}; font-weight: 700;">[${agent.name}]</span> <span>${msg}</span>`;
+            logs.prepend(div);
+            if (logs.children.length > 50) logs.removeChild(logs.lastChild);
+        }
+
+        const tokens = [
+            { name: 'SHMEEGUS', sym: '$SHMEE', liq: '542k', vol: '1.2M', curve: 82, conf: 84 },
+            { name: 'PEPE MOM', sym: '$MOM', liq: '124k', vol: '450k', curve: 45, conf: 72 },
+            { name: 'RALPH', sym: '$RALPH', liq: '2.1M', vol: '8.4M', curve: 98, conf: 41 },
+            { name: 'PENGU BRO', sym: '$PBRO', liq: '87k', vol: '12k', curve: 12, conf: 91 },
+            { name: 'SOL DOGE', sym: '$SDOGE', liq: '310k', vol: '600k', curve: 65, conf: 68 },
+            { name: 'MOON AGENT', sym: '$MAGENT', liq: '15k', vol: '120k', curve: 88, conf: 35 }
+        ];
+
+        function updateTokens() {
+            tokenGrid.innerHTML = tokens.map(t => `
+                <div class="token-card">
+                    <div class="header">
+                        <div class="name">${t.sym}</div>
+                        <div style="font-size: 10px; color: ${t.conf > 70 ? 'var(--accent-green)' : 'var(--accent-orange)'}">${t.conf}% CONF</div>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">Liq: ${t.liq} | Vol: ${t.vol}</div>
+                    <div class="curve-bg"><div class="curve-fill" style="width: ${t.curve}%"></div></div>
+                    <div style="display: flex; justify-content: space-between; font-size: 9px; opacity: 0.5;">
+                        <span>Progress</span> <span>${t.curve}%</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // --- Charts Initialization ---
+        const macroCtx = document.getElementById('macroChart').getContext('2d');
+        new Chart(macroCtx, {
+            type: 'line',
+            data: {
+                labels: ['', '', '', '', '', ''],
+                datasets: [{
+                    data: [65, 59, 80, 81, 76, 74],
+                    borderColor: '#00ff88',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    pointRadius: 0
+                }]
+            },
+            options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
+        });
+
+        const pnlCtx = document.getElementById('pnlChart').getContext('2d');
+        new Chart(pnlCtx, {
+            type: 'line',
+            data: {
+                labels: Array(24).fill(''),
+                datasets: [{
+                    label: 'Portfolio Equity',
+                    data: Array(24).fill(0).map(() => Math.random() * 5000 + 40000),
+                    borderColor: '#00f2ff',
+                    backgroundColor: 'rgba(0, 242, 255, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, border: { display: false } },
+                    x: { grid: { display: false }, border: { display: false } }
+                }
+            }
+        });
+
+        // Initialize and Start Loops
+        updateTokens();
+        setInterval(addLog, 1500);
+        setInterval(() => {
+            // Mock system load fluctuation
+            document.getElementById('sys-load').innerText = (Math.random() * 5 + 10).toFixed(1) + '%';
+            // Shuffle confidence values slightly
+            tokens.forEach(t => t.conf = Math.min(100, Math.max(0, t.conf + (Math.random() * 4 - 2))));
+            updateTokens();
+        }, 3000);
+
+    </script>
+</body>
+
+</html>

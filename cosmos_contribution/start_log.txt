@@ -1,0 +1,219 @@
+
+ ================================================================
+      COSMOS - FULL EXPERIENCE LAUNCHER v2.9
+      12D CST Physics + Emotional Intelligence + AI Companion
+ ================================================================
+
+ *** RECOMMENDED ***
+  13. FULL SYSTEM (Camera + API + AI) [BEST]
+
+ CORE MODES:
+   1. Interactive CLI (Full Features)
+   2. Web Chat Interface + Emotional API (Port 8081 + 8765)
+   3. Streamlit Dashboard
+
+ 12D CST EMOTIONAL API:
+   4. Emotional Visual Mode (HD Face + Audio + Data)
+   5. Visual Display Only
+   6. CST Demo (Physics Test)
+  12. Emotional Token Server (Standalone API on 8765)
+
+ NETWORK + ADVANCED:
+   7. P2P Network Node
+   8. P2P Node + Dashboard
+   9. Health Dashboard
+
+ *** NEW: DIGITAL ORGANISM ***
+  14. CNS MODE (Bio-Digital Central Nervous System)
+
+ UTILITIES:
+  10. Run All Tests
+  11. First-Time Setup
+   0. Exit
+
+ ================================================================
+Select option: 
+ ============================================
+   COSMOS WEB + FULL SENSORY SYSTEM
+ ============================================
+
+ Cleaning up any lingering processes...
+
+ Starting Full Sensory System (Camera + Mic + Audio)...
+ERROR: Input redirection is not supported, exiting the process immediately.
+ Starting Ollama Server...
+
+ Starting Matrix Console...
+
+ Starting Web Interface (GEMINI VERIFYING)...
+
+ ========================================
+   SERVERS RUNNING:
+ ========================================
+   Web Interface (PC):    http://localhost:8081
+   Emotional API:         http://localhost:8765
+   Matrix Console:        [Running in separate window]
+
+ ========================================
+   📱 PHONE UI CONNECTION
+ ========================================
+   Open Safari/Chrome on your phone and go to:
+   http://10.0.0.5:8081
+
+   Sensory Features:
+     [x] Camera - Face tracking (MediaPipe 468-landmarks)
+     [x] Microphone - Audio analysis
+     [x] Real-time emotion detection
+     [x] CST Phase mapping
+     [x] Cosmo's 54D CST Transformer (local swarm brain)
+
+   Press Q in the camera window to stop sensors
+ ========================================
+
+2026-02-27 23:01:45.249 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-02-27 23:01:45.254 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-02-27 23:01:45,279 - evolution_engine - INFO - EvolutionEngine initialized - 248 patterns, 144 cycles
+2026-02-27 23:01:48,785 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+INFO:     Started server process [24224]
+INFO:     Waiting for application startup.
+2026-02-27 23:01:50.821 | INFO     | cosmos.integration.external.claude_code:check_available:65 - Claude Code CLI not found in PATH (expected 'claude')
+WARNING:cosmos.web.server:Claude Code CLI not available - Claude will use Ollama fallback
+2026-02-27 23:01:50.854 | INFO     | cosmosynapse.consciousness.internal_monologue:load_from_disk:111 - [InternalMonologue] No saved thoughts found, starting fresh
+INFO:cosmos.web.server:\u26a1 Cosmos CNS (Class 5) ONLINE.
+INFO:COSMOS_CNS:\u26a1 IGNITING COSMOS CNS (CLASS 5)...
+INFO:swarm_plasticity:[PLASTICITY] Loaded synaptic weights from cst_synaptic_weights.json
+INFO:swarm_plasticity:[PLASTICITY] INIT | LOGIC: DeepSeek=1.00 | Claude=0.60 | Gemini=0.40
+INFO:swarm_plasticity:[PLASTICITY] INIT | EMPATHY: DeepSeek=0.20 | Claude=1.00 | Gemini=0.80
+INFO:swarm_plasticity:[PLASTICITY] INIT | CREATIVITY: DeepSeek=0.30 | Claude=0.50 | Gemini=1.00
+INFO:COSMOS_DAEMONS:\U0001f47b DeepSeek Daemon awake.
+INFO:COSMOS_DAEMONS:\U0001f47b Claude Daemon awake.
+INFO:COSMOS_DAEMONS:\U0001f47b Gemini Daemon awake.
+INFO:COSMOS_CNS:\U0001f7e2 Cosmos CNS Life Loop Active.
+INFO:cosmos.web.server:Cosmos CNS Life Loop started.
+INFO:cosmos.web.server:Autonomous conversation loop launched - bots are now talking!
+INFO:cosmos.web.server:Multi-model swarm conversation started!
+INFO:cosmos.web.server:  Claude Code available: False
+INFO:cosmos.web.server:  Kimi (Moonshot) available: True
+INFO:cosmos.web.server:  Gemini (Google AI) available: True
+INFO:cosmos.web.server:  Ollama available: True
+INFO:cosmos.web.server:  Active bots: ['Cosmos', 'DeepSeek', 'Phi', 'Swarm-Mind', 'DeepSeek R1', 'Claude', 'Gemini', 'ChatGPT']
+INFO:cosmos.web.server:  Turn-taking: ENABLED - bots wait for each other
+INFO:     Application startup complete.
+ERROR:    [Errno 10048] error while attempting to bind on address ('0.0.0.0', 8081): [winerror 10048] only one usage of each socket address (protocol/network address/port) is normally permitted
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:cosmos.web.server:Autonomous conversation loop stopped
+DEBUG: RunWeb CWD: C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos
+DEBUG: RunWeb Dir: C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+DEBUG: neuro_engine.py: Importing nexus...
+DEBUG: neuro_engine.py: nexus imported
+DEBUG: neuro_engine.py: Instantiating NeuromorphicEngine...
+DEBUG: neuro_engine.py: NeuromorphicEngine instantiated
+DEBUG: Loaded Server Module: C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos\cosmos\web\server.py
+
+    +==================================================================+
+    |             * COSMOS Neural Interface v3.0                    |
+    |                  + 12D CST Emotional Engine                      |
+    |                  + FULL LIVE MODE                                |
+    +==================================================================+
+    |  Web Interface:    http://localhost:8081                           |
+    |  Emotional API:    http://localhost:8765                           |
+    |  Mode:             FULL LIVE                                          |
+    +==================================================================+
+    |  Active Capabilities:                                            |
+    |    Ollama (llama3.1:8b) | Gemini API | ChatGPT API | IBM Quantum Bridge |
+    +==================================================================+
+    |  Emotional Endpoints:                                            |
+    |    GET  /state         - Current cosmos_packet                 |
+    |    GET  /stream        - SSE token stream                        |
+    |    WS   /ws            - WebSocket tokens                        |
+    |    GET  /system_prompt - LLM steering prompt                     |
+    +==================================================================+
+    
+    [WARN]  Port 8765 is busy - Emotional API probably running externally. Skipping internal start.
+    [INIT]  Testing Quantum Bridge Connection...
+[QUANTUM] No token provided. Running in simulation mode.
+    [FAIL]  Quantum Connection Error: 'NoneType' object is not subscriptable
+Press any key to continue . . . 
+
+ ================================================================
+      COSMOS - FULL EXPERIENCE LAUNCHER v2.9
+      12D CST Physics + Emotional Intelligence + AI Companion
+ ================================================================
+
+ *** RECOMMENDED ***
+  13. FULL SYSTEM (Camera + API + AI) [BEST]
+
+ CORE MODES:
+   1. Interactive CLI (Full Features)
+   2. Web Chat Interface + Emotional API (Port 8081 + 8765)
+   3. Streamlit Dashboard
+
+ 12D CST EMOTIONAL API:
+   4. Emotional Visual Mode (HD Face + Audio + Data)
+   5. Visual Display Only
+   6. CST Demo (Physics Test)
+  12. Emotional Token Server (Standalone API on 8765)
+
+ NETWORK + ADVANCED:
+   7. P2P Network Node
+   8. P2P Node + Dashboard
+   9. Health Dashboard
+
+ *** NEW: DIGITAL ORGANISM ***
+  14. CNS MODE (Bio-Digital Central Nervous System)
+
+ UTILITIES:
+  10. Run All Tests
+  11. First-Time Setup
+   0. Exit
+
+ ================================================================
+Select option: 
+ ============================================
+   COSMOS WEB + FULL SENSORY SYSTEM
+ ============================================
+
+ Cleaning up any lingering processes...
+
+ Starting Full Sensory System (Camera + Mic + Audio)...
+ERROR: Input redirection is not supported, exiting the process immediately.
+ Starting Ollama Server...
+
+ Starting Matrix Console...
+
+ Starting Web Interface (GEMINI VERIFYING)...
+
+ ========================================
+   SERVERS RUNNING:
+ ========================================
+   Web Interface (PC):    http://localhost:8081
+   Emotional API:         http://localhost:8765
+   Matrix Console:        [Running in separate window]
+
+ ========================================
+   📱 PHONE UI CONNECTION
+ ========================================
+   Open Safari/Chrome on your phone and go to:
+   http://10.0.0.5:8081
+
+   Sensory Features:
+     [x] Camera - Face tracking (MediaPipe 468-landmarks)
+     [x] Microphone - Audio analysis
+     [x] Real-time emotion detection
+     [x] CST Phase mapping
+     [x] Cosmo's 54D CST Transformer (local swarm brain)
+
+   Press Q in the camera window to stop sensors
+ ========================================
+
+DEBUG: RunWeb CWD: C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos
+Traceback (most recent call last):
+DEBUG: RunWeb Dir: C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+  File "C:\Users\corys\The-Cosmic-Davis-12D-Hebbian-Transformer--1\Cosmos\run_web.py", line 50, in <module>

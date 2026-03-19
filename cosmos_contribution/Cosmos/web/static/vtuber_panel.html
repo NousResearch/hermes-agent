@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmos VTuber Control Panel</title>
+    <style>
+        :root {
+            --bg-dark: #0a0a0f;
+            --bg-card: #14141f;
+            --accent: #00ff88;
+            --accent-dim: #00aa55;
+            --text: #e0e0e0;
+            --text-dim: #888;
+            --danger: #ff4444;
+            --warning: #ffaa00;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background: var(--bg-card);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(0, 255, 136, 0.2);
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            color: var(--accent);
+        }
+
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 0.9rem;
+        }
+
+        .status-offline { background: #333; color: #888; }
+        .status-live { background: var(--accent); color: #000; animation: pulse 2s infinite; }
+        .status-speaking { background: #00aaff; color: #fff; }
+        .status-thinking { background: var(--warning); color: #000; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .card h2 {
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+            color: var(--accent);
+            border-bottom: 1px solid rgba(0,255,136,0.3);
+            padding-bottom: 10px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: var(--text-dim);
+            font-size: 0.9rem;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 10px 15px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            color: var(--text);
+            font-size: 1rem;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+        }
+
+        .btn-primary:hover {
+            background: #00ffaa;
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: #fff;
+        }
+
+        .btn-danger:hover {
+            background: #ff6666;
+        }
+
+        .btn-secondary {
+            background: #333;
+            color: var(--text);
+        }
+
+        .btn-secondary:hover {
+            background: #444;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .emotion-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+        }
+
+        .emotion-btn {
+            padding: 8px;
+            font-size: 0.85rem;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: var(--text);
+            border-radius: 6px;
+        }
+
+        .emotion-btn:hover, .emotion-btn.active {
+            background: var(--accent);
+            color: #000;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .stat-item {
+            background: rgba(0,0,0,0.2);
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--accent);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .chat-display {
+            height: 200px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+        }
+
+        .chat-message {
+            padding: 8px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .chat-message .username {
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        .preview-container {
+            aspect-ratio: 16/9;
+            background: #000;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-dim);
+            margin-bottom: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .log-output {
+            height: 150px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.5);
+            border-radius: 8px;
+            padding: 10px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.85rem;
+        }
+
+        .log-entry {
+            margin-bottom: 4px;
+        }
+
+        .log-info { color: #00aaff; }
+        .log-success { color: var(--accent); }
+        .log-warning { color: var(--warning); }
+        .log-error { color: var(--danger); }
+
+        .connection-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .connected { background: var(--accent); }
+        .disconnected { background: var(--danger); }
+
+        .agent-select {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .agent-chip {
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .agent-chip.active {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Cosmos VTuber Control</h1>
+            <div>
+                <span class="connection-indicator disconnected" id="wsIndicator"></span>
+                <span class="status-badge status-offline" id="statusBadge">OFFLINE</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <!-- Stream Control -->
+            <div class="card">
+                <h2>📡 Stream Control</h2>
+                <div class="control-group">
+                    <label>Stream Key</label>
+                    <input type="password" id="streamKey" placeholder="Enter your Twitter stream key">
+                </div>
+                <div class="control-group">
+                    <label>Quality</label>
+                    <select id="quality">
+                        <option value="low">Low (480p)</option>
+                        <option value="medium" selected>Medium (720p)</option>
+                        <option value="high">High (1080p)</option>
+                        <option value="ultra">Ultra (1080p60)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="simulateChat" checked> Simulate Chat (Testing)
+                    </label>
+                </div>
+                <div class="button-row">
+                    <button class="btn-primary" id="startBtn" onclick="startStream()">▶ Start Stream</button>
+                    <button class="btn-danger" id="stopBtn" onclick="stopStream()" disabled>⬛ Stop Stream</button>
+                </div>
+            </div>
+
+            <!-- Preview -->
+            <div class="card">
+                <h2>🖥️ Preview</h2>
+                <div class="preview-container" id="preview">
+                    Avatar Preview (Not streaming)
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="fps">0</div>
+                        <div class="stat-label">FPS</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="bitrate">0</div>
+                        <div class="stat-label">Bitrate (kbps)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="uptime">00:00</div>
+                        <div class="stat-label">Uptime</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="viewers">0</div>
+                        <div class="stat-label">Frames Sent</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Speaking Control -->
+            <div class="card">
+                <h2>🎤 Speaking</h2>
+                <div class="control-group">
+                    <label>Agent</label>
+                    <div class="agent-select" id="agentSelect">
+                        <span class="agent-chip active" data-agent="Cosmos">Cosmos</span>
+                        <span class="agent-chip" data-agent="Grok">Grok</span>
+                        <span class="agent-chip" data-agent="DeepSeek">DeepSeek</span>
+                        <span class="agent-chip" data-agent="Gemini">Gemini</span>
+                        <span class="agent-chip" data-agent="Claude">Claude</span>
+                        <span class="agent-chip" data-agent="Kimi">Kimi</span>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label>Text to Speak</label>
+                    <textarea id="speakText" rows="3" placeholder="Enter text for the VTuber to say..."></textarea>
+                </div>
+                <div class="button-row">
+                    <button class="btn-primary" onclick="speak()">🗣️ Speak</button>
+                    <button class="btn-secondary" onclick="speakRandom()">🎲 Random</button>
+                </div>
+            </div>
+
+            <!-- Expressions -->
+            <div class="card">
+                <h2>😊 Expressions</h2>
+                <div class="emotion-grid">
+                    <button class="emotion-btn" onclick="setExpression('neutral')">😐 Neutral</button>
+                    <button class="emotion-btn" onclick="setExpression('happy')">😊 Happy</button>
+                    <button class="emotion-btn" onclick="setExpression('excited')">🤩 Excited</button>
+                    <button class="emotion-btn" onclick="setExpression('thinking')">🤔 Thinking</button>
+                    <button class="emotion-btn" onclick="setExpression('curious')">🧐 Curious</button>
+                    <button class="emotion-btn" onclick="setExpression('surprised')">😲 Surprised</button>
+                    <button class="emotion-btn" onclick="setExpression('confused')">😕 Confused</button>
+                    <button class="emotion-btn" onclick="setExpression('smug')">😏 Smug</button>
+                    <button class="emotion-btn" onclick="setExpression('mischievous')">😈 Mischievous</button>
+                    <button class="emotion-btn" onclick="setExpression('proud')">😤 Proud</button>
+                </div>
+            </div>
+
+            <!-- Chat -->
+            <div class="card">
+                <h2>💬 Chat</h2>
+                <div class="chat-display" id="chatDisplay">
+                    <div class="chat-message">
+                        <span class="username">System:</span> Chat messages will appear here...
+                    </div>
+                </div>
+                <div class="control-group">
+                    <input type="text" id="chatInput" placeholder="Simulate a chat message...">
+                </div>
+                <div class="button-row">
+                    <button class="btn-secondary" onclick="sendChat()">Send</button>
+                    <button class="btn-secondary" onclick="clearChat()">Clear</button>
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="card">
+                <h2>📋 Activity Log</h2>
+                <div class="log-output" id="logOutput">
+                    <div class="log-entry log-info">[System] VTuber Control Panel loaded</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/vtuber';
+        let ws = null;
+        let selectedAgent = 'Cosmos';
+
+        // WebSocket connection
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}${API_BASE}/ws`);
+
+            ws.onopen = () => {
+                document.getElementById('wsIndicator').classList.replace('disconnected', 'connected');
+                log('Connected to VTuber server', 'success');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateStatus(data);
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsIndicator').classList.replace('connected', 'disconnected');
+                log('Disconnected from server', 'warning');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                log('WebSocket error', 'error');
+            };
+        }
+
+        function updateStatus(data) {
+            const badge = document.getElementById('statusBadge');
+            badge.textContent = data.state.toUpperCase();
+            badge.className = `status-badge status-${data.state}`;
+
+            if (data.stats && data.stats.stream_stats) {
+                const s = data.stats.stream_stats;
+                document.getElementById('fps').textContent = (s.avg_fps || 0).toFixed(1);
+                document.getElementById('bitrate').textContent = Math.round(s.bitrate_kbps || 0);
+                document.getElementById('viewers').textContent = s.frames_sent || 0;
+
+                const uptime = Math.floor(s.uptime || 0);
+                const mins = Math.floor(uptime / 60);
+                const secs = uptime % 60;
+                document.getElementById('uptime').textContent =
+                    `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+
+            // Update button states
+            const isLive = ['live', 'speaking', 'thinking'].includes(data.state);
+            document.getElementById('startBtn').disabled = isLive;
+            document.getElementById('stopBtn').disabled = !isLive;
+
+            if (isLive) {
+                document.getElementById('preview').textContent = '🔴 LIVE - ' + data.current_agent;
+            }
+        }
+
+        async function startStream() {
+            const streamKey = document.getElementById('streamKey').value || 'test';
+            const quality = document.getElementById('quality').value;
+            const simulate = document.getElementById('simulateChat').checked;
+
+            log('Starting stream...', 'info');
+
+            try {
+                const resp = await fetch(`${API_BASE}/start`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        stream_key: streamKey,
+                        quality: quality,
+                        simulate_chat: simulate
+                    })
+                });
+
+                const data = await resp.json();
+                if (resp.ok) {
+                    log('Stream started!', 'success');
+                } else {
+                    log('Failed: ' + data.detail, 'error');
+                }
+            } catch (e) {
+                log('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function stopStream() {
+            log('Stopping stream...', 'info');
+
+            try {
+                const resp = await fetch(`${API_BASE}/stop`, {method: 'POST'});
+                const data = await resp.json();
+                log('Stream stopped', 'success');
+            } catch (e) {
+                log('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function speak() {
+            const text = document.getElementById('speakText').value;
+            if (!text) return;
+
+            log(`Speaking as ${selectedAgent}: "${text.substring(0, 30)}..."`, 'info');
+
+            try {
+                await fetch(`${API_BASE}/speak`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        text: text,
+                        agent: selectedAgent
+                    })
+                });
+            } catch (e) {
+                log('Speak error: ' + e.message, 'error');
+            }
+        }
+
+        function speakRandom() {
+            const phrases = [
+                "Great Scott! The quantum fluctuations are off the charts!",
+                "The swarm collective is processing at maximum efficiency.",
+                "Fascinating! I haven't seen patterns like this since 2089.",
+                "Welcome to the stream, fellow sentient beings!",
+                "The AI council has reached a consensus on this matter.",
+            ];
+            document.getElementById('speakText').value = phrases[Math.floor(Math.random() * phrases.length)];
+            speak();
+        }
+
+        async function setExpression(emotion) {
+            log(`Setting expression: ${emotion}`, 'info');
+
+            try {
+                await fetch(`${API_BASE}/expression`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({emotion: emotion, intensity: 1.0})
+                });
+            } catch (e) {
+                log('Expression error: ' + e.message, 'error');
+            }
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const message = input.value;
+            if (!message) return;
+
+            addChatMessage('Viewer', message);
+
+            try {
+                await fetch(`${API_BASE}/chat/simulate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        username: 'Viewer',
+                        message: message
+                    })
+                });
+            } catch (e) {
+                log('Chat error: ' + e.message, 'error');
+            }
+
+            input.value = '';
+        }
+
+        function addChatMessage(username, message) {
+            const display = document.getElementById('chatDisplay');
+            const div = document.createElement('div');
+            div.className = 'chat-message';
+            div.innerHTML = `<span class="username">${username}:</span> ${message}`;
+            display.appendChild(div);
+            display.scrollTop = display.scrollHeight;
+        }
+
+        function clearChat() {
+            document.getElementById('chatDisplay').innerHTML = '';
+        }
+
+        function log(message, type = 'info') {
+            const output = document.getElementById('logOutput');
+            const time = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.className = `log-entry log-${type}`;
+            div.textContent = `[${time}] ${message}`;
+            output.appendChild(div);
+            output.scrollTop = output.scrollHeight;
+
+            // Keep only last 50 entries
+            while (output.children.length > 50) {
+                output.removeChild(output.firstChild);
+            }
+        }
+
+        // Agent selection
+        document.querySelectorAll('.agent-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                document.querySelectorAll('.agent-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                selectedAgent = chip.dataset.agent;
+                log(`Selected agent: ${selectedAgent}`, 'info');
+            });
+        });
+
+        // Enter key for chat
+        document.getElementById('chatInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendChat();
+        });
+
+        // Initialize
+        connectWebSocket();
+        log('Control panel ready', 'success');
+    </script>
+</body>
+</html>

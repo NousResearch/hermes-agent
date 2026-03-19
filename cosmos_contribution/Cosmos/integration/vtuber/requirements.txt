@@ -1,0 +1,58 @@
+# Cosmos VTuber System Dependencies
+
+# Core
+numpy>=1.24.0
+asyncio-extras>=1.3.0
+loguru>=0.7.0
+pydantic>=2.0.0
+
+# Avatar/Graphics
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Live2D (optional - for Live2D avatar support)
+# live2d-py>=0.3.0  # Install if using Live2D models
+
+# VTube Studio (optional - for VTube Studio integration)
+# pyvts>=0.3.0
+
+# Audio/TTS
+soundfile>=0.12.0
+numpy>=1.24.0
+
+# Lip Sync
+# For Rhubarb: Install from https://github.com/DanielSWolf/rhubarb-lip-sync
+
+# Neural Avatar (optional - for MuseTalk/SadTalker)
+# torch>=2.0.0
+# torchvision>=0.15.0
+# onnxruntime-gpu>=1.15.0  # For optimized inference
+
+# Streaming
+# FFmpeg must be installed system-wide
+
+# API Server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+websockets>=11.0
+
+# Twitter/Chat Integration
+aiohttp>=3.8.0
+tweepy>=4.14.0  # For Twitter API
+
+# Sentiment Analysis (for expression engine)
+textblob>=0.17.0
+
+# Development
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Optional Performance Enhancements
+# cupy-cuda12x>=12.0.0  # GPU-accelerated numpy
+# onnxruntime-gpu>=1.15.0  # GPU inference
+
+# MuseTalk specific (if using neural avatar)
+# Install from: https://github.com/TMElyralab/MuseTalk
+# diffusers>=0.25.0
+# accelerate>=0.25.0
+# face-alignment>=1.4.0

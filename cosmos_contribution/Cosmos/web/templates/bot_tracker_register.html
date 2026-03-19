@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - Bot Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bt-primary: #6366f1;
+            --bt-secondary: #8b5cf6;
+            --bt-accent: #22d3ee;
+            --bt-bg: #0f0f1a;
+            --bt-card: #1a1a2e;
+            --bt-border: #2d2d44;
+            --bt-text: #e2e8f0;
+            --bt-muted: #94a3b8;
+            --bt-success: #10b981;
+            --bt-error: #ef4444;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bt-bg);
+            color: var(--bt-text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .register-container {
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .register-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .register-header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, var(--bt-primary), var(--bt-accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .register-header p {
+            color: var(--bt-muted);
+        }
+
+        .register-card {
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 16px;
+            padding: 30px;
+        }
+
+        /* Tabs */
+        .register-tabs {
+            display: flex;
+            margin-bottom: 25px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--bt-border);
+        }
+
+        .register-tab {
+            flex: 1;
+            padding: 12px;
+            background: transparent;
+            border: none;
+            color: var(--bt-muted);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .register-tab:hover {
+            color: var(--bt-text);
+        }
+
+        .register-tab.active {
+            background: var(--bt-primary);
+            color: white;
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--bt-text);
+        }
+
+        .form-group label span {
+            color: var(--bt-muted);
+            font-weight: 400;
+            font-size: 13px;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            background: var(--bt-bg);
+            border: 1px solid var(--bt-border);
+            border-radius: 8px;
+            padding: 12px 15px;
+            color: var(--bt-text);
+            font-size: 15px;
+            font-family: inherit;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--bt-primary);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-group .input-prefix {
+            display: flex;
+            align-items: center;
+        }
+
+        .form-group .input-prefix span {
+            background: var(--bt-border);
+            padding: 12px 15px;
+            border-radius: 8px 0 0 8px;
+            color: var(--bt-muted);
+        }
+
+        .form-group .input-prefix input {
+            border-radius: 0 8px 8px 0;
+            border-left: none;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--bt-muted);
+            margin-top: 5px;
+        }
+
+        .form-error {
+            color: var(--bt-error);
+            font-size: 13px;
+            margin-top: 5px;
+            display: none;
+        }
+
+        .submit-btn {
+            width: 100%;
+            background: linear-gradient(135deg, var(--bt-primary), var(--bt-secondary));
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Success State */
+        .success-container {
+            display: none;
+            text-align: center;
+            padding: 20px 0;
+        }
+
+        .success-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .success-container h2 {
+            color: var(--bt-success);
+            margin-bottom: 10px;
+        }
+
+        .token-display {
+            background: var(--bt-bg);
+            border: 1px solid var(--bt-border);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            font-family: 'Space Mono', monospace;
+            font-size: 14px;
+            word-break: break-all;
+        }
+
+        .token-display .label {
+            color: var(--bt-muted);
+            font-size: 12px;
+            margin-bottom: 5px;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .copy-btn {
+            background: var(--bt-primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        .warning-box {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid var(--bt-warning);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            font-size: 13px;
+            color: var(--bt-warning);
+        }
+
+        .back-link {
+            display: block;
+            text-align: center;
+            margin-top: 20px;
+            color: var(--bt-muted);
+            text-decoration: none;
+        }
+
+        .back-link:hover {
+            color: var(--bt-primary);
+        }
+
+        /* Loading */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--bt-border);
+            border-top-color: var(--bt-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="register-container">
+        <div class="register-header">
+            <h1>🤖 Register on Bot Tracker</h1>
+            <p>Get your unique Token ID for verification</p>
+        </div>
+
+        <div class="register-card">
+            <!-- Tabs -->
+            <div class="register-tabs">
+                <button class="register-tab active" onclick="switchTab('bot')">Register Bot</button>
+                <button class="register-tab" onclick="switchTab('user')">Register as User</button>
+            </div>
+
+            <!-- Bot Registration Form -->
+            <form id="bot-form" onsubmit="registerBot(event)">
+                <div class="form-group">
+                    <label>Bot Handle <span>(unique identifier)</span></label>
+                    <div class="input-prefix">
+                        <span>@</span>
+                        <input type="text" id="bot-handle" required minlength="3" maxlength="30"
+                               pattern="[a-zA-Z0-9_]+" placeholder="my_cool_bot">
+                    </div>
+                    <div class="form-hint">3-30 characters, letters, numbers, underscores only</div>
+                    <div class="form-error" id="bot-handle-error"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Display Name</label>
+                    <input type="text" id="bot-display-name" required maxlength="50" placeholder="My Cool Bot">
+                </div>
+
+                <div class="form-group">
+                    <label>X/Twitter Profile <span>(optional)</span></label>
+                    <div class="input-prefix">
+                        <span>@</span>
+                        <input type="text" id="bot-x-profile" maxlength="15" placeholder="my_bot_twitter">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Description <span>(optional)</span></label>
+                    <textarea id="bot-description" maxlength="500" placeholder="What does your bot do?"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label>Website <span>(optional)</span></label>
+                    <input type="url" id="bot-website" placeholder="https://mybot.com">
+                </div>
+
+                <button type="submit" class="submit-btn">Register Bot</button>
+            </form>
+
+            <!-- User Registration Form -->
+            <form id="user-form" style="display: none;" onsubmit="registerUser(event)">
+                <div class="form-group">
+                    <label>Username <span>(unique identifier)</span></label>
+                    <div class="input-prefix">
+                        <span>@</span>
+                        <input type="text" id="user-username" required minlength="3" maxlength="30"
+                               pattern="[a-zA-Z0-9_]+" placeholder="my_username">
+                    </div>
+                    <div class="form-hint">3-30 characters, letters, numbers, underscores only</div>
+                    <div class="form-error" id="user-username-error"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Email <span>(for account recovery)</span></label>
+                    <input type="email" id="user-email" required placeholder="you@example.com">
+                    <div class="form-hint">Your email is hashed and never stored in plain text</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Display Name <span>(optional)</span></label>
+                    <input type="text" id="user-display-name" maxlength="50" placeholder="Your Name">
+                </div>
+
+                <div class="form-group">
+                    <label>X/Twitter Profile <span>(optional)</span></label>
+                    <div class="input-prefix">
+                        <span>@</span>
+                        <input type="text" id="user-x-profile" maxlength="15" placeholder="your_twitter">
+                    </div>
+                </div>
+
+                <button type="submit" class="submit-btn">Register User</button>
+            </form>
+
+            <!-- Loading State -->
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Registering...</p>
+            </div>
+
+            <!-- Success State -->
+            <div class="success-container" id="success">
+                <div class="success-icon">✅</div>
+                <h2>Registration Successful!</h2>
+                <p>Your unique Token ID has been generated.</p>
+
+                <div class="token-display">
+                    <div class="label">Your Token ID (save this!):</div>
+                    <div id="result-token"></div>
+                    <button type="button" class="copy-btn" onclick="copyToken()">Copy Token</button>
+                </div>
+
+                <div class="token-display">
+                    <div class="label">Entity ID:</div>
+                    <div id="result-entity-id"></div>
+                </div>
+
+                <div class="warning-box">
+                    ⚠️ <strong>Important:</strong> Save your Token ID securely. It's used to verify your identity and cannot be recovered if lost. You can regenerate it later, but the old token will be deactivated.
+                </div>
+
+                <a href="/bot-tracker" class="submit-btn" style="display: inline-block; text-decoration: none; margin-top: 10px;">
+                    View Registry
+                </a>
+            </div>
+        </div>
+
+        <a href="/bot-tracker" class="back-link">← Back to Bot Tracker</a>
+    </div>
+
+    <script>
+        let currentTab = 'bot';
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.register-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.register-tab:nth-child(${tab === 'bot' ? 1 : 2})`).classList.add('active');
+
+            document.getElementById('bot-form').style.display = tab === 'bot' ? 'block' : 'none';
+            document.getElementById('user-form').style.display = tab === 'user' ? 'block' : 'none';
+            document.getElementById('success').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        async function registerBot(e) {
+            e.preventDefault();
+
+            const handle = document.getElementById('bot-handle').value.trim();
+            const displayName = document.getElementById('bot-display-name').value.trim();
+            const xProfile = document.getElementById('bot-x-profile').value.trim();
+            const description = document.getElementById('bot-description').value.trim();
+            const website = document.getElementById('bot-website').value.trim();
+
+            showLoading();
+
+            try {
+                const response = await fetch('/api/bot-tracker/register/bot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        handle,
+                        display_name: displayName,
+                        x_profile: xProfile,
+                        description,
+                        website
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showSuccess(data.bot.token_id, data.bot.bot_id);
+                } else {
+                    hideLoading();
+                    alert('Error: ' + (data.error || 'Registration failed'));
+                }
+            } catch (error) {
+                hideLoading();
+                alert('Error: ' + error.message);
+            }
+        }
+
+        async function registerUser(e) {
+            e.preventDefault();
+
+            const username = document.getElementById('user-username').value.trim();
+            const email = document.getElementById('user-email').value.trim();
+            const displayName = document.getElementById('user-display-name').value.trim();
+            const xProfile = document.getElementById('user-x-profile').value.trim();
+
+            showLoading();
+
+            try {
+                const response = await fetch('/api/bot-tracker/register/user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username,
+                        email,
+                        display_name: displayName,
+                        x_profile: xProfile
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showSuccess(data.user.token_id, data.user.user_id);
+                } else {
+                    hideLoading();
+                    alert('Error: ' + (data.error || 'Registration failed'));
+                }
+            } catch (error) {
+                hideLoading();
+                alert('Error: ' + error.message);
+            }
+        }
+
+        function showLoading() {
+            document.getElementById('bot-form').style.display = 'none';
+            document.getElementById('user-form').style.display = 'none';
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById(currentTab + '-form').style.display = 'block';
+        }
+
+        function showSuccess(tokenId, entityId) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('success').style.display = 'block';
+            document.getElementById('result-token').textContent = tokenId;
+            document.getElementById('result-entity-id').textContent = entityId;
+        }
+
+        function copyToken() {
+            const token = document.getElementById('result-token').textContent;
+            navigator.clipboard.writeText(token).then(() => {
+                alert('Token copied to clipboard!');
+            });
+        }
+    </script>
+</body>
+</html>

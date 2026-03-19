@@ -1,0 +1,39 @@
+2026-03-15 02:04:07.581 | DEBUG    | Cosmos.memory.memory_system:__init__:135 - PhiInvariantEncoder initialized with threshold=5.0░
+2026-03-15 02:04:07.587 | INFO     | Cosmos.core.evolution.recursive_self_evolution:start:48 - Recursive Self-Evolution Engine (RSEE) Ignited.
+2026-03-15 02:04:07.587 | DEBUG    | Cosmos.core.nexus:logging_middleware:158 - \u26a1 evolution.recursive_triggered from RSEE
+2026-03-15 02:04:07.587 | WARNING  | Cosmos.memory.codebase_indexer:index_codebase:276 - Memory system unavailable: cannot import name 'get_memory_system' from 'Cosmos.memory.memory_system' (D:\Cosmos\Cosmos\memory\memory_system.py)
+2026-03-15 02:04:07.980 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\compatibility\__init__.py: invalid syntax (__init__.py, line 30)
+2026-03-15 02:04:07.995 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\compatibility\hermes_adapter.py: expected '(' (hermes_adapter.py, line 64)
+2026-03-15 02:04:07.997 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\compatibility\model_invoker.py: invalid syntax (model_invoker.py, line 29)
+2026-03-15 02:04:07.998 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\compatibility\task_routing.py: invalid syntax (task_routing.py, line 40)
+2026-03-15 02:04:08.090 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\affective\engine.py: invalid syntax (engine.py, line 2)
+2026-03-15 02:04:08.092 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\affective\models.py: invalid syntax (models.py, line 2)
+2026-03-15 02:04:08.110 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\attention_router.py: invalid syntax (attention_router.py, line 18)
+2026-03-15 02:04:08.126 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\cognition\meeting_assistant.py: invalid syntax (meeting_assistant.py, line 13)
+2026-03-15 02:04:08.128 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\cognition\theory_of_mind.py: invalid syntax (theory_of_mind.py, line 24)
+2026-03-15 02:04:08.131 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\cognitive_feedback.py: invalid decimal literal (cognitive_feedback.py, line 214)
+2026-03-15 02:04:08.313 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\fcp.py: invalid syntax (fcp.py, line 14)
+2026-03-15 02:04:08.410 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\learning\continual.py: invalid syntax (continual.py, line 16)
+2026-03-15 02:04:08.414 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\learning\paths.py: invalid syntax (paths.py, line 16)
+2026-03-15 02:04:08.442 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\memory\planetary\akashic.py: invalid syntax (akashic.py, line 21)
+2026-03-15 02:04:08.516 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\parallel_orchestrator.py: invalid syntax (parallel_orchestrator.py, line 12)
+2026-03-15 02:04:08.551 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\quantum\search.py: invalid syntax (search.py, line 21)
+2026-03-15 02:04:08.580 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\quantum_trading.py: invalid syntax (quantum_trading.py, line 751)
+2026-03-15 02:04:08.590 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\safe_eval.py: invalid syntax (safe_eval.py, line 50)
+2026-03-15 02:04:08.718 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\core\upgrade_extractor.py: invalid syntax (upgrade_extractor.py, line 16)
+2026-03-15 02:04:09.001 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\integration\chain_memory\memory_manager.py: expected '(' (memory_manager.py, line 562)
+2026-03-15 02:04:09.020 | DEBUG    | Cosmos.memory.codebase_indexer:extract_module:83 - Syntax error in D:\Cosmos\cosmos\integration\chain_memory\startup.py: invalid syntax (startup.py, line 249)
+2026-03-15 02:04:11.172 | INFO     | Cosmos.memory.codebase_indexer:index_codebase:371 - Codebase indexing complete: 545 modules, 0 entities, 0 relationships (3.6s)
+--- RSEE Integration Verification ---
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+[1] Importing components: SUCCESS
+[2] EvolutionLoop instance: <Cosmos.core.evolution_loop.EvolutionLoop object at 0x00000136B814AC60>
+[3] RSEE instance: <Cosmos.core.evolution.recursive_self_evolution.RecursiveSelfEvolutionEngine object at 0x00000136D5F3F800>
+[4] Starting EvolutionLoop...
+[QUANTUM] No token provided. Running in simulation mode.
+[5] EvolutionLoop running: YES
+[6] RSEE running: YES
+
+VERIFICATION SUCCESSFUL: RSEE is correctly integrated and operational.

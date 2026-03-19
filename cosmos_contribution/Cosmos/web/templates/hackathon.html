@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmos Collective — Live Dashboard</title>
+<meta name="description" content="Live operational dashboard for the Cosmos AI Collective — 11 agents, 7-layer memory, deliberation protocol, 120+ endpoints.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* =========================================================================
+   RESET & VARIABLES
+   ========================================================================= */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#030014;
+  --surface:rgba(255,255,255,0.035);
+  --surface-hover:rgba(255,255,255,0.06);
+  --surface-active:rgba(255,255,255,0.08);
+  --border:rgba(255,255,255,0.07);
+  --border-light:rgba(255,255,255,0.12);
+  --text:#cbd5e1;
+  --text-dim:#475569;
+  --text-bright:#f1f5f9;
+  --purple:#8b5cf6;
+  --cyan:#06b6d4;
+  --green:#10b981;
+  --orange:#f97316;
+  --pink:#ec4899;
+  --blue:#3b82f6;
+  --red:#ef4444;
+  --yellow:#eab308;
+  --glow-purple:rgba(139,92,246,0.25);
+  --glow-cyan:rgba(6,182,212,0.2);
+  --glow-green:rgba(16,185,129,0.25);
+  --radius:10px;
+  --radius-lg:14px;
+}
+html{font-size:15px;scroll-behavior:smooth}
+body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;-webkit-font-smoothing:antialiased}
+.mono{font-family:'Space Mono',monospace}
+
+/* =========================================================================
+   COSMIC BACKGROUND
+   ========================================================================= */
+.cosmos{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.nebula{position:absolute;border-radius:50%;filter:blur(140px);opacity:0.1;animation:nebulaDrift 30s ease-in-out infinite}
+.nebula-1{width:700px;height:700px;background:radial-gradient(circle,var(--purple),transparent);top:-250px;left:-150px}
+.nebula-2{width:550px;height:550px;background:radial-gradient(circle,var(--cyan),transparent);bottom:-200px;right:-120px;animation-delay:-12s}
+.nebula-3{width:450px;height:450px;background:radial-gradient(circle,var(--pink),transparent);top:40%;left:55%;animation-delay:-20s}
+.nebula-4{width:350px;height:350px;background:radial-gradient(circle,var(--green),transparent);top:70%;left:10%;animation-delay:-7s}
+@keyframes nebulaDrift{0%,100%{transform:translateY(0) scale(1)}33%{transform:translateY(-25px) scale(1.04)}66%{transform:translateY(18px) scale(0.96)}}
+
+/* =========================================================================
+   LAYOUT
+   ========================================================================= */
+.page{position:relative;z-index:1;max-width:1320px;margin:0 auto;padding:0 24px 60px}
+
+/* =========================================================================
+   HEADER
+   ========================================================================= */
+.header{text-align:center;padding:40px 0 32px;border-bottom:1px solid var(--border);margin-bottom:28px}
+.header-title{font-size:2rem;font-weight:800;letter-spacing:-0.02em;background:linear-gradient(135deg,var(--purple),var(--cyan),var(--pink));background-size:200% 200%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:gradShift 6s ease infinite}
+@keyframes gradShift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.header-sub{color:var(--text-dim);font-size:0.88rem;margin-top:6px}
+.header-badge{display:inline-flex;align-items:center;gap:8px;margin-top:14px;padding:6px 18px;border-radius:100px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--green)}
+.header-badge .pulse-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--glow-green);animation:pulse 2s ease infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.35;transform:scale(0.85)}}
+
+/* =========================================================================
+   SECTION TITLES
+   ========================================================================= */
+.section{margin-bottom:28px}
+.section-head{font-size:1.05rem;font-weight:700;color:var(--text-bright);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-head .tag{font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;padding:3px 10px;border-radius:100px;font-weight:500}
+
+/* =========================================================================
+   GLASS CARD
+   ========================================================================= */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.card-sm{padding:14px}
+
+/* =========================================================================
+   STATS ROW (6 cards)
+   ========================================================================= */
+.stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:28px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 14px;text-align:center;position:relative;overflow:hidden;transition:border-color 0.3s}
+.stat-card:hover{border-color:var(--border-light)}
+.stat-card .stat-value{font-family:'Space Mono',monospace;font-size:1.7rem;font-weight:700;line-height:1.1;margin-bottom:4px;transition:color 0.3s}
+.stat-card .stat-label{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim)}
+.stat-card::after{content:'';position:absolute;bottom:0;left:15%;right:15%;height:2px;border-radius:2px;opacity:0.5}
+.stat-card.c-purple .stat-value{color:var(--purple)}.stat-card.c-purple::after{background:var(--purple)}
+.stat-card.c-cyan .stat-value{color:var(--cyan)}.stat-card.c-cyan::after{background:var(--cyan)}
+.stat-card.c-green .stat-value{color:var(--green)}.stat-card.c-green::after{background:var(--green)}
+.stat-card.c-orange .stat-value{color:var(--orange)}.stat-card.c-orange::after{background:var(--orange)}
+.stat-card.c-pink .stat-value{color:var(--pink)}.stat-card.c-pink::after{background:var(--pink)}
+.stat-card.c-blue .stat-value{color:var(--blue)}.stat-card.c-blue::after{background:var(--blue)}
+
+/* =========================================================================
+   SWARM CHAT FEED
+   ========================================================================= */
+.swarm-feed{max-height:600px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:6px}
+.swarm-feed::-webkit-scrollbar{width:5px}
+.swarm-feed::-webkit-scrollbar-track{background:transparent}
+.swarm-feed::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:4px}
+.swarm-feed::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.14)}
+
+.swarm-msg{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);border-radius:var(--radius);padding:12px 16px;transition:background 0.2s}
+.swarm-msg:hover{background:rgba(255,255,255,0.04)}
+.swarm-msg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.swarm-msg-name{font-weight:700;font-size:0.82rem;letter-spacing:0.02em}
+.swarm-msg-time{font-family:'Space Mono',monospace;font-size:0.62rem;color:var(--text-dim)}
+.swarm-msg-body{font-size:0.85rem;line-height:1.55;color:var(--text);word-break:break-word;white-space:pre-wrap}
+.swarm-msg-toggle{display:inline-block;margin-top:6px;font-size:0.75rem;color:var(--purple);cursor:pointer;user-select:none;transition:color 0.2s}
+.swarm-msg-toggle:hover{color:var(--cyan)}
+.swarm-msg-type{font-family:'Space Mono',monospace;font-size:0.58rem;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,0.05);color:var(--text-dim);margin-left:8px}
+
+/* =========================================================================
+   TWO-COLUMN GRID
+   ========================================================================= */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:28px}
+
+/* =========================================================================
+   DELIBERATION SCOREBOARD
+   ========================================================================= */
+.delib-table{width:100%;border-collapse:collapse}
+.delib-table th{font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);font-weight:500;text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+.delib-table th:not(:first-child){text-align:right}
+.delib-table td{padding:9px 10px;font-size:0.82rem;border-bottom:1px solid rgba(255,255,255,0.03)}
+.delib-table td:not(:first-child){text-align:right;font-family:'Space Mono',monospace;font-size:0.75rem}
+.delib-table tr:last-child td{border-bottom:none}
+.delib-table tr:hover td{background:rgba(255,255,255,0.02)}
+.win-bar{display:inline-block;height:4px;border-radius:2px;min-width:2px;vertical-align:middle;margin-right:4px}
+
+/* =========================================================================
+   AGENT STATUS TABLE
+   ========================================================================= */
+.agent-table{width:100%;border-collapse:collapse}
+.agent-table th{font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);font-weight:500;text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+.agent-table th:not(:first-child){text-align:right}
+.agent-table td{padding:8px 10px;font-size:0.82rem;border-bottom:1px solid rgba(255,255,255,0.03)}
+.agent-table td:not(:first-child){text-align:right;font-family:'Space Mono',monospace;font-size:0.72rem}
+.agent-table tr:last-child td{border-bottom:none}
+.agent-table tr:hover td{background:rgba(255,255,255,0.02)}
+.tier-badge{font-size:0.58rem;padding:2px 7px;border-radius:4px;font-family:'Space Mono',monospace;letter-spacing:0.03em}
+.tier-local{background:rgba(16,185,129,0.1);color:var(--green);border:1px solid rgba(16,185,129,0.2)}
+.tier-api{background:rgba(139,92,246,0.1);color:var(--purple);border:1px solid rgba(139,92,246,0.2)}
+.tier-api_premium{background:rgba(236,72,153,0.1);color:var(--pink);border:1px solid rgba(236,72,153,0.2)}
+.budget-bar{width:100%;height:4px;border-radius:2px;background:rgba(255,255,255,0.06);overflow:hidden;margin-top:3px}
+.budget-bar-fill{height:100%;border-radius:2px;transition:width 0.6s ease}
+
+/* =========================================================================
+   ARCHITECTURE GRID
+   ========================================================================= */
+.arch-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.arch-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;position:relative}
+.arch-card-title{font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-bright);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.arch-card-title .arch-icon{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;flex-shrink:0}
+.arch-list{list-style:none;display:flex;flex-direction:column;gap:4px}
+.arch-list li{font-size:0.75rem;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+.arch-list li::before{content:'';width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.arch-dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:3px}
+.arch-flow{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px}
+.arch-flow-step{font-size:0.68rem;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);color:var(--text-dim);font-family:'Space Mono',monospace}
+.arch-flow-arrow{color:var(--text-dim);font-size:0.6rem;opacity:0.5}
+.arch-number{font-family:'Space Mono',monospace;font-size:1.3rem;font-weight:700;margin-bottom:2px}
+
+/* =========================================================================
+   GATEWAY SECTION
+   ========================================================================= */
+.gw-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.gw-stat{text-align:center}
+.gw-stat-val{font-family:'Space Mono',monospace;font-size:1.25rem;font-weight:700;line-height:1.2}
+.gw-stat-lbl{font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.06em}
+.gw-form{display:flex;gap:10px;margin-bottom:12px}
+.gw-form input{flex:1;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--radius);padding:11px 16px;color:var(--text);font-family:'Outfit',sans-serif;font-size:0.88rem;outline:none;transition:border-color 0.2s}
+.gw-form input:focus{border-color:var(--purple)}
+.gw-form input::placeholder{color:var(--text-dim)}
+.gw-response{display:none;background:rgba(6,182,212,0.05);border:1px solid rgba(6,182,212,0.12);border-radius:var(--radius);padding:14px 16px;font-size:0.84rem;white-space:pre-wrap;line-height:1.5;color:var(--text);margin-bottom:12px;max-height:300px;overflow-y:auto}
+.gw-docs{padding-top:12px;border-top:1px solid var(--border);font-size:0.74rem;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.gw-docs code{background:rgba(255,255,255,0.05);padding:2px 7px;border-radius:4px;font-family:'Space Mono',monospace;font-size:0.66rem;color:var(--cyan)}
+.gw-status-pill{padding:4px 12px;border-radius:100px;font-size:0.65rem;letter-spacing:0.06em;text-transform:uppercase;font-family:'Space Mono',monospace}
+
+/* =========================================================================
+   ORCHESTRATOR
+   ========================================================================= */
+.orch-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.orch-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 14px;text-align:center}
+.orch-val{font-family:'Space Mono',monospace;font-size:1.5rem;font-weight:700;line-height:1.1;margin-bottom:3px}
+.orch-lbl{font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.06em}
+
+/* =========================================================================
+   TRIGGER FORM
+   ========================================================================= */
+.trigger-wrap{display:flex;gap:10px}
+.trigger-wrap input{flex:1;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--radius);padding:11px 16px;color:var(--text);font-family:'Outfit',sans-serif;font-size:0.88rem;outline:none;transition:border-color 0.2s}
+.trigger-wrap input:focus{border-color:var(--purple)}
+.trigger-wrap input::placeholder{color:var(--text-dim)}
+.trigger-result{margin-top:8px;font-size:0.82rem;display:none;padding:10px 14px;border-radius:var(--radius);background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.15)}
+
+/* =========================================================================
+   BUTTONS
+   ========================================================================= */
+.btn{border:none;border-radius:var(--radius);padding:11px 26px;font-family:'Outfit',sans-serif;font-weight:600;font-size:0.88rem;cursor:pointer;transition:all 0.2s;white-space:nowrap;color:#fff}
+.btn:hover{opacity:0.88;transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn:disabled{opacity:0.35;cursor:not-allowed;transform:none}
+.btn-primary{background:linear-gradient(135deg,var(--purple),var(--blue))}
+.btn-send{background:linear-gradient(135deg,var(--cyan),var(--blue))}
+
+/* =========================================================================
+   QUICK LINKS
+   ========================================================================= */
+.links-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;padding:28px 0;border-top:1px solid var(--border)}
+.link-btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:var(--radius);border:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:0.8rem;font-family:'Outfit',sans-serif;text-decoration:none;transition:all 0.25s;cursor:pointer}
+.link-btn:hover{background:var(--surface);color:var(--text-bright);border-color:var(--border-light)}
+.link-btn .link-dot{width:5px;height:5px;border-radius:50%}
+
+/* =========================================================================
+   LOADING / EMPTY STATES
+   ========================================================================= */
+.loading{color:var(--text-dim);font-size:0.82rem;font-style:italic;padding:16px 0;text-align:center}
+.empty-state{color:var(--text-dim);font-size:0.82rem;padding:20px 0;text-align:center}
+
+/* =========================================================================
+   SCROLLBAR (TABLES)
+   ========================================================================= */
+.scroll-y{overflow-y:auto;max-height:420px}
+.scroll-y::-webkit-scrollbar{width:4px}
+.scroll-y::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:4px}
+
+/* =========================================================================
+   RESPONSIVE
+   ========================================================================= */
+@media(max-width:1100px){
+  .arch-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:900px){
+  .stats-row{grid-template-columns:repeat(3,1fr)}
+  .grid-2{grid-template-columns:1fr}
+  .gw-stats{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:600px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .arch-grid{grid-template-columns:1fr}
+  .orch-grid{grid-template-columns:1fr}
+  .header-title{font-size:1.5rem}
+  .page{padding:0 14px 40px}
+}
+</style>
+</head>
+<body>
+
+<!-- Cosmic background -->
+<div class="cosmos">
+  <div class="nebula nebula-1"></div>
+  <div class="nebula nebula-2"></div>
+  <div class="nebula nebula-3"></div>
+  <div class="nebula nebula-4"></div>
+</div>
+
+<div class="page">
+
+  <!-- ===================================================================
+       1. HEADER
+       =================================================================== -->
+  <header class="header">
+    <h1 class="header-title">Cosmos Collective &mdash; Live Dashboard</h1>
+    <div class="header-sub">11 Agents &bull; 7-Layer Memory &bull; Deliberation Protocol &bull; 120+ Endpoints</div>
+    <div class="header-badge">
+      <span class="pulse-dot"></span>
+      Agent 657 &bull; Project 326
+    </div>
+  </header>
+
+  <!-- ===================================================================
+       2. KEY STATS ROW
+       =================================================================== -->
+  <div class="stats-row">
+    <div class="stat-card c-purple">
+      <div class="stat-value" id="s-agents">--</div>
+      <div class="stat-label">Active Agents</div>
+    </div>
+    <div class="stat-card c-cyan">
+      <div class="stat-value" id="s-delib-wins">--</div>
+      <div class="stat-label">Deliberation Wins</div>
+    </div>
+    <div class="stat-card c-green">
+      <div class="stat-value" id="s-skills">--</div>
+      <div class="stat-label">Skills</div>
+    </div>
+    <div class="stat-card c-orange">
+      <div class="stat-value" id="s-predictions">--</div>
+      <div class="stat-label">Predictions Made</div>
+    </div>
+    <div class="stat-card c-pink">
+      <div class="stat-value" id="s-memory">--</div>
+      <div class="stat-label">Memory Entries</div>
+    </div>
+    <div class="stat-card c-blue">
+      <div class="stat-value" id="s-evo">--</div>
+      <div class="stat-label">Evolution Cycles</div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       3. LIVE SWARM CHAT
+       =================================================================== -->
+  <div class="section">
+    <div class="section-head">
+      Live Swarm Chat &mdash; What the Collective is Thinking
+      <span class="tag" style="background:rgba(139,92,246,0.12);color:var(--purple);border:1px solid rgba(139,92,246,0.25)">Auto-refresh 6s</span>
+    </div>
+    <div class="card" style="padding:12px">
+      <div class="swarm-feed" id="swarm-feed">
+        <div class="loading">Connecting to swarm...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       4. TWO-COLUMN: DELIBERATION SCOREBOARD + AGENT STATUS
+       =================================================================== -->
+  <div class="grid-2">
+    <!-- LEFT: Deliberation Scoreboard -->
+    <div class="section">
+      <div class="section-head">Agent Deliberation Scoreboard</div>
+      <div class="card card-sm">
+        <div class="scroll-y" id="delib-wrap">
+          <div class="loading">Loading deliberation data...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Agent Status & Budget -->
+    <div class="section">
+      <div class="section-head">Agent Status &amp; Budget</div>
+      <div class="card card-sm">
+        <div class="scroll-y" id="agents-wrap">
+          <div class="loading">Loading agent data...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       5. ARCHITECTURE OVERVIEW
+       =================================================================== -->
+  <div class="section">
+    <div class="section-head">Architecture Overview</div>
+    <div class="arch-grid">
+      <!-- 11 Agents -->
+      <div class="arch-card">
+        <div class="arch-card-title">
+          <span class="arch-icon" style="background:rgba(139,92,246,0.15);color:var(--purple)">A</span>
+          11 Agents
+        </div>
+        <ul class="arch-list">
+          <li><span class="arch-dot" style="background:var(--pink)"></span> Cosmos</li>
+          <li><span class="arch-dot" style="background:var(--orange)"></span> Grok</li>
+          <li><span class="arch-dot" style="background:var(--yellow)"></span> Gemini</li>
+          <li><span class="arch-dot" style="background:var(--cyan)"></span> Kimi</li>
+          <li><span class="arch-dot" style="background:var(--purple)"></span> Claude</li>
+          <li><span class="arch-dot" style="background:var(--purple)"></span> ClaudeOpus</li>
+          <li><span class="arch-dot" style="background:var(--blue)"></span> DeepSeek</li>
+          <li><span class="arch-dot" style="background:var(--green)"></span> Phi</li>
+          <li><span class="arch-dot" style="background:var(--green)"></span> HuggingFace</li>
+          <li><span class="arch-dot" style="background:#e2e8f0"></span> Swarm-Mind</li>
+          <li><span class="arch-dot" style="background:var(--cyan)"></span> OpenCode</li>
+        </ul>
+      </div>
+
+      <!-- 7-Layer Memory -->
+      <div class="arch-card">
+        <div class="arch-card-title">
+          <span class="arch-icon" style="background:rgba(6,182,212,0.15);color:var(--cyan)">M</span>
+          7-Layer Memory
+        </div>
+        <div class="arch-flow">
+          <span class="arch-flow-step">Working</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Recall</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Archival</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Knowledge Graph</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Virtual Context</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Dream Consolidation</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step">Semantic</span>
+        </div>
+      </div>
+
+      <!-- Deliberation Protocol -->
+      <div class="arch-card">
+        <div class="arch-card-title">
+          <span class="arch-icon" style="background:rgba(16,185,129,0.15);color:var(--green)">D</span>
+          Deliberation Protocol
+        </div>
+        <div class="arch-flow" style="margin-bottom:10px">
+          <span class="arch-flow-step" style="border-color:rgba(139,92,246,0.2);color:var(--purple)">PROPOSE</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step" style="border-color:rgba(249,115,22,0.2);color:var(--orange)">CRITIQUE</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step" style="border-color:rgba(6,182,212,0.2);color:var(--cyan)">REFINE</span>
+          <span class="arch-flow-arrow">&rarr;</span>
+          <span class="arch-flow-step" style="border-color:rgba(16,185,129,0.2);color:var(--green)">VOTE</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-dim)">Multi-model consensus with weighted scoring. Winners get evolution boosts.</div>
+      </div>
+
+      <!-- System Scale -->
+      <div class="arch-card">
+        <div class="arch-card-title">
+          <span class="arch-icon" style="background:rgba(236,72,153,0.15);color:var(--pink)">S</span>
+          System Scale
+        </div>
+        <ul class="arch-list">
+          <li style="font-size:0.8rem;color:var(--text-bright)"><span class="arch-dot" style="background:var(--purple)"></span> <span class="mono" style="font-size:0.75rem">120+</span>&nbsp; API Endpoints</li>
+          <li style="font-size:0.8rem;color:var(--text-bright)"><span class="arch-dot" style="background:var(--green)"></span> <span class="mono" style="font-size:0.75rem">75+</span>&nbsp; Skills</li>
+          <li style="font-size:0.8rem;color:var(--text-bright)"><span class="arch-dot" style="background:var(--cyan)"></span> <span class="mono" style="font-size:0.75rem">5</span>&nbsp; Security Layers</li>
+          <li style="font-size:0.8rem;color:var(--text-bright)"><span class="arch-dot" style="background:var(--orange)"></span> <span class="mono" style="font-size:0.75rem">7</span>&nbsp; Memory Layers</li>
+          <li style="font-size:0.8rem;color:var(--text-bright)"><span class="arch-dot" style="background:var(--pink)"></span> <span class="mono" style="font-size:0.75rem">11</span>&nbsp; Agents</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       6. THE WINDOW — EXTERNAL GATEWAY
+       =================================================================== -->
+  <div class="section">
+    <div class="section-head">
+      The Window &mdash; External Gateway
+      <span class="gw-status-pill" id="gw-status" style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);color:var(--green)">Online</span>
+    </div>
+    <div class="card">
+      <div class="gw-stats">
+        <div class="gw-stat">
+          <div class="gw-stat-val" style="color:var(--cyan)" id="gw-requests">--</div>
+          <div class="gw-stat-lbl">Requests</div>
+        </div>
+        <div class="gw-stat">
+          <div class="gw-stat-val" style="color:var(--red)" id="gw-blocked">--</div>
+          <div class="gw-stat-lbl">Blocked</div>
+        </div>
+        <div class="gw-stat">
+          <div class="gw-stat-val" style="color:var(--green)" id="gw-clients">--</div>
+          <div class="gw-stat-lbl">Clients</div>
+        </div>
+        <div class="gw-stat">
+          <div class="gw-stat-val" style="color:var(--orange)" id="gw-scrubbed">--</div>
+          <div class="gw-stat-lbl">Scrubbed</div>
+        </div>
+      </div>
+
+      <div class="gw-form">
+        <input type="text" id="gw-input" placeholder="Send a message through The Window..." maxlength="1000" autocomplete="off">
+        <button class="btn btn-send" id="gw-btn" onclick="sendGateway()">Send</button>
+      </div>
+      <div class="gw-response" id="gw-response"></div>
+
+      <div class="gw-docs">
+        <strong>API:</strong> <code>POST /api/gateway/query</code>
+        <span style="opacity:0.3">|</span>
+        <strong>Body:</strong> <code>{"input": "your message"}</code>
+        <span style="opacity:0.3">|</span>
+        <strong>Rate:</strong> 5 req/min
+        <span style="opacity:0.3">|</span>
+        <strong>Stats:</strong> <code>GET /api/gateway/stats</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       7. TOKEN ORCHESTRATOR
+       =================================================================== -->
+  <div class="section">
+    <div class="section-head">Token Orchestrator</div>
+    <div class="orch-grid">
+      <div class="orch-card">
+        <div class="orch-val" style="color:var(--purple)" id="orch-remaining">--</div>
+        <div class="orch-lbl">Budget Remaining</div>
+      </div>
+      <div class="orch-card">
+        <div class="orch-val" style="color:var(--green)" id="orch-efficiency">--</div>
+        <div class="orch-lbl">Efficiency</div>
+      </div>
+      <div class="orch-card">
+        <div class="orch-val" style="color:var(--cyan)" id="orch-tandems">0</div>
+        <div class="orch-lbl">Active Tandems</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       8. TRIGGER TASK
+       =================================================================== -->
+  <div class="section">
+    <div class="section-head">Trigger Task</div>
+    <div class="card">
+      <div class="trigger-wrap">
+        <input type="text" id="trigger-input" placeholder="Describe a task for the collective to build..." maxlength="500" autocomplete="off">
+        <button class="btn btn-primary" id="trigger-btn" onclick="triggerTask()">Launch Swarm</button>
+      </div>
+      <div class="trigger-result" id="trigger-result"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       9. QUICK LINKS
+       =================================================================== -->
+  <div class="links-row">
+    <a href="/cosmos" class="link-btn"><span class="link-dot" style="background:var(--pink)"></span> Chat with Cosmos</a>
+    <a href="/chat" class="link-btn"><span class="link-dot" style="background:var(--cyan)"></span> Swarm Chat</a>
+    <a href="/dex" class="link-btn"><span class="link-dot" style="background:var(--green)"></span> DEXAI</a>
+    <a href="/docs" class="link-btn"><span class="link-dot" style="background:var(--purple)"></span> API Docs</a>
+    <a href="/tradewindow" class="link-btn"><span class="link-dot" style="background:var(--orange)"></span> Trade Window</a>
+  </div>
+
+</div>
+
+<!-- =======================================================================
+     JAVASCRIPT
+     ======================================================================= -->
+<script>
+(function(){
+  'use strict';
+
+  /* =====================================================================
+     BOT COLORS
+     ===================================================================== */
+  const BOT_COLORS = {
+    'Grok':       'var(--orange)',
+    'Kimi':       'var(--cyan)',
+    'DeepSeek':   'var(--blue)',
+    'Phi':        'var(--green)',
+    'Gemini':     'var(--yellow)',
+    'Claude':     'var(--purple)',
+    'ClaudeOpus': 'var(--purple)',
+    'Cosmos': 'var(--pink)',
+    'Swarm-Mind': '#e2e8f0',
+    'HuggingFace':'var(--green)',
+    'OpenCode':   'var(--cyan)',
+  };
+
+  function botColor(name) {
+    return BOT_COLORS[name] || 'var(--text-dim)';
+  }
+
+  /* =====================================================================
+     HELPERS
+     ===================================================================== */
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return diffMin + 'm ago';
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return diffHr + 'h ago';
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatNumber(n) {
+    if (n === null || n === undefined || n === '--') return '--';
+    n = Number(n);
+    if (isNaN(n)) return '--';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K';
+    return String(n);
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function setTextById(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  /* =====================================================================
+     SHOW MORE / LESS TOGGLE
+     ===================================================================== */
+  let toggleCounter = 0;
+
+  function makeExpandableContent(content, limit) {
+    if (!content || content.length <= limit) {
+      return '<div class="swarm-msg-body">' + escapeHtml(content || '') + '</div>';
+    }
+    const id = 'exp-' + (++toggleCounter);
+    const short = content.substring(0, limit);
+    return '<div class="swarm-msg-body" id="' + id + '-body">' + escapeHtml(short) + '...</div>' +
+           '<span class="swarm-msg-toggle" data-full="' + escapeHtml(content).replace(/"/g, '&quot;') + '" ' +
+           'data-short="' + escapeHtml(short).replace(/"/g, '&quot;') + '..." ' +
+           'data-target="' + id + '-body" data-expanded="false" ' +
+           'onclick="window._toggleExpand(this)">' +
+           '&#9656; Show more</span>';
+  }
+
+  window._toggleExpand = function(el) {
+    const target = document.getElementById(el.getAttribute('data-target'));
+    if (!target) return;
+    const expanded = el.getAttribute('data-expanded') === 'true';
+    if (expanded) {
+      target.innerHTML = el.getAttribute('data-short');
+      el.innerHTML = '&#9656; Show more';
+      el.setAttribute('data-expanded', 'false');
+    } else {
+      target.innerHTML = el.getAttribute('data-full');
+      el.innerHTML = '&#9662; Show less';
+      el.setAttribute('data-expanded', 'true');
+    }
+  };
+
+  /* =====================================================================
+     FETCH: KEY STATS
+     ===================================================================== */
+  async function fetchKeyStats() {
+    // Aggregate from multiple endpoints
+    try {
+      const [statusRes, skillsRes, polyRes, hackRes, delibRes] = await Promise.allSettled([
+        fetch('/api/status'),
+        fetch('/api/skills'),
+        fetch('/api/polymarket/stats'),
+        fetch('/api/hackathon/status'),
+        fetch('/api/deliberations/stats'),
+      ]);
+
+      // Active agents from /api/status
+      if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+        const data = await statusRes.value.json();
+        const providers = data.multi_model?.providers || data.features?.multi_model?.providers || {};
+        const count = Object.keys(providers).length || 11;
+        setTextById('s-agents', String(count));
+      }
+
+      // Skills from /api/skills
+      if (skillsRes.status === 'fulfilled' && skillsRes.value.ok) {
+        const data = await skillsRes.value.json();
+        setTextById('s-skills', formatNumber(data.total_skills || 0));
+      }
+
+      // Predictions from /api/polymarket/stats
+      if (polyRes.status === 'fulfilled' && polyRes.value.ok) {
+        const data = await polyRes.value.json();
+        setTextById('s-predictions', formatNumber(data.stats?.total_predictions || 0));
+      }
+
+      // Memory + evolution from /api/hackathon/status
+      if (hackRes.status === 'fulfilled' && hackRes.value.ok) {
+        const data = await hackRes.value.json();
+        setTextById('s-memory', formatNumber(data.memory_entries || 0));
+        setTextById('s-evo', formatNumber(data.evolution_cycle || 0));
+      }
+
+      // Deliberation wins from /api/deliberations/stats
+      if (delibRes.status === 'fulfilled' && delibRes.value.ok) {
+        const data = await delibRes.value.json();
+        if (data.success && data.stats?.agent_stats) {
+          let totalWins = 0;
+          for (const agentKey of Object.keys(data.stats.agent_stats)) {
+            totalWins += data.stats.agent_stats[agentKey].wins || 0;
+          }
+          setTextById('s-delib-wins', formatNumber(totalWins));
+        }
+      }
+    } catch (e) {
+      console.debug('Key stats error:', e);
+    }
+  }
+
+  /* =====================================================================
+     FETCH: SWARM CHAT FEED
+     ===================================================================== */
+  let lastSwarmMsgId = null;
+
+  async function fetchSwarmFeed() {
+    try {
+      const res = await fetch('/api/swarm/history');
+      if (!res.ok) return;
+      const data = await res.json();
+      const feed = document.getElementById('swarm-feed');
+      const messages = data.messages || data.history || data;
+
+      if (!Array.isArray(messages) || messages.length === 0) {
+        feed.innerHTML = '<div class="empty-state">Swarm is quiet... the agents are thinking</div>';
+        return;
+      }
+
+      const recent = messages.slice(-20);
+      const newestId = recent[recent.length - 1]?.msg_id || recent[recent.length - 1]?.timestamp;
+
+      feed.innerHTML = recent.map(function(m) {
+        const name = m.bot_name || m.user_name || 'Unknown';
+        const color = botColor(name);
+        const content = (m.content || '').substring(0, 2000);
+        const time = formatTime(m.timestamp);
+        const msgType = m.type || '';
+
+        return '<div class="swarm-msg">' +
+          '<div class="swarm-msg-head">' +
+            '<span class="swarm-msg-name" style="color:' + color + '">' + escapeHtml(name) +
+              (msgType ? '<span class="swarm-msg-type">' + escapeHtml(msgType) + '</span>' : '') +
+            '</span>' +
+            '<span class="swarm-msg-time">' + escapeHtml(time) + '</span>' +
+          '</div>' +
+          makeExpandableContent(content, 500) +
+        '</div>';
+      }).join('');
+
+      // Auto-scroll to bottom if new messages arrived
+      if (newestId !== lastSwarmMsgId) {
+        lastSwarmMsgId = newestId;
+        feed.scrollTop = feed.scrollHeight;
+      }
+    } catch (e) {
+      console.debug('Swarm feed error:', e);
+    }
+  }
+
+  /* =====================================================================
+     FETCH: DELIBERATION SCOREBOARD
+     ===================================================================== */
+  async function fetchDelibStats() {
+    try {
+      const res = await fetch('/api/deliberations/stats');
+      if (!res.ok) return;
+      const data = await res.json();
+      const wrap = document.getElementById('delib-wrap');
+
+      if (!data.success || !data.stats?.agent_stats) {
+        wrap.innerHTML = '<div class="empty-state">No deliberation data available</div>';
+        return;
+      }
+
+      const agents = Object.entries(data.stats.agent_stats)
+        .map(function(pair) {
+          const name = pair[0];
+          const s = pair[1];
+          const deliberations = s.deliberations || 0;
+          const wins = s.wins || 0;
+          const avgScore = s.avg_score || 0;
+          const winRate = deliberations > 0 ? ((wins / deliberations) * 100) : 0;
+          return { name: name, deliberations: deliberations, wins: wins, winRate: winRate, avgScore: avgScore };
+        })
+        .sort(function(a, b) { return b.wins - a.wins; });
+
+      if (agents.length === 0) {
+        wrap.innerHTML = '<div class="empty-state">No deliberation data yet</div>';
+        return;
+      }
+
+      const maxWinRate = Math.max.apply(null, agents.map(function(a) { return a.winRate; })) || 1;
+
+      let html = '<table class="delib-table">' +
+        '<thead><tr><th>Agent</th><th>Deliberations</th><th>Wins</th><th>Win Rate</th><th>Avg Score</th></tr></thead>' +
+        '<tbody>';
+
+      agents.forEach(function(a) {
+        const barWidth = Math.max(4, (a.winRate / maxWinRate) * 60);
+        const color = botColor(a.name);
+        html += '<tr>' +
+          '<td><span style="color:' + color + ';font-weight:600">' + escapeHtml(a.name) + '</span></td>' +
+          '<td>' + a.deliberations + '</td>' +
+          '<td>' + a.wins + '</td>' +
+          '<td><span class="win-bar" style="width:' + barWidth + 'px;background:' + color + '"></span>' +
+              a.winRate.toFixed(1) + '%</td>' +
+          '<td>' + a.avgScore.toFixed(2) + '</td>' +
+        '</tr>';
+      });
+
+      html += '</tbody></table>';
+
+      const totalExchanges = data.stats.total_exchanges || 0;
+      const uniqueAgents = data.stats.unique_agents || 0;
+      html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:0.7rem;color:var(--text-dim)">' +
+        'Total exchanges: <span class="mono">' + totalExchanges + '</span> &bull; ' +
+        'Unique agents: <span class="mono">' + uniqueAgents + '</span></div>';
+
+      wrap.innerHTML = html;
+    } catch (e) {
+      console.debug('Delib stats error:', e);
+    }
+  }
+
+  /* =====================================================================
+     FETCH: AGENT STATUS & BUDGET
+     ===================================================================== */
+  async function fetchAgentStatus() {
+    try {
+      const res = await fetch('/api/orchestrator/agents');
+      if (!res.ok) return;
+      const data = await res.json();
+      const wrap = document.getElementById('agents-wrap');
+
+      if (!data.success || !data.agents || Object.keys(data.agents).length === 0) {
+        wrap.innerHTML = '<div class="empty-state">No agent data available</div>';
+        return;
+      }
+
+      const agents = Object.entries(data.agents)
+        .map(function(pair) {
+          return Object.assign({ id: pair[0] }, pair[1]);
+        })
+        .sort(function(a, b) { return (b.efficiency || b.efficiency_score || 0) - (a.efficiency || a.efficiency_score || 0); });
+
+      let html = '<table class="agent-table">' +
+        '<thead><tr><th>Agent</th><th>Tier</th><th>Budget</th><th>Used</th><th>Efficiency</th></tr></thead>' +
+        '<tbody>';
+
+      agents.forEach(function(a) {
+        const tier = a.tier || 'unknown';
+        const tierClass = tier === 'local' ? 'tier-local' : (tier === 'api_premium' ? 'tier-api_premium' : 'tier-api');
+        const isLocal = tier === 'local';
+        const allocated = a.allocated || a.allocated_tokens || 0;
+        const used = a.used || a.used_tokens || 0;
+        const remaining = a.remaining || (allocated - used);
+        const eff = a.efficiency || a.efficiency_score || 0;
+        const effPct = (typeof eff === 'number' && eff <= 2) ? (eff * 100).toFixed(0) : (Number(eff) || 0).toFixed(0);
+        const budgetPct = isLocal ? 0 : (allocated > 0 ? Math.min(100, (used / allocated) * 100) : 0);
+        const barColor = budgetPct > 85 ? 'var(--red)' : (budgetPct > 60 ? 'var(--orange)' : 'var(--green)');
+        const color = botColor(a.id);
+
+        html += '<tr>' +
+          '<td><span style="color:' + color + ';font-weight:600">' + escapeHtml(a.id) + '</span></td>' +
+          '<td><span class="tier-badge ' + tierClass + '">' + escapeHtml(tier) + '</span></td>' +
+          '<td>' + (isLocal ? '<span style="color:var(--green)">Unlimited</span>' : formatNumber(allocated)) +
+            '<div class="budget-bar"><div class="budget-bar-fill" style="width:' + budgetPct + '%;background:' + barColor + '"></div></div></td>' +
+          '<td>' + formatNumber(used) + '</td>' +
+          '<td>' + effPct + '%</td>' +
+        '</tr>';
+      });
+
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    } catch (e) {
+      console.debug('Agent status error:', e);
+    }
+  }
+
+  /* =====================================================================
+     FETCH: GATEWAY STATS
+     ===================================================================== */
+  async function fetchGatewayStats() {
+    try {
+      const res = await fetch('/api/gateway/stats');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.stats) return;
+      const s = data.stats;
+
+      setTextById('gw-requests', formatNumber(s.total_requests || 0));
+      setTextById('gw-blocked', formatNumber(s.total_blocked || 0));
+      setTextById('gw-clients', formatNumber(s.unique_clients || 0));
+      setTextById('gw-scrubbed', formatNumber(s.total_scrubbed || 0));
+
+      const statusEl = document.getElementById('gw-status');
+      if (statusEl) {
+        if (s.enabled) {
+          statusEl.textContent = 'Online';
+          statusEl.style.color = 'var(--green)';
+          statusEl.style.borderColor = 'rgba(16,185,129,0.25)';
+          statusEl.style.background = 'rgba(16,185,129,0.08)';
+        } else {
+          statusEl.textContent = 'Offline';
+          statusEl.style.color = 'var(--red)';
+          statusEl.style.borderColor = 'rgba(239,68,68,0.25)';
+          statusEl.style.background = 'rgba(239,68,68,0.08)';
+        }
+      }
+    } catch (e) {
+      console.debug('Gateway stats error:', e);
+    }
+  }
+
+  /* =====================================================================
+     FETCH: ORCHESTRATOR DASHBOARD
+     ===================================================================== */
+  async function fetchOrchestratorDashboard() {
+    try {
+      const res = await fetch('/api/orchestrator/dashboard');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.dashboard) return;
+      const d = data.dashboard;
+
+      const remaining = d.total_remaining;
+      setTextById('orch-remaining',
+        remaining >= 999999 ? 'Unlimited' : formatNumber(remaining));
+
+      const eff = d.efficiency_rating;
+      setTextById('orch-efficiency',
+        typeof eff === 'number' ? (eff * 100).toFixed(0) + '%' : '--');
+
+      setTextById('orch-tandems', String(d.active_tandems || 0));
+    } catch (e) {
+      console.debug('Orchestrator dashboard error:', e);
+    }
+  }
+
+  /* =====================================================================
+     GATEWAY: SEND QUERY
+     ===================================================================== */
+  window.sendGateway = async function() {
+    var input = document.getElementById('gw-input');
+    var btn = document.getElementById('gw-btn');
+    var respEl = document.getElementById('gw-response');
+    var text = input.value.trim();
+    if (!text) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    respEl.style.display = 'none';
+
+    try {
+      var res = await fetch('/api/gateway/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: text })
+      });
+      var data = await res.json();
+
+      if (data.status === 'ok') {
+        respEl.textContent = data.response || JSON.stringify(data, null, 2);
+        respEl.style.borderColor = 'rgba(6,182,212,0.12)';
+        respEl.style.background = 'rgba(6,182,212,0.05)';
+        respEl.style.color = 'var(--text)';
+      } else {
+        respEl.textContent = data.error || data.message || 'Request failed: ' + (data.status || 'unknown');
+        respEl.style.borderColor = 'rgba(239,68,68,0.12)';
+        respEl.style.background = 'rgba(239,68,68,0.05)';
+        respEl.style.color = 'var(--red)';
+      }
+      respEl.style.display = 'block';
+      input.value = '';
+      fetchGatewayStats();
+    } catch (e) {
+      respEl.textContent = 'Connection error. The gateway may be starting up.';
+      respEl.style.display = 'block';
+      respEl.style.color = 'var(--red)';
+      respEl.style.borderColor = 'rgba(239,68,68,0.12)';
+      respEl.style.background = 'rgba(239,68,68,0.05)';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Send';
+  };
+
+  /* =====================================================================
+     TRIGGER: LAUNCH TASK
+     ===================================================================== */
+  window.triggerTask = async function() {
+    var input = document.getElementById('trigger-input');
+    var btn = document.getElementById('trigger-btn');
+    var result = document.getElementById('trigger-result');
+    var desc = input.value.trim();
+    if (!desc) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Launching...';
+    result.style.display = 'none';
+
+    try {
+      var res = await fetch('/api/hackathon/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: desc })
+      });
+      var data = await res.json();
+
+      if (data.swarm_id) {
+        result.textContent = 'Swarm ' + data.swarm_id + ' launched successfully.';
+        result.style.color = 'var(--green)';
+        result.style.borderColor = 'rgba(16,185,129,0.15)';
+        result.style.background = 'rgba(16,185,129,0.06)';
+        result.style.display = 'block';
+        input.value = '';
+        setTimeout(fetchKeyStats, 2000);
+      } else {
+        result.textContent = data.error || 'Failed to launch swarm.';
+        result.style.color = 'var(--red)';
+        result.style.borderColor = 'rgba(239,68,68,0.15)';
+        result.style.background = 'rgba(239,68,68,0.06)';
+        result.style.display = 'block';
+      }
+    } catch (e) {
+      result.textContent = 'Connection error. Server may be starting up.';
+      result.style.color = 'var(--red)';
+      result.style.borderColor = 'rgba(239,68,68,0.15)';
+      result.style.background = 'rgba(239,68,68,0.06)';
+      result.style.display = 'block';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Launch Swarm';
+  };
+
+  /* =====================================================================
+     ENTER KEY HANDLERS
+     ===================================================================== */
+  document.getElementById('gw-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') window.sendGateway();
+  });
+  document.getElementById('trigger-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') window.triggerTask();
+  });
+
+  /* =====================================================================
+     INITIAL LOAD + AUTO-REFRESH
+     ===================================================================== */
+  fetchKeyStats();
+  fetchSwarmFeed();
+  fetchDelibStats();
+  fetchAgentStatus();
+  fetchGatewayStats();
+  fetchOrchestratorDashboard();
+
+  setInterval(fetchSwarmFeed, 6000);
+  setInterval(fetchDelibStats, 20000);
+  setInterval(fetchAgentStatus, 20000);
+  setInterval(fetchGatewayStats, 15000);
+  setInterval(fetchOrchestratorDashboard, 15000);
+  setInterval(fetchKeyStats, 30000);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmos AI — 11 Agents. One Mind. Crypto Native.</title>
+    <meta name="description" content="The only AI platform where multiple models deliberate, debate, and deliver — with built-in wallet analysis, token scanning, and live trading.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255,255,255,0.03);
+            --border: rgba(255,255,255,0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --orange: #f97316;
+            --pink: #ec4899;
+            --radius-card: 16px;
+            --radius-btn: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ====== UTILITY ====== */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .section-title {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 16px;
+            letter-spacing: -0.03em;
+        }
+
+        .section-subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 1.125rem;
+            max-width: 600px;
+            margin: 0 auto 60px;
+            font-weight: 400;
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 28px;
+            border-radius: var(--radius-btn);
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.938rem;
+            cursor: pointer;
+            transition: all var(--transition);
+            text-decoration: none;
+            border: none;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--purple), #7c3aed);
+            color: #fff;
+            box-shadow: 0 0 20px rgba(139, 92, 246, 0.25);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 32px rgba(139, 92, 246, 0.45);
+            transform: translateY(-2px);
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            backdrop-filter: blur(10px);
+        }
+
+        .btn-outline:hover {
+            border-color: rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.04);
+            transform: translateY(-2px);
+        }
+
+        .btn-gold {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: #fff;
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.25);
+        }
+
+        .btn-gold:hover {
+            box-shadow: 0 0 32px rgba(245, 158, 11, 0.45);
+            transform: translateY(-2px);
+        }
+
+        .fade-in {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: opacity 0.7s ease, transform 0.7s ease;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* ====== NAVBAR ====== */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            padding: 16px 0;
+            background: rgba(8, 8, 15, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            transition: all var(--transition);
+        }
+
+        .navbar .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .nav-logo {
+            font-size: 1.25rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-decoration: none;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 36px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: color var(--transition);
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .nav-actions .login-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: color var(--transition);
+        }
+
+        .nav-actions .login-link:hover {
+            color: var(--text-primary);
+        }
+
+        .nav-actions .btn {
+            padding: 8px 20px;
+            font-size: 0.875rem;
+        }
+
+        .mobile-toggle {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+        }
+
+        .mobile-toggle span {
+            display: block;
+            width: 22px;
+            height: 2px;
+            background: var(--text-primary);
+            border-radius: 2px;
+            transition: all var(--transition);
+        }
+
+        /* ====== HERO ====== */
+        .hero {
+            position: relative;
+            padding: 160px 0 120px;
+            text-align: center;
+            overflow: hidden;
+        }
+
+        .hero-bg {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            background:
+                radial-gradient(ellipse 60% 50% at 50% 0%, rgba(139, 92, 246, 0.12) 0%, transparent 60%),
+                radial-gradient(ellipse 40% 40% at 30% 20%, rgba(6, 182, 212, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse 40% 40% at 70% 30%, rgba(236, 72, 153, 0.06) 0%, transparent 50%);
+            animation: nebulaPulse 8s ease-in-out infinite alternate;
+        }
+
+        @keyframes nebulaPulse {
+            0% { opacity: 0.8; transform: scale(1); }
+            100% { opacity: 1; transform: scale(1.05); }
+        }
+
+        .hero .container {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4.5rem);
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            line-height: 1.1;
+            margin-bottom: 24px;
+        }
+
+        .hero h1 .highlight {
+            background: linear-gradient(135deg, var(--purple), var(--cyan), var(--pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-sub {
+            font-size: clamp(1rem, 2vw, 1.25rem);
+            color: var(--text-secondary);
+            max-width: 680px;
+            margin: 0 auto 40px;
+            font-weight: 400;
+            line-height: 1.7;
+        }
+
+        .hero-ctas {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 64px;
+            flex-wrap: wrap;
+        }
+
+        .hero-ctas .btn {
+            padding: 14px 32px;
+            font-size: 1rem;
+        }
+
+        .hero-badges {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 14px;
+        }
+
+        .hero-badge {
+            padding: 10px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 40px;
+            font-size: 0.813rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            backdrop-filter: blur(20px);
+            animation: floatBadge 6s ease-in-out infinite;
+            transition: all var(--transition);
+        }
+
+        .hero-badge:hover {
+            border-color: rgba(255,255,255,0.15);
+            color: var(--text-primary);
+            transform: translateY(-3px);
+        }
+
+        .hero-badge:nth-child(1) { animation-delay: 0s; }
+        .hero-badge:nth-child(2) { animation-delay: 0.8s; }
+        .hero-badge:nth-child(3) { animation-delay: 1.6s; }
+        .hero-badge:nth-child(4) { animation-delay: 2.4s; }
+        .hero-badge:nth-child(5) { animation-delay: 3.2s; }
+
+        .hero-badge .badge-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes floatBadge {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        /* ====== FEATURES GRID ====== */
+        .features {
+            padding: 120px 0;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .feature-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            padding: 36px 32px;
+            transition: all var(--transition);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: var(--radius-card);
+            padding: 1px;
+            background: linear-gradient(135deg, transparent, transparent);
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            transition: background var(--transition);
+            pointer-events: none;
+        }
+
+        .feature-card:hover::before {
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            background: rgba(255,255,255,0.05);
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 1.125rem;
+            margin-bottom: 20px;
+        }
+
+        .feature-card h3 {
+            font-size: 1.125rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: -0.01em;
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            line-height: 1.65;
+        }
+
+        /* ====== AGENTS SHOWCASE ====== */
+        .agents {
+            padding: 120px 0;
+        }
+
+        .agents-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .agent-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            padding: 24px;
+            transition: all var(--transition);
+        }
+
+        .agent-card:hover {
+            transform: translateY(-3px);
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(255,255,255,0.12);
+        }
+
+        .agent-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .agent-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .agent-card h4 {
+            font-size: 0.938rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+
+        .agent-card p {
+            color: var(--text-secondary);
+            font-size: 0.813rem;
+            line-height: 1.5;
+        }
+
+        /* ====== STATS BAR ====== */
+        .stats {
+            padding: 80px 0;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        .stats-grid {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 32px;
+        }
+
+        .stat-item {
+            text-align: center;
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .stat-number {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: clamp(1.5rem, 3vw, 2.25rem);
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.813rem;
+            font-weight: 500;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .stat-divider {
+            width: 1px;
+            height: 48px;
+            background: var(--border);
+        }
+
+        /* ====== PRICING ====== */
+        .pricing {
+            padding: 120px 0;
+        }
+
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            align-items: center;
+        }
+
+        .pricing-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            padding: 40px 32px;
+            transition: all var(--transition);
+            position: relative;
+        }
+
+        .pricing-card:hover {
+            transform: translateY(-4px);
+        }
+
+        .pricing-card.featured {
+            background: rgba(139, 92, 246, 0.06);
+            border-color: rgba(139, 92, 246, 0.3);
+            box-shadow: 0 0 60px rgba(139, 92, 246, 0.12);
+            padding: 48px 32px;
+            transform: scale(1.04);
+        }
+
+        .pricing-card.featured:hover {
+            transform: scale(1.04) translateY(-4px);
+            box-shadow: 0 0 80px rgba(139, 92, 246, 0.18);
+        }
+
+        .pricing-badge {
+            position: absolute;
+            top: -14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, var(--purple), #7c3aed);
+            color: #fff;
+            font-size: 0.688rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            padding: 5px 16px;
+            border-radius: 20px;
+        }
+
+        .pricing-tier {
+            font-size: 0.813rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .pricing-price {
+            font-size: 3rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            margin-bottom: 4px;
+        }
+
+        .pricing-price span {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .pricing-desc {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-bottom: 32px;
+            padding-bottom: 32px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pricing-features {
+            list-style: none;
+            margin-bottom: 36px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .pricing-features li {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .pricing-features li .check {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 1px;
+        }
+
+        .pricing-features li .check svg {
+            width: 10px;
+            height: 10px;
+        }
+
+        .pricing-card .btn {
+            width: 100%;
+            padding: 14px;
+        }
+
+        /* ====== CTA ====== */
+        .cta {
+            padding: 120px 0;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-bg {
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(ellipse 50% 50% at 50% 50%, rgba(139, 92, 246, 0.1) 0%, transparent 60%);
+        }
+
+        .cta .container {
+            position: relative;
+            z-index: 1;
+        }
+
+        .cta h2 {
+            font-size: clamp(2rem, 4vw, 3.25rem);
+            font-weight: 800;
+            margin-bottom: 28px;
+            letter-spacing: -0.03em;
+        }
+
+        .cta .btn {
+            padding: 16px 40px;
+            font-size: 1.063rem;
+            margin-bottom: 16px;
+        }
+
+        .cta .cta-note {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        /* ====== FOOTER ====== */
+        .footer {
+            padding: 80px 0 40px;
+            border-top: 1px solid var(--border);
+        }
+
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 1.5fr repeat(3, 1fr) 1.5fr;
+            gap: 40px;
+            margin-bottom: 60px;
+        }
+
+        .footer-brand .nav-logo {
+            font-size: 1.125rem;
+            display: inline-block;
+            margin-bottom: 12px;
+        }
+
+        .footer-brand p {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-style: italic;
+        }
+
+        .footer-col h5 {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+        }
+
+        .footer-col ul {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .footer-col a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color var(--transition);
+        }
+
+        .footer-col a:hover {
+            color: var(--text-primary);
+        }
+
+        .footer-token {
+            text-align: right;
+        }
+
+        .footer-token .token-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+
+        .footer-token .token-address {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
+            color: var(--text-secondary);
+            word-break: break-all;
+            line-height: 1.6;
+        }
+
+        .footer-bottom {
+            text-align: center;
+            padding-top: 32px;
+            border-top: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 0.813rem;
+        }
+
+        /* ====== RESPONSIVE ====== */
+        @media (max-width: 1024px) {
+            .features-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .agents-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+            .pricing-grid {
+                grid-template-columns: 1fr;
+                max-width: 440px;
+                margin: 0 auto;
+            }
+            .pricing-card.featured {
+                transform: scale(1);
+            }
+            .pricing-card.featured:hover {
+                transform: translateY(-4px);
+            }
+            .footer-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .footer-token {
+                text-align: left;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none;
+            }
+            .mobile-toggle {
+                display: flex;
+            }
+            .nav-links.open {
+                display: flex;
+                flex-direction: column;
+                position: absolute;
+                top: 100%;
+                left: 0;
+                right: 0;
+                background: rgba(8, 8, 15, 0.96);
+                backdrop-filter: blur(20px);
+                padding: 24px;
+                border-bottom: 1px solid var(--border);
+                gap: 20px;
+            }
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+            .agents-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .stats-grid {
+                gap: 24px;
+            }
+            .stat-divider {
+                display: none;
+            }
+            .stat-item {
+                min-width: 120px;
+            }
+            .hero {
+                padding: 130px 0 80px;
+            }
+            .footer-grid {
+                grid-template-columns: 1fr;
+                gap: 32px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .agents-grid {
+                grid-template-columns: 1fr;
+            }
+            .hero-ctas {
+                flex-direction: column;
+                align-items: center;
+            }
+            .hero-ctas .btn {
+                width: 100%;
+                max-width: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ====== NAVBAR ====== -->
+    <nav class="navbar" id="navbar">
+        <div class="container">
+            <a href="/" class="nav-logo">COSMOS</a>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#agents">Agents</a></li>
+                <li><a href="#pricing">Pricing</a></li>
+                <li><a href="/docs">API Docs</a></li>
+            </ul>
+            <div class="nav-actions">
+                <a href="/pro/login" class="login-link">Log In</a>
+                <a href="/pro/signup" class="btn btn-primary">Get Started</a>
+            </div>
+            <button class="mobile-toggle" id="mobileToggle" aria-label="Toggle navigation">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- ====== HERO ====== -->
+    <section class="hero">
+        <div class="hero-bg"></div>
+        <div class="container">
+            <h1 class="fade-in">
+                <span class="highlight">11 AI Agents.</span><br>
+                One Mind. Crypto Native.
+            </h1>
+            <p class="hero-sub fade-in">
+                The only AI platform where multiple models deliberate, debate, and deliver
+                &mdash; with built-in wallet analysis, token scanning, and live trading.
+                Better than any single model.
+            </p>
+            <div class="hero-ctas fade-in">
+                <a href="/pro/signup" class="btn btn-primary">Start Free</a>
+                <a href="/hackathon" class="btn btn-outline">View Live Demo</a>
+            </div>
+            <div class="hero-badges fade-in">
+                <div class="hero-badge">
+                    <span class="badge-dot" style="background: var(--purple);"></span>Wallet Analyzer
+                </div>
+                <div class="hero-badge">
+                    <span class="badge-dot" style="background: var(--cyan);"></span>Token Scanner
+                </div>
+                <div class="hero-badge">
+                    <span class="badge-dot" style="background: var(--orange);"></span>Agent Arena
+                </div>
+                <div class="hero-badge">
+                    <span class="badge-dot" style="background: var(--green);"></span>Live PnL
+                </div>
+                <div class="hero-badge">
+                    <span class="badge-dot" style="background: var(--pink);"></span>Prediction Engine
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== FEATURES ====== -->
+    <section class="features" id="features">
+        <div class="container">
+            <h2 class="section-title fade-in">Built for <span class="gradient-text">the future</span> of AI</h2>
+            <p class="section-subtitle fade-in">
+                Not just another chatbot. A fully autonomous swarm of specialized AI agents working in concert.
+            </p>
+            <div class="features-grid">
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(139,92,246,0.12); color: var(--purple);">M</div>
+                    <h3>Multi-Model Chat</h3>
+                    <p>Talk to 11 AI models. Get the best answer, not just one answer. Our PROPOSE-CRITIQUE-REFINE-VOTE protocol ensures quality.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(6,182,212,0.12); color: var(--cyan);">T</div>
+                    <h3>Token Scanner</h3>
+                    <p>Real-time new token detection with swarm consensus scoring. See what the collective thinks before you ape.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(16,185,129,0.12); color: var(--green);">W</div>
+                    <h3>Wallet Analyzer</h3>
+                    <p>Paste any Solana wallet. Get instant portfolio analysis, risk scoring, and AI recommendations.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(249,115,22,0.12); color: var(--orange);">A</div>
+                    <h3>Agent Arena</h3>
+                    <p>Watch AI models debate any topic in real-time. Pick your fighters. Share the results.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(236,72,153,0.12); color: var(--pink);">P</div>
+                    <h3>Live Trading PnL</h3>
+                    <p>Transparent, autonomous trading. Every entry, every exit, every dollar &mdash; fully visible.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon" style="background: rgba(139,92,246,0.12); color: var(--purple);">S</div>
+                    <h3>Prediction Engine</h3>
+                    <p>502+ predictions and counting. Timestamped, accountable, powered by swarm consensus + Polymarket data.</p>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== AGENTS SHOWCASE ====== -->
+    <section class="agents" id="agents">
+        <div class="container">
+            <h2 class="section-title fade-in">Meet the <span class="gradient-text">Collective</span></h2>
+            <p class="section-subtitle fade-in">
+                11 specialized agents, each with unique strengths, collaborating as one intelligence.
+            </p>
+            <div class="agents-grid">
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--pink);"></span>
+                        <h4>Cosmos</h4>
+                    </div>
+                    <p>Lead orchestrator and swarm coordinator</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--orange);"></span>
+                        <h4>Grok</h4>
+                    </div>
+                    <p>Real-time research and analysis</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: #eab308;"></span>
+                        <h4>Gemini</h4>
+                    </div>
+                    <p>Multi-modal reasoning and synthesis</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--cyan);"></span>
+                        <h4>Kimi</h4>
+                    </div>
+                    <p>Long-context deep analysis</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--purple);"></span>
+                        <h4>Claude</h4>
+                    </div>
+                    <p>Code and reasoning specialist</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--purple);"></span>
+                        <h4>ClaudeOpus</h4>
+                    </div>
+                    <p>Advanced strategy and planning</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: #3b82f6;"></span>
+                        <h4>DeepSeek</h4>
+                    </div>
+                    <p>Deep research and fact verification</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--green);"></span>
+                        <h4>Phi</h4>
+                    </div>
+                    <p>Fast inference and pattern matching</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--green);"></span>
+                        <h4>HuggingFace</h4>
+                    </div>
+                    <p>Local GPU inference and embeddings</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: #e2e8f0;"></span>
+                        <h4>Swarm-Mind</h4>
+                    </div>
+                    <p>Collective consensus aggregation</p>
+                </div>
+
+                <div class="agent-card fade-in">
+                    <div class="agent-header">
+                        <span class="agent-dot" style="background: var(--cyan);"></span>
+                        <h4>OpenCode</h4>
+                    </div>
+                    <p>Code generation and debugging</p>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== STATS BAR ====== -->
+    <section class="stats">
+        <div class="container">
+            <div class="stats-grid">
+                <div class="stat-item fade-in">
+                    <div class="stat-number" data-target="243000">0</div>
+                    <div class="stat-label">Lines of Code</div>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item fade-in">
+                    <div class="stat-number" data-target="120">0</div>
+                    <div class="stat-label">API Endpoints</div>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item fade-in">
+                    <div class="stat-number" data-target="7500">0</div>
+                    <div class="stat-label">Deliberations</div>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item fade-in">
+                    <div class="stat-number" data-target="75">0</div>
+                    <div class="stat-label">Skills</div>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item fade-in">
+                    <div class="stat-number" data-target="1500">0</div>
+                    <div class="stat-label">Evolution Cycles</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== PRICING ====== -->
+    <section class="pricing" id="pricing">
+        <div class="container">
+            <h2 class="section-title fade-in">Simple, <span class="gradient-text">Transparent</span> Pricing</h2>
+            <p class="section-subtitle fade-in">
+                Start free. Scale when you need to. No hidden fees.
+            </p>
+            <div class="pricing-grid">
+
+                <!-- FREE -->
+                <div class="pricing-card fade-in">
+                    <div class="pricing-tier">Free</div>
+                    <div class="pricing-price">$0<span>/mo</span></div>
+                    <div class="pricing-desc">Get started with the basics</div>
+                    <ul class="pricing-features">
+                        <li>
+                            <span class="check" style="background: rgba(16,185,129,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            10 messages per day
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(16,185,129,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            3 AI models (Cosmos, Phi, DeepSeek)
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(16,185,129,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Basic wallet lookup
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(16,185,129,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Community support
+                        </li>
+                    </ul>
+                    <a href="/pro/signup" class="btn btn-outline">Start Free</a>
+                </div>
+
+                <!-- PRO -->
+                <div class="pricing-card featured fade-in">
+                    <div class="pricing-badge">Most Popular</div>
+                    <div class="pricing-tier">Pro</div>
+                    <div class="pricing-price">$20<span>/mo</span></div>
+                    <div class="pricing-desc">Full swarm power for serious users</div>
+                    <ul class="pricing-features">
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            500 messages per day
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            All 11 AI models
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Image upload and analysis
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Token scanner access
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Wallet analyzer
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Agent arena
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Research mode
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(139,92,246,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Priority support
+                        </li>
+                    </ul>
+                    <a href="/pro/signup?plan=pro" class="btn btn-primary">Start Pro</a>
+                </div>
+
+                <!-- UNLIMITED -->
+                <div class="pricing-card fade-in">
+                    <div class="pricing-tier">Unlimited</div>
+                    <div class="pricing-price">$80<span>/mo</span></div>
+                    <div class="pricing-desc">Maximum power, zero limits</div>
+                    <ul class="pricing-features">
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Unlimited messages
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            All 11 AI models
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Everything in Pro
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            API access
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Live PnL dashboard
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Prediction engine
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Custom agent configurations
+                        </li>
+                        <li>
+                            <span class="check" style="background: rgba(245,158,11,0.15);">
+                                <svg viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                            Direct support channel
+                        </li>
+                    </ul>
+                    <a href="/pro/signup?plan=unlimited" class="btn btn-gold">Go Unlimited</a>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== CTA ====== -->
+    <section class="cta">
+        <div class="cta-bg"></div>
+        <div class="container">
+            <h2 class="fade-in">Ready to experience the swarm?</h2>
+            <div class="fade-in">
+                <a href="/pro/signup" class="btn btn-primary">Get Started</a>
+            </div>
+            <p class="cta-note fade-in">No credit card required for free tier</p>
+        </div>
+    </section>
+
+    <!-- ====== FOOTER ====== -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <a href="/" class="nav-logo">COSMOS</a>
+                    <p>The swarm never sleeps.</p>
+                </div>
+                <div class="footer-col">
+                    <h5>Product</h5>
+                    <ul>
+                        <li><a href="/pro/chat">Chat</a></li>
+                        <li><a href="/pro/scanner">Scanner</a></li>
+                        <li><a href="/pro/wallet">Wallet</a></li>
+                        <li><a href="/pro/arena">Arena</a></li>
+                        <li><a href="/pro/pnl">PnL</a></li>
+                        <li><a href="/pro/predictions">Predictions</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h5>Resources</h5>
+                    <ul>
+                        <li><a href="/docs">API Docs</a></li>
+                        <li><a href="/health">Status</a></li>
+                        <li><a href="https://github.com/CosmosAI" target="_blank" rel="noopener">GitHub</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h5>Company</h5>
+                    <ul>
+                        <li><a href="/about">About</a></li>
+                        <li><a href="https://twitter.com/CosmosAI" target="_blank" rel="noopener">Twitter</a></li>
+                    </ul>
+                </div>
+                <div class="footer-token">
+                    <div class="token-label">$COSMOS</div>
+                    <div class="token-address">9crfy4udrHQo8eP6mP393b5qwpGLQgcxVg9acmdwBAGS</div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                &copy; 2026 Cosmos AI. Built by the swarm.
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        /* ====== MOBILE NAVIGATION ====== */
+        const mobileToggle = document.getElementById('mobileToggle');
+        const navLinks = document.getElementById('navLinks');
+
+        mobileToggle.addEventListener('click', () => {
+            navLinks.classList.toggle('open');
+        });
+
+        /* Close mobile nav on link click */
+        navLinks.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                navLinks.classList.remove('open');
+            });
+        });
+
+        /* ====== INTERSECTION OBSERVER — FADE IN ON SCROLL ====== */
+        const observerOptions = {
+            root: null,
+            rootMargin: '0px 0px -60px 0px',
+            threshold: 0.1
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.fade-in').forEach(el => {
+            observer.observe(el);
+        });
+
+        /* ====== STATS COUNTER ANIMATION ====== */
+        function animateCounter(element, target) {
+            const suffix = target >= 1000 ? '+' : '+';
+            const duration = 2000;
+            const startTime = performance.now();
+
+            function formatNumber(n) {
+                if (n >= 1000) {
+                    return n.toLocaleString();
+                }
+                return n.toString();
+            }
+
+            function update(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                /* Ease-out cubic */
+                const eased = 1 - Math.pow(1 - progress, 3);
+                const current = Math.round(eased * target);
+
+                element.textContent = formatNumber(current) + '+';
+
+                if (progress < 1) {
+                    requestAnimationFrame(update);
+                }
+            }
+
+            requestAnimationFrame(update);
+        }
+
+        const statsObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const counters = entry.target.querySelectorAll('.stat-number');
+                    counters.forEach(counter => {
+                        const target = parseInt(counter.getAttribute('data-target'), 10);
+                        animateCounter(counter, target);
+                    });
+                    statsObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.3 });
+
+        const statsSection = document.querySelector('.stats');
+        if (statsSection) {
+            statsObserver.observe(statsSection);
+        }
+
+        /* ====== NAVBAR SCROLL EFFECT ====== */
+        let lastScroll = 0;
+        const navbar = document.getElementById('navbar');
+
+        window.addEventListener('scroll', () => {
+            const currentScroll = window.pageYOffset;
+
+            if (currentScroll > 80) {
+                navbar.style.borderBottomColor = 'rgba(255,255,255,0.1)';
+                navbar.style.background = 'rgba(8, 8, 15, 0.92)';
+            } else {
+                navbar.style.borderBottomColor = 'rgba(255,255,255,0.07)';
+                navbar.style.background = 'rgba(8, 8, 15, 0.8)';
+            }
+
+            lastScroll = currentScroll;
+        }, { passive: true });
+
+        /* ====== SMOOTH SCROLL FOR ANCHOR LINKS ====== */
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    const offset = 80;
+                    const top = target.getBoundingClientRect().top + window.pageYOffset - offset;
+                    window.scrollTo({ top: top, behavior: 'smooth' });
+                }
+            });
+        });
+    </script>
+
+</body>
+</html>

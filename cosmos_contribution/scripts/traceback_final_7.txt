@@ -1,0 +1,19 @@
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+2026-03-13 13:56:55.425 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-13 13:56:55.428 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-13 13:56:55,448 - evolution_engine - INFO - EvolutionEngine initialized - 296 patterns, 169 cycles
+2026-03-13 13:56:57,342 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+Error during verification: type 'bytes' is not subscriptable
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\__init__.py", line 59, in <module>
+    from .cst_sensory_bridge import (
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\cst_sensory_bridge.py", line 99, in <module>
+    class FrequencyAnalyzer:
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\cst_sensory_bridge.py", line 144, in FrequencyAnalyzer
+    audio_buffer: Union[bytes[float], "np.ndarray"],
+                        ~~~~~^^^^^^^
+TypeError: type 'bytes' is not subscriptable

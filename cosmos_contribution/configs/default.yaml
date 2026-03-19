@@ -1,0 +1,138 @@
+# cosmos Default Configuration
+
+system:
+  name: "cosmos"
+  version: "0.1.0"
+  log_level: "INFO"
+  data_dir: "./data"
+
+hardware:
+  auto_detect: true
+  prefer_gpu: true
+  max_memory_gb: 8
+  cpu_threads: 4
+
+llm:
+  default_backend: "ollama"
+  fallback_chain:
+    - "ollama"
+    - "llama_cpp"
+    - "bitnet"
+
+  timeout_seconds: 120
+  max_retries: 3
+
+  generation:
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    max_tokens: 2048
+    repeat_penalty: 1.1
+
+memory:
+  context_window_size: 4096
+  working_memory_size: 1024
+  archival_chunk_size: 512
+
+  vector_db:
+    type: "chromadb"
+    collection_name: "cosmos_memories"
+    embedding_model: "all-MiniLM-L6-v2"
+
+  knowledge_graph:
+    max_nodes: 10000
+    entity_extraction: true
+    auto_link_threshold: 0.75
+
+  dreaming:
+    enabled: true
+    idle_threshold_minutes: 5
+    consolidation_interval_hours: 1
+    creativity_factor: 0.3
+
+agents:
+  max_concurrent: 5
+  handoff_timeout_seconds: 30
+
+  specialists:
+    code:
+      enabled: true
+      model_preference: "deepseek-r1"
+    reasoning:
+      enabled: true
+      model_preference: "deepseek-r1"
+    research:
+      enabled: true
+      model_preference: "phi-3"
+    creative:
+      enabled: true
+      model_preference: "qwen3"
+
+  meta_cognition:
+    enabled: true
+    reflection_interval_turns: 5
+
+  user_avatar:
+    enabled: true
+    learning_rate: 0.1
+
+rag:
+  hybrid_search: true
+  semantic_weight: 0.7
+  keyword_weight: 0.3
+
+  retrieval:
+    top_k: 10
+    rerank: true
+    min_relevance_score: 0.5
+
+  self_refining:
+    enabled: true
+    feedback_window: 100
+    mutation_rate: 0.1
+
+evolution:
+  enabled: true
+  population_size: 20
+  generations_per_cycle: 10
+
+  fitness_weights:
+    task_success: 0.4
+    efficiency: 0.3
+    user_satisfaction: 0.3
+
+  genetic:
+    crossover_prob: 0.7
+    mutation_prob: 0.2
+    selection_method: "tournament"
+    tournament_size: 3
+
+  lora:
+    enabled: false
+    rank: 8
+    alpha: 16
+    target_modules: ["q_proj", "v_proj"]
+
+mcp:
+  host: "localhost"
+  port: 8765
+
+  tools:
+    - "cosmos_remember"
+    - "cosmos_recall"
+    - "cosmos_delegate"
+    - "cosmos_evolve"
+    - "cosmos_status"
+
+  resources:
+    - "cosmos://memory/recent"
+    - "cosmos://memory/graph"
+    - "cosmos://agents/active"
+    - "cosmos://evolution/fitness"
+
+ui:
+  theme: "dark"
+  show_memory_browser: true
+  show_agent_monitor: true
+  show_evolution_dashboard: true
+  auto_refresh_seconds: 5

@@ -1,0 +1,201 @@
+# Smithery MCP Server Configuration
+# https://smithery.ai
+
+name: cosmos
+version: 2.9.0
+description: |
+  COSMOS - Your Claude Companion AI with superpowers!
+
+  Give Claude Code capabilities it doesn't have on its own:
+  - Persistent Memory: Claude remembers your preferences forever
+  - Model Swarm: 12+ models collaborate via PSO optimization
+  - Multimodal: Vision (CLIP/BLIP) + Voice (Whisper) understanding
+  - Self-Evolution: Learns from feedback via genetic optimization
+  - P2P Networking: Join the global COSMOS swarm
+  - Solana Trading: DeGen Mob suite for whale watching, rug detection, trading
+  - Productivity: Notes, focus timer, context profiles, daily summaries
+
+  All processing runs locally on your machine. Your data never leaves your computer.
+
+  Live Demo:
+
+  "COSMOS: The Symbiotic Mirror - 12D Neural Symbiosis"
+
+author: cory davis 
+license: Dual (Free + Commercial)
+repository: https://github.com/NavisWORLD/The-Cosmic-Davis-12D-Hebbian-Transformer-ver.4.2.git
+
+# Server configuration
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      data_dir:
+        type: string
+        description: Directory to store COSMOS data
+        default: "./data"
+      solana_rpc_url:
+        type: string
+        description: Solana RPC URL for blockchain operations
+      isolated_mode:
+        type: boolean
+        description: Disable P2P networking for maximum privacy
+        default: false
+      enable_vision:
+        type: boolean
+        description: Enable vision/image understanding
+        default: true
+      enable_voice:
+        type: boolean
+        description: Enable voice transcription
+        default: true
+    required: []
+  commandFunction: |
+    (config) => ({
+      command: "python",
+      args: ["-m", "cosmos.mcp_server"],
+      env: {
+        COSMOS_DATA_DIR: config.data_dir || "./data",
+        SOLANA_RPC_URL: config.solana_rpc_url || "",
+        COSMOS_ISOLATED: config.isolated_mode ? "true" : "false",
+        COSMOS_ENABLE_VISION: config.enable_vision !== false ? "true" : "false",
+        COSMOS_ENABLE_VOICE: config.enable_voice !== false ? "true" : "false"
+      }
+    })
+
+# Tool categories
+categories:
+  - memory
+  - agents
+  - productivity
+  - blockchain
+  - ai
+
+# Keywords for search
+keywords:
+  - memory
+  - persistent memory
+  - infinite memory
+  - agents
+  - swarm
+  - model swarm
+  - solana
+  - trading
+  - defi
+  - degen
+  - whale watching
+  - p2p
+  - peer-to-peer
+  - evolution
+  - self-improvement
+  - vision
+  - image understanding
+  - voice
+  - transcription
+  - productivity
+  - knowledge graph
+  - RAG
+  - retrieval
+  - multimodal
+  - local AI
+  - privacy
+  - offline
+  - claude companion
+  - claude code
+  - cosmos
+  - cst
+
+# Tools provided by this server
+tools:
+  - name: cosmos_remember
+    description: Store information in COSMOS's persistent memory with optional tags and importance
+
+  - name: cosmos_recall
+    description: Search and retrieve relevant memories using semantic search
+
+  - name: cosmos_delegate
+    description: Delegate tasks to specialist agents (code, reasoning, research, creative)
+
+  - name: cosmos_evolve
+    description: Provide feedback to help COSMOS learn and improve
+
+  - name: cosmos_status
+    description: Get system health, memory stats, and fitness metrics
+
+  - name: cosmos_vision
+    description: Analyze images - captioning, VQA, OCR, scene understanding
+
+  - name: cosmos_voice
+    description: Process audio - transcription, speaker diarization
+
+  - name: cosmos_swarm
+    description: Multi-model collaborative inference using PSO optimization
+
+  - name: cosmos_solana_balance
+    description: Check Solana wallet balance
+
+  - name: cosmos_solana_swap
+    description: Execute token swaps on Jupiter
+
+  - name: cosmos_dexscreener
+    description: Get token data from DexScreener
+
+  - name: cosmos_project_create
+    description: Create and track projects with milestones
+
+  - name: cosmos_project_status
+    description: Get project progress and tasks
+
+  - name: cosmos_quick_note
+    description: Add a quick note with tags
+
+  - name: cosmos_focus_start
+    description: Start a Pomodoro focus session
+
+  - name: cosmos_daily_summary
+    description: Generate daily activity summary
+
+  - name: cosmos_switch_profile
+    description: Switch context profile (Work, Personal, Creative, Technical)
+
+  - name: cosmos_export
+    description: Export conversations and memories to JSON, Markdown, HTML, or text
+
+  - name: cosmos_browse
+    description: Intelligent web browsing with goal-directed navigation
+
+  - name: cosmos_token_status
+    description: Check token budget, cache stats, and API cost savings
+
+  - name: cosmos_rug_check
+    description: Scan Solana tokens for rug pull risks
+
+  - name: cosmos_whale_watch
+    description: Monitor whale wallets for large transactions
+
+  - name: cosmos_collaborate
+    description: Team collaboration with shared memory pools
+
+# Resources provided
+resources:
+  - uri: cosmos://memory/recent
+    description: Recent conversation memories
+
+  - uri: cosmos://memory/graph
+    description: Knowledge graph of entities and relationships
+
+  - uri: cosmos://agents/active
+    description: Currently active agents
+
+  - uri: cosmos://evolution/fitness
+    description: Current fitness metrics
+
+# Requirements
+requirements:
+  python: ">=3.10"
+  dependencies:
+    - mcp>=1.0.0
+    - ollama
+    - sentence-transformers
+    - chromadb

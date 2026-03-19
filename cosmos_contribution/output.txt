@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "D:\Cosmos\test_node.py", line 4, in <module>
+    from cosmos.core.swarm.p2p import SwarmFabric
+ModuleNotFoundError: No module named 'cosmos'

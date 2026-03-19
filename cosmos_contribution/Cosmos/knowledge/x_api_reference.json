@@ -1,0 +1,172 @@
+{
+  "name": "X API v2 Reference",
+  "version": "2025-01",
+  "source": "https://github.com/xdevplatform",
+  "last_updated": "2026-01-31",
+
+  "authentication": {
+    "method": "OAuth 2.0 PKCE",
+    "description": "OAuth 2.0 Authorization Code Flow with PKCE for user context actions",
+    "credentials_required": {
+      "CLIENT_ID": "From X Developer Portal - App Settings",
+      "CLIENT_SECRET": "From X Developer Portal - App Settings"
+    },
+    "scopes": [
+      "tweet.read",
+      "tweet.write",
+      "users.read",
+      "offline.access"
+    ],
+    "scope_descriptions": {
+      "tweet.read": "Read tweets on behalf of user",
+      "tweet.write": "Post, delete, and engage with tweets",
+      "users.read": "Read user profile information",
+      "offline.access": "Generate refresh tokens for long-lived access"
+    },
+    "endpoints": {
+      "authorize": "https://x.com/i/oauth2/authorize",
+      "token": "https://api.x.com/2/oauth2/token",
+      "revoke": "https://api.x.com/2/oauth2/revoke"
+    },
+    "token_lifetime": {
+      "access_token": "2 hours",
+      "refresh_token": "6 months"
+    },
+    "pkce": {
+      "required": true,
+      "code_challenge_method": "S256",
+      "code_verifier_length": "43-128 characters"
+    }
+  },
+
+  "endpoints": {
+    "create_tweet": {
+      "method": "POST",
+      "url": "https://api.x.com/2/tweets",
+      "auth": "OAuth 2.0 User Context",
+      "request_body": {
+        "text": "string (required, max 280 chars)",
+        "reply": "object (optional)",
+        "quote_tweet_id": "string (optional)",
+        "media": {"media_ids": ["array of media_id strings (1-4)"]}
+      },
+      "response": {
+        "success_code": 201,
+        "data": {
+          "id": "tweet_id",
+          "text": "posted_text"
+        }
+      }
+    },
+    "media_upload": {
+      "description": "Chunked upload for images/video",
+      "base_url": "https://api.x.com/2/media/upload",
+      "auth": "OAuth 2.0 with media.write scope",
+      "steps": {
+        "1_init": {
+          "method": "POST",
+          "params": {
+            "command": "INIT",
+            "media_type": "image/png or video/mp4",
+            "total_bytes": "file size in bytes",
+            "media_category": "tweet_image or tweet_video"
+          },
+          "response": {"media_id": "string to use in APPEND/FINALIZE"}
+        },
+        "2_append": {
+          "method": "POST",
+          "params": {
+            "command": "APPEND",
+            "media_id": "from INIT",
+            "segment_index": "0 for single chunk",
+            "media": "binary file data"
+          }
+        },
+        "3_finalize": {
+          "method": "POST",
+          "params": {
+            "command": "FINALIZE",
+            "media_id": "from INIT"
+          },
+          "response": {"media_id": "ready for tweet"}
+        }
+      },
+      "limits": {
+        "image": "5 MB max",
+        "gif": "15 MB max",
+        "video": "512 MB max"
+      }
+    },
+    "delete_tweet": {
+      "method": "DELETE",
+      "url": "https://api.x.com/2/tweets/{id}",
+      "auth": "OAuth 2.0 User Context"
+    },
+    "get_me": {
+      "method": "GET",
+      "url": "https://api.x.com/2/users/me",
+      "auth": "OAuth 2.0 User Context"
+    }
+  },
+
+  "rate_limits": {
+    "create_tweet": {
+      "per_user": "100 requests / 15 minutes",
+      "per_app": "10,000 requests / 24 hours"
+    },
+    "free_tier": {
+      "posts_per_day": 17,
+      "note": "17 total across all authenticated users of app"
+    },
+    "basic_tier": {
+      "posts_per_day": 100,
+      "cost": "$200/month"
+    },
+    "headers": {
+      "x-rate-limit-limit": "Rate limit ceiling",
+      "x-rate-limit-remaining": "Remaining requests",
+      "x-rate-limit-reset": "Unix timestamp when limit resets"
+    },
+    "exceeded_response": {
+      "status_code": 429,
+      "action": "Wait until x-rate-limit-reset timestamp"
+    }
+  },
+
+  "python_sdk": {
+    "package": "xdk",
+    "install": "pip install xdk",
+    "usage": {
+      "init": "from xdk import Client",
+      "create_post": "client.posts.create(post_data={'text': 'Hello!'})",
+      "get_posts": "client.posts.get(ids=['123'])",
+      "search": "client.posts.recent_search(query='python')"
+    }
+  },
+
+  "oauth2_flow": {
+    "step_1": "Generate code_verifier (random 43-128 char string)",
+    "step_2": "Create code_challenge = base64url(sha256(code_verifier))",
+    "step_3": "Build authorize URL with client_id, redirect_uri, scope, state, code_challenge",
+    "step_4": "User visits URL and authorizes app",
+    "step_5": "User redirected to redirect_uri with ?code=xxx&state=xxx",
+    "step_6": "Exchange code for tokens: POST /2/oauth2/token with code + code_verifier",
+    "step_7": "Receive access_token (2hr) and refresh_token (6mo)",
+    "step_8": "Use access_token in Authorization: Bearer header",
+    "step_9": "When expired, POST /2/oauth2/token with grant_type=refresh_token"
+  },
+
+  "error_codes": {
+    "401": "Unauthorized - token invalid or expired",
+    "403": "Forbidden - scope insufficient",
+    "429": "Rate limit exceeded",
+    "400": "Bad request - check payload format"
+  },
+
+  "best_practices": {
+    "token_storage": "Store refresh_token securely, refresh access_token before expiry",
+    "rate_limiting": "Track x-rate-limit-remaining header, back off when low",
+    "error_handling": "On 401, try token refresh; on 429, wait until reset time",
+    "content": "Keep tweets under 280 chars, handle truncation gracefully"
+  }
+}

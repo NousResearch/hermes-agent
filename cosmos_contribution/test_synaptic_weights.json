@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "total_updates": 0,
+  "total_blocked": 0,
+  "last_saved": 1772504249.3707917,
+  "weights": {
+    "LOGIC": {
+      "DeepSeek": 1.0,
+      "Claude": 0.6,
+      "Gemini": 0.4
+    },
+    "EMPATHY": {
+      "DeepSeek": 0.2,
+      "Claude": 1.0,
+      "Gemini": 0.8
+    },
+    "CREATIVITY": {
+      "DeepSeek": 0.3,
+      "Claude": 0.5,
+      "Gemini": 1.0
+    }
+  },
+  "learning_rate": 0.05
+}

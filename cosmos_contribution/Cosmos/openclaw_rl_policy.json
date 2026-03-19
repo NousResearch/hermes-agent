@@ -1,0 +1,18 @@
+{
+  "params": {
+    "cosmos_weight": 1.0,
+    "deepseek_weight": 1.0,
+    "phi_weight": 1.0,
+    "swarm_mind_weight": 1.0,
+    "claude_weight": 1.0,
+    "gemini_weight": 1.0,
+    "chatgpt_weight": 1.0,
+    "grok_weight": 1.0,
+    "temperature_bias": 0.0,
+    "verbosity_scale": 1.0
+  },
+  "insights": {},
+  "total_updates": 177,
+  "running_reward": 0.07500000000000014,
+  "buffer_size": 80
+}

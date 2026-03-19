@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "farnsworth": {
+      "command": "python",
+      "args": [
+        "-m",
+        "farnsworth.mcp_server"
+      ],
+      "cwd": "/absolute/path/to/Farnsworth",
+      "env": {
+        "FARNSWORTH_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}

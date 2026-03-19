@@ -1,0 +1,268 @@
+:root {
+    --bg-dark: #020202;
+    --card-bg: rgba(12, 12, 12, 0.7);
+    --glass-border: rgba(255, 255, 255, 0.05);
+    --accent-green: #00ff88;
+    --accent-cyan: #00f2ff;
+    --accent-orange: #ffaa00;
+    --accent-red: #ff3333;
+    --accent-purple: #bc00ff;
+    --text-primary: #ffffff;
+    --text-secondary: #94a3b8;
+    --glow-green: 0 0 20px rgba(0, 255, 136, 0.2);
+    --font-main: 'Outfit', sans-serif;
+}
+
+body {
+    background: var(--bg-dark);
+    background-image:
+        radial-gradient(at 0% 0%, rgba(0, 255, 136, 0.05) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(188, 0, 255, 0.05) 0px, transparent 50%);
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    margin: 0;
+    padding: 20px;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.dashboard-container {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    grid-template-rows: 80px 1fr 240px;
+    gap: 15px;
+    height: calc(100vh - 40px);
+    max-width: 1800px;
+    margin: 0 auto;
+}
+
+/* Glassmorphism Card Base */
+.glass-card {
+    background: var(--card-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    padding: 20px;
+    position: relative;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+}
+
+.glass-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent, rgba(255, 255, 255, 0.05));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+}
+
+/* Header & Status */
+.top-nav {
+    grid-column: 1 / 4;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 25px;
+}
+
+.logo-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-icon {
+    width: 32px;
+    height: 32px;
+    background: var(--accent-green);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--glow-green);
+}
+
+.nav-metrics {
+    display: flex;
+    gap: 30px;
+}
+
+.nav-metric-item {
+    text-align: right;
+}
+
+.nav-metric-item .label {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 1px;
+}
+
+.nav-metric-item .val {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent-green);
+}
+
+/* Left Sidebar: Market Macro */
+.sidebar-left {
+    grid-row: 2 / 4;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.macro-chart {
+    height: 120px;
+    margin-top: 15px;
+}
+
+/* Main View: Center */
+.main-view {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+}
+
+.big-stat {
+    padding: 25px;
+}
+
+.big-stat .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.big-stat .value {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -1px;
+}
+
+.big-stat .sub {
+    font-size: 12px;
+    margin-top: 5px;
+}
+
+.token-scout-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    overflow-y: auto;
+    padding-right: 5px;
+}
+
+/* Right Sidebar: Swarm Logs */
+.sidebar-right {
+    grid-row: 2 / 4;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    overflow: hidden;
+}
+
+.swarm-console {
+    flex: 1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.log-line {
+    margin-bottom: 8px;
+    display: flex;
+    gap: 8px;
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Token Cards */
+.token-card {
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 12px;
+    padding: 15px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.token-card:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: var(--accent-green);
+    transform: translateY(-2px);
+}
+
+.token-card .header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.token-card .name {
+    font-weight: 700;
+    font-size: 15px;
+}
+
+.token-card .curve-bg {
+    height: 4px;
+    background: #222;
+    border-radius: 2px;
+    margin: 10px 0;
+}
+
+.token-card .curve-fill {
+    height: 100%;
+    background: var(--accent-cyan);
+    border-radius: 2px;
+    box-shadow: 0 0 10px var(--accent-cyan);
+}
+
+/* Charts */
+.performance-chart {
+    grid-column: 2 / 3;
+    height: 240px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-green);
+}

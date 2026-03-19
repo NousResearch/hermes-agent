@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>cosmos Holodeck 🏙️</title>
+    <style>
+        body {
+            margin: 0;
+            background: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #0f0;
+            pointer-events: none;
+            text-shadow: 0 0 5px #0f0;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="overlay">
+        <h1>cosmos Holodeck v1.0</h1>
+        <p>Visualizing Codebase Topology...</p>
+        <p>WASD to Move | Mouse to Look</p>
+    </div>
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+        import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+        // Scene Setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050510);
+        scene.fog = new THREE.FogExp2(0x050510, 0.0025);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 50, 100);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // Grid ("The Matrix")
+        const gridHelper = new THREE.GridHelper(500, 50, 0x004400, 0x002200);
+        scene.add(gridHelper);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040);
+        scene.add(ambientLight);
+        const pointLight = new THREE.PointLight(0x00ff00, 1, 500);
+        pointLight.position.set(50, 50, 50);
+        scene.add(pointLight);
+
+        // --- Mock City Generation (Codebase Visualization) ---
+        // In full integration, this fetches JSON from cosmos_server
+
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+
+        function createBuilding(x, z, height, complexity) {
+            // Color based on complexity (Red = Complex/Buggy, Blue = Clean)
+            const color = new THREE.Color().setHSL(0.6 - (complexity * 0.6), 1.0, 0.5);
+            const material = new THREE.MeshPhongMaterial({ color: color, transparent: true, opacity: 0.9 });
+
+            const cube = new THREE.Mesh(geometry, material);
+            cube.position.y = height / 2;
+            cube.position.x = x;
+            cube.position.z = z;
+            cube.scale.y = height;
+            cube.scale.x = 5 + Math.random() * 5;
+            cube.scale.z = 5 + Math.random() * 5;
+
+            scene.add(cube);
+
+            // Wireframe
+            const edges = new THREE.EdgesGeometry(cube.geometry);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff }));
+            // Start line scale needs to match cube
+            line.position.copy(cube.position);
+            line.scale.copy(cube.scale);
+            scene.add(line);
+        }
+
+        // Generate "Districts" (Modules)
+        for (let i = 0; i < 50; i++) {
+            const x = (Math.random() - 0.5) * 400;
+            const z = (Math.random() - 0.5) * 400;
+            const h = Math.random() * 50 + 5; // Lines of code
+            const comp = Math.random(); // Cognitive complexity
+            createBuilding(x, z, h, comp);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>

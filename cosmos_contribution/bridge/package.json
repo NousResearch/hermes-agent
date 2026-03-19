@@ -1,0 +1,17 @@
+{
+    "name": "cosmos-bridge",
+    "version": "2.0.0",
+    "description": "TypeScript bridge for cosmos AI",
+    "type": "module",
+    "main": "index.ts",
+    "scripts": {
+        "start": "tsx index.ts"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.1"
+    },
+    "devDependencies": {
+        "tsx": "^4.7.1",
+        "typescript": "^5.3.3"
+    }
+}

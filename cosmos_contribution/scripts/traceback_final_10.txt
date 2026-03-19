@@ -1,0 +1,19 @@
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+2026-03-13 14:33:13.429 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-13 14:33:13.433 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-13 14:33:13,451 - evolution_engine - INFO - EvolutionEngine initialized - 296 patterns, 169 cycles
+2026-03-13 14:33:15,250 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+--- 12D Dimension Mapping Verification ---
+Error during verification: 'charmap' codec can't encode character '\u26a1' in position 8: character maps to <undefined>
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 17, in <module>
+    field = SynapticField()
+            ^^^^^^^^^^^^^^^
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\synaptic_field.py", line 131, in __init__
+    print("[FIELD] \u26a1 Synaptic Field initialized with 12D Mapping + UQ Layer.")
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u26a1' in position 8: character maps to <undefined>

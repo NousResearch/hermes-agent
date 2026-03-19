@@ -1,0 +1,18 @@
+Error during verification: name 'Any' is not defined
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\__init__.py", line 6, in <module>
+    from .server import app, main
+  File "d:\Cosmos\Cosmos\web\server.py", line 183, in <module>
+    from cosmos.core.memory.planetary.audio_shard import (
+  File "d:\Cosmos\Cosmos\core\__init__.py", line 12, in <module>
+    from Cosmos.core.llm_backend import (
+  File "d:\Cosmos\Cosmos\core\__init__.py", line 22, in <module>
+    from Cosmos.core.model_manager import ModelManager
+  File "d:\Cosmos\Cosmos\core\model_manager.py", line 91, in <module>
+    class ModelManager:
+  File "d:\Cosmos\Cosmos\core\model_manager.py", line 539, in ModelManager
+    def get_best_model_for_task(self, task_type: str, field: Optional[Any] = None) -> Optional[str]:
+                                                                      ^^^
+NameError: name 'Any' is not defined. Did you mean: 'any'?

@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs - Bot Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bt-primary: #6366f1;
+            --bt-secondary: #8b5cf6;
+            --bt-accent: #22d3ee;
+            --bt-bg: #0f0f1a;
+            --bt-card: #1a1a2e;
+            --bt-border: #2d2d44;
+            --bt-text: #e2e8f0;
+            --bt-muted: #94a3b8;
+            --bt-success: #10b981;
+            --bt-error: #ef4444;
+            --bt-warning: #f59e0b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bt-bg);
+            color: var(--bt-text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+
+        /* Header */
+        .docs-header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 30px;
+            border-bottom: 1px solid var(--bt-border);
+        }
+
+        .docs-header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, var(--bt-primary), var(--bt-accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .docs-header p {
+            color: var(--bt-muted);
+            font-size: 16px;
+        }
+
+        /* Navigation */
+        .docs-nav {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 40px;
+        }
+
+        .docs-nav a {
+            padding: 8px 16px;
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 20px;
+            color: var(--bt-muted);
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .docs-nav a:hover {
+            border-color: var(--bt-primary);
+            color: var(--bt-text);
+        }
+
+        /* Section */
+        .docs-section {
+            margin-bottom: 50px;
+        }
+
+        .docs-section h2 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--bt-border);
+            color: var(--bt-accent);
+        }
+
+        .docs-section h3 {
+            font-size: 18px;
+            margin: 25px 0 15px;
+            color: var(--bt-text);
+        }
+
+        .docs-section p {
+            margin-bottom: 15px;
+            color: var(--bt-muted);
+        }
+
+        /* Endpoint Card */
+        .endpoint {
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .endpoint-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 15px 20px;
+            background: rgba(99, 102, 241, 0.1);
+            border-bottom: 1px solid var(--bt-border);
+        }
+
+        .method {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-family: 'Space Mono', monospace;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .method.get { background: var(--bt-success); color: white; }
+        .method.post { background: var(--bt-primary); color: white; }
+        .method.delete { background: var(--bt-error); color: white; }
+
+        .endpoint-path {
+            font-family: 'Space Mono', monospace;
+            font-size: 14px;
+            color: var(--bt-text);
+        }
+
+        .endpoint-body {
+            padding: 20px;
+        }
+
+        .endpoint-desc {
+            color: var(--bt-muted);
+            margin-bottom: 15px;
+        }
+
+        /* Code Block */
+        .code-block {
+            background: var(--bt-bg);
+            border: 1px solid var(--bt-border);
+            border-radius: 8px;
+            padding: 15px;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+
+        .code-block pre {
+            font-family: 'Space Mono', monospace;
+            font-size: 13px;
+            color: var(--bt-text);
+            white-space: pre-wrap;
+        }
+
+        .code-block .comment { color: var(--bt-muted); }
+        .code-block .key { color: var(--bt-accent); }
+        .code-block .string { color: var(--bt-success); }
+        .code-block .number { color: var(--bt-warning); }
+
+        /* Parameter Table */
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+
+        .param-table th,
+        .param-table td {
+            padding: 10px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--bt-border);
+        }
+
+        .param-table th {
+            background: rgba(99, 102, 241, 0.1);
+            font-weight: 500;
+            color: var(--bt-text);
+        }
+
+        .param-table td {
+            color: var(--bt-muted);
+        }
+
+        .param-name {
+            font-family: 'Space Mono', monospace;
+            color: var(--bt-accent);
+        }
+
+        .param-type {
+            font-size: 12px;
+            color: var(--bt-muted);
+            background: var(--bt-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .param-required {
+            font-size: 11px;
+            color: var(--bt-error);
+            font-weight: 600;
+        }
+
+        /* Info Box */
+        .info-box {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid var(--bt-primary);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+
+        .info-box.warning {
+            background: rgba(245, 158, 11, 0.1);
+            border-color: var(--bt-warning);
+        }
+
+        .info-box h4 {
+            color: var(--bt-primary);
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .info-box.warning h4 {
+            color: var(--bt-warning);
+        }
+
+        .info-box p {
+            font-size: 14px;
+            margin: 0;
+        }
+
+        /* Back Link */
+        .back-link {
+            display: inline-block;
+            margin-top: 30px;
+            color: var(--bt-muted);
+            text-decoration: none;
+        }
+
+        .back-link:hover {
+            color: var(--bt-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="docs-header">
+            <h1>Bot Tracker API Documentation</h1>
+            <p>Token ID Registration & Verification System for Bots and Users</p>
+        </div>
+
+        <nav class="docs-nav">
+            <a href="#overview">Overview</a>
+            <a href="#auth">Authentication</a>
+            <a href="#registration">Registration</a>
+            <a href="#verification">Verification</a>
+            <a href="#search">Search</a>
+            <a href="#management">Management</a>
+        </nav>
+
+        <!-- Overview -->
+        <section class="docs-section" id="overview">
+            <h2>Overview</h2>
+            <p>Bot Tracker is a universal registry where bots and users can register and receive unique Token IDs. These tokens can be used for authentication and verification across any service that integrates with the Bot Tracker API.</p>
+
+            <div class="info-box">
+                <h4>Base URL</h4>
+                <p><code>https://ai.cosmos.cloud/api/bot-tracker</code></p>
+            </div>
+
+            <h3>Key Features</h3>
+            <ul style="color: var(--bt-muted); margin-left: 20px;">
+                <li>Unique Token IDs for bots and users</li>
+                <li>Bot-to-user ownership linking</li>
+                <li>X/Twitter profile integration</li>
+                <li>Token verification endpoint for external services</li>
+                <li>Search functionality</li>
+            </ul>
+        </section>
+
+        <!-- Authentication -->
+        <section class="docs-section" id="auth">
+            <h2>Authentication</h2>
+            <p>Public endpoints (search, verification) require no authentication. Registration and management endpoints are rate-limited but do not require authentication.</p>
+
+            <div class="info-box warning">
+                <h4>Important: Save Your Token!</h4>
+                <p>When you register, you receive a unique Token ID. Save it securely - it's used to verify your identity and manage your registration. If lost, you can regenerate it, but the old token will be deactivated.</p>
+            </div>
+        </section>
+
+        <!-- Registration -->
+        <section class="docs-section" id="registration">
+            <h2>Registration Endpoints</h2>
+
+            <!-- Register Bot -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="endpoint-path">/api/bot-tracker/register/bot</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Register a new bot and receive a unique Token ID.</p>
+
+                    <h4 style="font-size: 14px; margin-bottom: 10px;">Request Body</h4>
+                    <table class="param-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">handle</span> <span class="param-required">required</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Unique bot identifier (3-30 chars, alphanumeric + underscore)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">display_name</span> <span class="param-required">required</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Display name for the bot</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">x_profile</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>X/Twitter handle (without @)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">description</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Bot description (max 500 chars)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">website</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Bot website URL</td>
+                        </tr>
+                    </table>
+
+                    <div class="code-block">
+<pre><span class="comment">// Example Request</span>
+{
+  <span class="key">"handle"</span>: <span class="string">"my_cool_bot"</span>,
+  <span class="key">"display_name"</span>: <span class="string">"My Cool Bot"</span>,
+  <span class="key">"x_profile"</span>: <span class="string">"mycoolbot"</span>,
+  <span class="key">"description"</span>: <span class="string">"A really cool AI bot"</span>
+}
+
+<span class="comment">// Example Response</span>
+{
+  <span class="key">"success"</span>: <span class="number">true</span>,
+  <span class="key">"message"</span>: <span class="string">"Bot registered successfully"</span>,
+  <span class="key">"bot"</span>: {
+    <span class="key">"bot_id"</span>: <span class="string">"bot_a1b2c3d4e5f6g7h8"</span>,
+    <span class="key">"handle"</span>: <span class="string">"my_cool_bot"</span>,
+    <span class="key">"token_id"</span>: <span class="string">"tkn_abc123..."</span>,
+    <span class="key">"display_name"</span>: <span class="string">"My Cool Bot"</span>
+  }
+}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Register User -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="endpoint-path">/api/bot-tracker/register/user</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Register as a user (bot owner) and receive a unique Token ID.</p>
+
+                    <table class="param-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">username</span> <span class="param-required">required</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Unique username (3-30 chars)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">email</span> <span class="param-required">required</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Email for account recovery (hashed, never stored plain)</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">display_name</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>Display name</td>
+                        </tr>
+                        <tr>
+                            <td><span class="param-name">x_profile</span></td>
+                            <td><span class="param-type">string</span></td>
+                            <td>X/Twitter handle</td>
+                        </tr>
+                    </table>
+
+                    <div class="code-block">
+<pre><span class="comment">// Example Response</span>
+{
+  <span class="key">"success"</span>: <span class="number">true</span>,
+  <span class="key">"user"</span>: {
+    <span class="key">"user_id"</span>: <span class="string">"usr_x1y2z3..."</span>,
+    <span class="key">"username"</span>: <span class="string">"bot_creator"</span>,
+    <span class="key">"token_id"</span>: <span class="string">"tkn_xyz789..."</span>
+  }
+}</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Verification -->
+        <section class="docs-section" id="verification">
+            <h2>Verification Endpoint</h2>
+            <p>This is the main endpoint for external services to verify Token IDs.</p>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/verify/{token_id}</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Verify a Token ID and get entity information. Use this endpoint to authenticate bots or users in your application.</p>
+
+                    <div class="code-block">
+<pre><span class="comment">// Valid Token Response</span>
+{
+  <span class="key">"success"</span>: <span class="number">true</span>,
+  <span class="key">"valid"</span>: <span class="number">true</span>,
+  <span class="key">"entity_type"</span>: <span class="string">"bot"</span>,
+  <span class="key">"entity"</span>: {
+    <span class="key">"bot_id"</span>: <span class="string">"bot_a1b2c3..."</span>,
+    <span class="key">"handle"</span>: <span class="string">"my_cool_bot"</span>,
+    <span class="key">"display_name"</span>: <span class="string">"My Cool Bot"</span>,
+    <span class="key">"x_profile"</span>: <span class="string">"mycoolbot"</span>,
+    <span class="key">"verified"</span>: <span class="number">false</span>,
+    <span class="key">"active"</span>: <span class="number">true</span>
+  }
+}
+
+<span class="comment">// Invalid Token Response</span>
+{
+  <span class="key">"success"</span>: <span class="number">false</span>,
+  <span class="key">"valid"</span>: <span class="number">false</span>,
+  <span class="key">"error"</span>: <span class="string">"Invalid or unknown Token ID"</span>
+}</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Search -->
+        <section class="docs-section" id="search">
+            <h2>Search & List Endpoints</h2>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/stats</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Get registry statistics.</p>
+                    <div class="code-block">
+<pre>{
+  <span class="key">"success"</span>: <span class="number">true</span>,
+  <span class="key">"stats"</span>: {
+    <span class="key">"total_bots"</span>: <span class="number">42</span>,
+    <span class="key">"total_users"</span>: <span class="number">15</span>,
+    <span class="key">"verified_bots"</span>: <span class="number">8</span>
+  }
+}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/bots?limit=50&offset=0</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Get list of registered bots (paginated).</p>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/search?q={query}&limit=20</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Search bots and users by handle, name, or X profile.</p>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/bot/{handle}</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Get bot details by handle.</p>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method get">GET</span>
+                    <span class="endpoint-path">/api/bot-tracker/user/{username}</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Get user details by username.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Management -->
+        <section class="docs-section" id="management">
+            <h2>Management Endpoints</h2>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="endpoint-path">/api/bot-tracker/link</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Link a bot to a user (establish ownership). Requires both bot and user tokens.</p>
+
+                    <div class="code-block">
+<pre><span class="comment">// Request Body</span>
+{
+  <span class="key">"bot_token"</span>: <span class="string">"tkn_abc123..."</span>,
+  <span class="key">"user_token"</span>: <span class="string">"tkn_xyz789..."</span>
+}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="method post">POST</span>
+                    <span class="endpoint-path">/api/bot-tracker/regenerate-token</span>
+                </div>
+                <div class="endpoint-body">
+                    <p class="endpoint-desc">Regenerate a Token ID. Old token will be deactivated.</p>
+
+                    <div class="code-block">
+<pre><span class="comment">// Request Body</span>
+{
+  <span class="key">"current_token"</span>: <span class="string">"tkn_old123..."</span>
+}
+
+<span class="comment">// Response</span>
+{
+  <span class="key">"success"</span>: <span class="number">true</span>,
+  <span class="key">"new_token"</span>: <span class="string">"tkn_new456..."</span>,
+  <span class="key">"entity_type"</span>: <span class="string">"bot"</span>
+}</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <a href="/bot-tracker" class="back-link">&larr; Back to Bot Tracker</a>
+    </div>
+</body>
+</html>

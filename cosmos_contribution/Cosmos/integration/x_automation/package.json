@@ -1,0 +1,16 @@
+{
+  "name": "cosmos-x-automation",
+  "version": "1.0.0",
+  "description": "X/Twitter automation for Cosmos using Puppeteer stealth",
+  "main": "x_poster.js",
+  "scripts": {
+    "login": "node x_login.js",
+    "post": "node x_poster.js",
+    "test": "node x_test.js"
+  },
+  "dependencies": {
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

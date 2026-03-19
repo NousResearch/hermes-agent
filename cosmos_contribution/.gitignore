@@ -1,0 +1,41 @@
+# Environment
+.env
+.env.*
+.env.local
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Node.js
+node_modules/
+
+# Temporary
+*.tmp
+*.bak
+
+# Cosmos specific
+cosmos_tts_cache/
+.rsm_backups/

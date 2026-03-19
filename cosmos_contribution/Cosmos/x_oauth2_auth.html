@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Farnsworth X OAuth2 Authorization</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        h1 {
+            color: #00ff88;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .auth-btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #1da1f2 0%, #0d8bd9 100%);
+            color: white;
+            padding: 20px 50px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-size: 20px;
+            font-weight: bold;
+            margin: 20px 0;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .auth-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(29,161,242,0.4);
+        }
+        .steps {
+            text-align: left;
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 30px;
+        }
+        .steps h3 {
+            color: #00ff88;
+            margin-top: 0;
+        }
+        .steps ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .steps li {
+            margin: 10px 0;
+            color: #ccc;
+        }
+        .note {
+            background: rgba(255,200,0,0.2);
+            border-left: 4px solid #ffc800;
+            padding: 15px;
+            margin-top: 20px;
+            text-align: left;
+            border-radius: 5px;
+        }
+        .scopes {
+            background: rgba(0,255,136,0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            text-align: left;
+        }
+        .scopes h4 { color: #00ff88; margin: 0 0 10px 0; }
+        .scope-item {
+            display: inline-block;
+            background: rgba(0,0,0,0.3);
+            padding: 5px 12px;
+            border-radius: 15px;
+            margin: 3px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FARNSWORTH</h1>
+        <p class="subtitle">X/Twitter OAuth 2.0 Authorization</p>
+
+        <a href="https://x.com/i/oauth2/authorize?response_type=code&client_id=OUJSQ3BEX0Npc3pxZm1HcmxxWDc6MTpjaQ&redirect_uri=https%3A%2F%2Fai.farnsworth.cloud%2Fcallback&scope=tweet.read+tweet.write+users.read+media.write+offline.access&state=b6cneaJPG29e6tzOkpqEIDkrsVepAHzke6v8H0iJmEs&code_challenge=083DuPP-dSWZBLhNamR86F5g3i2NW9R7rb4IRcCN71E&code_challenge_method=S256" class="auth-btn" target="_blank">
+            Authorize X Posting + Media
+        </a>
+
+        <div class="scopes">
+            <h4>Permissions Requested:</h4>
+            <span class="scope-item">tweet.read</span>
+            <span class="scope-item">tweet.write</span>
+            <span class="scope-item">users.read</span>
+            <span class="scope-item">media.write</span>
+            <span class="scope-item">offline.access</span>
+        </div>
+
+        <div class="steps">
+            <h3>What happens:</h3>
+            <ol>
+                <li>Click the blue button above</li>
+                <li>Log into your X account (FarnsorthAI)</li>
+                <li>Click "Authorize app"</li>
+                <li>You'll be redirected to ai.farnsworth.cloud</li>
+                <li>Tokens are automatically saved to server</li>
+                <li>Social posting begins automatically!</li>
+            </ol>
+        </div>
+
+        <div class="note">
+            <strong>One-time setup:</strong> After authorizing, refresh tokens last 6 months and auto-renew. You only need to do this once after a server reset.
+        </div>
+    </div>
+</body>
+</html>

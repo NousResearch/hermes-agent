@@ -1,0 +1,24 @@
+Testing HermesCascadeBackend Escalation Logic...
+
+[Test 1] Simple greeting...
+[QUANTUM] No token provided. Running in simulation mode.
+[PASS] Simple prompt handled locally.
+
+[Test 2] Complex coding architect question...
+[FAILED] Complex prompt was NOT escalated.
+Traceback (most recent call last):
+  File "D:\Cosmos\scripts\verify_cascade.py", line 125, in <module>
+    asyncio.run(main())
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 687, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "D:\Cosmos\scripts\verify_cascade.py", line 98, in main
+    assert local.call_count == 1  # Should not have increased
+           ^^^^^^^^^^^^^^^^^^^^^
+AssertionError

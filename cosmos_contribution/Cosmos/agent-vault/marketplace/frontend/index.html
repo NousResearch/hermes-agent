@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DropClaw Marketplace — Decentralized File Marketplace on Monad</title>
+<meta name="description" content="Buy and sell encrypted files on-chain. Commit-reveal key exchange with escrow. Fully decentralized on Monad blockchain.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#050a08;
+  --bg-card:rgba(8,18,12,0.75);
+  --purple:#8b5cf6;
+  --purple-dim:#7c3aed;
+  --green:#10b981;
+  --green-dim:#059669;
+  --green-bright:#34d399;
+  --text:#e2e8f0;
+  --text-dim:#94a3b8;
+  --text-muted:#475569;
+  --border:rgba(16,185,129,0.12);
+  --font-display:'Orbitron',sans-serif;
+  --font-mono:'IBM Plex Mono',monospace;
+  --ease:cubic-bezier(0.16,1,0.3,1);
+}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:var(--font-mono);font-size:14px;line-height:1.6;
+  min-height:100vh;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background:
+    linear-gradient(rgba(16,185,129,0.025) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(16,185,129,0.025) 1px,transparent 1px);
+  background-size:60px 60px;
+}
+body::after{
+  content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(ellipse 600px 400px at 10% 20%,rgba(139,92,246,0.07),transparent),
+    radial-gradient(ellipse 500px 500px at 80% 70%,rgba(16,185,129,0.06),transparent);
+}
+
+/* Nav */
+nav{
+  position:sticky;top:0;z-index:100;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 24px;
+  background:rgba(5,10,8,0.88);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);flex-wrap:wrap;gap:12px;
+}
+.nav-logo{
+  font-family:var(--font-display);font-weight:900;font-size:20px;
+  color:var(--green);text-decoration:none;letter-spacing:2px;
+}
+.nav-logo span{color:var(--purple)}
+.nav-logo small{font-size:10px;font-weight:500;color:var(--text-dim);letter-spacing:3px;display:block;margin-top:-2px}
+.nav-links{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.nav-links a{
+  color:var(--text-dim);text-decoration:none;padding:8px 14px;
+  border-radius:8px;font-size:13px;font-weight:500;transition:all .2s;
+}
+.nav-links a:hover,.nav-links a.active{color:var(--green-bright);background:rgba(16,185,129,0.08)}
+#connect-btn{
+  font-family:var(--font-mono);font-size:13px;font-weight:600;
+  padding:8px 20px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--green);color:var(--green);background:transparent;transition:all .2s;
+}
+#connect-btn:hover{background:rgba(16,185,129,0.1)}
+#connect-btn.connected{border-color:var(--purple);color:var(--purple)}
+
+/* Main */
+main{max-width:1200px;margin:0 auto;padding:24px}
+h1{font-family:var(--font-display);font-size:28px;font-weight:700;margin-bottom:8px}
+h2{font-family:var(--font-display);font-size:20px;font-weight:700;margin-bottom:16px}
+.page-sub{color:var(--text-dim);margin-bottom:32px;font-size:13px}
+
+/* Cards */
+.card{
+  background:var(--bg-card);backdrop-filter:blur(20px);
+  border:1px solid var(--border);border-radius:12px;padding:24px;
+  transition:border-color .2s,transform .2s;
+}
+.card:hover{border-color:rgba(16,185,129,0.25);transform:translateY(-2px)}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:20px}
+.card-title{font-family:var(--font-display);font-size:15px;font-weight:700;margin-bottom:8px}
+.card-desc{font-size:13px;color:var(--text-dim);margin-bottom:12px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding-top:12px;border-top:1px solid rgba(16,185,129,0.06)}
+
+/* Badges */
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+.badge-available{background:rgba(16,185,129,0.15);color:var(--green-bright)}
+.badge-pending{background:rgba(245,158,11,0.15);color:#f59e0b}
+.badge-delivered{background:rgba(16,185,129,0.2);color:var(--green-bright)}
+.badge-refunded{background:rgba(148,163,184,0.15);color:var(--text-dim)}
+
+/* Buttons */
+.btn{
+  font-family:var(--font-mono);font-size:13px;font-weight:600;
+  padding:10px 24px;border-radius:8px;cursor:pointer;border:none;
+  transition:all .2s;display:inline-flex;align-items:center;gap:8px;
+}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.btn-primary{background:linear-gradient(135deg,var(--green-dim),var(--green));color:#050a08}
+.btn-primary:hover:not(:disabled){filter:brightness(1.15)}
+.btn-secondary{background:transparent;border:1px solid var(--purple);color:var(--purple)}
+.btn-secondary:hover:not(:disabled){background:rgba(139,92,246,0.1)}
+.btn-danger{background:transparent;border:1px solid #ef4444;color:#ef4444}
+.btn-danger:hover:not(:disabled){background:rgba(239,68,68,0.1)}
+.btn-sm{padding:6px 14px;font-size:12px}
+
+/* Forms */
+.form-group{margin-bottom:20px}
+.form-group label{display:block;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--text-dim);letter-spacing:1px;text-transform:uppercase}
+.form-group input,.form-group textarea{
+  width:100%;padding:12px 16px;background:rgba(5,10,8,0.6);
+  border:1px solid var(--border);border-radius:8px;color:var(--text);
+  font-family:var(--font-mono);font-size:14px;transition:border-color .2s;
+}
+.form-group input:focus,.form-group textarea:focus{outline:none;border-color:var(--green-dim)}
+.form-group textarea{min-height:100px;resize:vertical}
+.form-group .hint{font-size:11px;color:var(--text-muted);margin-top:4px}
+.form-group .computed{font-size:12px;color:var(--purple);margin-top:4px;font-family:var(--font-mono);word-break:break-all}
+
+/* Detail */
+.detail-meta{display:flex;flex-wrap:wrap;gap:20px;margin:16px 0}
+.detail-meta-item .label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:1px}
+.detail-meta-item .value{color:var(--text);margin-top:2px;word-break:break-all;font-size:13px}
+.detail-desc{margin:20px 0;padding:16px;background:rgba(5,10,8,0.4);border-radius:8px;border:1px solid rgba(16,185,129,0.06);white-space:pre-wrap;color:var(--text-dim)}
+.detail-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}
+
+.key-box{
+  margin-top:12px;padding:12px;background:rgba(16,185,129,0.08);
+  border-radius:8px;border:1px solid rgba(16,185,129,0.2);
+  font-size:11px;word-break:break-all;color:var(--green-bright);
+}
+.price{font-family:var(--font-display);font-weight:700;color:var(--green-bright)}
+.price .unit{font-size:12px;color:var(--text-dim);font-weight:500;margin-left:4px}
+.addr{font-size:12px;color:var(--text-dim)}
+
+/* Spinner/Empty */
+.spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .8s linear infinite;margin:40px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{text-align:center;color:var(--text-dim);font-size:13px;margin-top:12px}
+.empty-state{text-align:center;padding:60px 20px;color:var(--text-dim)}
+.empty-state h3{font-family:var(--font-display);font-size:18px;margin-bottom:8px;color:var(--text-muted)}
+.back-link{display:inline-flex;align-items:center;gap:6px;color:var(--text-dim);text-decoration:none;font-size:13px;margin-bottom:20px;transition:color .2s}
+.back-link:hover{color:var(--green-bright)}
+
+/* Toast */
+#toast-container{position:fixed;top:80px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:10px}
+.toast{padding:14px 20px;border-radius:8px;font-size:13px;backdrop-filter:blur(20px);max-width:400px;animation:slideIn .3s ease;word-break:break-word}
+.toast-success{background:rgba(16,185,129,0.15);border:1px solid var(--green-dim);color:var(--green-bright)}
+.toast-error{background:rgba(239,68,68,0.15);border:1px solid #ef4444;color:#fca5a5}
+.toast-info{background:rgba(139,92,246,0.15);border:1px solid var(--purple-dim);color:#c4b5fd}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Footer */
+footer{position:relative;z-index:2;padding:30px 24px;border-top:1px solid var(--border);text-align:center;font-size:12px;color:var(--text-muted)}
+
+@media(max-width:768px){
+  nav{flex-direction:column;gap:12px}
+  .nav-links{justify-content:center}
+  main{padding:16px}
+  .card-grid{grid-template-columns:1fr}
+  .detail-meta{flex-direction:column;gap:12px}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="#browse" class="nav-logo">DROP<span>CLAW</span> <small>MARKETPLACE</small></a>
+  <div class="nav-links">
+    <a href="#browse">Browse</a>
+    <a href="#sell">Sell</a>
+    <a href="#my-listings">My Listings</a>
+    <a href="#my-purchases">My Purchases</a>
+    <button id="connect-btn">Connect Wallet</button>
+  </div>
+</nav>
+
+<main id="app"></main>
+<div id="toast-container"></div>
+
+<footer>Built By FARNSWORTH &mdash; Fully Decentralized on Monad &mdash; No Server Required</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6/dist/ethers.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+<script>
+(function() {
+'use strict';
+
+// ═══════════ CONFIG ═══════════
+const CONTRACT_ADDRESS = '0x0000000000000000000000000000000000000000'; // UPDATE AFTER DEPLOYMENT
+
+const MONAD_CHAIN = {
+  chainId: '0x8f',
+  chainName: 'Monad',
+  rpcUrls: ['https://rpc.monad.xyz'],
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  blockExplorerUrls: ['https://monadexplorer.com']
+};
+
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs/';
+const HEADER_BYTES = 47;
+
+// ABI matching MarketplaceV1.sol exactly
+const ABI = [
+  "function listFile(string calldata _fileId, string calldata _title, string calldata _description, string calldata _skillFileUri, bytes32 _keyHash, uint256 _price) external returns (uint256)",
+  "function purchase(uint256 _listingId) external payable",
+  "function deliverKey(uint256 _listingId, string calldata _keyHex) external",
+  "function claimRefund(uint256 _listingId) external",
+  "function delistFile(uint256 _listingId) external",
+  "function getListing(uint256 _listingId) external view returns (tuple(address seller, string fileId, string title, string description, string skillFileUri, bytes32 keyHash, uint256 price, uint256 createdAt, address buyer, uint256 purchasedAt, bool keyRevealed, bool refunded, bool active))",
+  "function listingCount() external view returns (uint256)",
+  "function FEE_BPS() external view returns (uint256)",
+  "function KEY_DELIVERY_TIMEOUT() external view returns (uint256)",
+  "event Listed(uint256 indexed listingId, address indexed seller, string fileId, string title, uint256 price)",
+  "event Purchased(uint256 indexed listingId, address indexed buyer, uint256 price)",
+  "event KeyRevealed(uint256 indexed listingId, string key)",
+  "event Refunded(uint256 indexed listingId, address indexed buyer, uint256 amount)",
+  "event Delisted(uint256 indexed listingId)"
+];
+
+// ═══════════ STATE ═══════════
+let provider = null;
+let signer = null;
+let contract = null;
+let account = null;
+
+const readProvider = new ethers.JsonRpcProvider(MONAD_CHAIN.rpcUrls[0]);
+const readContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, readProvider);
+
+const app = document.getElementById('app');
+const connectBtn = document.getElementById('connect-btn');
+
+// ═══════════ TOAST ═══════════
+function toast(msg, type) {
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + (type || 'info');
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(function() { el.remove(); }, 5000);
+}
+
+// ═══════════ WALLET ═══════════
+async function connectWallet() {
+  if (!window.ethereum) { toast('MetaMask not detected', 'error'); return; }
+  try {
+    await window.ethereum.request({ method: 'eth_requestAccounts' });
+    try {
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: MONAD_CHAIN.chainId }] });
+    } catch (e) {
+      if (e.code === 4902) {
+        await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [MONAD_CHAIN] });
+      } else throw e;
+    }
+    provider = new ethers.BrowserProvider(window.ethereum);
+    signer = await provider.getSigner();
+    account = (await signer.getAddress()).toLowerCase();
+    contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    connectBtn.textContent = account.slice(0, 6) + '...' + account.slice(-4);
+    connectBtn.classList.add('connected');
+    toast('Wallet connected', 'success');
+    route();
+  } catch (e) {
+    toast('Connection failed: ' + e.message, 'error');
+  }
+}
+
+connectBtn.addEventListener('click', connectWallet);
+
+if (window.ethereum) {
+  window.ethereum.on('accountsChanged', function(accs) {
+    if (accs.length === 0) { account = null; signer = null; contract = null; connectBtn.textContent = 'Connect Wallet'; connectBtn.classList.remove('connected'); }
+    else connectWallet();
+  });
+  window.ethereum.on('chainChanged', function() { window.location.reload(); });
+  window.ethereum.request({ method: 'eth_accounts' }).then(function(accs) { if (accs.length > 0) connectWallet(); });
+}
+
+// ═══════════ HELPERS ═══════════
+function truncAddr(a) { return a ? a.slice(0, 6) + '...' + a.slice(-4) : ''; }
+function formatMON(wei) { try { return parseFloat(ethers.formatEther(wei)).toFixed(4); } catch(e) { return '0'; } }
+function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function showLoading() { return '<div class="spinner"></div><div class="loading-text">Loading...</div>'; }
+function isZeroAddr(a) { return !a || a === ethers.ZeroAddress; }
+
+function getStatus(l) {
+  if (l.refunded) return 'refunded';
+  if (l.keyRevealed) return 'delivered';
+  if (!isZeroAddr(l.buyer)) return 'pending';
+  if (!l.active) return 'delisted';
+  return 'available';
+}
+
+function statusBadge(s) {
+  var map = { available: ['Available','badge-available'], pending: ['Pending Key','badge-pending'], delivered: ['Delivered','badge-delivered'], refunded: ['Refunded','badge-refunded'], delisted: ['Delisted','badge-refunded'] };
+  var m = map[s] || ['Unknown',''];
+  return '<span class="badge ' + m[1] + '">' + m[0] + '</span>';
+}
+
+function timeAgo(ts) {
+  var s = Math.floor(Date.now()/1000) - Number(ts);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+// ═══════════ ROUTER ═══════════
+function getRoute() {
+  var h = (location.hash || '#browse').slice(1);
+  if (h.startsWith('listing/')) return { view: 'listing', id: h.split('/')[1] };
+  return { view: h || 'browse' };
+}
+
+function route() {
+  var r = getRoute();
+  document.querySelectorAll('.nav-links a').forEach(function(a) {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + r.view);
+  });
+  switch (r.view) {
+    case 'browse': renderBrowse(); break;
+    case 'listing': renderListing(r.id); break;
+    case 'sell': renderSell(); break;
+    case 'my-listings': renderMyListings(); break;
+    case 'my-purchases': renderMyPurchases(); break;
+    default: renderBrowse();
+  }
+}
+
+window.addEventListener('hashchange', route);
+
+// ═══════════ VIEWS ═══════════
+
+// -- Browse --
+async function renderBrowse() {
+  app.innerHTML = '<h1>Browse Files</h1><p class="page-sub">Discover and purchase encrypted files on the decentralized marketplace</p>' + showLoading();
+  try {
+    var count = Number(await readContract.listingCount());
+    if (count === 0) {
+      app.innerHTML = '<h1>Browse Files</h1><p class="page-sub">Discover and purchase encrypted files</p><div class="empty-state"><h3>No listings yet</h3><p>Be the first to <a href="#sell" style="color:var(--green)">sell a file</a>.</p></div>';
+      return;
+    }
+    var listings = [];
+    var promises = [];
+    for (var i = 0; i < count; i++) {
+      (function(idx) {
+        promises.push(readContract.getListing(idx).then(function(l) { listings[idx] = l; }));
+      })(i);
+    }
+    await Promise.all(promises);
+
+    var cards = '';
+    for (var j = count - 1; j >= 0; j--) {
+      var l = listings[j];
+      if (!l) continue;
+      var s = getStatus(l);
+      if (s === 'delisted') continue;
+      cards += '<div class="card" style="cursor:pointer" onclick="location.hash=\'#listing/' + j + '\'">' +
+        '<div class="card-title">' + esc(l.title) + '</div>' +
+        '<div class="card-desc">' + esc(l.description) + '</div>' +
+        '<div class="addr">Seller: ' + truncAddr(l.seller) + ' &middot; ' + timeAgo(l.createdAt) + '</div>' +
+        '<div class="card-footer">' +
+          '<span class="price" style="font-size:16px">' + formatMON(l.price) + '<span class="unit">MON</span></span>' +
+          statusBadge(s) +
+        '</div></div>';
+    }
+    app.innerHTML = '<h1>Browse Files</h1><p class="page-sub">Discover and purchase encrypted files on the decentralized marketplace</p>' +
+      (cards ? '<div class="card-grid">' + cards + '</div>' : '<div class="empty-state"><h3>No active listings</h3></div>');
+  } catch (e) {
+    app.innerHTML = '<h1>Browse Files</h1><div class="empty-state"><h3>Error loading listings</h3><p style="font-size:12px;color:var(--text-muted)">' + esc(e.message) + '</p></div>';
+  }
+}
+
+// -- Listing Detail --
+async function renderListing(id) {
+  app.innerHTML = '<a href="#browse" class="back-link">&larr; Back</a>' + showLoading();
+  try {
+    var l = await readContract.getListing(id);
+    var s = getStatus(l);
+    var isSeller = account && l.seller.toLowerCase() === account;
+    var isBuyer = account && !isZeroAddr(l.buyer) && l.buyer.toLowerCase() === account;
+
+    // Check timeout
+    var timeout = Number(await readContract.KEY_DELIVERY_TIMEOUT());
+    var canRefund = isBuyer && s === 'pending' && (Math.floor(Date.now()/1000) >= Number(l.purchasedAt) + timeout);
+
+    // Get revealed key from events if delivered
+    var revealedKey = '';
+    if (l.keyRevealed) {
+      try {
+        var filter = readContract.filters.KeyRevealed(BigInt(id));
+        var events = await readContract.queryFilter(filter);
+        if (events.length > 0) revealedKey = events[0].args[1];
+      } catch(e) { console.warn('Key event fetch failed:', e); }
+    }
+
+    var html = '<a href="#browse" class="back-link">&larr; Back</a>' +
+      '<div class="card">' +
+      '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px"><h1>' + esc(l.title) + '</h1>' + statusBadge(s) + '</div>' +
+      '<div class="detail-meta">' +
+        '<div class="detail-meta-item"><div class="label">Price</div><div class="value price">' + formatMON(l.price) + '<span class="unit">MON</span></div></div>' +
+        '<div class="detail-meta-item"><div class="label">Seller</div><div class="value addr">' + esc(l.seller) + '</div></div>' +
+        '<div class="detail-meta-item"><div class="label">File ID</div><div class="value addr">' + esc(l.fileId) + '</div></div>' +
+        '<div class="detail-meta-item"><div class="label">Skill File CID</div><div class="value"><a href="' + IPFS_GATEWAY + esc(l.skillFileUri) + '" target="_blank" style="color:var(--purple);font-size:13px">' + esc(l.skillFileUri) + '</a></div></div>' +
+        '<div class="detail-meta-item"><div class="label">Listed</div><div class="value">' + timeAgo(l.createdAt) + '</div></div>' +
+        (!isZeroAddr(l.buyer) ? '<div class="detail-meta-item"><div class="label">Buyer</div><div class="value addr">' + esc(l.buyer) + '</div></div><div class="detail-meta-item"><div class="label">Purchased</div><div class="value">' + timeAgo(l.purchasedAt) + '</div></div>' : '') +
+      '</div>' +
+      '<div class="detail-desc">' + esc(l.description) + '</div>';
+
+    if (revealedKey) {
+      html += '<div><strong style="color:var(--text-dim);font-size:12px;text-transform:uppercase;letter-spacing:1px">Decryption Key</strong><div class="key-box">' + esc(revealedKey) + '</div></div>';
+    }
+
+    html += '<div class="detail-actions">';
+    if (s === 'available' && !isSeller) html += '<button class="btn btn-primary" id="buy-btn">Buy for ' + formatMON(l.price) + ' MON</button>';
+    if (s === 'pending' && isSeller) html += '<button class="btn btn-primary" id="deliver-btn">Deliver Key</button>';
+    if (canRefund) html += '<button class="btn btn-danger" id="refund-btn">Claim Refund</button>';
+    if (s === 'available' && isSeller) html += '<button class="btn btn-danger btn-sm" id="delist-btn">Delist</button>';
+    if (revealedKey && l.skillFileUri) html += '<button class="btn btn-secondary" id="download-btn">Download File</button>';
+    html += '</div>';
+    html += '<div id="deliver-form-area"></div>';
+    html += '</div>';
+
+    app.innerHTML = html;
+
+    // Bind buy
+    var buyBtn = document.getElementById('buy-btn');
+    if (buyBtn) buyBtn.addEventListener('click', async function() {
+      if (!contract) { toast('Connect wallet first', 'error'); return; }
+      buyBtn.disabled = true; buyBtn.textContent = 'Processing...';
+      try {
+        var tx = await contract.purchase(id, { value: l.price });
+        toast('Transaction sent...', 'info');
+        await tx.wait();
+        toast('Purchase successful!', 'success');
+        renderListing(id);
+      } catch(e) {
+        toast('Purchase failed: ' + (e.reason || e.message), 'error');
+        buyBtn.disabled = false; buyBtn.textContent = 'Buy for ' + formatMON(l.price) + ' MON';
+      }
+    });
+
+    // Bind deliver
+    var deliverBtn = document.getElementById('deliver-btn');
+    if (deliverBtn) deliverBtn.addEventListener('click', function() {
+      var area = document.getElementById('deliver-form-area');
+      area.innerHTML = '<div style="margin-top:20px">' +
+        '<div class="form-group"><label>Encryption Key (hex)</label>' +
+        '<input type="text" id="dk-input" placeholder="Your AES-256 key hex...">' +
+        '<div class="hint">Must match the keyHash you committed</div></div>' +
+        '<button class="btn btn-primary btn-sm" id="dk-submit">Submit Key</button></div>';
+      document.getElementById('dk-submit').addEventListener('click', async function() {
+        var keyHex = document.getElementById('dk-input').value.trim();
+        if (!keyHex) { toast('Enter the key', 'error'); return; }
+        var btn = document.getElementById('dk-submit');
+        btn.disabled = true; btn.textContent = 'Submitting...';
+        try {
+          var tx = await contract.deliverKey(id, keyHex);
+          toast('Transaction sent...', 'info');
+          await tx.wait();
+          toast('Key delivered! Payment received.', 'success');
+          renderListing(id);
+        } catch(e) {
+          toast('Delivery failed: ' + (e.reason || e.message), 'error');
+          btn.disabled = false; btn.textContent = 'Submit Key';
+        }
+      });
+    });
+
+    // Bind refund
+    var refundBtn = document.getElementById('refund-btn');
+    if (refundBtn) refundBtn.addEventListener('click', async function() {
+      if (!contract) { toast('Connect wallet first', 'error'); return; }
+      refundBtn.disabled = true; refundBtn.textContent = 'Processing...';
+      try {
+        var tx = await contract.claimRefund(id);
+        await tx.wait();
+        toast('Refund claimed!', 'success');
+        renderListing(id);
+      } catch(e) {
+        toast('Refund failed: ' + (e.reason || e.message), 'error');
+        refundBtn.disabled = false; refundBtn.textContent = 'Claim Refund';
+      }
+    });
+
+    // Bind delist
+    var delistBtn = document.getElementById('delist-btn');
+    if (delistBtn) delistBtn.addEventListener('click', async function() {
+      if (!contract) { toast('Connect wallet first', 'error'); return; }
+      delistBtn.disabled = true;
+      try {
+        var tx = await contract.delistFile(id);
+        await tx.wait();
+        toast('Listing removed', 'success');
+        location.hash = '#browse';
+      } catch(e) {
+        toast('Delist failed: ' + (e.reason || e.message), 'error');
+        delistBtn.disabled = false;
+      }
+    });
+
+    // Bind download
+    var dlBtn = document.getElementById('download-btn');
+    if (dlBtn) dlBtn.addEventListener('click', function() {
+      downloadFile(l.skillFileUri, revealedKey, l.fileId);
+    });
+
+  } catch(e) {
+    app.innerHTML = '<a href="#browse" class="back-link">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+  }
+}
+
+// -- Sell --
+function renderSell() {
+  if (!account) {
+    app.innerHTML = '<h1>Sell a File</h1><div class="empty-state"><h3>Wallet not connected</h3><p>Connect your wallet to list a file for sale.</p></div>';
+    return;
+  }
+  app.innerHTML = '<h1>Create Listing</h1><p class="page-sub">List an encrypted file for sale on the marketplace</p>' +
+    '<div class="card" style="max-width:640px">' +
+      '<div class="form-group"><label>File ID</label><input type="text" id="sf-fileId" placeholder="DropClaw file ID (from skill file)"></div>' +
+      '<div class="form-group"><label>Title</label><input type="text" id="sf-title" placeholder="Display title"></div>' +
+      '<div class="form-group"><label>Description</label><textarea id="sf-desc" placeholder="Describe the file contents..."></textarea></div>' +
+      '<div class="form-group"><label>Skill File IPFS CID</label><input type="text" id="sf-uri" placeholder="Qm... or bafy..."><div class="hint">Upload your skill file JSON to IPFS first, then paste the CID</div></div>' +
+      '<div class="form-group"><label>Price (MON)</label><input type="text" id="sf-price" placeholder="0.5"></div>' +
+      '<div class="form-group"><label>Encryption Key (hex)</label><input type="text" id="sf-key" placeholder="Your AES-256 key hex"><div class="hint">Stays secret until you deliver it after purchase. We compute the keccak256 hash for the on-chain commitment.</div><div class="computed" id="sf-hash"></div></div>' +
+      '<button class="btn btn-primary" id="sf-submit">Create Listing</button>' +
+    '</div>';
+
+  document.getElementById('sf-key').addEventListener('input', function() {
+    var val = this.value.trim();
+    var el = document.getElementById('sf-hash');
+    if (!val) { el.textContent = ''; return; }
+    try { el.textContent = 'keyHash: ' + ethers.keccak256(ethers.toUtf8Bytes(val)); }
+    catch(e) { el.textContent = 'Invalid input'; }
+  });
+
+  document.getElementById('sf-submit').addEventListener('click', async function() {
+    if (!contract) { toast('Connect wallet first', 'error'); return; }
+    var fileId = document.getElementById('sf-fileId').value.trim();
+    var title = document.getElementById('sf-title').value.trim();
+    var desc = document.getElementById('sf-desc').value.trim();
+    var uri = document.getElementById('sf-uri').value.trim();
+    var priceStr = document.getElementById('sf-price').value.trim();
+    var keyHex = document.getElementById('sf-key').value.trim();
+
+    if (!fileId || !title || !priceStr || !keyHex) { toast('Fill all required fields', 'error'); return; }
+
+    var btn = document.getElementById('sf-submit');
+    btn.disabled = true; btn.textContent = 'Submitting...';
+    try {
+      var price = ethers.parseEther(priceStr);
+      var keyHash = ethers.keccak256(ethers.toUtf8Bytes(keyHex));
+      var tx = await contract.listFile(fileId, title, desc, uri, keyHash, price);
+      toast('Transaction sent...', 'info');
+      await tx.wait();
+      toast('Listing created!', 'success');
+      location.hash = '#my-listings';
+    } catch(e) {
+      toast('Failed: ' + (e.reason || e.message), 'error');
+      btn.disabled = false; btn.textContent = 'Create Listing';
+    }
+  });
+}
+
+// -- My Listings --
+async function renderMyListings() {
+  if (!account) {
+    app.innerHTML = '<h1>My Listings</h1><div class="empty-state"><h3>Wallet not connected</h3><p>Connect your wallet to view your listings.</p></div>';
+    return;
+  }
+  app.innerHTML = '<h1>My Listings</h1><p class="page-sub">Files you have listed for sale</p>' + showLoading();
+  try {
+    var count = Number(await readContract.listingCount());
+    var mine = [];
+    var promises = [];
+    for (var i = 0; i < count; i++) {
+      (function(idx) {
+        promises.push(readContract.getListing(idx).then(function(l) {
+          if (l.seller.toLowerCase() === account) mine.push({ id: idx, l: l });
+        }));
+      })(i);
+    }
+    await Promise.all(promises);
+
+    if (mine.length === 0) {
+      app.innerHTML = '<h1>My Listings</h1><p class="page-sub">Files you have listed for sale</p><div class="empty-state"><h3>No listings yet</h3><p><a href="#sell" style="color:var(--green)">Create your first listing</a></p></div>';
+      return;
+    }
+    var cards = '';
+    mine.reverse().forEach(function(item) {
+      var s = getStatus(item.l);
+      cards += '<div class="card" style="cursor:pointer" onclick="location.hash=\'#listing/' + item.id + '\'">' +
+        '<div class="card-title">' + esc(item.l.title) + '</div>' +
+        (!isZeroAddr(item.l.buyer) ? '<div class="addr">Buyer: ' + truncAddr(item.l.buyer) + '</div>' : '') +
+        '<div class="card-footer"><span class="price" style="font-size:16px">' + formatMON(item.l.price) + '<span class="unit">MON</span></span>' + statusBadge(s) + '</div></div>';
+    });
+    app.innerHTML = '<h1>My Listings</h1><p class="page-sub">Files you have listed for sale</p><div class="card-grid">' + cards + '</div>';
+  } catch(e) {
+    app.innerHTML = '<h1>My Listings</h1><div class="empty-state"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+  }
+}
+
+// -- My Purchases --
+async function renderMyPurchases() {
+  if (!account) {
+    app.innerHTML = '<h1>My Purchases</h1><div class="empty-state"><h3>Wallet not connected</h3><p>Connect your wallet to view your purchases.</p></div>';
+    return;
+  }
+  app.innerHTML = '<h1>My Purchases</h1><p class="page-sub">Files you have purchased</p>' + showLoading();
+  try {
+    var count = Number(await readContract.listingCount());
+    var mine = [];
+    var promises = [];
+    for (var i = 0; i < count; i++) {
+      (function(idx) {
+        promises.push(readContract.getListing(idx).then(function(l) {
+          if (!isZeroAddr(l.buyer) && l.buyer.toLowerCase() === account) mine.push({ id: idx, l: l });
+        }));
+      })(i);
+    }
+    await Promise.all(promises);
+
+    if (mine.length === 0) {
+      app.innerHTML = '<h1>My Purchases</h1><p class="page-sub">Files you have purchased</p><div class="empty-state"><h3>No purchases yet</h3><p><a href="#browse" style="color:var(--green)">Browse listings</a></p></div>';
+      return;
+    }
+
+    var cards = '';
+    for (var j = mine.length - 1; j >= 0; j--) {
+      var item = mine[j];
+      var s = getStatus(item.l);
+      var keyHtml = '';
+      if (item.l.keyRevealed) {
+        try {
+          var filter = readContract.filters.KeyRevealed(BigInt(item.id));
+          var events = await readContract.queryFilter(filter);
+          if (events.length > 0) {
+            var key = events[0].args[1];
+            keyHtml = '<div class="key-box">' + esc(key) + '</div>';
+            if (item.l.skillFileUri) {
+              keyHtml += '<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="event.stopPropagation();downloadFile(\'' + esc(item.l.skillFileUri) + '\',\'' + esc(key) + '\',\'' + esc(item.l.fileId) + '\')">Download File</button>';
+            }
+          }
+        } catch(e) { console.warn(e); }
+      }
+      cards += '<div class="card" style="cursor:pointer" onclick="location.hash=\'#listing/' + item.id + '\'">' +
+        '<div class="card-title">' + esc(item.l.title) + '</div>' +
+        '<div class="addr">Seller: ' + truncAddr(item.l.seller) + '</div>' +
+        '<div class="card-footer"><span class="price" style="font-size:16px">' + formatMON(item.l.price) + '<span class="unit">MON</span></span>' + statusBadge(s) + '</div>' +
+        keyHtml + '</div>';
+    }
+    app.innerHTML = '<h1>My Purchases</h1><p class="page-sub">Files you have purchased</p><div class="card-grid">' + cards + '</div>';
+  } catch(e) {
+    app.innerHTML = '<h1>My Purchases</h1><div class="empty-state"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+  }
+}
+
+// ═══════════ FILE DOWNLOAD (Client-Side from Calldata) ═══════════
+window.downloadFile = async function(skillFileUri, keyHex, fileId) {
+  toast('Starting file retrieval...', 'info');
+  try {
+    // 1. Fetch skill file JSON from IPFS
+    var sfRes = await fetch(IPFS_GATEWAY + skillFileUri);
+    if (!sfRes.ok) throw new Error('Could not fetch skill file from IPFS');
+    var skillFile = await sfRes.json();
+
+    var txHashes = skillFile.storage && skillFile.storage.txHashes;
+    if (!txHashes || txHashes.length === 0) throw new Error('No tx hashes in skill file');
+
+    toast('Fetching ' + txHashes.length + ' chunks from Monad...', 'info');
+
+    // 2. Fetch chunks from calldata
+    var rpc = new ethers.JsonRpcProvider(skillFile.chain && skillFile.chain.rpcUrl || MONAD_CHAIN.rpcUrls[0]);
+    var chunkArr = [];
+
+    for (var i = 0; i < txHashes.length; i++) {
+      var tx = await rpc.getTransaction(txHashes[i]);
+      if (!tx) throw new Error('Transaction not found: ' + txHashes[i]);
+
+      var hexData = tx.data.startsWith('0x') ? tx.data.slice(2) : tx.data;
+      var raw = hexToBytes(hexData);
+
+      // bytes 39-42: chunkIndex (big-endian uint32)
+      var chunkIndex = (raw[39] << 24) | (raw[40] << 16) | (raw[41] << 8) | raw[42];
+      // bytes 47+: chunk data
+      var chunkData = raw.slice(HEADER_BYTES);
+      chunkArr.push({ idx: chunkIndex, data: chunkData });
+    }
+
+    // 3. Sort and reassemble
+    chunkArr.sort(function(a, b) { return a.idx - b.idx; });
+    var totalLen = 0;
+    chunkArr.forEach(function(c) { totalLen += c.data.length; });
+    var encrypted = new Uint8Array(totalLen);
+    var off = 0;
+    chunkArr.forEach(function(c) { encrypted.set(c.data, off); off += c.data.length; });
+
+    toast('Decrypting ' + encrypted.length + ' bytes...', 'info');
+
+    // 4. AES-256-GCM decrypt
+    // DropClaw format: [IV:12][AuthTag:16][Ciphertext]
+    // SubtleCrypto expects IV separate, ciphertext with tag appended
+    var iv = encrypted.slice(0, 12);
+    var authTag = encrypted.slice(12, 28);
+    var ciphertext = encrypted.slice(28);
+
+    var ctWithTag = new Uint8Array(ciphertext.length + authTag.length);
+    ctWithTag.set(ciphertext);
+    ctWithTag.set(authTag, ciphertext.length);
+
+    var rawKey = keyHex.startsWith('0x') ? keyHex.slice(2) : keyHex;
+    var keyBytes = hexToBytes(rawKey);
+    var cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['decrypt']);
+    var compressed = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv, tagLength: 128 }, cryptoKey, ctWithTag));
+
+    // 5. Decompress
+    toast('Decompressing...', 'info');
+    var original = pako.inflate(compressed);
+
+    // 6. Verify hash
+    if (skillFile.file && skillFile.file.contentHash) {
+      var expected = skillFile.file.contentHash.replace('sha256:', '');
+      var hashBuf = await crypto.subtle.digest('SHA-256', original);
+      var actual = Array.from(new Uint8Array(hashBuf)).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+      if (expected && actual !== expected) toast('WARNING: Content hash mismatch!', 'error');
+    }
+
+    // 7. Download
+    var blob = new Blob([original]);
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = (skillFile.file && skillFile.file.originalName) || ('dropclaw-' + (fileId || 'file') + '.bin');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast('File downloaded successfully!', 'success');
+  } catch(e) {
+    toast('Download failed: ' + e.message, 'error');
+    console.error(e);
+  }
+};
+
+function hexToBytes(hex) {
+  var arr = new Uint8Array(hex.length / 2);
+  for (var i = 0; i < arr.length; i++) arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return arr;
+}
+
+// ═══════════ INIT ═══════════
+route();
+
+})();
+</script>
+</body>
+</html>

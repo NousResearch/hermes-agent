@@ -1,0 +1,10 @@
+    [INIT]  Testing torch import (10s timeout)...
+    [WARN]  torch import timed out ù setting COSMOS_SKIP_TORCH=1
+            TTS voice cloning disabled; server will use fallback voice.
+DEBUG: Server Import Failed: No module named 'fastapi'
+Traceback (most recent call last):
+  File "D:\Cosmos\run_web.py", line 218, in <module>
+    main()
+  File "D:\Cosmos\run_web.py", line 118, in main
+    import uvicorn
+ModuleNotFoundError: No module named 'uvicorn'

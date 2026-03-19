@@ -1,0 +1,23 @@
+2026-03-13 11:15:14.030 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-13 11:15:14.033 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-13 11:15:14,053 - evolution_engine - INFO - EvolutionEngine initialized - 296 patterns, 169 cycles
+2026-03-13 11:15:15,964 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\__init__.py", line 6, in <module>
+    from .server import app, main
+  File "d:\Cosmos\Cosmos\web\server.py", line 298, in <module>
+    from cosmos.core.multimodal import UnifiedMultimodalSystem
+  File "d:\Cosmos\Cosmos\core\multimodal\__init__.py", line 7, in <module>
+    from .multimodal_fusion import UnifiedMultimodalSystem, MultimodalLightToken
+  File "d:\Cosmos\Cosmos\core\multimodal\multimodal_fusion.py", line 18, in <module>
+    from audio_engine import MusicalLightToken
+  File "d:\Cosmos\Cosmos\core\multimodal\audio_engine.py", line 129, in <module>
+    @dataclass
+     ^^^^^^^^^
+NameError: name 'dataclass' is not defined
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+Error during verification: name 'dataclass' is not defined

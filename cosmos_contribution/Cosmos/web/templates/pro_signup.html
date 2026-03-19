@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Choose Your Plan - Cosmos AI</title>
+    <meta name="description" content="Pick your plan on Cosmos AI - Free, Pro, or Unlimited.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255, 255, 255, 0.03);
+            --border: rgba(255, 255, 255, 0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --purple-hover: #7c3aed;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --red: #ef4444;
+            --gold: #f59e0b;
+            --gold-hover: #d97706;
+            --radius-card: 16px;
+            --radius-input: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+            padding: 40px 16px;
+        }
+
+        /* Nebula background */
+        .nebula {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .nebula::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(6, 182, 212, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 60% 80%, rgba(16, 185, 129, 0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+
+        .nebula::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background:
+                radial-gradient(ellipse at 70% 60%, rgba(139, 92, 246, 0.05) 0%, transparent 40%),
+                radial-gradient(ellipse at 30% 30%, rgba(6, 182, 212, 0.04) 0%, transparent 40%);
+            animation: nebulaShift 25s ease-in-out infinite alternate-reverse;
+        }
+
+        @keyframes nebulaShift {
+            0% { transform: translate(0, 0) rotate(0deg); }
+            33% { transform: translate(2%, -1%) rotate(1deg); }
+            66% { transform: translate(-1%, 2%) rotate(-0.5deg); }
+            100% { transform: translate(1%, -2%) rotate(0.5deg); }
+        }
+
+        /* Logo */
+        .logo {
+            position: relative;
+            z-index: 1;
+            margin-bottom: 36px;
+            text-align: center;
+        }
+
+        .logo a {
+            text-decoration: none;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 6px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            transition: opacity var(--transition);
+        }
+
+        .logo a:hover {
+            opacity: 0.8;
+        }
+
+        /* Card */
+        .auth-card {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 720px;
+            padding: 40px 36px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .auth-card h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .auth-card .subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        /* Connected identity */
+        .connected-as {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--cyan);
+            margin-bottom: 32px;
+            padding: 8px 14px;
+            background: rgba(6, 182, 212, 0.06);
+            border: 1px solid rgba(6, 182, 212, 0.15);
+            border-radius: var(--radius-input);
+            display: inline-block;
+        }
+
+        /* Error message */
+        .error-msg {
+            display: none;
+            padding: 12px 16px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: var(--radius-input);
+            color: #fca5a5;
+            font-size: 13px;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .error-msg.visible {
+            display: block;
+        }
+
+        /* Plans grid */
+        .plans-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .plan-card {
+            position: relative;
+            padding: 28px 20px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            background: rgba(255, 255, 255, 0.02);
+            transition: all var(--transition);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .plan-card:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        /* Popular badge */
+        .plan-badge {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, var(--purple), var(--purple-hover));
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 3px 12px;
+            border-radius: 20px;
+            white-space: nowrap;
+        }
+
+        .plan-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .plan-price {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 28px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .plan-price span {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-family: 'Inter', sans-serif;
+            font-weight: 400;
+        }
+
+        .plan-features {
+            list-style: none;
+            margin: 16px 0 24px;
+            flex: 1;
+        }
+
+        .plan-features li {
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 5px 0;
+            padding-left: 20px;
+            position: relative;
+            line-height: 1.4;
+        }
+
+        .plan-features li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 10px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--border);
+        }
+
+        .plan-card.pro .plan-features li::before {
+            background: var(--purple);
+        }
+
+        .plan-card.unlimited .plan-features li::before {
+            background: var(--gold);
+        }
+
+        /* Plan buttons */
+        .btn-plan {
+            width: 100%;
+            padding: 12px 20px;
+            border-radius: var(--radius-input);
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+            position: relative;
+            overflow: hidden;
+            margin-top: auto;
+        }
+
+        .btn-plan:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn-plan:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-plan:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Free button - outlined */
+        .btn-free {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+        }
+
+        .btn-free:hover:not(:disabled) {
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.04);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Pro button - purple gradient */
+        .btn-pro {
+            background: linear-gradient(135deg, var(--purple), var(--purple-hover));
+            border: none;
+            color: #fff;
+        }
+
+        .btn-pro:hover:not(:disabled) {
+            box-shadow: 0 8px 24px rgba(139, 92, 246, 0.35);
+        }
+
+        /* Unlimited button - gold/amber gradient */
+        .btn-unlimited {
+            background: linear-gradient(135deg, var(--gold), var(--gold-hover));
+            border: none;
+            color: #fff;
+        }
+
+        .btn-unlimited:hover:not(:disabled) {
+            box-shadow: 0 8px 24px rgba(245, 158, 11, 0.35);
+        }
+
+        /* Pro card elevated */
+        .plan-card.pro {
+            border-color: rgba(139, 92, 246, 0.3);
+            background: rgba(139, 92, 246, 0.04);
+            box-shadow: 0 4px 24px rgba(139, 92, 246, 0.08);
+        }
+
+        .plan-card.pro:hover {
+            border-color: rgba(139, 92, 246, 0.5);
+            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.12);
+        }
+
+        /* Spinner */
+        .btn-plan .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin: 0 auto;
+        }
+
+        .btn-free .spinner {
+            border-color: rgba(255, 255, 255, 0.15);
+            border-top-color: var(--text-primary);
+        }
+
+        .btn-plan.loading .btn-text {
+            visibility: hidden;
+        }
+
+        .btn-plan.loading .spinner {
+            display: block;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        @keyframes spin {
+            to { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+
+        /* Footer */
+        .auth-footer {
+            text-align: center;
+            margin-top: 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Responsive */
+        @media (max-width: 680px) {
+            body {
+                padding: 24px 12px;
+                justify-content: flex-start;
+                padding-top: 40px;
+            }
+
+            .auth-card {
+                padding: 28px 20px;
+                max-width: 480px;
+            }
+
+            .logo {
+                margin-bottom: 24px;
+            }
+
+            .plans-grid {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+
+            .plan-card {
+                padding: 24px 20px;
+            }
+
+            .plan-card.pro {
+                order: -1;
+            }
+
+            .plan-price {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="nebula"></div>
+
+<div class="logo">
+    <a href="/pro">COSMOS</a>
+</div>
+
+<div class="auth-card">
+    <h1>Choose Your Plan</h1>
+    <p class="subtitle">You're in. Now pick your power level.</p>
+
+    <div class="connected-as" id="connectedAs"></div>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <div class="plans-grid">
+        <!-- FREE -->
+        <div class="plan-card free">
+            <div class="plan-name">Free</div>
+            <div class="plan-price">$0</div>
+            <ul class="plan-features">
+                <li>10 messages/day</li>
+                <li>3 AI models</li>
+                <li>Basic features</li>
+            </ul>
+            <button type="button" class="btn-plan btn-free" data-plan="free">
+                <span class="btn-text">Start Free</span>
+                <span class="spinner"></span>
+            </button>
+        </div>
+
+        <!-- PRO -->
+        <div class="plan-card pro">
+            <div class="plan-badge">POPULAR</div>
+            <div class="plan-name">Pro</div>
+            <div class="plan-price">$20<span>/mo</span></div>
+            <ul class="plan-features">
+                <li>500 messages/day</li>
+                <li>All 11 models</li>
+                <li>Scanner, Wallet Analyzer, Arena</li>
+                <li>Image upload</li>
+            </ul>
+            <button type="button" class="btn-plan btn-pro" data-plan="pro">
+                <span class="btn-text">Start Pro</span>
+                <span class="spinner"></span>
+            </button>
+        </div>
+
+        <!-- UNLIMITED -->
+        <div class="plan-card unlimited">
+            <div class="plan-name">Unlimited</div>
+            <div class="plan-price">$80<span>/mo</span></div>
+            <ul class="plan-features">
+                <li>Unlimited messages</li>
+                <li>Everything in Pro</li>
+                <li>API access, PnL, Predictions</li>
+                <li>Priority support</li>
+            </ul>
+            <button type="button" class="btn-plan btn-unlimited" data-plan="unlimited">
+                <span class="btn-text">Go Unlimited</span>
+                <span class="spinner"></span>
+            </button>
+        </div>
+    </div>
+
+    <div class="auth-footer">
+        You can change your plan anytime
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    var errorMsg = document.getElementById('errorMsg');
+    var connectedAs = document.getElementById('connectedAs');
+
+    function showError(msg) {
+        errorMsg.textContent = msg;
+        errorMsg.classList.add('visible');
+    }
+
+    function hideError() {
+        errorMsg.classList.remove('visible');
+    }
+
+    // Get the auth token (from URL param or localStorage)
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get('token') || localStorage.getItem('cosmos_token');
+
+    if (!token) {
+        window.location.href = '/pro/login';
+        return;
+    }
+
+    // Ensure token is stored
+    localStorage.setItem('cosmos_token', token);
+
+    // Display connected identity
+    var userRaw = localStorage.getItem('cosmos_user');
+    if (userRaw) {
+        try {
+            var user = JSON.parse(userRaw);
+            if (user.x_handle) {
+                connectedAs.textContent = 'Connected as @' + user.x_handle;
+            } else if (user.wallet || user.publicKey) {
+                var addr = user.wallet || user.publicKey;
+                connectedAs.textContent = 'Connected as ' + addr.slice(0, 4) + '...' + addr.slice(-4);
+            } else if (user.username) {
+                connectedAs.textContent = 'Connected as ' + user.username;
+            } else {
+                connectedAs.style.display = 'none';
+            }
+        } catch (e) {
+            connectedAs.style.display = 'none';
+        }
+    } else {
+        connectedAs.style.display = 'none';
+    }
+
+    // Plan selection
+    var planButtons = document.querySelectorAll('.btn-plan');
+
+    planButtons.forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+            hideError();
+
+            var plan = this.getAttribute('data-plan');
+
+            // Disable all buttons and show spinner on clicked one
+            planButtons.forEach(function(b) { b.disabled = true; });
+            this.classList.add('loading');
+
+            try {
+                var res = await fetch('/api/pro/auth/select-plan', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token
+                    },
+                    body: JSON.stringify({ plan: plan })
+                });
+
+                var data = await res.json();
+
+                if (!res.ok) {
+                    showError(data.error || data.message || 'Failed to select plan. Please try again.');
+                    planButtons.forEach(function(b) { b.disabled = false; });
+                    this.classList.remove('loading');
+                    return;
+                }
+
+                // Update user data if returned
+                if (data.user) {
+                    localStorage.setItem('cosmos_user', JSON.stringify(data.user));
+                }
+
+                window.location.href = '/pro/chat';
+            } catch (err) {
+                showError('Unable to connect to the server. Please check your connection and try again.');
+                planButtons.forEach(function(b) { b.disabled = false; });
+                this.classList.remove('loading');
+            }
+        });
+    });
+})();
+</script>
+
+</body>
+</html>

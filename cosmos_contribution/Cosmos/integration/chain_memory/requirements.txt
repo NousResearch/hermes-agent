@@ -1,0 +1,17 @@
+# Chain Memory Dependencies
+
+# Core
+memvid>=0.1.0
+web3>=6.0.0
+eth-account>=0.10.0
+
+# For PDF support in memvid (optional)
+PyPDF2>=3.0.0
+
+# For code protection (development only)
+cython>=3.0.0
+# pyarmor>=8.0.0  # Alternative to cython
+# nuitka>=1.0.0   # Alternative for standalone
+
+# Async support
+aiohttp>=3.8.0

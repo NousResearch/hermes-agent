@@ -1,0 +1,285 @@
+# cosmos Evolution Configuration
+
+# Global evolution settings
+evolution:
+  enabled: true
+  auto_evolve: true
+  min_interactions_before_evolution: 50
+  evolution_check_interval_hours: 24
+
+# Genetic algorithm parameters
+genetic:
+  algorithm: "NSGA-II"  # Multi-objective optimization
+  population_size: 20
+  generations: 10
+
+  # Selection
+  selection:
+    method: "tournament"
+    tournament_size: 3
+    elite_count: 2
+
+  # Crossover
+  crossover:
+    probability: 0.7
+    method: "two_point"
+
+  # Mutation
+  mutation:
+    probability: 0.2
+    method: "gaussian"
+    sigma: 0.1
+    indpb: 0.1  # Independent probability for each gene
+
+# Fitness function weights
+fitness:
+  objectives:
+    - name: "task_success"
+      weight: 0.4
+      minimize: false
+      description: "Percentage of tasks completed successfully"
+
+    - name: "efficiency"
+      weight: 0.3
+      minimize: true
+      description: "Average tokens used per task"
+
+    - name: "user_satisfaction"
+      weight: 0.3
+      minimize: false
+      description: "User feedback score (0-1)"
+
+  # Penalty factors
+  penalties:
+    timeout_penalty: 0.1
+    error_penalty: 0.2
+    memory_overflow_penalty: 0.15
+
+# Evolvable parameters (genome)
+genome:
+  # LLM generation parameters
+  llm:
+    temperature:
+      min: 0.1
+      max: 1.5
+      default: 0.7
+
+    top_p:
+      min: 0.5
+      max: 1.0
+      default: 0.9
+
+    top_k:
+      min: 10
+      max: 100
+      default: 40
+
+    repeat_penalty:
+      min: 1.0
+      max: 1.5
+      default: 1.1
+
+  # Memory system parameters
+  memory:
+    context_window_size:
+      min: 1024
+      max: 8192
+      default: 4096
+      step: 512
+
+    retrieval_top_k:
+      min: 3
+      max: 20
+      default: 10
+
+    relevance_threshold:
+      min: 0.3
+      max: 0.8
+      default: 0.5
+
+    dreaming_creativity:
+      min: 0.0
+      max: 0.5
+      default: 0.3
+
+  # Agent swarm parameters
+  agents:
+    max_concurrent:
+      min: 1
+      max: 10
+      default: 5
+
+    handoff_threshold:
+      min: 0.5
+      max: 0.9
+      default: 0.7
+
+    reflection_interval:
+      min: 3
+      max: 10
+      default: 5
+
+  # RAG parameters
+  rag:
+    semantic_weight:
+      min: 0.3
+      max: 0.9
+      default: 0.7
+
+    rerank_depth:
+      min: 5
+      max: 50
+      default: 20
+
+# LoRA evolution settings
+lora:
+  enabled: false  # Requires more resources
+
+  adapter:
+    rank: 8
+    alpha: 16
+    dropout: 0.1
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "k_proj"
+      - "o_proj"
+
+  training:
+    learning_rate: 1.0e-4
+    batch_size: 4
+    epochs: 3
+    warmup_ratio: 0.1
+
+  merging:
+    method: "ties"  # TIES-Merging for combining adapters
+    density: 0.5
+
+  # Minimum data required before training
+  min_training_examples: 100
+
+# Swarm behavior evolution
+swarm:
+  behavior_genome:
+    # Communication patterns
+    communication_frequency:
+      min: 0.1
+      max: 1.0
+      default: 0.5
+
+    # Specialization vs generalization
+    specialization_factor:
+      min: 0.3
+      max: 0.9
+      default: 0.7
+
+    # Cooperation vs independence
+    cooperation_level:
+      min: 0.2
+      max: 0.8
+      default: 0.5
+
+    # Risk tolerance for novel strategies
+    exploration_rate:
+      min: 0.05
+      max: 0.3
+      default: 0.1
+
+  # Team composition optimization
+  team_composition:
+    min_agents: 2
+    max_agents: 7
+    specialist_types:
+      - "code"
+      - "reasoning"
+      - "research"
+      - "creative"
+      - "meta"
+
+# Self-healing and fallback evolution
+self_healing:
+  enabled: true
+
+  # Error pattern learning
+  error_learning:
+    max_patterns: 100
+    pattern_decay: 0.95
+
+  # Fallback strategy evolution
+  fallback_strategies:
+    - name: "retry_same"
+      initial_weight: 0.3
+
+    - name: "switch_model"
+      initial_weight: 0.3
+
+    - name: "simplify_task"
+      initial_weight: 0.2
+
+    - name: "ask_clarification"
+      initial_weight: 0.2
+
+# Evolution logging (hash-chain for integrity)
+logging:
+  enabled: true
+  storage_path: "./data/evolution_logs"
+
+  hash_chain:
+    enabled: true
+    algorithm: "sha256"
+
+  # What to log
+  log_items:
+    - "generation_stats"
+    - "fitness_scores"
+    - "genome_changes"
+    - "user_feedback"
+    - "error_patterns"
+
+  # Retention
+  max_generations_stored: 100
+  compress_old_logs: true
+
+# A/B testing configuration
+ab_testing:
+  enabled: true
+
+  # Traffic allocation
+  control_ratio: 0.5  # 50% control, 50% variant
+
+  # Statistical significance
+  min_samples: 30
+  confidence_level: 0.95
+
+  # Test duration
+  max_test_duration_days: 7
+  early_stopping: true
+  early_stop_threshold: 0.99  # Stop if variant is clearly better/worse
+
+# Swarm-Awareness Protocol (The Mirror)
+swarm_awareness:
+  enabled: true
+
+  # How often (in CNS ticks) the self-assessment cycle runs
+  assessment_interval_ticks: 50
+
+  # Probability of triggering a peer review each assessment cycle (0.0–1.0)
+  peer_review_probability: 0.3
+
+  # Alignment score below which corrective action is taken (0.0–1.0)
+  value_alignment_threshold: 0.6
+
+  # Strength of weight corrections when misaligned (learning rate)
+  correction_strength: 0.02
+
+  # Target value profiles for the collective (0.0–1.0)
+  value_targets:
+    coherence: 0.8      # Internal consistency of responses
+    empathy: 0.7        # Resonance with user emotional state
+    creativity: 0.6     # Novel connections and unexpected insights
+    stability: 0.85     # Lyapunov-stable outputs
+    cooperation: 0.75   # Models complement, not contradict
+
+  # Logging
+  log_assessments: true
+  max_reports_stored: 50

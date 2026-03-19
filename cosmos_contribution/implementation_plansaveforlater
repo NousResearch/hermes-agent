@@ -1,0 +1,76 @@
+# Implementation Plan - Hybrid Hermes-4.3-36B Integration
+
+The goal is to integrate the `Hermes-4.3-36B` model as a primary components within the Cosmos CNS using a **Hybrid Cascade** approach. Since the local PC has 16GB RAM and limited VRAM, we will use a small local model for speed and offload heavy reasoning to a cloud-hosted Hermes-36B.
+
+## Proposed Changes
+
+### [Cosmos Core]
+
+#### [MODIFY] [model_manager.py](file:///d:/Cosmos/Cosmos/core/model_manager.py)
+- Define a `hermes-36b-cloud` model profile.
+# Quantum Benchmark Competition
+
+Execute a comprehensive real-time benchmark comparing all available AI models (Ollama, Gemini, Hermes) with active Quantum Bridge integration. 
+
+## User Review Required
+
+> [!IMPORTANT]
+> This benchmark requires a running Quantum Bridge with a valid IBM token. If the token is invalid, the system will fallback to simulated entropy, which will be noted in the results.
+
+## Proposed Changes
+
+### Benchmark Execution
+
+#### [NEW] [benchmark_competition.py](file:///d:/Cosmos/scripts/benchmark_competition.py)
+Create a new script to orchestrate the competition:
+- Initialize [CosmosSwarmOrchestrator](file:///d:/Cosmos/Cosmos/web/cosmosynapse/engine/cosmos_swarm_orchestrator.py#209-1377) and [QuantumEntanglementBridge](file:///d:/Cosmos/Cosmos/core/quantum_bridge.py#29-395).
+- Define a suite of 12D-focused prompts across Logic, Empathy, and Creativity.
+- Execute the swarm fan-out and synthesis for each prompt.
+- Capture and display real-time metrics:
+    - Individual model output "Informational Mass".
+    - Quantum Entropy impact on synthesis.
+    - Swarm Coherence and Hebbian weights.
+- Save results to `competition_results.jsonl`.
+
+### Model Integration
+
+#### [NEW] [Hermes Integration Logic]
+Ensure the [CosmosSwarmOrchestrator](file:///d:/Cosmos/Cosmos/web/cosmosynapse/engine/cosmos_swarm_orchestrator.py#209-1377) recognizes the new Hermes model configuration if available. Currently, it defaults to Ollama surrogates, but the competition script will explicitly attempt to include Hermes if its bridge or Ollama variant is active.
+
+## Verification Plan
+
+### Automated Tests
+- Run `python scripts/benchmark_competition.py` and verify it generates a comprehensive table and saves data.
+- Run `python benchmark_hermes_quantum.py` after the competition to see the updated archival stats.
+
+### Manual Verification
+- Review the `competition_results.jsonl` to ensure model weights shifted based on performance (Hebbian learning).
+- Confirm the Quantum Bridge reported "ACTIVE" during the run.
+- Configure it to use `BackendType.OPENAI_COMPATIBLE` or `BackendType.GEMINI` (pointing to a Hermes-compatible endpoint like OpenRouter).
+- Ensure a local "companion" model (e.g., `qwen2.5-1.5b` or `phi-3.5-mini`) is defined for the cascade base.
+
+#### [MODIFY] [llm_backend.py](file:///d:/Cosmos/Cosmos/core/llm_backend.py)
+- Update [CascadeBackend](file:///d:/Cosmos/Cosmos/core/llm_backend.py#1227-1353) to support a local-to-cloud transition.
+- Implement specialized "Complexity Estimation" for Hermes-specific tasks (RL feedback, skill synthesis).
+
+### [Cosmos Integration]
+
+#### [MODIFY] [hermes_bridge.py](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py)
+- Configure the [HermesRuntime](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py#505-639) to use the [CascadeBackend](file:///d:/Cosmos/Cosmos/core/llm_backend.py#1227-1353).
+- This allows the Hermes AIAgent to start fast on local hardware but escalate to the full 36B model for complex plans/coding.
+
+## Verification Plan
+
+### Automated Tests
+- Verification script to check the Cascade escalation logic:
+  ```python
+  import asyncio
+  from Cosmos.core.model_manager import ModelManager
+  mm = ModelManager()
+  # Test if complexity > 0.7 triggers the cloud backend
+  ```
+
+### Manual Verification
+- Run a simple query (local response).
+- Run a complex coding task (should trigger "Escalating to Hermes-36B-Cloud" log).
+- Verify [hermes_bridge](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py#739-745) properly records the escalated turn rewards.

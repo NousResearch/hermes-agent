@@ -1,0 +1,15 @@
+{
+  "name": "cosmos-ai",
+  "version": "2.1.0-alpha",
+  "description": "Self-evolving companion AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NavisWORLD/The-Cosmic-Davis-12D-Hebbian-Transformer-ver.4.2.git"
+  },
+  "module": "bridge/index.ts",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "zod": "^4.3.6"
+  }
+}

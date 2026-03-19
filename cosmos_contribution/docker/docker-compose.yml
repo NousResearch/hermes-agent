@@ -1,0 +1,277 @@
+# cosmos Docker Compose Configuration
+# Supports multiple deployment profiles
+
+version: '3.8'
+
+services:
+  # ============ Main cosmos Service ============
+  cosmos:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: cosmos:latest
+    container_name: cosmos
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000" # MCP Server
+      - "8501:8501" # Streamlit UI
+      - "8888:8888/udp" # P2P Discovery
+      - "9999:9999" # P2P Swarm Fabric
+
+    volumes:
+      - cosmos-data:/data
+      - cosmos-config:/config
+      - cosmos-models:/models
+
+    environment:
+      - cosmos_LOG_LEVEL=INFO
+      - cosmos_DATA_DIR=/data
+      - cosmos_CONFIG_DIR=/config
+      - cosmos_MODELS_DIR=/models
+      - cosmos_ISOLATED=${cosmos_ISOLATED:-false}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - DB_CONNECTION_STRING=${DB_CONNECTION_STRING:-}
+      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY:-}
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-}
+
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import cosmos; print('ok')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - cosmos-network
+
+  # ============ GPU-Enabled Service ============
+  cosmos-gpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: gpu-runtime
+    image: cosmos:gpu
+    container_name: cosmos-gpu
+    restart: unless-stopped
+    profiles:
+      - gpu
+
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+      - "8888:8888/udp"
+      - "9999:9999"
+
+    volumes:
+      - cosmos-data:/data
+      - cosmos-config:/config
+      - cosmos-models:/models
+
+    environment:
+      - cosmos_LOG_LEVEL=INFO
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - DB_CONNECTION_STRING=${DB_CONNECTION_STRING:-}
+      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY:-}
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
+    networks:
+      - cosmos-network
+
+  # ============ Ollama Service (Local LLM) ============
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cosmos-ollama
+    restart: unless-stopped
+    profiles:
+      - ollama
+
+    ports:
+      - "11434:11434"
+
+    volumes:
+      - ollama-data:/root/.ollama
+
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    networks:
+      - cosmos-network
+
+  # ============ ChromaDB Service (Vector Store) ============
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: cosmos-chromadb
+    restart: unless-stopped
+    profiles:
+      - chromadb
+
+    ports:
+      - "8080:8000"
+
+    volumes:
+      - chromadb-data:/chroma/chroma
+
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+
+    networks:
+      - cosmos-network
+
+  # ============ Redis Service (Caching) ============
+  redis:
+    image: redis:7-alpine
+    container_name: cosmos-redis
+    restart: unless-stopped
+    profiles:
+      - redis
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
+    command: redis-server --appendonly yes
+
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+    networks:
+      - cosmos-network
+
+  # ============ Streamlit UI Only ============
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: cosmos:latest
+    container_name: cosmos-ui
+    restart: unless-stopped
+    profiles:
+      - ui-only
+
+    ports:
+      - "8501:8501"
+
+    volumes:
+      - cosmos-data:/data
+      - cosmos-config:/config
+
+    environment:
+      - cosmos_LOG_LEVEL=INFO
+
+    command: [ "python", "-m", "streamlit", "run", "cosmos/ui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0" ]
+
+    networks:
+      - cosmos-network
+
+  # ============ P2P Node Service ============
+  node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: cosmos:node
+    container_name: cosmos-node
+    restart: unless-stopped
+    profiles:
+      - node
+
+    ports:
+      - "8888:8888/udp" # P2P Discovery
+      - "9999:9999" # P2P Swarm Fabric
+
+    volumes:
+      - cosmos-data:/data
+      - cosmos-config:/config
+      - cosmos-models:/models
+
+    environment:
+      - cosmos_LOG_LEVEL=INFO
+      - cosmos_ISOLATED=false
+      - cosmos_P2P_PORT=9999
+
+    command: [ "python", "main.py", "--node", "--dashboard" ]
+
+    networks:
+      - cosmos-network
+
+  # ============ Development Service ============
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: cosmos:dev
+    container_name: cosmos-dev
+    profiles:
+      - dev
+
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+      - "5678:5678" # debugpy
+
+    volumes:
+      - ../cosmos:/app/cosmos:rw
+      - ../tests:/app/tests:rw
+      - ../configs:/app/configs:rw
+      - cosmos-data:/data
+      - cosmos-models:/models
+
+    environment:
+      - cosmos_LOG_LEVEL=DEBUG
+      - PYTHONDONTWRITEBYTECODE=0
+
+    command: [ "python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "-m", "cosmos.mcp_server" ]
+
+    networks:
+      - cosmos-network
+
+# ============ Volumes ============
+volumes:
+  cosmos-data:
+    driver: local
+  cosmos-config:
+    driver: local
+  cosmos-models:
+    driver: local
+  ollama-data:
+    driver: local
+  chromadb-data:
+    driver: local
+  redis-data:
+    driver: local
+
+# ============ Networks ============
+networks:
+  cosmos-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

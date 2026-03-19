@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMOS Live Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/dist/vis-network.min.js"></script>
+    <style>
+        .live-container {
+            display: grid;
+            grid-template-columns: 300px 1fr 300px;
+            gap: 20px;
+            padding: 20px;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 20px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .panel-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.disconnected {
+            background: #ef4444;
+            animation: none;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Sessions Panel */
+        .sessions-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .session-item {
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .session-item:hover {
+            background: rgba(139, 92, 246, 0.2);
+        }
+
+        .session-item.active {
+            border-left: 3px solid #8b5cf6;
+        }
+
+        .session-id {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            color: #8b5cf6;
+        }
+
+        .session-meta {
+            font-size: 0.75rem;
+            color: rgba(248, 250, 252, 0.5);
+            margin-top: 4px;
+        }
+
+        /* Graph Panel */
+        #action-graph {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+        }
+
+        /* Events Panel */
+        .events-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .event-item {
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border-left: 3px solid #6366f1;
+        }
+
+        .event-item.thinking_start,
+        .event-item.thinking_step,
+        .event-item.thinking_end {
+            border-left-color: #f59e0b;
+        }
+
+        .event-item.tool_call,
+        .event-item.tool_result {
+            border-left-color: #10b981;
+        }
+
+        .event-item.response_chunk,
+        .event-item.response_complete {
+            border-left-color: #8b5cf6;
+        }
+
+        .event-item.error {
+            border-left-color: #ef4444;
+        }
+
+        .event-type {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: rgba(248, 250, 252, 0.5);
+            margin-bottom: 4px;
+        }
+
+        .event-content {
+            font-size: 0.85rem;
+            color: #f8fafc;
+            word-break: break-word;
+        }
+
+        .event-time {
+            font-size: 0.65rem;
+            color: rgba(248, 250, 252, 0.3);
+            margin-top: 4px;
+        }
+
+        /* Connection Status Bar */
+        .connection-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 8px 20px;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .connection-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .connection-text {
+            font-size: 0.85rem;
+        }
+
+        .back-link {
+            color: #8b5cf6;
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Cosmic Background -->
+    <div class="cosmos">
+        <div class="nebula nebula-1"></div>
+        <div class="nebula nebula-2"></div>
+        <div class="stars"></div>
+    </div>
+
+    <!-- Connection Status Bar -->
+    <div class="connection-bar">
+        <div class="connection-info">
+            <div class="status-dot" id="status-dot"></div>
+            <span class="connection-text" id="connection-status">Connecting...</span>
+        </div>
+        <a href="/" class="back-link">&larr; Back to Chat</a>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div class="live-container" style="padding-top: 60px;">
+        <!-- Sessions Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Active Sessions</span>
+                <span id="session-count">0</span>
+            </div>
+            <div class="sessions-list" id="sessions-list">
+                <div class="session-item active" data-session="default">
+                    <div class="session-id">default</div>
+                    <div class="session-meta">Waiting for events...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Graph Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Action Chain Graph</span>
+                <button onclick="resetGraph()"
+                    style="background: rgba(139, 92, 246, 0.2); border: none; padding: 6px 12px; border-radius: 6px; color: #f8fafc; cursor: pointer;">Reset</button>
+            </div>
+            <div id="action-graph"></div>
+        </div>
+
+        <!-- Live Events Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Live Events</span>
+                <span id="event-count">0</span>
+            </div>
+            <div class="events-list" id="events-list">
+                <div class="event-item">
+                    <div class="event-type">Waiting</div>
+                    <div class="event-content">Good news, everyone! Waiting for events...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // Graph data
+        let nodes = new vis.DataSet([]);
+        let edges = new vis.DataSet([]);
+        let network = null;
+        let nodeCounter = 0;
+
+        // Event colors
+        const eventColors = {
+            'thinking_start': '#f59e0b',
+            'thinking_step': '#fbbf24',
+            'thinking_end': '#f59e0b',
+            'tool_call': '#10b981',
+            'tool_result': '#34d399',
+            'response_chunk': '#8b5cf6',
+            'response_complete': '#a78bfa',
+            'session_start': '#06b6d4',
+            'session_end': '#06b6d4',
+            'error': '#ef4444',
+            'connected': '#10b981',
+            'heartbeat': '#6b7280'
+        };
+
+        // Initialize graph
+        function initGraph() {
+            const container = document.getElementById('action-graph');
+            const data = { nodes: nodes, edges: edges };
+            const options = {
+                nodes: {
+                    shape: 'dot',
+                    size: 20,
+                    font: { color: '#f8fafc', size: 12 },
+                    borderWidth: 2
+                },
+                edges: {
+                    arrows: 'to',
+                    color: { color: 'rgba(139, 92, 246, 0.5)' },
+                    smooth: { type: 'cubicBezier' }
+                },
+                physics: {
+                    stabilization: false,
+                    barnesHut: {
+                        gravitationalConstant: -2000,
+                        springLength: 150
+                    }
+                },
+                layout: {
+                    hierarchical: {
+                        direction: 'LR',
+                        sortMethod: 'directed',
+                        levelSeparation: 150
+                    }
+                }
+            };
+            network = new vis.Network(container, data, options);
+        }
+
+        function resetGraph() {
+            nodes.clear();
+            edges.clear();
+            nodeCounter = 0;
+        }
+
+        function addEventToGraph(event) {
+            const eventType = event.type;
+            const color = eventColors[eventType] || '#6366f1';
+            const label = eventType.replace(/_/g, '\n');
+
+            const nodeId = nodeCounter++;
+            nodes.add({
+                id: nodeId,
+                label: label,
+                color: { background: color, border: color },
+                title: JSON.stringify(event.data || {}, null, 2)
+            });
+
+            // Connect to previous node
+            if (nodeId > 0) {
+                edges.add({
+                    from: nodeId - 1,
+                    to: nodeId
+                });
+            }
+        }
+
+        // Connect WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/live`);
+
+            ws.onopen = () => {
+                document.getElementById('status-dot').classList.remove('disconnected');
+                document.getElementById('connection-status').textContent = 'Connected to COSMOS Live Feed';
+                reconnectAttempts = 0;
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status-dot').classList.add('disconnected');
+                document.getElementById('connection-status').textContent = 'Disconnected - Reconnecting...';
+
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    setTimeout(connect, 2000);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleEvent(data);
+            };
+        }
+
+        function handleEvent(event) {
+            // Skip heartbeats and pongs
+            if (event.type === 'heartbeat' || event.type === 'pong') {
+                return;
+            }
+
+            // Add to events list
+            addEventToList(event);
+
+            // Add to graph
+            addEventToGraph(event);
+
+            // Update event count
+            const eventCount = document.getElementById('events-list').children.length;
+            document.getElementById('event-count').textContent = eventCount;
+        }
+
+        function addEventToList(event) {
+            const list = document.getElementById('events-list');
+
+            // Remove "waiting" message
+            if (list.children.length === 1 && list.children[0].querySelector('.event-type').textContent === 'Waiting') {
+                list.innerHTML = '';
+            }
+
+            const item = document.createElement('div');
+            item.className = `event-item ${event.type}`;
+
+            const content = event.data ? JSON.stringify(event.data).substring(0, 100) : event.message || event.type;
+
+            item.innerHTML = `
+                <div class="event-type">${event.type}</div>
+                <div class="event-content">${content}</div>
+                <div class="event-time">${new Date(event.timestamp).toLocaleTimeString()}</div>
+            `;
+
+            list.insertBefore(item, list.firstChild);
+
+            // Keep only last 50 events
+            while (list.children.length > 50) {
+                list.removeChild(list.lastChild);
+            }
+        }
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            initGraph();
+            connect();
+
+            // Request session history
+            setTimeout(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'get_history', session_id: 'default' }));
+                }
+            }, 1000);
+        });
+    </script>
+</body>
+
+</html>

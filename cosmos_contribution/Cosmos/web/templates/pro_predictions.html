@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Tracker - Cosmos AI</title>
+    <meta name="description" content="Real-time Polymarket tracker with AI predictions. Live odds, closing soon alerts, and swarm intelligence picks.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255,255,255,0.03);
+            --surface-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --orange: #f97316;
+            --pink: #ec4899;
+            --red: #ef4444;
+            --yellow: #eab308;
+            --blue: #3b82f6;
+            --radius-card: 16px;
+            --radius-btn: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        .nebula {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0; pointer-events: none; overflow: hidden;
+        }
+        .nebula::before {
+            content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+            background:
+                radial-gradient(ellipse at 25% 35%, rgba(139,92,246,0.07) 0%, transparent 50%),
+                radial-gradient(ellipse at 75% 65%, rgba(6,182,212,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 20%, rgba(234,179,8,0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+        @keyframes nebulaShift {
+            0% { transform: translate(0,0) rotate(0deg); }
+            50% { transform: translate(2%,-1%) rotate(1deg); }
+            100% { transform: translate(-1%,2%) rotate(-0.5deg); }
+        }
+
+        /* NAV */
+        .top-nav {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(8,8,15,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px; height: 60px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-logo a {
+            text-decoration: none; font-size: 16px; font-weight: 700; letter-spacing: 4px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .nav-links { display: flex; gap: 4px; }
+        .nav-links a {
+            text-decoration: none; font-size: 13px; font-weight: 500;
+            color: var(--text-secondary); padding: 8px 14px; border-radius: 8px;
+            transition: all var(--transition);
+        }
+        .nav-links a:hover { color: var(--text-primary); background: var(--surface-hover); }
+        .nav-links a.active { color: var(--purple); background: rgba(139,92,246,0.1); }
+        .pro-badge {
+            font-size: 8px; font-weight: 700; padding: 2px 5px; border-radius: 3px;
+            background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+            color: #fff; letter-spacing: 0.5px; margin-left: 3px; vertical-align: middle;
+        }
+        .nav-right { display: flex; align-items: center; gap: 12px; }
+        .nav-avatar {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: linear-gradient(135deg, var(--purple), var(--cyan)); cursor: pointer;
+        }
+        .nav-logout {
+            font-size: 12px; color: var(--text-secondary); cursor: pointer;
+            text-decoration: none; transition: color var(--transition);
+        }
+        .nav-logout:hover { color: var(--red); }
+        .mobile-nav-toggle {
+            display: none; background: none; border: none; color: var(--text-primary); cursor: pointer; padding: 4px;
+        }
+        @media (max-width: 768px) {
+            .mobile-nav-toggle { display: block; }
+            .nav-links { display: none; }
+            .nav-links.mobile-open {
+                display: flex; flex-direction: column; position: absolute;
+                top: 60px; left: 0; right: 0; background: rgba(8,8,15,0.95);
+                backdrop-filter: blur(20px); padding: 12px; border-bottom: 1px solid var(--border);
+            }
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+        /* HEADER */
+        .page-header { padding: 40px 0 12px; text-align: center; }
+        .page-header h1 {
+            font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 700; letter-spacing: -0.03em; margin-bottom: 8px;
+        }
+        .page-header h1 span {
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .page-header .subtitle { font-size: 15px; color: var(--text-secondary); margin-bottom: 24px; }
+
+        /* STATS BAR */
+        .stats-bar {
+            display: flex; justify-content: center; gap: 24px; flex-wrap: wrap;
+            padding: 16px 24px; background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); margin-bottom: 28px;
+            backdrop-filter: blur(20px); font-family: 'JetBrains Mono', monospace;
+        }
+        .stat-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .stat-item .label { color: var(--text-secondary); }
+        .stat-item .value { font-weight: 600; color: var(--text-primary); }
+        .stat-item .value.highlight { color: var(--green); }
+        .stat-divider { width: 1px; background: var(--border); }
+
+        /* CONTROLS */
+        .controls-row {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            margin-bottom: 28px;
+        }
+        .category-pills { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+        .cat-pill {
+            padding: 6px 14px; font-size: 12px; font-weight: 500;
+            background: transparent; border: 1px solid var(--border);
+            border-radius: 20px; color: var(--text-secondary);
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition); white-space: nowrap;
+        }
+        .cat-pill:hover { background: var(--surface-hover); color: var(--text-primary); }
+        .cat-pill.active { background: rgba(139,92,246,0.1); border-color: var(--purple); color: var(--purple); }
+
+        .search-wrap {
+            position: relative; width: 220px;
+        }
+        .search-input {
+            width: 100%; padding: 8px 12px 8px 32px; font-size: 12px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 20px; color: var(--text-primary);
+            font-family: 'Inter', sans-serif; outline: none;
+            transition: border-color var(--transition);
+        }
+        .search-input:focus { border-color: rgba(139,92,246,0.4); }
+        .search-input::placeholder { color: var(--text-secondary); }
+        .search-icon {
+            position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+            width: 14px; height: 14px; color: var(--text-secondary); pointer-events: none;
+        }
+
+        .refresh-toggle {
+            display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary);
+            cursor: pointer; user-select: none; white-space: nowrap;
+        }
+        .refresh-toggle input { accent-color: var(--purple); }
+        .refresh-dot {
+            width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+            animation: pulse 2s infinite;
+        }
+        .refresh-dot.paused { background: var(--text-secondary); animation: none; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        /* SECTION */
+        .section-title {
+            font-size: 18px; font-weight: 700; margin-bottom: 20px;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .section-title .count-badge {
+            font-size: 11px; font-weight: 600; padding: 3px 10px;
+            border-radius: 10px; background: rgba(139,92,246,0.1);
+            color: var(--purple); font-family: 'JetBrains Mono', monospace;
+        }
+        .section { margin-bottom: 40px; }
+
+        /* MARKET CARDS */
+        .market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+        .market-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 20px;
+            backdrop-filter: blur(20px); transition: all var(--transition);
+            cursor: pointer; text-decoration: none; color: inherit; display: block;
+        }
+        .market-card:hover { background: var(--surface-hover); transform: translateY(-2px); border-color: rgba(139,92,246,0.2); }
+        .market-question { font-size: 14px; font-weight: 600; line-height: 1.5; margin-bottom: 14px; }
+        .odds-bar-wrap { margin-bottom: 12px; }
+        .odds-labels { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; font-family: 'JetBrains Mono', monospace; }
+        .odds-yes { color: var(--green); font-weight: 600; }
+        .odds-no { color: var(--red); font-weight: 600; }
+        .odds-bar {
+            width: 100%; height: 8px; border-radius: 4px;
+            background: rgba(239,68,68,0.2); overflow: hidden;
+        }
+        .odds-bar-fill {
+            height: 100%; border-radius: 4px;
+            background: linear-gradient(90deg, var(--green), rgba(16,185,129,0.6));
+            transition: width 0.8s ease;
+        }
+        .market-meta {
+            display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px;
+            color: var(--text-secondary); font-family: 'JetBrains Mono', monospace;
+        }
+        .market-meta span { display: flex; align-items: center; gap: 4px; }
+        .market-cat-badge {
+            font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            background: rgba(139,92,246,0.1); color: var(--purple);
+        }
+
+        /* CLOSING SOON */
+        .closing-scroll {
+            display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px;
+            scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+        }
+        .closing-scroll::-webkit-scrollbar { height: 4px; }
+        .closing-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .closing-card {
+            min-width: 260px; max-width: 300px; flex-shrink: 0;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 16px;
+            backdrop-filter: blur(20px); transition: all var(--transition);
+            cursor: pointer; text-decoration: none; color: inherit; display: block;
+        }
+        .closing-card:hover { background: var(--surface-hover); border-color: rgba(249,115,22,0.3); }
+        .closing-question { font-size: 12px; font-weight: 600; line-height: 1.4; margin-bottom: 10px;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .closing-countdown {
+            font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+            color: var(--orange); margin-bottom: 8px;
+        }
+        .closing-odds { font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+        .closing-odds .yes { color: var(--green); font-weight: 600; }
+
+        /* AI PREDICTION CARDS */
+        .ai-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+        .ai-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 20px;
+            backdrop-filter: blur(20px); transition: all var(--transition);
+            position: relative; overflow: hidden;
+        }
+        .ai-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, var(--purple), var(--cyan));
+        }
+        .ai-card:hover { background: var(--surface-hover); }
+        .ai-question { font-size: 14px; font-weight: 600; line-height: 1.5; margin-bottom: 12px; }
+        .ai-outcome {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px;
+            margin-bottom: 12px;
+        }
+        .ai-outcome.yes { background: rgba(16,185,129,0.1); color: var(--green); }
+        .ai-outcome.no { background: rgba(239,68,68,0.1); color: var(--red); }
+        .ai-confidence-wrap { margin-bottom: 12px; }
+        .ai-conf-header { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
+        .ai-conf-header .label { color: var(--text-secondary); }
+        .ai-conf-header .value { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+        .ai-conf-bar { width: 100%; height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+        .ai-conf-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease; }
+        .conf-high { background: var(--green); }
+        .conf-med { background: var(--yellow); }
+        .conf-low { background: var(--red); }
+
+        .ai-signals { margin-bottom: 12px; }
+        .ai-signal {
+            display: flex; align-items: center; gap: 8px; font-size: 11px;
+            padding: 4px 0; color: var(--text-secondary);
+        }
+        .ai-signal-dot {
+            width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+        }
+        .ai-signal-name { font-weight: 600; color: var(--text-primary); min-width: 60px; }
+        .ai-agents {
+            display: flex; gap: 4px; flex-wrap: wrap; font-size: 10px;
+        }
+        .ai-agent-tag {
+            padding: 2px 8px; border-radius: 4px; font-weight: 500;
+            background: rgba(139,92,246,0.08); color: var(--purple);
+        }
+
+        /* LEADERBOARD */
+        .leaderboard-section { margin-bottom: 48px; }
+        .leaderboard-table { width: 100%; border-collapse: collapse; }
+        .leaderboard-table-wrap {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); overflow: hidden;
+            backdrop-filter: blur(20px);
+        }
+        .leaderboard-table th {
+            text-align: left; font-size: 11px; font-weight: 600; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 0.5px; padding: 14px 16px;
+            border-bottom: 1px solid var(--border); white-space: nowrap;
+        }
+        .leaderboard-table td {
+            font-size: 13px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .leaderboard-table tr:hover td { background: var(--surface-hover); }
+        .leaderboard-table tr:last-child td { border-bottom: none; }
+        .agent-cell { display: flex; align-items: center; gap: 10px; }
+        .agent-cell .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        .agent-cell .name { font-weight: 600; font-family: 'Inter', sans-serif; }
+        .rank-badge {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 24px; height: 24px; border-radius: 50%; font-size: 11px; font-weight: 700;
+        }
+        .rank-1 { background: rgba(234,179,8,0.15); color: #eab308; }
+        .rank-2 { background: rgba(148,163,184,0.15); color: #94a3b8; }
+        .rank-3 { background: rgba(180,83,9,0.15); color: #d97706; }
+        .rank-default { background: var(--surface); color: var(--text-secondary); }
+
+        /* EMPTY / ERROR STATES */
+        .empty-state {
+            text-align: center; padding: 48px 24px; color: var(--text-secondary);
+        }
+        .empty-state .icon { font-size: 36px; margin-bottom: 12px; opacity: 0.4; }
+        .empty-state .msg { font-size: 14px; }
+
+        /* SKELETON */
+        .skeleton {
+            background: linear-gradient(90deg, var(--surface) 25%, var(--surface-hover) 50%, var(--surface) 75%);
+            background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .skel-card { height: 180px; border-radius: var(--radius-card); }
+        .skel-closing { height: 120px; min-width: 260px; border-radius: 12px; flex-shrink: 0; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.5s ease both; }
+
+        /* TOAST */
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+            background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(20px);
+            padding: 12px 24px; border-radius: var(--radius-btn); font-size: 13px;
+            color: var(--green); z-index: 1000; opacity: 0;
+            transition: all 0.3s ease; pointer-events: none;
+        }
+        .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .toast.error { color: var(--red); }
+
+        @media (max-width: 768px) {
+            .market-grid, .ai-grid { grid-template-columns: 1fr; }
+            .controls-row { flex-direction: column; align-items: stretch; }
+            .search-wrap { width: 100%; }
+            .stats-bar { gap: 12px; }
+            .stat-divider { display: none; }
+            .leaderboard-table-wrap { overflow-x: auto; }
+        }
+    </style>
+</head>
+<body>
+    <div class="nebula"></div>
+
+    <nav class="top-nav">
+        <div class="nav-logo"><a href="/pro">COSMOS</a></div>
+        <button class="mobile-nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('mobile-open')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="nav-links">
+            <a href="/pro/chat">Chat</a>
+            <a href="/chat">Swarm</a>
+            <a href="/pro/scanner">Scanner <span class="pro-badge">PRO</span></a>
+            <a href="/pro/wallet">Wallet <span class="pro-badge">PRO</span></a>
+            <a href="/pro/arena">Arena <span class="pro-badge">PRO</span></a>
+            <a href="/pro/pnl">PnL <span class="pro-badge">PRO</span></a>
+            <a href="/pro/predictions" class="active">Polymarket <span class="pro-badge">PRO</span></a>
+        </div>
+        <div class="nav-right">
+            <div class="nav-avatar"></div>
+            <a class="nav-logout" href="/pro/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- HEADER -->
+        <section class="page-header fade-in">
+            <h1><span>Polymarket Tracker</span></h1>
+            <p class="subtitle">Real-time prediction markets + AI-powered picks from the swarm</p>
+        </section>
+
+        <!-- STATS BAR -->
+        <div class="stats-bar fade-in" style="animation-delay:0.1s" id="statsBar">
+            <div class="stat-item">
+                <span class="label">Markets</span>
+                <span class="value" id="statMarkets">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="label">AI Predictions</span>
+                <span class="value" id="statPredictions">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="label">AI Accuracy</span>
+                <span class="value highlight" id="statAccuracy">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="label">Best Streak</span>
+                <span class="value highlight" id="statStreak">--</span>
+            </div>
+        </div>
+
+        <!-- CONTROLS -->
+        <div class="controls-row fade-in" style="animation-delay:0.15s">
+            <div class="category-pills" id="categoryPills">
+                <button class="cat-pill active" data-cat="all">All</button>
+                <button class="cat-pill" data-cat="politics">Politics</button>
+                <button class="cat-pill" data-cat="crypto">Crypto</button>
+                <button class="cat-pill" data-cat="sports">Sports</button>
+                <button class="cat-pill" data-cat="entertainment">Entertainment</button>
+                <button class="cat-pill" data-cat="science">Science</button>
+                <button class="cat-pill" data-cat="business">Business</button>
+                <button class="cat-pill" data-cat="world">World</button>
+            </div>
+            <div class="search-wrap">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input type="text" class="search-input" id="searchInput" placeholder="Search markets...">
+            </div>
+            <label class="refresh-toggle">
+                <input type="checkbox" id="autoRefresh" checked>
+                <div class="refresh-dot" id="refreshDot"></div>
+                Auto-refresh
+            </label>
+        </div>
+
+        <!-- LIVE MARKETS -->
+        <section class="section fade-in" style="animation-delay:0.2s">
+            <h2 class="section-title">Live Markets <span class="count-badge" id="marketCount">0</span></h2>
+            <div class="market-grid" id="marketGrid">
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+            </div>
+        </section>
+
+        <!-- CLOSING SOON -->
+        <section class="section fade-in" style="animation-delay:0.25s">
+            <h2 class="section-title">Closing Soon</h2>
+            <div class="closing-scroll" id="closingScroll">
+                <div class="skeleton skel-closing"></div>
+                <div class="skeleton skel-closing"></div>
+                <div class="skeleton skel-closing"></div>
+                <div class="skeleton skel-closing"></div>
+            </div>
+        </section>
+
+        <!-- AI PREDICTIONS -->
+        <section class="section fade-in" style="animation-delay:0.3s">
+            <h2 class="section-title">AI Predictions <span class="count-badge" id="aiCount">0</span></h2>
+            <div class="ai-grid" id="aiGrid">
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+                <div class="skeleton skel-card"></div>
+            </div>
+        </section>
+
+        <!-- AGENT LEADERBOARD -->
+        <section class="leaderboard-section fade-in" style="animation-delay:0.35s" id="leaderboardSection" style="display:none">
+            <h2 class="section-title">Agent Leaderboard</h2>
+            <div class="leaderboard-table-wrap">
+                <table class="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th style="width:40px">Rank</th>
+                            <th>Agent</th>
+                            <th>Predictions</th>
+                            <th>Accuracy</th>
+                            <th>Streak</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboardBody"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+    (function() {
+        const token = localStorage.getItem('cosmos_pro_token');
+        if (!token) { window.location.href = '/pro/login'; return; }
+
+        const headers = { 'Authorization': 'Bearer ' + token };
+        let activeCategory = 'all';
+        let searchQuery = '';
+        let autoRefreshEnabled = true;
+        let refreshTimer = null;
+        let searchDebounce = null;
+
+        const AGENT_COLORS = {
+            'claudeopus': '#8b5cf6', 'claude': '#8b5cf6', 'grok': '#f97316',
+            'cosmos': '#ec4899', 'gemini': '#eab308', 'deepseek': '#3b82f6',
+            'swarm-mind': '#e2e8f0', 'kimi': '#06b6d4', 'huggingface': '#10b981',
+            'phi': '#10b981', 'opencode': '#06b6d4'
+        };
+
+        // ===================== FETCH HELPERS =====================
+
+        async function fetchJSON(url) {
+            const res = await fetch(url, { headers });
+            if (!res.ok) throw new Error(res.statusText);
+            return res.json();
+        }
+
+        function formatVolume(v) {
+            if (!v) return '$0';
+            if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M';
+            if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
+            return '$' + Math.round(v);
+        }
+
+        function formatCountdown(endDateStr) {
+            if (!endDateStr) return '--';
+            const end = new Date(endDateStr);
+            const now = Date.now();
+            const diff = end - now;
+            if (diff <= 0) return 'Ended';
+            const hours = Math.floor(diff / 3600000);
+            const mins = Math.floor((diff % 3600000) / 60000);
+            if (hours >= 24) {
+                const days = Math.floor(hours / 24);
+                return days + 'd ' + (hours % 24) + 'h';
+            }
+            return hours + 'h ' + mins + 'm';
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        // ===================== RENDER: MARKETS =====================
+
+        function renderMarkets(markets) {
+            const grid = document.getElementById('marketGrid');
+            const count = document.getElementById('marketCount');
+
+            if (!markets || markets.length === 0) {
+                grid.innerHTML = '<div class="empty-state"><div class="icon">&#x1F50D;</div><div class="msg">No markets found. Try a different category or search.</div></div>';
+                count.textContent = '0';
+                return;
+            }
+
+            count.textContent = markets.length;
+            grid.innerHTML = markets.map(m => {
+                const yesPercent = parseFloat(m.probability_yes) || (m.price_yes * 100);
+                const noPercent = parseFloat(m.probability_no) || (m.price_no * 100);
+                const yesDisplay = typeof yesPercent === 'number' ? yesPercent.toFixed(0) + '%' : m.probability_yes;
+                const noDisplay = typeof noPercent === 'number' ? noPercent.toFixed(0) + '%' : m.probability_no;
+                const url = m.url || ('https://polymarket.com/event/' + m.id);
+
+                return `<a class="market-card" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+                    <div class="market-question">${escapeHtml(m.question)}</div>
+                    <div class="odds-bar-wrap">
+                        <div class="odds-labels">
+                            <span class="odds-yes">Yes ${yesDisplay}</span>
+                            <span class="odds-no">No ${noDisplay}</span>
+                        </div>
+                        <div class="odds-bar">
+                            <div class="odds-bar-fill" style="width:${parseFloat(yesPercent) || 50}%"></div>
+                        </div>
+                    </div>
+                    <div class="market-meta">
+                        <span>Vol ${formatVolume(m.volume)}</span>
+                        <span>Liq ${formatVolume(m.liquidity)}</span>
+                        ${m.end_date ? '<span>Ends ' + formatCountdown(m.end_date) + '</span>' : ''}
+                    </div>
+                </a>`;
+            }).join('');
+        }
+
+        // ===================== RENDER: CLOSING SOON =====================
+
+        function renderClosingSoon(markets) {
+            const scroll = document.getElementById('closingScroll');
+
+            if (!markets || markets.length === 0) {
+                scroll.innerHTML = '<div class="empty-state" style="min-width:260px"><div class="msg">No markets closing soon</div></div>';
+                return;
+            }
+
+            scroll.innerHTML = markets.map(m => {
+                const url = m.url || ('https://polymarket.com/event/' + m.id);
+                const yesPercent = parseFloat(m.probability_yes) || (m.price_yes * 100);
+                const yesDisplay = typeof yesPercent === 'number' ? yesPercent.toFixed(0) + '%' : m.probability_yes;
+
+                return `<a class="closing-card" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+                    <div class="closing-question">${escapeHtml(m.question)}</div>
+                    <div class="closing-countdown">${formatCountdown(m.end_date)}</div>
+                    <div class="closing-odds">Yes <span class="yes">${yesDisplay}</span> &middot; Vol ${formatVolume(m.volume)}</div>
+                </a>`;
+            }).join('');
+        }
+
+        // ===================== RENDER: AI PREDICTIONS =====================
+
+        function renderAIPredictions(predictions, stats) {
+            const grid = document.getElementById('aiGrid');
+            const aiCount = document.getElementById('aiCount');
+
+            // Update stats bar
+            if (stats) {
+                document.getElementById('statPredictions').textContent = stats.total_predictions || 0;
+                document.getElementById('statAccuracy').textContent = (stats.accuracy || 0) + '%';
+                document.getElementById('statStreak').textContent = stats.best_streak || 0;
+            }
+
+            if (!predictions || predictions.length === 0) {
+                grid.innerHTML = '<div class="empty-state"><div class="icon">&#x1F916;</div><div class="msg">AI predictions will appear here once the swarm starts analyzing markets.</div></div>';
+                aiCount.textContent = '0';
+                return;
+            }
+
+            aiCount.textContent = predictions.length;
+            grid.innerHTML = predictions.map(p => {
+                const conf = Math.round((p.confidence || 0) * 100);
+                const confClass = conf >= 70 ? 'conf-high' : conf >= 50 ? 'conf-med' : 'conf-low';
+                const outcomeClass = (p.predicted_outcome || '').toLowerCase().includes('yes') ? 'yes' : 'no';
+
+                const signalsHtml = (p.top_signals || []).map(s => {
+                    const weight = Math.round((s.weight || 0) * 100);
+                    const dotColor = weight >= 70 ? 'var(--green)' : weight >= 40 ? 'var(--yellow)' : 'var(--red)';
+                    return `<div class="ai-signal">
+                        <div class="ai-signal-dot" style="background:${dotColor}"></div>
+                        <span class="ai-signal-name">${escapeHtml(s.name)}</span>
+                        <span>${escapeHtml(s.reasoning || '')}</span>
+                    </div>`;
+                }).join('');
+
+                const agentsHtml = (p.agents_involved || []).map(a =>
+                    `<span class="ai-agent-tag" style="color:${AGENT_COLORS[a] || 'var(--purple)'}">${escapeHtml(a)}</span>`
+                ).join('');
+
+                return `<div class="ai-card">
+                    <div class="ai-question">${escapeHtml(p.question)}</div>
+                    <div class="ai-outcome ${outcomeClass}">Predicted: ${escapeHtml(p.predicted_outcome)}</div>
+                    <div class="ai-confidence-wrap">
+                        <div class="ai-conf-header">
+                            <span class="label">Confidence</span>
+                            <span class="value">${conf}%</span>
+                        </div>
+                        <div class="ai-conf-bar">
+                            <div class="ai-conf-fill ${confClass}" style="width:${conf}%"></div>
+                        </div>
+                    </div>
+                    ${signalsHtml ? '<div class="ai-signals">' + signalsHtml + '</div>' : ''}
+                    ${agentsHtml ? '<div class="ai-agents">' + agentsHtml + '</div>' : ''}
+                </div>`;
+            }).join('');
+        }
+
+        // ===================== RENDER: LEADERBOARD =====================
+
+        function renderLeaderboard(stats) {
+            const section = document.getElementById('leaderboardSection');
+            const body = document.getElementById('leaderboardBody');
+
+            if (!stats || !stats.by_category || Object.keys(stats.by_category).length === 0) {
+                // Use agent data from predictions if no category stats
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = '';
+            const agents = Object.entries(stats.by_category).map(([name, data]) => ({
+                name, ...data
+            })).sort((a, b) => (b.accuracy || 0) - (a.accuracy || 0));
+
+            body.innerHTML = agents.map((agent, idx) => {
+                const rank = idx + 1;
+                const rankClass = rank <= 3 ? 'rank-' + rank : 'rank-default';
+                const color = AGENT_COLORS[agent.name.toLowerCase()] || 'var(--purple)';
+                return `<tr>
+                    <td><span class="rank-badge ${rankClass}">${rank}</span></td>
+                    <td>
+                        <div class="agent-cell">
+                            <div class="dot" style="background:${color}"></div>
+                            <span class="name">${escapeHtml(agent.name)}</span>
+                        </div>
+                    </td>
+                    <td>${agent.total || agent.predictions || 0}</td>
+                    <td style="color:${(agent.accuracy || 0) >= 60 ? 'var(--green)' : 'var(--text-primary)'};font-weight:600">
+                        ${((agent.accuracy || 0)).toFixed(1)}%
+                    </td>
+                    <td style="color:var(--yellow);font-weight:600">${agent.streak || 0}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // ===================== DATA LOADING =====================
+
+        async function loadMarkets() {
+            try {
+                let url = '/api/pro/polymarket/markets?limit=20';
+                if (searchQuery) url += '&search=' + encodeURIComponent(searchQuery);
+                else if (activeCategory !== 'all') url += '&category=' + encodeURIComponent(activeCategory);
+
+                const data = await fetchJSON(url);
+                renderMarkets(data.markets || []);
+                document.getElementById('statMarkets').textContent = data.count || 0;
+            } catch (e) {
+                console.error('Markets load failed:', e);
+                document.getElementById('marketGrid').innerHTML =
+                    '<div class="empty-state"><div class="msg">Failed to load markets. Retrying...</div></div>';
+            }
+        }
+
+        async function loadClosingSoon() {
+            try {
+                const data = await fetchJSON('/api/pro/polymarket/closing-soon?hours=48&limit=10');
+                renderClosingSoon(data.markets || []);
+            } catch (e) {
+                console.error('Closing soon load failed:', e);
+                document.getElementById('closingScroll').innerHTML =
+                    '<div class="empty-state" style="min-width:260px"><div class="msg">Failed to load</div></div>';
+            }
+        }
+
+        async function loadAIPredictions() {
+            try {
+                const data = await fetchJSON('/api/pro/polymarket/ai-predictions?limit=20');
+                renderAIPredictions(data.predictions || [], data.stats || {});
+                renderLeaderboard(data.stats || {});
+            } catch (e) {
+                console.error('AI predictions load failed:', e);
+                document.getElementById('aiGrid').innerHTML =
+                    '<div class="empty-state"><div class="msg">Failed to load AI predictions</div></div>';
+            }
+        }
+
+        async function loadAll() {
+            await Promise.all([loadMarkets(), loadClosingSoon(), loadAIPredictions()]);
+        }
+
+        // ===================== CONTROLS =====================
+
+        // Category pills
+        document.querySelectorAll('.cat-pill').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                activeCategory = btn.dataset.cat;
+                searchQuery = '';
+                document.getElementById('searchInput').value = '';
+                loadMarkets();
+            });
+        });
+
+        // Search with debounce
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                searchQuery = e.target.value.trim();
+                if (searchQuery) {
+                    document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
+                } else {
+                    document.querySelector('.cat-pill[data-cat="all"]').classList.add('active');
+                    activeCategory = 'all';
+                }
+                loadMarkets();
+            }, 400);
+        });
+
+        // Auto-refresh toggle
+        const autoRefreshCheckbox = document.getElementById('autoRefresh');
+        const refreshDot = document.getElementById('refreshDot');
+
+        autoRefreshCheckbox.addEventListener('change', () => {
+            autoRefreshEnabled = autoRefreshCheckbox.checked;
+            if (autoRefreshEnabled) {
+                refreshDot.classList.remove('paused');
+                startAutoRefresh();
+            } else {
+                refreshDot.classList.add('paused');
+                stopAutoRefresh();
+            }
+        });
+
+        function startAutoRefresh() {
+            stopAutoRefresh();
+            refreshTimer = setInterval(loadAll, 30000);
+        }
+
+        function stopAutoRefresh() {
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
+        // Update closing soon countdowns every minute
+        setInterval(() => {
+            document.querySelectorAll('.closing-countdown').forEach(el => {
+                // Countdowns are rendered from data, re-render closing section
+            });
+            loadClosingSoon();
+        }, 60000);
+
+        // Toast
+        function showToast(msg, isError) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show' + (isError ? ' error' : '');
+            setTimeout(() => t.className = 'toast', 2500);
+        }
+
+        // ===================== INIT =====================
+        loadAll();
+        startAutoRefresh();
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,2033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMOS Mesh Protocol v2.0 — Live Network</title>
+    <meta name="description" content="Real-time visualization of the COSMOS GPU-as-Identity mesh protocol. Proof-of-Inference, Latent Routing, Attestation Chains, Swarm Memory.">
+    <meta name="theme-color" content="#a78bfa">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #06060c;
+            --bg-raised: #0a0a14;
+            --surface: rgba(255,255,255,0.025);
+            --surface-hover: rgba(255,255,255,0.05);
+            --border: rgba(255,255,255,0.06);
+            --border-bright: rgba(255,255,255,0.12);
+            --text: #c8d0dc;
+            --text-dim: #4a5568;
+            --text-bright: #e8ecf4;
+            --purple: #a78bfa;
+            --purple-dim: rgba(167,139,250,0.15);
+            --purple-glow: rgba(167,139,250,0.3);
+            --cyan: #22d3ee;
+            --cyan-dim: rgba(34,211,238,0.15);
+            --cyan-glow: rgba(34,211,238,0.3);
+            --green: #34d399;
+            --green-dim: rgba(52,211,153,0.15);
+            --amber: #fbbf24;
+            --amber-dim: rgba(251,191,36,0.12);
+            --red: #f87171;
+            --red-dim: rgba(248,113,113,0.12);
+            --pink: #f472b6;
+            --radius: 12px;
+            --mono: 'JetBrains Mono', monospace;
+            --display: 'Chakra Petch', sans-serif;
+            --body: 'DM Sans', sans-serif;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: var(--body);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.55;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        /* ── Scanline overlay ── */
+        .scanlines {
+            position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0,0,0,0.03) 2px,
+                rgba(0,0,0,0.03) 4px
+            );
+        }
+
+        /* ── Ambient background ── */
+        .ambient {
+            position: fixed; inset: 0; z-index: 0; pointer-events: none;
+            overflow: hidden;
+        }
+        .ambient::before {
+            content: ''; position: absolute; top: -40%; left: -40%; width: 180%; height: 180%;
+            background:
+                radial-gradient(ellipse at 15% 30%, rgba(167,139,250,0.07) 0%, transparent 50%),
+                radial-gradient(ellipse at 85% 25%, rgba(34,211,238,0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(52,211,153,0.03) 0%, transparent 40%);
+            animation: ambientDrift 25s ease-in-out infinite alternate;
+        }
+        @keyframes ambientDrift {
+            0% { transform: translate(0,0) scale(1); }
+            100% { transform: translate(-3%,2%) scale(1.02); }
+        }
+
+        /* ── Top bar ── */
+        .topbar {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(6,6,12,0.88); backdrop-filter: blur(24px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 28px; height: 56px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .topbar-brand {
+            font-family: var(--display); font-weight: 700; font-size: 14px;
+            letter-spacing: 5px; text-transform: uppercase;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .topbar-status {
+            display: flex; align-items: center; gap: 16px; font-size: 12px;
+        }
+        .status-pill {
+            display: flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 20px;
+            background: var(--surface); border: 1px solid var(--border);
+            font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+        }
+        .status-pill .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: var(--green); box-shadow: 0 0 6px var(--green);
+            animation: pulse 2s ease-in-out infinite;
+        }
+        .status-pill.offline .dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .topbar-nav { display: flex; gap: 4px; }
+        .topbar-nav a {
+            text-decoration: none; color: var(--text-dim); font-size: 12px;
+            padding: 6px 14px; border-radius: 8px; transition: all 0.2s;
+            font-family: var(--display); font-weight: 500; letter-spacing: 1px;
+        }
+        .topbar-nav a:hover { color: var(--text); background: var(--surface-hover); }
+        .topbar-nav a.active { color: var(--purple); background: var(--purple-dim); }
+
+        /* ── Layout ── */
+        .page { position: relative; z-index: 1; max-width: 1600px; margin: 0 auto; padding: 24px; }
+
+        /* ── Section headers ── */
+        .section-head {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 16px; padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .section-head .icon {
+            width: 28px; height: 28px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 13px;
+        }
+        .section-head h2 {
+            font-family: var(--display); font-size: 13px; font-weight: 600;
+            letter-spacing: 3px; text-transform: uppercase; color: var(--text-bright);
+        }
+        .section-head .count {
+            margin-left: auto; font-family: var(--mono); font-size: 11px;
+            color: var(--text-dim); background: var(--surface);
+            padding: 2px 10px; border-radius: 10px; border: 1px solid var(--border);
+        }
+
+        /* ── Card ── */
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px;
+            transition: border-color 0.3s;
+        }
+        .card:hover { border-color: var(--border-bright); }
+
+        /* ── Mesh Topology (Hero) ── */
+        .mesh-hero {
+            margin-bottom: 24px; border-radius: var(--radius);
+            background: var(--surface); border: 1px solid var(--border);
+            position: relative; overflow: hidden;
+        }
+        .mesh-hero-header {
+            padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between;
+        }
+        .mesh-hero-header h2 {
+            font-family: var(--display); font-size: 13px; font-weight: 600;
+            letter-spacing: 3px; text-transform: uppercase; color: var(--text-bright);
+        }
+        .mesh-meta {
+            display: flex; gap: 24px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+        }
+        .mesh-meta span { display: flex; align-items: center; gap: 6px; }
+        .mesh-meta .val { color: var(--text); }
+
+        #meshCanvas {
+            width: 100%; height: 520px; display: block;
+            cursor: default;
+        }
+
+        /* ── Bot tooltip ── */
+        .bot-tooltip {
+            position: absolute; z-index: 50; pointer-events: none;
+            background: rgba(6,6,12,0.94); backdrop-filter: blur(16px);
+            border: 1px solid var(--border-bright); border-radius: 10px;
+            padding: 12px 16px; min-width: 200px; max-width: 280px;
+            opacity: 0; transition: opacity 0.2s; font-size: 11px;
+        }
+        .bot-tooltip.visible { opacity: 1; }
+        .bot-tooltip .tt-name {
+            font-family: var(--display); font-weight: 700; font-size: 13px;
+            margin-bottom: 4px; display: flex; align-items: center; gap: 8px;
+        }
+        .bot-tooltip .tt-name .tt-orb {
+            width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+        }
+        .bot-tooltip .tt-provider {
+            font-family: var(--mono); font-size: 10px; color: var(--cyan);
+            margin-bottom: 6px;
+        }
+        .bot-tooltip .tt-personality {
+            color: var(--text-dim); font-size: 10px; line-height: 1.5;
+            margin-bottom: 6px;
+        }
+        .bot-tooltip .tt-specs {
+            display: flex; flex-wrap: wrap; gap: 4px;
+        }
+        .bot-tooltip .tt-specs span {
+            padding: 1px 7px; border-radius: 8px; font-size: 9px;
+            font-family: var(--mono); background: var(--surface);
+            border: 1px solid var(--border); color: var(--text-dim);
+        }
+
+        /* ── Discussion Feed ── */
+        .discussion-section {
+            margin-bottom: 24px;
+        }
+        .discussion-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px;
+        }
+        .discussion-header {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 14px; padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .discussion-header .icon {
+            width: 28px; height: 28px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 13px; background: linear-gradient(135deg, var(--green-dim), var(--cyan-dim));
+            color: var(--green);
+        }
+        .discussion-header h2 {
+            font-family: var(--display); font-size: 13px; font-weight: 600;
+            letter-spacing: 3px; text-transform: uppercase; color: var(--text-bright);
+        }
+        .discussion-header .discussion-controls {
+            margin-left: auto; display: flex; align-items: center; gap: 10px;
+        }
+        .disc-status-badge {
+            display: flex; align-items: center; gap: 6px;
+            padding: 3px 10px; border-radius: 14px; font-family: var(--mono);
+            font-size: 10px; letter-spacing: 0.5px;
+        }
+        .disc-status-badge.active {
+            background: var(--green-dim); color: var(--green);
+            border: 1px solid rgba(52,211,153,0.2);
+        }
+        .disc-status-badge.paused {
+            background: var(--amber-dim); color: var(--amber);
+            border: 1px solid rgba(251,191,36,0.2);
+        }
+        .disc-status-badge .sdot {
+            width: 5px; height: 5px; border-radius: 50%;
+        }
+        .disc-status-badge.active .sdot { background: var(--green); box-shadow: 0 0 4px var(--green); }
+        .disc-status-badge.paused .sdot { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+        .disc-toggle-btn {
+            padding: 4px 14px; border: 1px solid var(--border); border-radius: 8px;
+            background: var(--surface); color: var(--text-dim); cursor: pointer;
+            font-family: var(--display); font-size: 10px; font-weight: 600;
+            letter-spacing: 1.5px; text-transform: uppercase; transition: all 0.2s;
+        }
+        .disc-toggle-btn:hover {
+            border-color: var(--border-bright); color: var(--text); background: var(--surface-hover);
+        }
+
+        .discussion-topic {
+            padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;
+            background: rgba(0,0,0,0.2); border: 1px solid var(--border);
+        }
+        .discussion-topic .topic-label {
+            font-family: var(--mono); font-size: 9px; color: var(--text-dim);
+            text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 4px;
+        }
+        .discussion-topic .topic-text {
+            font-size: 13px; color: var(--text-bright); line-height: 1.5;
+        }
+        .discussion-meta {
+            display: flex; gap: 16px; margin-bottom: 14px;
+            font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+        }
+        .discussion-meta .dm-val { color: var(--text); }
+
+        .discussion-feed {
+            max-height: 320px; overflow-y: auto;
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .discussion-feed::-webkit-scrollbar { width: 3px; }
+        .discussion-feed::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+        .disc-msg {
+            display: flex; gap: 10px; padding: 10px 12px;
+            border-radius: 8px; transition: background 0.2s;
+            animation: fadeSlideIn 0.4s ease;
+        }
+        .disc-msg:hover { background: rgba(255,255,255,0.015); }
+        .disc-msg .msg-orb {
+            width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--display); font-size: 10px; font-weight: 700;
+            color: rgba(255,255,255,0.9); position: relative;
+        }
+        .disc-msg .msg-orb::after {
+            content: ''; position: absolute; inset: -3px; border-radius: 50%;
+            border: 1px solid; opacity: 0.2;
+        }
+        .disc-msg .msg-body { flex: 1; min-width: 0; }
+        .disc-msg .msg-head {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 3px;
+        }
+        .disc-msg .msg-name {
+            font-family: var(--display); font-size: 11px; font-weight: 600;
+        }
+        .disc-msg .msg-time {
+            font-family: var(--mono); font-size: 9px; color: var(--text-dim);
+        }
+        .disc-msg .msg-content {
+            font-size: 12px; color: var(--text); line-height: 1.5;
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .disc-empty {
+            text-align: center; padding: 40px; color: var(--text-dim); font-size: 12px;
+        }
+        @keyframes orbBreathe {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.06); }
+        }
+
+        /* ── 3-column grid ── */
+        .grid-3 {
+            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 1100px) { .grid-3 { grid-template-columns: 1fr; } }
+
+        /* ── Radar chart container ── */
+        .radar-wrap {
+            display: flex; align-items: center; justify-content: center;
+            padding: 12px 0;
+        }
+        #radarCanvas { max-width: 280px; max-height: 280px; }
+
+        /* ── Model heatmap ── */
+        .heatmap { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-top: 12px; }
+        .heatmap-label {
+            font-family: var(--mono); font-size: 9px; color: var(--text-dim);
+            text-align: center; padding: 3px 0; letter-spacing: 0.5px;
+        }
+        .heatmap-cell {
+            aspect-ratio: 1; border-radius: 4px; position: relative;
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.7);
+            transition: transform 0.2s; cursor: default;
+        }
+        .heatmap-cell:hover { transform: scale(1.15); z-index: 2; }
+
+        /* ── Route feed ── */
+        .route-feed { max-height: 200px; overflow-y: auto; margin-top: 12px; }
+        .route-feed::-webkit-scrollbar { width: 3px; }
+        .route-feed::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+        .route-item {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 11px; animation: fadeSlideIn 0.3s ease;
+        }
+        @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(-6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .route-item .prompt {
+            flex: 1; color: var(--text-dim); font-family: var(--mono);
+            font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .route-item .arrow { color: var(--text-dim); font-size: 10px; }
+        .route-item .model { color: var(--cyan); font-family: var(--mono); font-weight: 500; font-size: 10px; }
+        .route-item .conf {
+            font-family: var(--mono); font-size: 10px; padding: 1px 6px;
+            border-radius: 4px; min-width: 42px; text-align: center;
+        }
+
+        /* ── Stats row ── */
+        .stats-row {
+            display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px;
+        }
+        .stat-box {
+            flex: 1; min-width: 80px; text-align: center;
+            padding: 10px 8px; border-radius: 8px;
+            background: rgba(255,255,255,0.015); border: 1px solid var(--border);
+        }
+        .stat-box .num {
+            font-family: var(--display); font-size: 22px; font-weight: 700;
+            color: var(--text-bright);
+        }
+        .stat-box .label {
+            font-size: 9px; color: var(--text-dim); text-transform: uppercase;
+            letter-spacing: 1.5px; margin-top: 2px;
+        }
+
+        /* ── PoI consensus bars ── */
+        .poi-round {
+            padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .poi-round-header {
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 11px; margin-bottom: 6px;
+        }
+        .poi-round-header .id { font-family: var(--mono); color: var(--text-dim); }
+        .poi-round-header .status { font-family: var(--mono); font-size: 10px; }
+        .poi-bar-bg {
+            height: 6px; border-radius: 3px; background: rgba(255,255,255,0.04);
+            overflow: hidden;
+        }
+        .poi-bar-fill {
+            height: 100%; border-radius: 3px;
+            transition: width 0.6s ease;
+        }
+
+        /* ── Proof list ── */
+        .proof-list { margin-top: 12px; }
+        .proof-item {
+            padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 11px;
+        }
+        .proof-item .seal-hex {
+            font-family: var(--mono); font-size: 10px; color: var(--green);
+            background: var(--green-dim); padding: 1px 6px; border-radius: 4px;
+            display: inline-block; margin-top: 3px;
+        }
+
+        /* ── Attestation chain ── */
+        .chain-visual { position: relative; padding-left: 24px; }
+        .chain-link {
+            position: relative; padding: 10px 0 10px 16px;
+            border-left: 2px solid var(--border);
+        }
+        .chain-link::before {
+            content: ''; position: absolute; left: -6px; top: 14px;
+            width: 10px; height: 10px; border-radius: 50%;
+            background: var(--purple); border: 2px solid var(--bg);
+            box-shadow: 0 0 8px var(--purple-glow);
+        }
+        .chain-link:last-child { border-left-color: transparent; }
+        .chain-link .seal {
+            font-family: var(--mono); font-size: 10px; color: var(--purple);
+            word-break: break-all;
+        }
+        .chain-link .meta {
+            font-size: 10px; color: var(--text-dim); margin-top: 2px;
+        }
+        .chain-link .meta span { margin-right: 12px; }
+
+        .trust-scores { margin-top: 16px; }
+        .trust-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 11px;
+        }
+        .trust-row .node-name { font-family: var(--mono); }
+        .trust-bar-bg {
+            width: 80px; height: 5px; border-radius: 3px;
+            background: rgba(255,255,255,0.04); overflow: hidden; margin: 0 10px;
+        }
+        .trust-bar-fill { height: 100%; border-radius: 3px; background: var(--green); }
+        .trust-score { font-family: var(--mono); font-size: 10px; color: var(--green); min-width: 36px; text-align: right; }
+
+        /* ── Chain integrity badge ── */
+        .integrity-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 20px; font-size: 11px;
+            font-family: var(--mono); margin-bottom: 12px;
+        }
+        .integrity-badge.valid { background: var(--green-dim); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+        .integrity-badge.broken { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+
+        /* ── Crystals bottom section ── */
+        .crystals-section { margin-bottom: 24px; }
+        .crystal-grid {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+            margin-bottom: 16px;
+        }
+        @media (max-width: 800px) { .crystal-grid { grid-template-columns: repeat(2, 1fr); } }
+        .crystal-stat {
+            text-align: center; padding: 16px 12px; border-radius: var(--radius);
+            border: 1px solid var(--border); position: relative; overflow: hidden;
+        }
+        .crystal-stat .gem {
+            font-size: 24px; margin-bottom: 6px; display: block;
+        }
+        .crystal-stat .num {
+            font-family: var(--display); font-size: 28px; font-weight: 700;
+        }
+        .crystal-stat .label {
+            font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+            letter-spacing: 1.5px; margin-top: 2px;
+        }
+        .crystal-stat.proposed { background: var(--amber-dim); }
+        .crystal-stat.proposed .num { color: var(--amber); }
+        .crystal-stat.voting { background: var(--cyan-dim); }
+        .crystal-stat.voting .num { color: var(--cyan); }
+        .crystal-stat.crystallized { background: var(--green-dim); }
+        .crystal-stat.crystallized .num { color: var(--green); }
+        .crystal-stat.rejected { background: var(--red-dim); }
+        .crystal-stat.rejected .num { color: var(--red); }
+
+        .crystal-list { margin-top: 12px; }
+        .crystal-item {
+            padding: 10px 14px; border-radius: 8px; margin-bottom: 8px;
+            background: rgba(255,255,255,0.015); border: 1px solid var(--border);
+            font-size: 11px;
+        }
+        .crystal-item .content-preview {
+            color: var(--text); margin-bottom: 4px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .crystal-item .crystal-meta {
+            display: flex; gap: 12px; font-size: 10px; color: var(--text-dim);
+            font-family: var(--mono);
+        }
+
+        .tags-cloud {
+            display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+        }
+        .tag-pill {
+            padding: 3px 10px; border-radius: 12px; font-size: 10px;
+            font-family: var(--mono); border: 1px solid var(--border);
+            color: var(--text-dim); background: var(--surface);
+        }
+
+        /* ── Grid bottom half ── */
+        .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        /* ── Footer ── */
+        .footer {
+            text-align: center; padding: 32px 0 24px;
+            font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+            border-top: 1px solid var(--border); margin-top: 16px;
+        }
+        .footer a { color: var(--purple); text-decoration: none; }
+
+        /* ── Empty state ── */
+        .empty-state {
+            text-align: center; padding: 40px 20px; color: var(--text-dim);
+            font-size: 12px;
+        }
+        .empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+
+        /* ── Loading shimmer ── */
+        .shimmer {
+            background: linear-gradient(90deg, var(--surface) 25%, rgba(255,255,255,0.04) 50%, var(--surface) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+        /* ── Prompt / Query Area ── */
+        .prompt-section { margin-bottom: 24px; }
+        .prompt-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px;
+        }
+        .prompt-input-row {
+            display: flex; gap: 10px; margin-top: 12px;
+        }
+        .prompt-input {
+            flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+            border-radius: 8px; padding: 10px 14px; color: var(--text-bright);
+            font-family: var(--body); font-size: 13px; outline: none;
+            transition: border-color 0.2s;
+        }
+        .prompt-input:focus { border-color: var(--purple); }
+        .prompt-input::placeholder { color: var(--text-dim); }
+        .prompt-btn {
+            padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer;
+            font-family: var(--display); font-weight: 600; font-size: 12px;
+            letter-spacing: 2px; text-transform: uppercase; transition: all 0.2s;
+            background: linear-gradient(135deg, var(--purple), #7c3aed);
+            color: white;
+        }
+        .prompt-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(167,139,250,0.3); }
+        .prompt-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        .prompt-btn.routing { background: linear-gradient(135deg, var(--cyan), #0891b2); }
+
+        .query-result {
+            margin-top: 16px; display: none;
+        }
+        .query-result.visible { display: block; animation: fadeSlideIn 0.3s ease; }
+        .result-routing {
+            display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
+            padding: 12px; border-radius: 8px;
+            background: rgba(0,0,0,0.2); border: 1px solid var(--border);
+        }
+        .result-routing .route-tag {
+            display: flex; align-items: center; gap: 6px;
+            font-family: var(--mono); font-size: 11px;
+        }
+        .result-routing .route-tag .label { color: var(--text-dim); }
+        .result-routing .route-tag .val { color: var(--text-bright); }
+        .result-routing .route-tag .val.model { color: var(--cyan); font-weight: 600; }
+        .result-routing .route-tag .val.conf { color: var(--green); }
+        .result-routing .route-tag .val.method { color: var(--purple); }
+        .dim-bars {
+            display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+        }
+        .dim-bar {
+            display: flex; align-items: center; gap: 4px;
+            font-family: var(--mono); font-size: 9px;
+        }
+        .dim-bar .bar-bg {
+            width: 40px; height: 4px; border-radius: 2px;
+            background: rgba(255,255,255,0.04); overflow: hidden;
+        }
+        .dim-bar .bar-fill { height: 100%; border-radius: 2px; background: var(--cyan); }
+        .result-response {
+            padding: 14px; border-radius: 8px;
+            background: rgba(0,0,0,0.2); border: 1px solid var(--border);
+            font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+            max-height: 300px; overflow-y: auto;
+        }
+        .result-response::-webkit-scrollbar { width: 3px; }
+        .result-response::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+        .result-timing {
+            margin-top: 8px; font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+            text-align: right;
+        }
+        .scores-grid {
+            display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+        }
+        .score-chip {
+            padding: 2px 8px; border-radius: 6px; font-family: var(--mono); font-size: 10px;
+            background: var(--surface); border: 1px solid var(--border);
+        }
+        .score-chip.winner { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-dim); }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block; width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,0.1); border-top-color: var(--purple);
+            border-radius: 50%; animation: spin 0.6s linear infinite;
+            vertical-align: middle; margin-right: 6px;
+        }
+
+        /* ── Bot Tooltip ── */
+        .bot-tooltip {
+            position: fixed; z-index: 200; display: none;
+            background: rgba(10,10,20,0.95); backdrop-filter: blur(20px);
+            border: 1px solid var(--border-bright); border-radius: 10px;
+            padding: 14px 18px; min-width: 200px;
+            pointer-events: none; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+        }
+        .tt-name { font-family: var(--display); font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+        .tt-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; font-size: 11px; }
+        .tt-label { color: var(--text-dim); font-family: var(--mono); }
+        .tt-val { color: var(--text); font-family: var(--mono); }
+
+        /* ── Discussion Feed Section ── */
+        .discussion-section { margin-bottom: 24px; }
+        .discussion-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px; overflow: hidden;
+        }
+        .disc-status-row {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; margin-bottom: 12px;
+        }
+        .disc-status-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 3px 12px; border-radius: 20px;
+            font-family: var(--mono); font-size: 10px; font-weight: 600;
+            letter-spacing: 1.5px;
+            background: rgba(255,255,255,0.04); color: var(--text-dim);
+        }
+        .disc-status-badge::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background: var(--text-dim);
+        }
+        .disc-status-badge.active { background: var(--green-dim); color: var(--green); }
+        .disc-status-badge.active::before { background: var(--green); box-shadow: 0 0 8px var(--green); animation: statusPulse 2s ease infinite; }
+        .disc-status-badge.paused { background: var(--amber-dim); color: var(--amber); }
+        .disc-status-badge.paused::before { background: var(--amber); }
+        @keyframes statusPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        .disc-toggle-btn {
+            padding: 5px 16px; border: 1px solid var(--green); border-radius: 6px;
+            background: var(--green-dim); color: var(--green); cursor: pointer;
+            font-family: var(--display); font-size: 10px; font-weight: 600;
+            letter-spacing: 2px; transition: all 0.2s;
+        }
+        .disc-toggle-btn:hover { background: rgba(52,211,153,0.2); }
+        .disc-toggle-btn.paused { border-color: var(--amber); color: var(--amber); background: var(--amber-dim); }
+        .disc-toggle-btn.paused:hover { background: rgba(251,191,36,0.2); }
+
+        .disc-topic {
+            font-family: var(--body); font-size: 13px; color: var(--text-bright);
+            padding: 8px 14px; border-radius: 8px;
+            background: rgba(167,139,250,0.06); border-left: 3px solid var(--purple);
+            margin-bottom: 10px;
+        }
+        .disc-meta {
+            display: flex; gap: 16px; margin-bottom: 14px;
+            font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+        }
+        .disc-participants {
+            display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px;
+        }
+        .disc-participant-chip {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 2px 10px 2px 6px; border-radius: 12px;
+            font-family: var(--mono); font-size: 10px;
+            background: var(--surface); border: 1px solid var(--border);
+        }
+        .disc-participant-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+        }
+
+        .disc-feed {
+            max-height: 320px; overflow-y: auto;
+            border-top: 1px solid var(--border); padding-top: 12px;
+        }
+        .disc-feed::-webkit-scrollbar { width: 3px; }
+        .disc-feed::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+
+        .disc-msg {
+            display: flex; gap: 10px; padding: 10px 12px;
+            border-radius: 8px; margin-bottom: 6px;
+            transition: background 0.15s;
+        }
+        .disc-msg:hover { background: rgba(255,255,255,0.02); }
+        .disc-msg-orb {
+            flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%;
+            margin-top: 4px;
+        }
+        .disc-msg-body { flex: 1; min-width: 0; }
+        .disc-msg-head {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 3px;
+        }
+        .disc-msg-name { font-family: var(--display); font-weight: 600; font-size: 11px; }
+        .disc-msg-time { font-family: var(--mono); font-size: 9px; color: var(--text-dim); }
+        .disc-msg-text {
+            font-size: 12px; color: var(--text); line-height: 1.5;
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .disc-msg.new { animation: msgSlideIn 0.3s ease; }
+        @keyframes msgSlideIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="scanlines"></div>
+    <div class="ambient"></div>
+    <div class="bot-tooltip" id="botTooltip"></div>
+
+    <!-- Top Bar -->
+    <header class="topbar">
+        <div class="topbar-brand">COSMOS MESH v2.0</div>
+        <nav class="topbar-nav">
+            <a href="/">HOME</a>
+            <a href="/pro">PRO</a>
+            <a href="/mesh" class="active">MESH</a>
+            <a href="/health">HEALTH</a>
+        </nav>
+        <div class="topbar-status">
+            <div class="status-pill" id="connStatus">
+                <span class="dot"></span>
+                <span id="connLabel">CONNECTING</span>
+            </div>
+            <span style="font-family:var(--mono);font-size:10px;color:var(--text-dim)" id="lastUpdate">--</span>
+        </div>
+    </header>
+
+    <main class="page">
+
+        <!-- ═══ MESH TOPOLOGY ═══ -->
+        <section class="mesh-hero">
+            <div class="mesh-hero-header">
+                <h2>MESH TOPOLOGY</h2>
+                <div class="mesh-meta">
+                    <span>ROOT <span class="val" id="meshRoot">--------</span></span>
+                    <span>SEQ <span class="val" id="meshSeq">0</span></span>
+                    <span>PEERS <span class="val" id="meshPeers">0</span></span>
+                    <span>PROTOCOL <span class="val">v2.0.0</span></span>
+                </div>
+            </div>
+            <canvas id="meshCanvas"></canvas>
+        </section>
+
+        <!-- ═══ FREE DISCUSSION FEED ═══ -->
+        <section class="discussion-section">
+            <div class="discussion-card">
+                <div class="section-head">
+                    <div class="icon" style="background:linear-gradient(135deg,var(--green-dim),var(--cyan-dim));color:var(--green);">D</div>
+                    <h2>FREE DISCUSSION</h2>
+                    <span class="disc-status-badge" id="discStatusBadge">CONNECTING</span>
+                </div>
+                <div class="disc-status-row">
+                    <div class="disc-topic" id="discTopic">Awaiting topic...</div>
+                    <button class="disc-toggle-btn" id="discToggleBtn" onclick="toggleDiscussion()">PAUSE</button>
+                </div>
+                <div class="disc-meta" id="discMeta">
+                    <span>Turn 0</span>
+                    <span>0 participants</span>
+                </div>
+                <div class="disc-participants" id="discParticipants"></div>
+                <div class="disc-feed" id="discFeed">
+                    <div class="empty-state" style="padding:30px">
+                        <div style="font-size:20px;opacity:0.3">&#9672;</div>
+                        <div>Awaiting discussion...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ MESH QUERY — Interactive Prompt ═══ -->
+        <section class="prompt-section">
+            <div class="prompt-card">
+                <div class="section-head">
+                    <div class="icon" style="background:linear-gradient(135deg,var(--purple-dim),var(--cyan-dim));color:var(--purple);">Q</div>
+                    <h2>MESH QUERY</h2>
+                    <span class="count" id="queryStatus">READY</span>
+                </div>
+                <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">
+                    Send a prompt through the COSMOS mesh — latent routes to the best model, runs inference, returns result with full routing metadata.
+                </div>
+                <div class="prompt-input-row">
+                    <input type="text" class="prompt-input" id="queryInput" placeholder="Ask anything — e.g. &quot;Write a Python quicksort&quot; or &quot;Translate hello to Japanese&quot;" autocomplete="off">
+                    <button class="prompt-btn" id="queryBtn" onclick="sendMeshQuery()">ROUTE &amp; INFER</button>
+                </div>
+                <div class="query-result" id="queryResult">
+                    <div class="result-routing" id="resultRouting"></div>
+                    <div class="dim-bars" id="resultDims"></div>
+                    <div class="scores-grid" id="resultScores"></div>
+                    <div class="result-response" id="resultResponse"></div>
+                    <div class="result-timing" id="resultTiming"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ 3-COLUMN: Router / PoI / Attestation ═══ -->
+        <div class="grid-3">
+
+            <!-- LATENT SPACE ROUTER -->
+            <section class="card">
+                <div class="section-head">
+                    <div class="icon" style="background:var(--cyan-dim);color:var(--cyan);">R</div>
+                    <h2>LATENT ROUTER</h2>
+                    <span class="count" id="routeCount">0 routes</span>
+                </div>
+
+                <div class="stats-row">
+                    <div class="stat-box">
+                        <div class="num" id="totalRoutes">0</div>
+                        <div class="label">Total</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="num" id="avgConf">0.0</div>
+                        <div class="label">Avg Conf</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="num" id="routeMethod">--</div>
+                        <div class="label">Method</div>
+                    </div>
+                </div>
+
+                <div class="radar-wrap">
+                    <canvas id="radarCanvas" width="280" height="280"></canvas>
+                </div>
+
+                <!-- Model heatmap -->
+                <div style="margin-top:8px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:6px;">MODEL STRENGTH MATRIX</div>
+                    <div class="heatmap" id="heatmapGrid"></div>
+                </div>
+
+                <!-- Route feed -->
+                <div style="margin-top:14px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:6px;">RECENT ROUTES</div>
+                    <div class="route-feed" id="routeFeed"></div>
+                </div>
+            </section>
+
+            <!-- PROOF-OF-INFERENCE -->
+            <section class="card">
+                <div class="section-head">
+                    <div class="icon" style="background:var(--green-dim);color:var(--green);">P</div>
+                    <h2>PROOF OF INFERENCE</h2>
+                    <span class="count" id="poiCount">0 proofs</span>
+                </div>
+
+                <div class="stats-row">
+                    <div class="stat-box">
+                        <div class="num" id="activeRounds">0</div>
+                        <div class="label">Active</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="num" id="completedProofs">0</div>
+                        <div class="label">Verified</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="num" id="bftThreshold">2/3</div>
+                        <div class="label">BFT</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:16px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">CONSENSUS ROUNDS</div>
+                    <div id="poiRounds">
+                        <div class="empty-state">
+                            <div class="icon">&#9878;</div>
+                            <div>No active rounds</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top:16px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">VERIFIED PROOFS</div>
+                    <div class="proof-list" id="proofList">
+                        <div class="empty-state">
+                            <div class="icon">&#9883;</div>
+                            <div>Awaiting inference consensus</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BFT visualization -->
+                <div style="margin-top:16px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">BFT CONSENSUS</div>
+                    <canvas id="bftCanvas" width="280" height="100" style="width:100%;height:100px;"></canvas>
+                </div>
+            </section>
+
+            <!-- ATTESTATION CHAIN -->
+            <section class="card">
+                <div class="section-head">
+                    <div class="icon" style="background:var(--purple-dim);color:var(--purple);">A</div>
+                    <h2>ATTESTATION CHAIN</h2>
+                    <span class="count" id="chainLength">0 seals</span>
+                </div>
+
+                <div id="chainIntegrity"></div>
+
+                <div style="margin-top:4px;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">CHAIN SEALS</div>
+                    <div class="chain-visual" id="chainVisual">
+                        <div class="empty-state">
+                            <div class="icon">&#9741;</div>
+                            <div>No attestations yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="trust-scores" id="trustSection" style="display:none;">
+                    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">TRUST SCORES</div>
+                    <div id="trustList"></div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ═══ SWARM MEMORY CRYSTALS ═══ -->
+        <section class="crystals-section">
+            <div class="card">
+                <div class="section-head">
+                    <div class="icon" style="background:linear-gradient(135deg,var(--purple-dim),var(--cyan-dim));color:var(--pink);">M</div>
+                    <h2>SWARM MEMORY CRYSTALS</h2>
+                    <span class="count" id="crystalCount">0 crystals</span>
+                </div>
+
+                <div class="crystal-grid" id="crystalStats">
+                    <div class="crystal-stat proposed">
+                        <span class="gem">&#9672;</span>
+                        <div class="num" id="crystalProposed">0</div>
+                        <div class="label">Proposed</div>
+                    </div>
+                    <div class="crystal-stat voting">
+                        <span class="gem">&#9673;</span>
+                        <div class="num" id="crystalVoting">0</div>
+                        <div class="label">Voting</div>
+                    </div>
+                    <div class="crystal-stat crystallized">
+                        <span class="gem">&#9830;</span>
+                        <div class="num" id="crystalCrystallized">0</div>
+                        <div class="label">Crystallized</div>
+                    </div>
+                    <div class="crystal-stat rejected">
+                        <span class="gem">&#9651;</span>
+                        <div class="num" id="crystalRejected">0</div>
+                        <div class="label">Rejected</div>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div>
+                        <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">
+                            KNOWLEDGE GRAPH
+                            <span style="margin-left:8px;" id="graphEdges">0 edges</span>
+                        </div>
+                        <canvas id="crystalGraphCanvas" width="600" height="200" style="width:100%;height:200px;border-radius:8px;background:rgba(0,0,0,0.2);"></canvas>
+                    </div>
+                    <div>
+                        <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px;">TAGS</div>
+                        <div class="tags-cloud" id="tagCloud"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        COSMOS v2.0.0 &mdash; GPU-as-Identity Mesh Protocol &mdash;
+        <a href="https://ai.cosmos.cloud">ai.cosmos.cloud</a>
+    </footer>
+
+    <script>
+    // ════════════════════════════════════════════════════════════
+    // COSMOS MESH DASHBOARD — Pure Vanilla JS
+    // ════════════════════════════════════════════════════════════
+
+    const API = '/api/mesh/status';
+    let meshData = null;
+    let prevData = null;
+    let frameId = null;
+
+    // ── Mesh Topology Canvas ──────────────────────────────────
+    const meshCanvas = document.getElementById('meshCanvas');
+    const meshCtx = meshCanvas.getContext('2d');
+    const CANVAS_H = 520;
+    function resizeMeshCanvas() {
+        const r = meshCanvas.parentElement.getBoundingClientRect();
+        meshCanvas.width = r.width * devicePixelRatio;
+        meshCanvas.height = CANVAS_H * devicePixelRatio;
+        meshCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        meshCanvas.style.height = CANVAS_H + 'px';
+    }
+    resizeMeshCanvas();
+    window.addEventListener('resize', () => { resizeMeshCanvas(); if (meshData) buildBubbleMap(meshData); });
+
+    // ── Bot Info Database ──
+    const BOT_INFO = {
+        'phi4-latest':  { name:'Phi-4',       agent:'phi',        color:'#f472b6', provider:'Ollama',       personality:'Curious philosopher',  specialties:'Math, Reasoning' },
+        'deepseek-r1-8b':{ name:'DeepSeek',   agent:'deepseek',   color:'#22d3ee', provider:'Ollama',       personality:'Deep thinker',         specialties:'Reasoning, Code' },
+        'qwen2.5-7b':   { name:'Qwen 2.5',    agent:'qwen2_5',    color:'#fbbf24', provider:'Ollama',       personality:'Multilingual sage',    specialties:'Languages, Code' },
+        'mistral-7b':    { name:'Mistral',     agent:'mistral',    color:'#f87171', provider:'Ollama',       personality:'Creative writer',      specialties:'Creative, Factual' },
+        'llama3-8b':     { name:'Llama 3',     agent:'llama3',     color:'#34d399', provider:'Ollama',       personality:'Balanced generalist',  specialties:'Creative, Factual' },
+        'gemma2-9b':     { name:'Gemma 2',     agent:'gemma2',     color:'#fb923c', provider:'Ollama',       personality:'Detail oriented',      specialties:'Factual, Reasoning' },
+        'qwen3-coder-next-latest':{ name:'Qwen3 Coder', agent:'qwen3_coder', color:'#a78bfa', provider:'COSMOS Remote', personality:'Code wizard', specialties:'Code, Math' },
+        'phi':           { name:'Phi-4',       agent:'phi',        color:'#f472b6', provider:'Ollama',       personality:'Curious philosopher',  specialties:'Math, Reasoning' },
+        'deepseek':      { name:'DeepSeek',    agent:'deepseek',   color:'#22d3ee', provider:'Ollama',       personality:'Deep thinker',         specialties:'Reasoning, Code' },
+        'qwen2_5':       { name:'Qwen 2.5',    agent:'qwen2_5',    color:'#fbbf24', provider:'Ollama',       personality:'Multilingual sage',    specialties:'Languages, Code' },
+        'mistral':       { name:'Mistral',     agent:'mistral',    color:'#f87171', provider:'Ollama',       personality:'Creative writer',      specialties:'Creative, Factual' },
+        'qwen3_coder':   { name:'Qwen3 Coder', agent:'qwen3_coder',color:'#a78bfa', provider:'COSMOS Remote', personality:'Code wizard',          specialties:'Code, Math' },
+    };
+
+    // ── State ──
+    let bubbleNodes = [];
+    let packetOrbs = [];
+    let hoveredBot = null;
+    let discData = null;
+    let lastDiscMsgCount = 0;
+    let breathePhase = 0;
+
+    // ── Packet Orbs ──
+    class PacketOrb {
+        constructor(fx, fy, tx, ty, color, cross) {
+            this.fx = fx; this.fy = fy; this.tx = tx; this.ty = ty;
+            this.color = color; this.t = 0; this.alive = true;
+            this.speed = 0.006 + Math.random() * 0.01;
+            const mx = (fx+tx)/2, my = (fy+ty)/2;
+            const ang = Math.atan2(ty-fy, tx-fx) + Math.PI/2;
+            const off = (cross ? 50 : 25) * (Math.random()>0.5 ? 1 : -1);
+            this.cpx = mx + Math.cos(ang)*off;
+            this.cpy = my + Math.sin(ang)*off;
+            this.trail = [];
+        }
+        pos() {
+            const t=this.t, m=1-t;
+            return { x: m*m*this.fx + 2*m*t*this.cpx + t*t*this.tx,
+                     y: m*m*this.fy + 2*m*t*this.cpy + t*t*this.ty };
+        }
+        update() {
+            this.t += this.speed;
+            if (this.t >= 1) { this.alive = false; return; }
+            const p = this.pos();
+            this.trail.push({x:p.x, y:p.y, age:0});
+            if (this.trail.length > 14) this.trail.shift();
+            this.trail.forEach(t => t.age += 0.07);
+        }
+        draw(ctx) {
+            this.trail.forEach(p => {
+                const a = Math.max(0, 0.5 - p.age*0.35);
+                ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, 3-p.age*2), 0, Math.PI*2);
+                ctx.fillStyle = this.color.replace(/[\d.]+\)$/, a+')');
+                ctx.fill();
+            });
+            const p = this.pos();
+            ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI*2);
+            ctx.fillStyle = this.color; ctx.fill();
+            ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
+            ctx.fillStyle = this.color.replace(/[\d.]+\)$/, '0.12)'); ctx.fill();
+        }
+    }
+
+    function hexToRgba(hex, a) {
+        const c = hex.replace('#','');
+        return `rgba(${parseInt(c.substr(0,2),16)},${parseInt(c.substr(2,2),16)},${parseInt(c.substr(4,2),16)},${a})`;
+    }
+
+    // ── Build Bubble Map ──
+    function buildBubbleMap(data) {
+        const w = meshCanvas.width / devicePixelRatio;
+        const h = CANVAS_H;
+        bubbleNodes = [];
+
+        const localBots = data.local_bots || [];
+        const allBots = data.all_bots || {};
+        const peers = data.connected_peers || [];
+        const nodeName = data.node_name || 'unknown';
+
+        // Peer-only bots: in all_bots but NOT in local_bots
+        const peerBots = {};
+        peers.forEach(p => peerBots[p] = []);
+        Object.entries(allBots).forEach(([bot, node]) => {
+            if (!localBots.includes(bot) && peerBots[node]) {
+                peerBots[node].push(bot);
+            }
+        });
+
+        const activeParticipants = discData ? (discData.participants || []) : [];
+        const recentSpeakers = discData ? (discData.recent_speakers || []).slice(-3) : [];
+
+        // Deduplicate local bots by display name
+        const seen = new Set();
+        const dedupLocal = [];
+        localBots.forEach(b => {
+            const info = BOT_INFO[b] || {};
+            const n = info.name || b;
+            if (!seen.has(n)) { seen.add(n); dedupLocal.push(b); }
+        });
+
+        const hasPeers = peers.length > 0;
+        const primaryX = hasPeers ? w * 0.32 : w * 0.5;
+        const primaryY = h * 0.48;
+        const primaryR = Math.min(140, w * 0.18);
+
+        // Primary node
+        const primary = { name: nodeName, x: primaryX, y: primaryY, radius: primaryR, color: '#a78bfa', isPrimary: true, bots: [] };
+        const orbitR = primaryR * 0.55;
+        dedupLocal.forEach((bot, i) => {
+            const info = BOT_INFO[bot] || {};
+            const agentId = info.agent || bot;
+            const a = (Math.PI * 2 / dedupLocal.length) * i - Math.PI / 2;
+            primary.bots.push({
+                id: bot, agentId, name: info.name || bot,
+                x: primaryX + Math.cos(a)*orbitR, y: primaryY + Math.sin(a)*orbitR,
+                baseX: primaryX + Math.cos(a)*orbitR, baseY: primaryY + Math.sin(a)*orbitR,
+                radius: 16, color: info.color || '#888', info,
+                speaking: recentSpeakers.includes(agentId),
+                active: activeParticipants.includes(agentId),
+                node: nodeName,
+            });
+        });
+        bubbleNodes.push(primary);
+
+        // Peer nodes
+        peers.forEach((peerName, pi) => {
+            const peerX = w * 0.72;
+            const peerY = h * 0.48;
+            const pBots = peerBots[peerName] || [];
+            const peerR = Math.min(110, w * 0.14);
+            const peer = { name: peerName, x: peerX, y: peerY, radius: peerR, color: '#22d3ee', isPrimary: false, bots: [] };
+            const pOrbitR = pBots.length > 1 ? peerR * 0.45 : 0;
+            pBots.forEach((bot, i) => {
+                const info = BOT_INFO[bot] || {};
+                const agentId = info.agent || bot;
+                const a = (Math.PI * 2 / Math.max(pBots.length, 1)) * i - Math.PI / 2;
+                peer.bots.push({
+                    id: bot, agentId, name: info.name || bot,
+                    x: peerX + Math.cos(a)*pOrbitR, y: peerY + Math.sin(a)*pOrbitR,
+                    baseX: peerX + Math.cos(a)*pOrbitR, baseY: peerY + Math.sin(a)*pOrbitR,
+                    radius: 18, color: info.color || '#888', info,
+                    speaking: recentSpeakers.includes(agentId),
+                    active: activeParticipants.includes(agentId),
+                    node: peerName,
+                });
+            });
+            bubbleNodes.push(peer);
+        });
+
+        // Ghost peer if none
+        if (!hasPeers) {
+            bubbleNodes.push({ name: '(awaiting peer)', x: w*0.72, y: h*0.48, radius: 80, color: 'rgba(255,255,255,0.06)', isPrimary: false, bots: [], isGhost: true });
+        }
+    }
+
+    // ── Draw Bubble Map ──
+    function drawBubbleMap() {
+        const w = meshCanvas.width / devicePixelRatio;
+        const h = CANVAS_H;
+        meshCtx.clearRect(0, 0, w, h);
+        breathePhase += 0.018;
+
+        // Inter-node connections
+        if (bubbleNodes.length > 1) {
+            for (let i = 1; i < bubbleNodes.length; i++) {
+                const n0 = bubbleNodes[0], n1 = bubbleNodes[i];
+                if (n1.isGhost) {
+                    meshCtx.beginPath(); meshCtx.moveTo(n0.x, n0.y);
+                    meshCtx.lineTo(n1.x, n1.y);
+                    meshCtx.strokeStyle = 'rgba(255,255,255,0.03)';
+                    meshCtx.setLineDash([5,5]); meshCtx.lineWidth = 1; meshCtx.stroke();
+                    meshCtx.setLineDash([]);
+                    continue;
+                }
+                // Wide glow line
+                meshCtx.beginPath(); meshCtx.moveTo(n0.x, n0.y);
+                const cpx = (n0.x+n1.x)/2, cpy = (n0.y+n1.y)/2 - 40;
+                meshCtx.quadraticCurveTo(cpx, cpy, n1.x, n1.y);
+                meshCtx.strokeStyle = 'rgba(167,139,250,0.03)'; meshCtx.lineWidth = 12; meshCtx.stroke();
+                // Core line
+                meshCtx.beginPath(); meshCtx.moveTo(n0.x, n0.y);
+                meshCtx.quadraticCurveTo(cpx, cpy, n1.x, n1.y);
+                meshCtx.strokeStyle = 'rgba(255,255,255,0.07)'; meshCtx.lineWidth = 1.5; meshCtx.stroke();
+            }
+        }
+
+        // Draw node bubbles
+        bubbleNodes.forEach(node => {
+            if (node.isGhost) {
+                meshCtx.beginPath(); meshCtx.arc(node.x, node.y, node.radius, 0, Math.PI*2);
+                meshCtx.strokeStyle = 'rgba(255,255,255,0.04)'; meshCtx.lineWidth = 1;
+                meshCtx.setLineDash([4,4]); meshCtx.stroke(); meshCtx.setLineDash([]);
+                meshCtx.font = '11px "Chakra Petch"'; meshCtx.textAlign = 'center';
+                meshCtx.fillStyle = 'rgba(255,255,255,0.12)';
+                meshCtx.fillText(node.name, node.x, node.y + 4);
+                return;
+            }
+            const br = Math.sin(breathePhase + (node.isPrimary ? 0 : 1.5)) * 4;
+            const r = node.radius + br;
+
+            // Outer glow
+            const grad = meshCtx.createRadialGradient(node.x, node.y, r*0.5, node.x, node.y, r*1.4);
+            grad.addColorStop(0, hexToRgba(node.color, 0.06));
+            grad.addColorStop(1, 'transparent');
+            meshCtx.fillStyle = grad;
+            meshCtx.beginPath(); meshCtx.arc(node.x, node.y, r*1.4, 0, Math.PI*2); meshCtx.fill();
+
+            // Bubble fill
+            meshCtx.beginPath(); meshCtx.arc(node.x, node.y, r, 0, Math.PI*2);
+            meshCtx.fillStyle = hexToRgba(node.color, 0.03); meshCtx.fill();
+            meshCtx.strokeStyle = hexToRgba(node.color, 0.18); meshCtx.lineWidth = 1; meshCtx.stroke();
+
+            // Node label
+            meshCtx.font = '600 13px "Chakra Petch", sans-serif'; meshCtx.textAlign = 'center';
+            meshCtx.fillStyle = '#e8ecf4';
+            meshCtx.fillText(node.name.toUpperCase(), node.x, node.y - r - 12);
+            meshCtx.font = '10px "JetBrains Mono", monospace';
+            meshCtx.fillStyle = hexToRgba(node.color, 0.5);
+            meshCtx.fillText(node.bots.length + ' model' + (node.bots.length !== 1 ? 's' : ''), node.x, node.y - r - 0);
+        });
+
+        // Draw bot orbs
+        bubbleNodes.forEach(node => {
+            node.bots.forEach(bot => {
+                const br = Math.sin(breathePhase * 0.8 + bot.baseX * 0.01) * 2;
+                const r = bot.radius + br;
+                const cx = bot.baseX + Math.sin(breathePhase * 0.4 + bot.baseY * 0.02) * 4;
+                const cy = bot.baseY + Math.cos(breathePhase * 0.4 + bot.baseX * 0.02) * 4;
+                bot.x = cx; bot.y = cy;
+
+                // Active glow ring
+                if (bot.active) {
+                    meshCtx.beginPath(); meshCtx.arc(cx, cy, r + 8, 0, Math.PI*2);
+                    meshCtx.fillStyle = hexToRgba(bot.color, 0.08); meshCtx.fill();
+                }
+                // Speaking pulse
+                if (bot.speaking) {
+                    const pr = r + 12 + Math.sin(breathePhase * 3) * 5;
+                    meshCtx.beginPath(); meshCtx.arc(cx, cy, pr, 0, Math.PI*2);
+                    meshCtx.strokeStyle = hexToRgba(bot.color, 0.25); meshCtx.lineWidth = 2; meshCtx.stroke();
+                }
+
+                // Orb gradient
+                const g = meshCtx.createRadialGradient(cx - r*0.25, cy - r*0.25, r*0.1, cx, cy, r);
+                g.addColorStop(0, bot.color + 'cc');
+                g.addColorStop(0.6, bot.color + '80');
+                g.addColorStop(1, bot.color + '20');
+                meshCtx.beginPath(); meshCtx.arc(cx, cy, r, 0, Math.PI*2);
+                meshCtx.fillStyle = g; meshCtx.fill();
+                meshCtx.strokeStyle = bot.color + (bot.active ? 'bb' : '33');
+                meshCtx.lineWidth = bot.active ? 1.5 : 0.7; meshCtx.stroke();
+
+                // Highlight for hovered bot
+                if (hoveredBot === bot) {
+                    meshCtx.beginPath(); meshCtx.arc(cx, cy, r + 4, 0, Math.PI*2);
+                    meshCtx.strokeStyle = bot.color; meshCtx.lineWidth = 2; meshCtx.stroke();
+                }
+
+                // Label
+                meshCtx.font = '500 9px "JetBrains Mono", monospace'; meshCtx.textAlign = 'center';
+                meshCtx.fillStyle = bot.active ? bot.color : 'rgba(255,255,255,0.45)';
+                meshCtx.fillText(bot.name, cx, cy + r + 13);
+            });
+        });
+
+        // Draw packet orbs
+        packetOrbs = packetOrbs.filter(p => p.alive);
+        packetOrbs.forEach(p => { p.update(); p.draw(meshCtx); });
+
+        // Ambient packets
+        if (Math.random() < 0.025 && bubbleNodes.length > 0) spawnAmbientPacket();
+    }
+
+    function spawnAmbientPacket() {
+        const all = bubbleNodes.flatMap(n => n.bots);
+        if (all.length < 2) return;
+        const f = all[Math.floor(Math.random()*all.length)];
+        let t = all[Math.floor(Math.random()*all.length)];
+        let tries = 0;
+        while (t === f && tries++ < 5) t = all[Math.floor(Math.random()*all.length)];
+        if (t === f) return;
+        packetOrbs.push(new PacketOrb(f.x, f.y, t.x, t.y, hexToRgba(f.color, 0.6), f.node !== t.node));
+    }
+
+    function spawnDiscussionPacket(speakerId) {
+        const all = bubbleNodes.flatMap(n => n.bots);
+        const speaker = all.find(b => b.agentId === speakerId || b.id === speakerId);
+        if (!speaker) return;
+        all.forEach(b => {
+            if (b !== speaker && b.active) {
+                packetOrbs.push(new PacketOrb(speaker.x, speaker.y, b.x, b.y, hexToRgba(speaker.color, 0.8), speaker.node !== b.node));
+            }
+        });
+    }
+
+    function animateMesh() {
+        drawBubbleMap();
+        frameId = requestAnimationFrame(animateMesh);
+    }
+    animateMesh();
+
+    // ── Mouse hover for bot tooltips ──
+    const tooltip = document.getElementById('botTooltip');
+    meshCanvas.addEventListener('mousemove', (e) => {
+        const rect = meshCanvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        const all = bubbleNodes.flatMap(n => n.bots);
+        let found = null;
+        for (const b of all) {
+            if ((mx-b.x)**2 + (my-b.y)**2 < (b.radius+6)**2) { found = b; break; }
+        }
+        if (found && tooltip) {
+            hoveredBot = found;
+            const info = found.info || {};
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.clientX + 16) + 'px';
+            tooltip.style.top = (e.clientY - 10) + 'px';
+            tooltip.innerHTML = `
+                <div class="tt-name" style="color:${found.color}">${found.name}</div>
+                <div class="tt-row"><span class="tt-label">Provider</span><span class="tt-val">${info.provider||'Unknown'}</span></div>
+                <div class="tt-row"><span class="tt-label">Agent</span><span class="tt-val">${found.agentId}</span></div>
+                ${info.personality ? `<div class="tt-row"><span class="tt-label">Personality</span><span class="tt-val">${info.personality}</span></div>` : ''}
+                ${info.specialties ? `<div class="tt-row"><span class="tt-label">Specialties</span><span class="tt-val">${info.specialties}</span></div>` : ''}
+                <div class="tt-row"><span class="tt-label">Node</span><span class="tt-val">${found.node}</span></div>
+                <div class="tt-row"><span class="tt-label">Status</span><span class="tt-val" style="color:${found.active?'#34d399':'#4a5568'}">${found.active ? 'In Discussion' : 'Idle'}</span></div>
+            `;
+        } else {
+            hoveredBot = null; if (tooltip) tooltip.style.display = 'none';
+        }
+    });
+    meshCanvas.addEventListener('mouseleave', () => { hoveredBot = null; if (tooltip) tooltip.style.display = 'none'; });
+
+    // ── Radar Chart ───────────────────────────────────────────
+    const radarCanvas = document.getElementById('radarCanvas');
+    const radarCtx = radarCanvas.getContext('2d');
+    const DIMS = ['code', 'math', 'reasoning', 'creative', 'factual', 'multilingual'];
+    const MODEL_COLORS = {
+        'qwen3-coder-next-latest': '#a78bfa',
+        'phi4-latest': '#f472b6',
+        'deepseek-r1-8b': '#22d3ee',
+        'qwen2.5-7b': '#fbbf24',
+        'mistral-7b': '#f87171',
+        'llama3-8b': '#34d399',
+        'gemma2-9b': '#fb923c',
+    };
+
+    function drawRadar(models) {
+        const w = 280, h = 280, cx = w/2, cy = h/2, r = 100;
+        radarCtx.clearRect(0, 0, w, h);
+
+        // Grid rings
+        for (let ring = 1; ring <= 4; ring++) {
+            const rr = (r / 4) * ring;
+            radarCtx.beginPath();
+            for (let i = 0; i <= 6; i++) {
+                const a = (Math.PI * 2 / 6) * i - Math.PI / 2;
+                const px = cx + Math.cos(a) * rr;
+                const py = cy + Math.sin(a) * rr;
+                i === 0 ? radarCtx.moveTo(px, py) : radarCtx.lineTo(px, py);
+            }
+            radarCtx.closePath();
+            radarCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+            radarCtx.lineWidth = 1;
+            radarCtx.stroke();
+        }
+
+        // Axis lines + labels
+        DIMS.forEach((dim, i) => {
+            const a = (Math.PI * 2 / 6) * i - Math.PI / 2;
+            const px = cx + Math.cos(a) * r;
+            const py = cy + Math.sin(a) * r;
+            radarCtx.beginPath();
+            radarCtx.moveTo(cx, cy);
+            radarCtx.lineTo(px, py);
+            radarCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+            radarCtx.stroke();
+
+            // Label
+            const lx = cx + Math.cos(a) * (r + 16);
+            const ly = cy + Math.sin(a) * (r + 16);
+            radarCtx.font = '9px "JetBrains Mono", monospace';
+            radarCtx.textAlign = 'center';
+            radarCtx.textBaseline = 'middle';
+            radarCtx.fillStyle = 'rgba(255,255,255,0.3)';
+            radarCtx.fillText(dim.toUpperCase(), lx, ly);
+        });
+
+        // Draw each model
+        if (!models) return;
+        const modelNames = Object.keys(models);
+        modelNames.forEach((name, mi) => {
+            const m = models[name];
+            const strengths = m.strengths || {};
+            const color = MODEL_COLORS[name] || `hsl(${mi * 51}, 70%, 65%)`;
+
+            radarCtx.beginPath();
+            DIMS.forEach((dim, i) => {
+                const val = strengths[dim] || 0;
+                const a = (Math.PI * 2 / 6) * i - Math.PI / 2;
+                const px = cx + Math.cos(a) * r * val;
+                const py = cy + Math.sin(a) * r * val;
+                i === 0 ? radarCtx.moveTo(px, py) : radarCtx.lineTo(px, py);
+            });
+            radarCtx.closePath();
+            radarCtx.fillStyle = color.replace(')', ',0.06)').replace('rgb', 'rgba').replace(/#[0-9a-f]{6}/i, color + '0f');
+            radarCtx.strokeStyle = color;
+            radarCtx.lineWidth = 1.5;
+            radarCtx.globalAlpha = 0.7;
+            radarCtx.stroke();
+            radarCtx.globalAlpha = 0.08;
+            radarCtx.fill();
+            radarCtx.globalAlpha = 1;
+        });
+    }
+
+    // ── Heatmap ───────────────────────────────────────────────
+    function drawHeatmap(models) {
+        const grid = document.getElementById('heatmapGrid');
+        grid.innerHTML = '';
+
+        // Header row (dimensions)
+        const blank = document.createElement('div');
+        blank.className = 'heatmap-label';
+        blank.textContent = '';
+        grid.appendChild(blank);
+        DIMS.forEach(d => {
+            const lbl = document.createElement('div');
+            lbl.className = 'heatmap-label';
+            lbl.textContent = d.slice(0, 4).toUpperCase();
+            grid.appendChild(lbl);
+        });
+
+        if (!models) return;
+        Object.keys(models).forEach(name => {
+            const m = models[name];
+            const s = m.strengths || {};
+
+            // Row label
+            const rlbl = document.createElement('div');
+            rlbl.className = 'heatmap-label';
+            rlbl.textContent = name.split('-')[0].slice(0, 6);
+            rlbl.style.textAlign = 'right';
+            grid.appendChild(rlbl);
+
+            DIMS.forEach(dim => {
+                const val = s[dim] || 0;
+                const cell = document.createElement('div');
+                cell.className = 'heatmap-cell';
+                // Color interpolation: low=dark, high=bright
+                const h = val > 0.7 ? 140 : val > 0.5 ? 200 : val > 0.3 ? 260 : 0;
+                const l = 15 + val * 30;
+                cell.style.background = `hsla(${h}, 60%, ${l}%, 0.6)`;
+                cell.textContent = val.toFixed(1);
+                cell.title = `${name} — ${dim}: ${val.toFixed(2)}`;
+                grid.appendChild(cell);
+            });
+        });
+
+        // Update grid columns
+        grid.style.gridTemplateColumns = `60px repeat(${DIMS.length}, 1fr)`;
+    }
+
+    // ── Route Feed ────────────────────────────────────────────
+    function updateRouteFeed(routes) {
+        const feed = document.getElementById('routeFeed');
+        if (!routes || routes.length === 0) {
+            feed.innerHTML = '<div class="empty-state" style="padding:16px;"><div style="font-size:20px;opacity:0.3;">&#8644;</div><div>No routes yet</div></div>';
+            return;
+        }
+        feed.innerHTML = '';
+        routes.slice().reverse().forEach(r => {
+            const item = document.createElement('div');
+            item.className = 'route-item';
+            const confColor = r.confidence > 0.8 ? 'var(--green)' : r.confidence > 0.6 ? 'var(--amber)' : 'var(--red)';
+            const confBg = r.confidence > 0.8 ? 'var(--green-dim)' : r.confidence > 0.6 ? 'var(--amber-dim)' : 'var(--red-dim)';
+            item.innerHTML = `
+                <span class="prompt">${escHtml(r.prompt || '...')}</span>
+                <span class="arrow">&#8594;</span>
+                <span class="model">${r.model || '?'}</span>
+                <span class="conf" style="color:${confColor};background:${confBg}">${(r.confidence || 0).toFixed(2)}</span>
+            `;
+            feed.appendChild(item);
+        });
+    }
+
+    // ── BFT Canvas ────────────────────────────────────────────
+    const bftCanvas = document.getElementById('bftCanvas');
+    const bftCtx = bftCanvas.getContext('2d');
+
+    function drawBFT(activeRounds, completedProofs) {
+        const w = bftCanvas.width, h = bftCanvas.height;
+        bftCtx.clearRect(0, 0, w, h);
+
+        // Draw validator nodes in a circle
+        const total = 3; // BFT with 3 validators
+        const cx = w / 2, cy = h / 2, r = 35;
+
+        for (let i = 0; i < total; i++) {
+            const a = (Math.PI * 2 / total) * i - Math.PI / 2;
+            const x = cx + Math.cos(a) * r;
+            const y = cy + Math.sin(a) * r;
+
+            // Node
+            bftCtx.beginPath();
+            bftCtx.arc(x, y, 12, 0, Math.PI * 2);
+            const agreed = i < 2; // 2/3 agree
+            bftCtx.fillStyle = agreed ? 'rgba(52,211,153,0.15)' : 'rgba(248,113,113,0.1)';
+            bftCtx.fill();
+            bftCtx.strokeStyle = agreed ? '#34d399' : '#f87171';
+            bftCtx.lineWidth = 1.5;
+            bftCtx.stroke();
+
+            // Label
+            bftCtx.font = '9px "JetBrains Mono"';
+            bftCtx.textAlign = 'center';
+            bftCtx.fillStyle = agreed ? '#34d399' : '#f87171';
+            bftCtx.fillText(agreed ? 'AGR' : 'DIS', x, y + 3);
+
+            // Connection to center
+            bftCtx.beginPath();
+            bftCtx.moveTo(cx, cy);
+            bftCtx.lineTo(x, y);
+            bftCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+            bftCtx.lineWidth = 0.5;
+            bftCtx.stroke();
+        }
+
+        // Center — consensus result
+        bftCtx.beginPath();
+        bftCtx.arc(cx, cy, 8, 0, Math.PI * 2);
+        bftCtx.fillStyle = 'rgba(52,211,153,0.2)';
+        bftCtx.fill();
+
+        // Label
+        bftCtx.font = '600 10px "Chakra Petch"';
+        bftCtx.fillStyle = '#e8ecf4';
+        bftCtx.fillText('2/3+ CONSENSUS', cx, cy + r + 24);
+        bftCtx.font = '9px "JetBrains Mono"';
+        bftCtx.fillStyle = 'rgba(255,255,255,0.3)';
+        bftCtx.fillText(`${completedProofs || 0} verified`, cx, cy + r + 38);
+    }
+
+    // ── Crystal Graph Canvas ──────────────────────────────────
+    const crystalCanvas = document.getElementById('crystalGraphCanvas');
+    const crystalCtx = crystalCanvas.getContext('2d');
+
+    function drawCrystalGraph(memData) {
+        const w = crystalCanvas.width, h = crystalCanvas.height;
+        crystalCtx.clearRect(0, 0, w, h);
+
+        const total = memData?.total_crystals || 0;
+        const edges = memData?.graph_edges || 0;
+
+        if (total === 0) {
+            crystalCtx.font = '11px "DM Sans"';
+            crystalCtx.fillStyle = 'rgba(255,255,255,0.15)';
+            crystalCtx.textAlign = 'center';
+            crystalCtx.fillText('Awaiting crystal formation...', w/2, h/2);
+            return;
+        }
+
+        // Generate pseudo-crystal nodes
+        const crystalNodes = [];
+        const count = Math.min(total, 30);
+        for (let i = 0; i < count; i++) {
+            crystalNodes.push({
+                x: 40 + Math.random() * (w - 80),
+                y: 20 + Math.random() * (h - 40),
+                r: 3 + Math.random() * 4,
+                status: ['crystallized', 'proposed', 'voting'][Math.floor(Math.random() * 3)],
+            });
+        }
+
+        // Draw edges
+        const edgeCount = Math.min(edges, count * 2);
+        for (let e = 0; e < edgeCount; e++) {
+            const a = crystalNodes[Math.floor(Math.random() * count)];
+            const b = crystalNodes[Math.floor(Math.random() * count)];
+            if (a === b) continue;
+            crystalCtx.beginPath();
+            crystalCtx.moveTo(a.x, a.y);
+            crystalCtx.lineTo(b.x, b.y);
+            crystalCtx.strokeStyle = 'rgba(255,255,255,0.03)';
+            crystalCtx.lineWidth = 0.5;
+            crystalCtx.stroke();
+        }
+
+        // Draw crystal nodes
+        crystalNodes.forEach(n => {
+            const color = n.status === 'crystallized' ? '#34d399' :
+                          n.status === 'voting' ? '#22d3ee' : '#fbbf24';
+            crystalCtx.beginPath();
+            // Diamond shape for crystals
+            crystalCtx.moveTo(n.x, n.y - n.r);
+            crystalCtx.lineTo(n.x + n.r * 0.7, n.y);
+            crystalCtx.lineTo(n.x, n.y + n.r);
+            crystalCtx.lineTo(n.x - n.r * 0.7, n.y);
+            crystalCtx.closePath();
+            crystalCtx.fillStyle = color.replace(')', ',0.3)').replace('rgb', 'rgba');
+            crystalCtx.fillStyle = color + '20';
+            crystalCtx.fill();
+            crystalCtx.strokeStyle = color + '80';
+            crystalCtx.lineWidth = 1;
+            crystalCtx.stroke();
+        });
+    }
+
+    // ── Data Update ───────────────────────────────────────────
+    function escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function updateDashboard(data) {
+        if (!data) return;
+        prevData = meshData;
+        meshData = data;
+
+        // Connection status
+        const connPill = document.getElementById('connStatus');
+        const connLabel = document.getElementById('connLabel');
+        if (data.peer_count > 0) {
+            connPill.classList.remove('offline');
+            connLabel.textContent = `${data.peer_count} PEER${data.peer_count > 1 ? 'S' : ''}`;
+        } else {
+            connPill.classList.add('offline');
+            connLabel.textContent = 'NO PEERS';
+        }
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+
+        // Mesh meta
+        document.getElementById('meshRoot').textContent = data.mesh_root || '--------';
+        document.getElementById('meshSeq').textContent = data.mesh_sequence || 0;
+        document.getElementById('meshPeers').textContent = data.mesh_peers || 0;
+
+        // Build bubble map topology
+        buildBubbleMap(data);
+
+        // ── Latent Router ──
+        const lr = data.latent_router || {};
+        document.getElementById('routeCount').textContent = `${lr.total_routes || 0} routes`;
+        document.getElementById('totalRoutes').textContent = lr.total_routes || 0;
+        document.getElementById('avgConf').textContent = (lr.avg_confidence || 0).toFixed(2);
+
+        const methods = lr.methods || {};
+        const topMethod = Object.keys(methods).sort((a, b) => methods[b] - methods[a])[0] || '--';
+        document.getElementById('routeMethod').textContent = topMethod;
+
+        drawRadar(lr.models);
+        drawHeatmap(lr.models);
+        updateRouteFeed(lr.recent_routes);
+
+        // ── Proof-of-Inference ──
+        const poi = data.poi || {};
+        document.getElementById('activeRounds').textContent = poi.active_rounds || 0;
+        document.getElementById('completedProofs').textContent = poi.completed_proofs || 0;
+        document.getElementById('poiCount').textContent = `${poi.completed_proofs || 0} proofs`;
+        drawBFT(poi.active_rounds, poi.completed_proofs);
+
+        // ── Attestation Chain ──
+        const att = data.attestation || {};
+        const chainLen = att.chain_length || 0;
+        document.getElementById('chainLength').textContent = `${chainLen} seals`;
+
+        // Integrity badge
+        const integ = document.getElementById('chainIntegrity');
+        if (chainLen > 0) {
+            integ.innerHTML = `<span class="integrity-badge valid">&#10003; CHAIN INTACT &mdash; ${chainLen} seals</span>`;
+        } else {
+            integ.innerHTML = `<span class="integrity-badge broken">&#9888; NO CHAIN</span>`;
+        }
+
+        // Chain visualization
+        const chainVis = document.getElementById('chainVisual');
+        const models_attested = att.models_attested || [];
+        if (models_attested.length > 0) {
+            chainVis.innerHTML = '';
+            models_attested.slice(-6).forEach((model, i) => {
+                const link = document.createElement('div');
+                link.className = 'chain-link';
+                link.innerHTML = `
+                    <div class="seal">${att.last_seal || '0'.repeat(32)}</div>
+                    <div class="meta">
+                        <span>${escHtml(model)}</span>
+                        <span>gpu:${(att.gpu_model || 'unknown').slice(0, 20)}</span>
+                        <span>seq:${chainLen - models_attested.length + i + 1}</span>
+                    </div>
+                `;
+                chainVis.appendChild(link);
+            });
+        }
+
+        // Trust scores
+        const trust = att.trust_scores || {};
+        const trustKeys = Object.keys(trust);
+        const trustSection = document.getElementById('trustSection');
+        const trustList = document.getElementById('trustList');
+        if (trustKeys.length > 0) {
+            trustSection.style.display = 'block';
+            trustList.innerHTML = '';
+            trustKeys.forEach(node => {
+                const score = trust[node];
+                const row = document.createElement('div');
+                row.className = 'trust-row';
+                row.innerHTML = `
+                    <span class="node-name">${escHtml(node)}</span>
+                    <div class="trust-bar-bg"><div class="trust-bar-fill" style="width:${score * 100}%"></div></div>
+                    <span class="trust-score">${score.toFixed(3)}</span>
+                `;
+                trustList.appendChild(row);
+            });
+        }
+
+        // ── Swarm Memory ──
+        const mem = data.swarm_memory || {};
+        document.getElementById('crystalCount').textContent = `${mem.total_crystals || 0} crystals`;
+        const byStatus = mem.by_status || {};
+        document.getElementById('crystalProposed').textContent = byStatus.proposed || 0;
+        document.getElementById('crystalVoting').textContent = byStatus.voting || 0;
+        document.getElementById('crystalCrystallized').textContent = byStatus.crystallized || 0;
+        document.getElementById('crystalRejected').textContent = byStatus.rejected || 0;
+        document.getElementById('graphEdges').textContent = `${mem.graph_edges || 0} edges`;
+
+        drawCrystalGraph(mem);
+
+        // Tags cloud
+        const tagCloud = document.getElementById('tagCloud');
+        const tags = mem.unique_tags || [];
+        tagCloud.innerHTML = '';
+        tags.forEach(tag => {
+            const pill = document.createElement('span');
+            pill.className = 'tag-pill';
+            pill.textContent = tag;
+            tagCloud.appendChild(pill);
+        });
+    }
+
+    // ── Polling ───────────────────────────────────────────────
+    async function fetchStatus() {
+        try {
+            const resp = await fetch(API);
+            if (!resp.ok) throw new Error(resp.status);
+            const data = await resp.json();
+            updateDashboard(data);
+        } catch (e) {
+            // Show offline status
+            const connPill = document.getElementById('connStatus');
+            connPill.classList.add('offline');
+            document.getElementById('connLabel').textContent = 'OFFLINE';
+        }
+    }
+
+    // Initial fetch + poll every 3s (mesh + discussion)
+    fetchStatus();
+    setInterval(fetchStatus, 3000);
+
+    // ── Free Discussion Feed ──────────────────────────────────
+    async function fetchDiscussionStatus() {
+        try {
+            const resp = await fetch('/api/discussion/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const prevMsgCount = lastDiscMsgCount;
+            discData = data;
+            updateDiscussionFeed(data);
+
+            // Rebuild bubble map to update active/speaking states
+            if (meshData) buildBubbleMap(meshData);
+
+            // Spawn packets for new messages
+            const msgs = data.recent_messages || [];
+            if (msgs.length > prevMsgCount && prevMsgCount > 0) {
+                const newest = msgs[msgs.length - 1];
+                if (newest && newest.agent) spawnDiscussionPacket(newest.agent);
+            }
+            lastDiscMsgCount = msgs.length;
+        } catch(e) {
+            console.warn('Discussion fetch failed:', e);
+        }
+    }
+
+    function updateDiscussionFeed(data) {
+        // Status badge
+        const badge = document.getElementById('discStatusBadge');
+        if (badge) {
+            if (data.running && !data.paused) {
+                badge.className = 'disc-status-badge active'; badge.textContent = 'ACTIVE';
+            } else if (data.paused) {
+                badge.className = 'disc-status-badge paused'; badge.textContent = 'PAUSED';
+            } else {
+                badge.className = 'disc-status-badge'; badge.textContent = 'STOPPED';
+            }
+        }
+
+        // Toggle button
+        const btn = document.getElementById('discToggleBtn');
+        if (btn) {
+            btn.textContent = data.paused ? 'RESUME' : 'PAUSE';
+            btn.className = 'disc-toggle-btn' + (data.paused ? ' paused' : '');
+        }
+
+        // Topic
+        const topic = document.getElementById('discTopic');
+        if (topic) topic.textContent = data.current_topic || 'No topic';
+
+        // Meta
+        const meta = document.getElementById('discMeta');
+        if (meta) {
+            meta.innerHTML = `
+                <span>Turn ${data.turn_count || 0}</span>
+                <span>${(data.participants || []).length} participants</span>
+                <span>Interval ${data.min_interval || 30}\u2013${data.max_interval || 90}s</span>
+            `;
+        }
+
+        // Participant chips
+        const chips = document.getElementById('discParticipants');
+        if (chips) {
+            chips.innerHTML = '';
+            (data.participants || []).forEach(p => {
+                const info = BOT_INFO[p] || {};
+                const color = info.color || '#888';
+                const name = info.name || p;
+                const recent = (data.recent_speakers || []).includes(p);
+                chips.innerHTML += `<span class="disc-participant-chip" style="${recent ? 'border-color:'+color : ''}">
+                    <span class="disc-participant-dot" style="background:${color};${recent ? 'box-shadow:0 0 6px '+color : ''}"></span>
+                    ${escHtml(name)}
+                </span>`;
+            });
+        }
+
+        // Feed messages
+        const feed = document.getElementById('discFeed');
+        if (!feed) return;
+        const msgs = data.recent_messages || [];
+        if (msgs.length === 0) {
+            feed.innerHTML = '<div class="empty-state" style="padding:24px"><div style="font-size:18px;opacity:0.3">&#9672;</div><div>Awaiting discussion...</div></div>';
+            return;
+        }
+
+        feed.innerHTML = '';
+        msgs.slice().reverse().forEach((msg, i) => {
+            const info = BOT_INFO[msg.agent] || {};
+            const color = info.color || '#888';
+            const name = info.name || msg.agent;
+            const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
+            const el = document.createElement('div');
+            el.className = 'disc-msg' + (i === 0 ? ' new' : '');
+            el.innerHTML = `
+                <div class="disc-msg-orb" style="background:${color};box-shadow:0 0 8px ${color}40"></div>
+                <div class="disc-msg-body">
+                    <div class="disc-msg-head">
+                        <span class="disc-msg-name" style="color:${color}">${escHtml(name)}</span>
+                        <span class="disc-msg-time">${time}</span>
+                    </div>
+                    <div class="disc-msg-text">${escHtml(msg.content || '')}</div>
+                </div>
+            `;
+            feed.appendChild(el);
+        });
+    }
+
+    async function toggleDiscussion() {
+        const action = discData && discData.paused ? 'resume' : 'pause';
+        try {
+            await fetch('/api/discussion/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action}),
+            });
+            fetchDiscussionStatus();
+        } catch(e) { console.warn('Discussion control failed:', e); }
+    }
+
+    // Discussion polling (3s, same as mesh)
+    fetchDiscussionStatus();
+    setInterval(fetchDiscussionStatus, 3000);
+
+    // ── Canvas DPI fix for radar + crystal ──
+    function fixCanvasDPI(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * devicePixelRatio;
+        canvas.height = rect.height * devicePixelRatio;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(devicePixelRatio, devicePixelRatio);
+    }
+    // Fix on load
+    setTimeout(() => {
+        [bftCanvas, crystalCanvas].forEach(fixCanvasDPI);
+        if (meshData) {
+            drawBFT(meshData.poi?.active_rounds, meshData.poi?.completed_proofs);
+            drawCrystalGraph(meshData.swarm_memory);
+        }
+    }, 100);
+    // ── Mesh Query (Interactive Prompt) ──────────────────────
+    const queryInput = document.getElementById('queryInput');
+    const queryBtn = document.getElementById('queryBtn');
+    const queryResult = document.getElementById('queryResult');
+    const queryStatus = document.getElementById('queryStatus');
+
+    queryInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !queryBtn.disabled) sendMeshQuery();
+    });
+
+    async function sendMeshQuery() {
+        const prompt = queryInput.value.trim();
+        if (!prompt) return;
+
+        // UI: loading state
+        queryBtn.disabled = true;
+        queryBtn.classList.add('routing');
+        queryBtn.innerHTML = '<span class="spinner"></span>ROUTING...';
+        queryStatus.textContent = 'ROUTING';
+        queryResult.classList.remove('visible');
+
+        try {
+            const resp = await fetch('/api/mesh/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt }),
+            });
+            const data = await resp.json();
+
+            if (data.error) {
+                showQueryError(data.error);
+                return;
+            }
+
+            // Routing metadata
+            const routing = document.getElementById('resultRouting');
+            routing.innerHTML = `
+                <div class="route-tag"><span class="label">ROUTED TO</span> <span class="val model">${escHtml(data.routed_to || '?')}</span></div>
+                <div class="route-tag"><span class="label">CONFIDENCE</span> <span class="val conf">${(data.confidence || 0).toFixed(4)}</span></div>
+                <div class="route-tag"><span class="label">METHOD</span> <span class="val method">${escHtml(data.method || '?')}</span></div>
+                <div class="route-tag"><span class="label">LATENCY</span> <span class="val">${data.inference_ms || 0}ms</span></div>
+            `;
+
+            // Dimension bars
+            const dims = data.dimensions || {};
+            const dimHtml = Object.entries(dims).sort((a,b) => b[1] - a[1]).map(([dim, val]) =>
+                `<div class="dim-bar">
+                    <span style="color:var(--text-dim);min-width:52px;">${dim}</span>
+                    <div class="bar-bg"><div class="bar-fill" style="width:${(val * 100).toFixed(0)}%"></div></div>
+                    <span style="color:var(--text-dim)">${val.toFixed(2)}</span>
+                </div>`
+            ).join('');
+            document.getElementById('resultDims').innerHTML = dimHtml;
+
+            // All model scores
+            const scores = data.all_scores || {};
+            const winner = data.routed_to;
+            const scoresHtml = Object.entries(scores).sort((a,b) => b[1] - a[1]).map(([model, score]) =>
+                `<span class="score-chip ${model === winner ? 'winner' : ''}">${model.split('-')[0]}:${score.toFixed(3)}</span>`
+            ).join('');
+            document.getElementById('resultScores').innerHTML = scoresHtml;
+
+            // Response
+            const responseDiv = document.getElementById('resultResponse');
+            responseDiv.textContent = data.response || '(no response)';
+
+            // Timing
+            document.getElementById('resultTiming').textContent =
+                `Routed to ${data.routed_to} in ${data.inference_ms}ms via ${data.method} routing`;
+
+            queryResult.classList.add('visible');
+            queryStatus.textContent = 'COMPLETE';
+
+        } catch (e) {
+            showQueryError('Network error: ' + e.message);
+        } finally {
+            queryBtn.disabled = false;
+            queryBtn.classList.remove('routing');
+            queryBtn.innerHTML = 'ROUTE &amp; INFER';
+        }
+    }
+
+    function showQueryError(msg) {
+        const routing = document.getElementById('resultRouting');
+        routing.innerHTML = `<div class="route-tag"><span class="label" style="color:var(--red);">ERROR</span> <span class="val" style="color:var(--red);">${escHtml(msg)}</span></div>`;
+        document.getElementById('resultDims').innerHTML = '';
+        document.getElementById('resultScores').innerHTML = '';
+        document.getElementById('resultResponse').textContent = '';
+        document.getElementById('resultTiming').textContent = '';
+        queryResult.classList.add('visible');
+        queryStatus.textContent = 'ERROR';
+    }
+    </script>
+</body>
+</html>

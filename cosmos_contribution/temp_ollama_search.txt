@@ -1,0 +1,36 @@
+d:/Cosmos/Cosmos\core\swarm\deepseek_backbone.py:90:lambda: ollama.chat(model=self.model_name, messages=messages, options=ollama_options)
+d:/Cosmos/Cosmos\web\server.py:82:ollama = _olm  # inject into module globals so ollama.chat() works
+d:/Cosmos/Cosmos\web\server.py:94:# Eagerly load so all `ollama.chat()` calls work
+d:/Cosmos/Cosmos\web\server.py:2449:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:2958:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3193:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3300:comment_response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3408:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3466:retry_response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3586:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3627:retry_response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3755:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:3916:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server.py:6511:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:1921:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:2609:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3055:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3233:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3294:comment_response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3355:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3465:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:3591:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:4184:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:6087:response = ollama.chat(
+d:/Cosmos/Cosmos\web\server_remote.py:6105:response = ollama.chat(
+d:/Cosmos/Cosmos\web\cosmosynapse\engine\cosmos_swarm_orchestrator.py:1159:lambda: ollama.chat(model=model_name, messages=messages, options=options)
+d:/Cosmos/Cosmos\web\web\server.py:2305:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:2784:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3018:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3124:comment_response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3213:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3270:retry_response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3389:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3429:retry_response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3556:response = ollama.chat(
+d:/Cosmos/Cosmos\web\web\server.py:3706:response = ollama.chat(

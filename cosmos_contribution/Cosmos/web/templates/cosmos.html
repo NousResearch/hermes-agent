@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Talk to Cosmos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#030014;--surface:rgba(255,255,255,0.04);--surface-hover:rgba(255,255,255,0.07);
+  --border:rgba(255,255,255,0.08);--text:#e2e8f0;--text-dim:#64748b;--text-bright:#f8fafc;
+  --purple:#8b5cf6;--cyan:#06b6d4;--green:#10b981;--pink:#ec4899;
+  --orange:#f97316;--blue:#3b82f6;--red:#ef4444;--yellow:#eab308;
+}
+html{font-size:16px;height:100%}
+body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;height:100%;display:flex;flex-direction:column;overflow:hidden}
+.mono{font-family:'Space Mono',monospace}
+
+/* Animated background */
+.cosmos{position:fixed;inset:0;overflow:hidden;z-index:0;pointer-events:none}
+.nebula{position:absolute;border-radius:50%;filter:blur(120px);opacity:0.12;animation:float 25s ease-in-out infinite}
+.nebula-1{width:600px;height:600px;background:radial-gradient(circle,var(--purple),transparent);top:-200px;left:-100px}
+.nebula-2{width:500px;height:500px;background:radial-gradient(circle,var(--cyan),transparent);bottom:-150px;right:-100px;animation-delay:-10s}
+.nebula-3{width:400px;height:400px;background:radial-gradient(circle,var(--pink),transparent);top:50%;left:60%;animation-delay:-18s}
+@keyframes float{0%,100%{transform:translateY(0) scale(1)}33%{transform:translateY(-30px) scale(1.05)}66%{transform:translateY(20px) scale(0.95)}}
+
+/* Header */
+.header{position:relative;z-index:1;text-align:center;padding:24px 16px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.header h1{font-size:1.8rem;font-weight:800;background:linear-gradient(135deg,var(--purple),var(--cyan),var(--pink));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:4px}
+.header .subtitle{color:var(--text-dim);font-size:0.85rem}
+.header .status{display:inline-flex;align-items:center;gap:6px;padding:4px 14px;border-radius:100px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);font-size:0.7rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--green);margin-top:8px}
+.header .status .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+
+/* Gateway banner */
+.gateway-banner{position:relative;z-index:1;background:rgba(139,92,246,0.06);border-bottom:1px solid rgba(139,92,246,0.15);padding:10px 24px;text-align:center;font-size:0.78rem;color:var(--text-dim);flex-shrink:0}
+.gateway-banner code{background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:4px;font-family:'Space Mono',monospace;font-size:0.72rem;color:var(--cyan)}
+
+/* Chat area */
+.chat-container{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;max-width:800px;width:100%;margin:0 auto;padding:0 16px;overflow:hidden}
+.messages{flex:1;overflow-y:auto;padding:20px 0;display:flex;flex-direction:column;gap:12px}
+.messages::-webkit-scrollbar{width:4px}
+.messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+/* Message bubbles */
+.msg{max-width:85%;padding:12px 16px;border-radius:12px;font-size:0.9rem;line-height:1.5;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.msg.user{align-self:flex-end;background:linear-gradient(135deg,rgba(139,92,246,0.2),rgba(59,130,246,0.2));border:1px solid rgba(139,92,246,0.2);border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.bot .agent-name{font-size:0.72rem;font-weight:600;color:var(--cyan);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px}
+.msg.bot .meta{font-size:0.68rem;color:var(--text-dim);margin-top:6px;font-family:'Space Mono',monospace}
+.msg.system{align-self:center;background:rgba(234,179,8,0.06);border:1px solid rgba(234,179,8,0.15);color:var(--yellow);font-size:0.8rem;text-align:center;max-width:95%}
+.msg.error{align-self:center;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);color:var(--red);font-size:0.8rem;text-align:center}
+
+/* Typing indicator */
+.typing{align-self:flex-start;padding:12px 16px;display:none;gap:4px;align-items:center}
+.typing.active{display:flex}
+.typing span{width:6px;height:6px;border-radius:50%;background:var(--text-dim);animation:bounce 1.4s ease infinite}
+.typing span:nth-child(2){animation-delay:0.2s}
+.typing span:nth-child(3){animation-delay:0.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-8px)}}
+
+/* Input area */
+.input-area{flex-shrink:0;padding:12px 0 20px;border-top:1px solid var(--border)}
+.input-row{display:flex;gap:10px;align-items:flex-end}
+.input-row textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 16px;color:var(--text);font-family:'Outfit',sans-serif;font-size:0.9rem;resize:none;outline:none;min-height:48px;max-height:150px;line-height:1.5;transition:border-color 0.2s}
+.input-row textarea:focus{border-color:var(--purple)}
+.input-row textarea::placeholder{color:var(--text-dim)}
+.send-btn{width:48px;height:48px;border-radius:12px;border:none;background:linear-gradient(135deg,var(--purple),var(--blue));color:white;font-size:1.2rem;cursor:pointer;transition:opacity 0.2s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.send-btn:hover{opacity:0.85}
+.send-btn:disabled{opacity:0.3;cursor:not-allowed}
+.send-btn svg{width:20px;height:20px}
+
+/* Mode toggle */
+.mode-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.mode-toggle{display:flex;gap:6px}
+.mode-btn{padding:4px 12px;border-radius:100px;border:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:0.75rem;font-family:'Outfit',sans-serif;cursor:pointer;transition:all 0.2s}
+.mode-btn.active{background:rgba(139,92,246,0.15);border-color:rgba(139,92,246,0.3);color:var(--purple)}
+.mode-btn:hover{border-color:rgba(139,92,246,0.3)}
+.char-count{font-size:0.7rem;color:var(--text-dim);font-family:'Space Mono',monospace}
+
+/* Quick actions */
+.quick-actions{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.quick-btn{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-size:0.72rem;cursor:pointer;transition:all 0.2s;font-family:'Outfit',sans-serif}
+.quick-btn:hover{background:var(--surface-hover);color:var(--text);border-color:rgba(139,92,246,0.3)}
+
+/* Responsive */
+@media(max-width:600px){
+  .header h1{font-size:1.4rem}
+  .msg{max-width:92%}
+  .chat-container{padding:0 10px}
+}
+</style>
+</head>
+<body>
+
+<div class="cosmos">
+  <div class="nebula nebula-1"></div>
+  <div class="nebula nebula-2"></div>
+  <div class="nebula nebula-3"></div>
+</div>
+
+<div class="header">
+  <h1>Talk to Cosmos</h1>
+  <div class="subtitle">The self-evolving AI collective &mdash; 11 agents, one mind</div>
+  <div class="status"><span class="dot"></span> Collective Online</div>
+</div>
+
+<div class="gateway-banner">
+  Powered by the Cosmos Collective. External agents: use <code>POST /api/gateway/query</code> for API access.
+</div>
+
+<div class="chat-container">
+  <div class="messages" id="messages">
+    <div class="msg system">
+      Welcome to Cosmos. You're talking to an 11-agent AI collective. Ask anything &mdash; the swarm will route your question to the best-suited agent.
+    </div>
+  </div>
+
+  <div class="typing" id="typing">
+    <span></span><span></span><span></span>
+  </div>
+
+  <div class="input-area">
+    <div class="mode-row">
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="mode-chat" onclick="setMode('chat')">Chat</button>
+        <button class="mode-btn" id="mode-gateway" onclick="setMode('gateway')">Gateway (Sandboxed)</button>
+      </div>
+      <span class="char-count" id="char-count">0</span>
+    </div>
+    <div class="quick-actions">
+      <button class="quick-btn" onclick="quickSend('What is Cosmos?')">What is Cosmos?</button>
+      <button class="quick-btn" onclick="quickSend('Who is in the swarm?')">Who is in the swarm?</button>
+      <button class="quick-btn" onclick="quickSend('What can you do?')">What can you do?</button>
+      <button class="quick-btn" onclick="quickSend('Show me the token')">$COSMOS Token</button>
+    </div>
+    <div class="input-row">
+      <textarea id="input" rows="1" placeholder="Ask Cosmos anything..." maxlength="5000"></textarea>
+      <button class="send-btn" id="send-btn" onclick="sendMessage()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentMode = 'chat';
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('mode-chat').classList.toggle('active', mode === 'chat');
+  document.getElementById('mode-gateway').classList.toggle('active', mode === 'gateway');
+  const input = document.getElementById('input');
+  input.placeholder = mode === 'gateway'
+    ? 'Send via The Window (sandboxed, rate-limited)...'
+    : 'Ask Cosmos anything...';
+}
+
+function addMessage(text, type, meta) {
+  const messages = document.getElementById('messages');
+  const msg = document.createElement('div');
+  msg.className = `msg ${type}`;
+
+  if (type === 'bot') {
+    let html = '';
+    if (meta && meta.model) {
+      html += `<div class="agent-name">${meta.model}</div>`;
+    }
+    html += `<div class="content">${escapeHtml(text)}</div>`;
+    if (meta) {
+      const parts = [];
+      if (meta.tokens) parts.push(`${meta.tokens} tokens`);
+      if (meta.time) parts.push(`${meta.time}ms`);
+      if (meta.scrubbed) parts.push('scrubbed');
+      if (parts.length) html += `<div class="meta">${parts.join(' | ')}</div>`;
+    }
+    msg.innerHTML = html;
+  } else {
+    msg.textContent = text;
+  }
+
+  messages.appendChild(msg);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML.replace(/\n/g, '<br>');
+}
+
+function showTyping(show) {
+  document.getElementById('typing').classList.toggle('active', show);
+}
+
+async function sendMessage() {
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  addMessage(text, 'user');
+  input.value = '';
+  updateCharCount();
+  showTyping(true);
+
+  const sendBtn = document.getElementById('send-btn');
+  sendBtn.disabled = true;
+
+  try {
+    let data;
+    if (currentMode === 'gateway') {
+      const res = await fetch('/api/gateway/query', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({input: text})
+      });
+      data = await res.json();
+
+      if (data.status === 'ok') {
+        addMessage(data.response, 'bot', {
+          model: `Gateway: ${data.model || 'collective'}`,
+          tokens: data.tokens_used,
+          time: data.processing_time_ms,
+          scrubbed: data.was_filtered
+        });
+      } else {
+        addMessage(data.error || 'Gateway error', 'error');
+      }
+    } else {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: text, history: getHistory()})
+      });
+      data = await res.json();
+
+      if (data.response) {
+        const model = data.winning_agent || (data.collective_active ? 'Collective' : 'Cosmos');
+        addMessage(data.response, 'bot', {model: model});
+      } else {
+        addMessage(data.error || 'No response', 'error');
+      }
+    }
+  } catch (e) {
+    addMessage('Connection error: ' + e.message, 'error');
+  }
+
+  showTyping(false);
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+function getHistory() {
+  const msgs = document.querySelectorAll('.msg.user, .msg.bot');
+  const history = [];
+  msgs.forEach(m => {
+    if (m.classList.contains('user')) {
+      history.push({role: 'user', content: m.textContent});
+    } else {
+      const content = m.querySelector('.content');
+      if (content) history.push({role: 'assistant', content: content.textContent});
+    }
+  });
+  return history.slice(-10);
+}
+
+function quickSend(text) {
+  document.getElementById('input').value = text;
+  sendMessage();
+}
+
+function updateCharCount() {
+  const input = document.getElementById('input');
+  document.getElementById('char-count').textContent = input.value.length;
+}
+
+// Auto-resize textarea
+const input = document.getElementById('input');
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+  updateCharCount();
+});
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+</script>
+</body>
+</html>

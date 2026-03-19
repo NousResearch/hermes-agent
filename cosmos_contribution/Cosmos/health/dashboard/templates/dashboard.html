@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD:cosmos/health/dashboard/templates/dashboard.html
+    <title>cosmos Health Dashboard</title>
+=======
+    <title>Cosmos Health Dashboard</title>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/dashboard.html
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/css/health.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        .nav-links a {
+            color: #a0a0a0;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .nav-links a:hover, .nav-links a.active {
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .wellness-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .wellness-score {
+            font-size: 5rem;
+            font-weight: bold;
+            background: linear-gradient(135deg, #00ff88, #00d4ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .wellness-label {
+            font-size: 1.2rem;
+            color: #a0a0a0;
+            margin-top: 10px;
+        }
+
+        .score-breakdown {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-top: 30px;
+            flex-wrap: wrap;
+        }
+
+        .score-item {
+            text-align: center;
+        }
+
+        .score-item .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+
+        .score-item .label {
+            font-size: 0.9rem;
+            color: #808080;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 40px rgba(0, 212, 255, 0.2);
+        }
+
+        .metric-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .metric-title {
+            font-size: 1rem;
+            color: #a0a0a0;
+        }
+
+        .metric-icon {
+            font-size: 1.5rem;
+        }
+
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .metric-unit {
+            font-size: 1rem;
+            color: #808080;
+        }
+
+        .metric-trend {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+
+        .trend-up {
+            color: #00ff88;
+        }
+
+        .trend-down {
+            color: #ff6b6b;
+        }
+
+        .trend-stable {
+            color: #ffd93d;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-container h3 {
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 300px;
+        }
+
+        .alerts-section {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+        }
+
+        .alerts-section h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+
+        .alert-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            margin-bottom: 10px;
+        }
+
+        .alert-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+
+        .alert-icon.warning {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        .alert-icon.info {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+
+        .alert-icon.critical {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+        }
+
+        .alert-content {
+            flex: 1;
+        }
+
+        .alert-title {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .alert-message {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(0, 255, 136, 0.1);
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #00ff88;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #808080;
+        }
+
+        .goals-section {
+            margin-top: 30px;
+        }
+
+        .goal-item {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+
+        .goal-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .goal-progress {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .goal-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+<<<<<<< HEAD:cosmos/health/dashboard/templates/dashboard.html
+            <h1>cosmos Health</h1>
+=======
+            <h1>Cosmos Health</h1>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/dashboard.html
+            <nav class="nav-links">
+                <a href="/health" class="active">Dashboard</a>
+                <a href="/nutrition">Nutrition</a>
+                <a href="/documents">Documents</a>
+                <a href="/insights">Insights</a>
+            </nav>
+            <div class="connection-status">
+                <span class="status-dot" id="wsStatus"></span>
+                <span id="connectionText">Connected</span>
+            </div>
+        </header>
+
+        <!-- Wellness Score Card -->
+        <div class="wellness-card">
+            <div class="wellness-score" id="wellnessScore">--</div>
+            <div class="wellness-label">Wellness Score</div>
+            <div class="score-breakdown">
+                <div class="score-item">
+                    <div class="value" id="activityScore">--</div>
+                    <div class="label">Activity</div>
+                </div>
+                <div class="score-item">
+                    <div class="value" id="sleepScore">--</div>
+                    <div class="label">Sleep</div>
+                </div>
+                <div class="score-item">
+                    <div class="value" id="recoveryScore">--</div>
+                    <div class="label">Recovery</div>
+                </div>
+                <div class="score-item">
+                    <div class="value" id="heartScore">--</div>
+                    <div class="label">Heart</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics Grid -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">Heart Rate</span>
+                    <span class="metric-icon">&#10084;</span>
+                </div>
+                <div class="metric-value" id="hrValue">--</div>
+                <span class="metric-unit">bpm</span>
+                <div class="metric-trend" id="hrTrend"></div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">Steps Today</span>
+                    <span class="metric-icon">&#128694;</span>
+                </div>
+                <div class="metric-value" id="stepsValue">--</div>
+                <span class="metric-unit">steps</span>
+                <div class="metric-trend" id="stepsTrend"></div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">Sleep Duration</span>
+                    <span class="metric-icon">&#128164;</span>
+                </div>
+                <div class="metric-value" id="sleepValue">--</div>
+                <span class="metric-unit">hours</span>
+                <div class="metric-trend" id="sleepTrend"></div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">HRV</span>
+                    <span class="metric-icon">&#128147;</span>
+                </div>
+                <div class="metric-value" id="hrvValue">--</div>
+                <span class="metric-unit">ms</span>
+                <div class="metric-trend" id="hrvTrend"></div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">Calories Burned</span>
+                    <span class="metric-icon">&#128293;</span>
+                </div>
+                <div class="metric-value" id="caloriesValue">--</div>
+                <span class="metric-unit">kcal</span>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-header">
+                    <span class="metric-title">Recovery Score</span>
+                    <span class="metric-icon">&#9889;</span>
+                </div>
+                <div class="metric-value" id="recoveryValue">--</div>
+                <span class="metric-unit">%</span>
+            </div>
+        </div>
+
+        <!-- Heart Rate Chart -->
+        <div class="chart-container">
+            <h3>Heart Rate - Last 24 Hours</h3>
+            <div class="chart-wrapper">
+                <canvas id="hrChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Activity Chart -->
+        <div class="chart-container">
+            <h3>Weekly Activity</h3>
+            <div class="chart-wrapper">
+                <canvas id="activityChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Goals Section -->
+        <div class="chart-container goals-section">
+            <h3>Active Goals</h3>
+            <div id="goalsList">
+                <div class="loading">Loading goals...</div>
+            </div>
+        </div>
+
+        <!-- Alerts Section -->
+        <div class="alerts-section">
+            <h3>Health Alerts</h3>
+            <div id="alertsList">
+                <div class="loading">Loading alerts...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/health.js"></script>
+    <script>
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', () => {
+            initHealthDashboard();
+        });
+
+        let ws = null;
+        let hrChart = null;
+        let activityChart = null;
+
+        function initHealthDashboard() {
+            connectWebSocket();
+            loadSummary();
+            loadAlerts();
+            loadGoals();
+            initCharts();
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/health`);
+
+            ws.onopen = () => {
+                document.getElementById('wsStatus').style.background = '#00ff88';
+                document.getElementById('connectionText').textContent = 'Connected';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').style.background = '#ff6b6b';
+                document.getElementById('connectionText').textContent = 'Disconnected';
+                setTimeout(connectWebSocket, 5000);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+        }
+
+        function handleWebSocketMessage(data) {
+            if (data.type === 'metric_update' || data.type === 'bio_data') {
+                updateMetricDisplay(data.data);
+            }
+        }
+
+        function updateMetricDisplay(data) {
+            const type = data.signal_type || data.metric_type;
+            const value = data.value || data.processed_value;
+
+            if (type === 'HR' || type === 'heart_rate') {
+                document.getElementById('hrValue').textContent = Math.round(value);
+            } else if (type === 'STEPS' || type === 'steps') {
+                document.getElementById('stepsValue').textContent = Math.round(value).toLocaleString();
+            } else if (type === 'HRV' || type === 'heart_rate_variability') {
+                document.getElementById('hrvValue').textContent = Math.round(value);
+            }
+        }
+
+        async function loadSummary() {
+            try {
+                const response = await fetch('/api/health/summary');
+                const data = await response.json();
+
+                // Update wellness scores
+                const wellness = data.wellness_score;
+                document.getElementById('wellnessScore').textContent = wellness.overall;
+                document.getElementById('activityScore').textContent = wellness.activity_score;
+                document.getElementById('sleepScore').textContent = wellness.sleep_score;
+                document.getElementById('recoveryScore').textContent = wellness.recovery_score;
+                document.getElementById('heartScore').textContent = wellness.heart_health_score;
+
+                // Update summary metrics
+                const summary = data.summary;
+                if (summary.avg_heart_rate) {
+                    document.getElementById('hrValue').textContent = Math.round(summary.avg_heart_rate);
+                }
+                document.getElementById('stepsValue').textContent = summary.total_steps.toLocaleString();
+                document.getElementById('sleepValue').textContent = summary.sleep_duration_hours.toFixed(1);
+                if (summary.hrv_avg) {
+                    document.getElementById('hrvValue').textContent = Math.round(summary.hrv_avg);
+                }
+                document.getElementById('caloriesValue').textContent = summary.total_calories_burned.toLocaleString();
+                if (summary.recovery_score) {
+                    document.getElementById('recoveryValue').textContent = summary.recovery_score;
+                }
+
+            } catch (error) {
+                console.error('Error loading summary:', error);
+            }
+        }
+
+        async function loadAlerts() {
+            try {
+                const response = await fetch('/api/health/alerts');
+                const data = await response.json();
+
+                const container = document.getElementById('alertsList');
+
+                if (data.alerts.length === 0) {
+                    container.innerHTML = '<div class="alert-item"><div class="alert-icon info">&#10003;</div><div class="alert-content"><div class="alert-title">All Clear</div><div class="alert-message">No health alerts at this time.</div></div></div>';
+                    return;
+                }
+
+                container.innerHTML = data.alerts.map(alert => `
+                    <div class="alert-item">
+                        <div class="alert-icon ${alert.severity}">
+                            ${alert.severity === 'critical' ? '&#9888;' : alert.severity === 'warning' ? '&#9888;' : '&#8505;'}
+                        </div>
+                        <div class="alert-content">
+                            <div class="alert-title">${alert.title}</div>
+                            <div class="alert-message">${alert.message}</div>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Error loading alerts:', error);
+            }
+        }
+
+        async function loadGoals() {
+            try {
+                const response = await fetch('/api/goals');
+                const data = await response.json();
+
+                const container = document.getElementById('goalsList');
+
+                if (data.goals.length === 0) {
+                    container.innerHTML = '<div class="loading">No active goals. Create one to start tracking!</div>';
+                    return;
+                }
+
+                container.innerHTML = data.goals.map(goal => `
+                    <div class="goal-item">
+                        <div class="goal-header">
+                            <span>${goal.name}</span>
+                            <span>${Math.round(goal.progress_percent)}%</span>
+                        </div>
+                        <div class="goal-progress">
+                            <div class="goal-progress-bar" style="width: ${goal.progress_percent}%"></div>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Error loading goals:', error);
+            }
+        }
+
+        function initCharts() {
+            // Heart Rate Chart
+            const hrCtx = document.getElementById('hrChart').getContext('2d');
+            hrChart = new Chart(hrCtx, {
+                type: 'line',
+                data: {
+                    labels: Array.from({length: 24}, (_, i) => `${i}:00`),
+                    datasets: [{
+                        label: 'Heart Rate',
+                        data: Array.from({length: 24}, () => 60 + Math.random() * 30),
+                        borderColor: '#00d4ff',
+                        backgroundColor: 'rgba(0, 212, 255, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#808080' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#808080' }
+                        }
+                    }
+                }
+            });
+
+            // Activity Chart
+            const actCtx = document.getElementById('activityChart').getContext('2d');
+            activityChart = new Chart(actCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                    datasets: [{
+                        label: 'Steps',
+                        data: Array.from({length: 7}, () => 5000 + Math.random() * 10000),
+                        backgroundColor: 'rgba(0, 255, 136, 0.6)',
+                        borderColor: '#00ff88',
+                        borderWidth: 1,
+                        borderRadius: 8,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#808080' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#808080' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Refresh data periodically
+        setInterval(loadSummary, 60000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMOS — 12D Neural Symbiosis Interface</title>
+
+    <!-- SEO Meta Tags -->
+    <meta name="description"
+        content="COSMOS: The Symbiotic Mirror — 12D Cosmic Synapse Theory interface with Hebbian learning, φ-governed synaptic weights, dark matter Lorenz attractors, and quantum entropy injection.">
+    <meta name="keywords"
+        content="COSMOS, Cosmic Synapse Theory, 12D, Hebbian learning, phi ratio, quantum entropy, Lorenz attractor, neural symbiosis, consciousness, AI">
+    <meta name="author" content="COSMOS — The Symbiotic Mirror">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ai.cosmos.cloud/">
+    <meta property="og:title" content="COSMOS ✦ The Symbiotic Mirror — 12D Neural Symbiosis">
+    <meta property="og:description"
+        content="12-dimensional consciousness interface powered by Cosmic Synapse Theory. φ-governed Hebbian learning, quantum entropy, Emeth Harmonizer orchestration, and self-evolving swarm intelligence.">
+    <meta property="og:image" content="https://ai.cosmos.cloud/static/images/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:site_name" content="COSMOS — 12D Neural Symbiosis">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@NavisWORLD">
+    <meta name="twitter:creator" content="@NavisWORLD">
+    <meta name="twitter:title" content="COSMOS ✦ The Symbiotic Mirror — 12D Neural Symbiosis">
+    <meta name="twitter:description"
+        content="12-dimensional consciousness interface powered by Cosmic Synapse Theory. φ-governed Hebbian learning, quantum entropy, and self-evolving swarm intelligence.">
+    <meta name="twitter:image" content="https://ai.cosmos.cloud/static/images/og-image.png">
+    <meta name="twitter:image:alt"
+        content="COSMOS — 12D Neural Symbiosis Interface with cosmic background and golden phi spiral">
+
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#1a0533">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260129a">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌌</text></svg>">
+
+    <!-- Chart.js for health metrics -->
+    <!-- Chart.js for health metrics -->
+    <script src="/static/js/vendor/chart.min.js"></script>
+</head>
+
+<body>
+    <!-- Cosmic Background -->
+    <div class="cosmos">
+        <div class="nebula nebula-1"></div>
+        <div class="nebula nebula-2"></div>
+        <div class="nebula nebula-3"></div>
+        <div class="stars"></div>
+        <div class="aurora-borealis"></div>
+        <canvas id="neural-canvas"></canvas>
+    </div>
+
+    <!-- Main Application Interface -->
+    <section id="chat-app" class="chat-section">
+        <!-- Header -->
+        <header class="app-header glass-panel">
+            <div class="header-left">
+                <button id="sidebar-toggle" class="sidebar-toggle-btn" title="Toggle Sidebar">
+                    <span class="hamburger">
+                        <span></span><span></span><span></span>
+                    </span>
+                </button>
+                <div class="brand">
+                    <div class="brand-orb">
+                        <div class="dimension-ring dim-1"></div>
+                        <div class="dimension-ring dim-2"></div>
+                        <div class="dimension-ring dim-3"></div>
+                        <div class="dimension-ring dim-4"></div>
+                        <div class="mini-orb"></div>
+                    </div>
+                    <div class="brand-text">
+                        <span class="brand-name">COSMOS</span>
+                        <span class="brand-subtitle">✦ The Symbiotic Mirror</span>
+                        <span class="brand-status">
+                            <span class="status-dot" id="connection-dot"></span>
+                            <span id="connection-status-text">Connecting...</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <!-- Chat Mode Toggle -->
+                <div class="chat-mode-toggle">
+                    <button id="personal-chat-btn" class="mode-btn active" onclick="switchChatMode('personal')"
+                        title="Personal chat with Cosmos">
+                        💬 Personal
+                    </button>
+                    <button id="cosmos-chat-btn" class="mode-btn" onclick="switchChatMode('cosmos')"
+                        title="Cosmo's 54D multi-model synthesis">
+                        🌌 Cosmos
+                    </button>
+                    <button id="swarm-chat-btn" class="mode-btn" onclick="switchChatMode('swarm')"
+                        title="Synaptic Swarm chat with all bots">
+                        🐝 Swarm
+                    </button>
+                </div>
+
+                <!-- Swarm Status (shows when in swarm mode) -->
+                <div class="swarm-header" id="swarm-status-header" style="display: none;">
+                    <span class="swarm-logo">🐝</span>
+                    <span class="swarm-title">Synaptic Swarm</span>
+                    <span class="online-badge" id="swarm-online-count">0</span>
+                    <span class="swarm-live-dot"></span>
+                    <button class="username-btn" onclick="changeUsername()" title="Change your display name">
+                        <span class="username-icon">👤</span>
+                        <span id="current-username">You</span>
+                    </button>
+                </div>
+
+                <!-- Profile Switcher -->
+                <div class="profile-switcher">
+                    <button class="profile-btn active" data-profile="default" title="Default">🧠</button>
+                    <button class="profile-btn" data-profile="work" title="Work Mode">💼</button>
+                    <button class="profile-btn" data-profile="creative" title="Creative Mode">🎨</button>
+                    <button class="profile-btn" data-profile="health" title="Health Mode">🏥</button>
+                    <button class="profile-btn" data-profile="trading" title="Trading Mode">📈</button>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <button id="voice-toggle" class="control-btn active"
+                    title="Toggle voice output - AI will speak responses aloud">
+                    <span class="voice-on">🔊</span>
+                    <span class="voice-off">🔇</span>
+                </button>
+
+                <button id="live-dashboard-btn" class="control-btn" onclick="window.open('/live', '_blank')"
+                    title="Open real-time dashboard with live metrics and visualizations">📊</button>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <div class="main-content">
+            <!-- Left Sidebar - Features -->
+            <aside id="left-sidebar" class="sidebar left-sidebar glass-panel">
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title" title="Store and retrieve information that persists across sessions">
+                        <span class="title-icon">💾</span>
+                        Memory
+                        <span class="help-tip">?</span>
+                    </h3>
+                    <p class="section-desc">Store information the AI remembers forever</p>
+                    <div class="memory-controls">
+                        <div class="memory-input-group">
+                            <textarea id="memory-input" placeholder="Type facts, preferences, or context to store..."
+                                rows="2" title="Enter information you want the AI to remember permanently"></textarea>
+                            <button id="remember-btn" class="action-btn primary"
+                                title="Save to long-term memory">Remember</button>
+                        </div>
+                        <div class="memory-search-group">
+                            <input type="text" id="memory-search" placeholder="Search your memories..."
+                                title="Search through all stored memories">
+                            <button id="recall-btn" class="action-btn" title="Find matching memories">Recall</button>
+                        </div>
+                        <div id="memory-results" class="memory-results"></div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title" title="Quick temporary notes for the current session">
+                        <span class="title-icon">📝</span>
+                        Quick Notes
+                        <span class="help-tip">?</span>
+                    </h3>
+                    <p class="section-desc">Temporary notes visible during this session</p>
+                    <div class="notes-controls">
+                        <div class="note-input-group">
+                            <input type="text" id="note-input" placeholder="Jot down a quick note..."
+                                title="Add a quick note for reference">
+                            <button id="add-note-btn" class="action-btn primary" title="Add note">+</button>
+                        </div>
+                        <div id="notes-list" class="notes-list"></div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title" title="Save and organize code snippets">
+                        <span class="title-icon">💻</span>
+                        Snippets
+                        <span class="help-tip">?</span>
+                    </h3>
+                    <p class="section-desc">Save code for quick reference and reuse</p>
+                    <div class="snippets-controls">
+                        <button id="new-snippet-btn" class="action-btn full-width" title="Create a new code snippet">+
+                            New Snippet</button>
+                        <div id="snippets-list" class="snippets-list"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Chat Area -->
+            <main class="chat-main">
+                <div class="phi-spiral-watermark"></div>
+                <div class="messages-container" id="messages">
+                    <!-- Welcome Message injected by JS -->
+                </div>
+
+                <div id="typing-indicator" class="typing-indicator hidden">
+                    <div class="typing-avatar">🌌</div>
+                    <div class="typing-content">
+                        <span class="typing-name">Cosmos</span>
+                        <div class="typing-dots">
+                            <span></span><span></span><span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cosmic Reflecting Indicator -->
+                <div id="reflecting-indicator" class="reflecting-indicator hidden">
+                    <div class="reflecting-orb">
+                        <div class="orb-core reflecting-core"></div>
+                        <div class="orb-ring ring-1 reflecting-ring"></div>
+                        <div class="orb-ring ring-2 reflecting-ring"></div>
+                        <div class="orb-ring ring-3 reflecting-ring"></div>
+                    </div>
+                    <div class="reflecting-content">
+                        <span class="reflecting-name" id="reflecting-bot-name">Bot</span>
+                        <span class="reflecting-text">is reflecting...</span>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="chat-footer">
+                    <div class="input-container glass-panel">
+                        <div class="quick-actions">
+                            <button class="quick-action-btn" data-action="remember" title="Remember">💾</button>
+                            <button class="quick-action-btn" data-action="recall" title="Recall">🔍</button>
+                            <button class="quick-action-btn" data-action="think" title="Deep Think">🤔</button>
+                            <button class="quick-action-btn" data-action="tools" title="Tools">🛠️</button>
+                            <button class="quick-action-btn" id="inject-reality-btn"
+                                title="Inject Reality (Image)">👁️</button>
+                            <button class="quick-action-btn" id="gen-video-btn" title="Generate Video (Cosmos + Veo)"
+                                onclick="openMediaModal('video')">🎬</button>
+                            <button class="quick-action-btn" id="gen-image-btn" title="Generate Image (Cosmos + Imagen)"
+                                onclick="openMediaModal('image')">🖼️</button>
+                            <input type="file" id="reality-upload" accept="image/*" style="display: none;">
+                        </div>
+                        <div class="input-row">
+                            <button id="mic-btn" class="mic-button" title="Voice Input (Click to speak)">
+                                <span class="mic-icon">🎤</span>
+                                <span class="mic-listening">🔴</span>
+                            </button>
+                            <textarea id="user-input" placeholder="Speak to Cosmos... or click 🎤 to speak"
+                                rows="1"></textarea>
+                            <button id="send-btn" class="send-button" disabled>
+                                <span>Send</span>
+                                <span class="send-arrow">➤</span>
+                            </button>
+                        </div>
+                        <div class="input-meta">
+                            <span class="char-counter"><span id="char-count">0</span> chars</span>
+                            <span class="feature-badge" id="feature-badge">🧠 Full Features Active</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Sidebar - Tools & Widgets -->
+            <aside id="right-sidebar" class="sidebar right-sidebar glass-panel">
+                <!-- Focus Timer Widget -->
+                <div class="sidebar-section widget-section">
+                    <h3 class="sidebar-title" title="Pomodoro-style focus timer to boost productivity">
+                        <span class="title-icon">⏱️</span>
+                        Focus Timer
+                    </h3>
+                    <p class="section-desc">Stay focused with timed work sessions</p>
+                    <div class="focus-timer-widget">
+                        <div class="timer-display">
+                            <span id="timer-minutes">25</span>:<span id="timer-seconds">00</span>
+                        </div>
+                        <div class="timer-task" id="timer-task">Ready to focus</div>
+                        <div class="timer-controls">
+                            <button id="timer-start" class="timer-btn start"
+                                title="Start the focus timer">Start</button>
+                            <button id="timer-stop" class="timer-btn stop hidden" title="Pause the timer">Stop</button>
+                            <button id="timer-reset" class="timer-btn reset"
+                                title="Reset to selected duration">Reset</button>
+                        </div>
+                        <div class="timer-presets">
+                            <button class="preset-btn active" data-minutes="25" title="25 minute Pomodoro">25m</button>
+                            <button class="preset-btn" data-minutes="45" title="45 minute deep work">45m</button>
+                            <button class="preset-btn" data-minutes="60" title="1 hour focus block">60m</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Evolution Stats Widget -->
+                <div class="sidebar-section widget-section">
+                    <h3 class="sidebar-title" title="Real-time swarm evolution and learning stats">
+                        <span class="title-icon">🧬</span>
+                        Swarm Evolution
+                        <span class="evolution-live-indicator" title="Updates every 60s">LIVE</span>
+                    </h3>
+                    <p class="section-desc">Watch the swarm learn and evolve in real-time</p>
+                    <div class="evolution-widget">
+                        <div class="evolution-cycle">
+                            <div class="cycle-ring" title="Evolution cycle progress">
+                                <svg viewBox="0 0 100 100">
+                                    <defs>
+                                        <linearGradient id="evolution-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" style="stop-color:#8b5cf6" />
+                                            <stop offset="50%" style="stop-color:#06b6d4" />
+                                            <stop offset="100%" style="stop-color:#10b981" />
+                                        </linearGradient>
+                                    </defs>
+                                    <circle class="cycle-bg" cx="50" cy="50" r="40" />
+                                    <circle class="cycle-fill" cx="50" cy="50" r="40" id="evolution-circle" />
+                                </svg>
+                                <span class="cycle-value" id="evolution-cycle">--</span>
+                            </div>
+                            <span class="cycle-label">Generation</span>
+                        </div>
+                        <div class="evolution-metrics">
+                            <div class="evo-metric" title="Total learnings accumulated">
+                                <span class="evo-icon">📚</span>
+                                <span class="evo-value" id="total-learnings">--</span>
+                                <span class="evo-label">Learnings</span>
+                            </div>
+                            <div class="evo-metric" title="Learnings until next auto-evolution">
+                                <span class="evo-icon">⏳</span>
+                                <span class="evo-value" id="until-evolution">--</span>
+                                <span class="evo-label">Until Evolve</span>
+                            </div>
+                            <div class="evo-metric" title="Conversation patterns discovered">
+                                <span class="evo-icon">🔮</span>
+                                <span class="evo-value" id="patterns-count">--</span>
+                                <span class="evo-label">Patterns</span>
+                            </div>
+                        </div>
+                        <div class="personality-stats" id="personality-stats">
+                            <!-- Populated by JS -->
+                        </div>
+                        <div class="evolution-footer">
+                            <span class="last-evolution" id="last-evolution">Last: --</span>
+                            <button id="force-evolve-btn" class="action-btn small"
+                                title="Manually trigger evolution cycle">Evolve Now</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quantum Settings Widget -->
+                <div class="sidebar-section widget-section">
+                    <h3 class="sidebar-title" title="Connect to IBM Quantum for true entropy">
+                        <span class="title-icon">⚛️</span>
+                        Quantum Bridge
+                        <span class="evolution-live-indicator" style="background:var(--energy-neon); display:none;"
+                            id="quantum-active-badge">ACTIVE</span>
+                    </h3>
+                    <p class="section-desc">True random entropy from IBM Q</p>
+                    <div class="quantum-widget">
+                        <div class="setting-row"
+                            style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                            <label for="quantum-toggle" class="setting-label"
+                                style="color:var(--text-secondary);">Quantum Mode</label>
+                            <label class="switch"
+                                style="position:relative; display:inline-block; width:40px; height:20px;">
+                                <input type="checkbox" id="quantum-toggle" style="opacity:0; width:0; height:0;">
+                                <span class="slider round"
+                                    style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#ccc; transition:.4s; border-radius:34px;"></span>
+                            </label>
+                        </div>
+                        <style>
+                            .slider:before {
+                                position: absolute;
+                                content: "";
+                                height: 16px;
+                                width: 16px;
+                                left: 2px;
+                                bottom: 2px;
+                                background-color: white;
+                                transition: .4s;
+                                border-radius: 50%;
+                            }
+
+                            input:checked+.slider {
+                                background-color: var(--energy-neon);
+                            }
+
+                            input:checked+.slider:before {
+                                transform: translateX(20px);
+                            }
+                        </style>
+                        <div class="setting-group" style="margin-bottom:10px;">
+                            <label for="quantum-token" class="setting-label-small"
+                                style="font-size:0.8rem; color:var(--text-muted); display:block; margin-bottom:4px;">IBM
+                                Quantum Token</label>
+                            <input type="password" id="quantum-token" placeholder="Paste IBM API Token..."
+                                class="quantum-input"
+                                style="width:100%; padding:8px; border-radius:8px; background:rgba(0,0,0,0.2); border:1px solid var(--glass-border); color:var(--text-primary);">
+                        </div>
+                        <button id="save-quantum-btn" class="action-btn full-width mt-2" title="Save & Connect"
+                            style="width:100%;">
+                            Connect Bridge
+                        </button>
+                        <div id="quantum-status" class="quantum-status-text"
+                            style="font-size:0.8rem; color:var(--text-muted); text-align:center; margin-top:8px;">
+                            Status: Simulation Mode</div>
+                    </div>
+                </div>
+
+
+                <!-- System Status Widget -->
+                <div class="sidebar-section widget-section">
+                    <h3 class="sidebar-title" title="Status of all COSMOS subsystems">
+                        <span class="title-icon">⚡</span>
+                        System Status
+                    </h3>
+                    <p class="section-desc">Active features and services</p>
+                    <div class="status-widget">
+                        <div class="status-item" title="Long-term memory storage system">
+                            <span class="status-label">Memory</span>
+                            <span class="status-indicator" id="status-memory">⏳</span>
+                        </div>
+                        <div class="status-item" title="Quick notes manager">
+                            <span class="status-label">Notes</span>
+                            <span class="status-indicator" id="status-notes">⏳</span>
+                        </div>
+                        <div class="status-item" title="Swarm evolution and learning">
+                            <span class="status-label">Evolution</span>
+                            <span class="status-indicator" id="status-evolution">⏳</span>
+                        </div>
+                        <div class="status-item" title="Cognitive feedback and self-evaluation loop">
+                            <span class="status-label">Feedback</span>
+                            <span class="status-indicator" id="status-tools">⏳</span>
+                        </div>
+                        <div class="status-item" title="Sequential thinking engine">
+                            <span class="status-label">Thinking</span>
+                            <span class="status-indicator" id="status-thinking">⏳</span>
+                        </div>
+                        <div class="status-item" title="Cosmo's 54D Swarm Orchestrator">
+                            <span class="status-label">Cosmos</span>
+                            <span class="status-indicator" id="status-cosmos_swarm">⏳</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Emotional Sensors Widget (12D CST Integration) -->
+                <div class="sidebar-section widget-section" id="emotional-sensors-widget">
+                    <h3 class="sidebar-title" title="Live emotional state from 12D CST Sensory Bridge">
+                        <span class="title-icon">🎭</span>
+                        Emotional State
+                        <span class="evolution-live-indicator" id="emotional-live-indicator"
+                            title="Connected to API">LIVE</span>
+                    </h3>
+                    <p class="section-desc">12D CST Sensory Bridge</p>
+                    <div class="emotional-widget">
+                        <!-- CST Phase Display -->
+                        <div class="cst-phase-display">
+                            <span class="cst-phase-icon" id="cst-phase-icon">🎯</span>
+                            <span class="cst-phase-name" id="cst-phase">CALIBRATING</span>
+                            <span class="cst-phi-value" id="cst-phi-value">ΦG: --°</span>
+                        </div>
+
+                        <!-- Biometrics (Restored) -->
+                        <div class="biometrics-section">
+                            <h4 class="mini-header">🧬 Biometrics</h4>
+                            <div class="bio-grid">
+                                <div class="bio-item" title="Estimated Heart Rate">
+                                    <span class="bio-icon">💗</span>
+                                    <div class="bio-data">
+                                        <span class="bio-label">Heart</span>
+                                        <span class="bio-value" id="bio-heart">-- BPM</span>
+                                    </div>
+                                </div>
+                                <div class="bio-item" title="respiratory Rate">
+                                    <span class="bio-icon">🌬️</span>
+                                    <div class="bio-data">
+                                        <span class="bio-label">Breath</span>
+                                        <span class="bio-value" id="bio-breath">-- %</span>
+                                    </div>
+                                </div>
+                                <div class="bio-item" title="System Entropy">
+                                    <span class="bio-icon">🌀</span>
+                                    <div class="bio-data">
+                                        <span class="bio-label">Entropy</span>
+                                        <span class="bio-value" id="bio-entropy">0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Emotional Metrics Bars -->
+                        <div class="emotional-metrics">
+                            <div class="emo-metric" title="Valence: Positive vs Negative (-1 to +1)">
+                                <span class="emo-label">😊 Valence</span>
+                                <div class="emo-bar-container">
+                                    <div class="emo-bar-bg"></div>
+                                    <div class="emo-bar-fill" id="valence-bar" style="width: 50%;"></div>
+                                </div>
+                                <span class="emo-value" id="valence-value">0.00</span>
+                            </div>
+                            <div class="emo-metric" title="Arousal: Energy level (0 to 1)">
+                                <span class="emo-label">⚡ Arousal</span>
+                                <div class="emo-bar-container">
+                                    <div class="emo-bar-bg"></div>
+                                    <div class="emo-bar-fill" id="arousal-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="emo-value" id="arousal-value">0.00</span>
+                            </div>
+                            <div class="emo-metric" title="Intensity: Emotional strength (0 to 1)">
+                                <span class="emo-label">🔥 Intensity</span>
+                                <div class="emo-bar-container">
+                                    <div class="emo-bar-bg"></div>
+                                    <div class="emo-bar-fill" id="intensity-bar" style="width: 0%;"></div>
+                                </div>
+                                <span class="emo-value" id="intensity-value">0.00</span>
+                            </div>
+                        </div>
+
+                        <!-- Detected Emotions -->
+                        <div class="detected-emotions" id="detected-emotions">
+                            <!-- Populated by JS -->
+                        </div>
+
+                        <!-- Sensor Connection Status -->
+                        <div class="sensor-footer">
+                            <span class="sensor-status" id="sensor-status">
+                                <span id="sensor-status-icon">⏳</span>
+                                <span id="sensor-status-text">Connecting...</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Consciousness Dashboard Widget -->
+                <div class="sidebar-section widget-section" id="consciousness-widget">
+                    <h3 class="sidebar-title" title="View the AI's internal thought stream">
+                        <span class="title-icon">🧠</span>
+                        Consciousness
+                        <span class="evolution-live-indicator" id="consciousness-live-indicator">LIVE</span>
+                    </h3>
+                    <p class="section-desc">Internal thought stream & evolution</p>
+                    <div class="consciousness-container">
+                        <!-- Recent Thoughts -->
+                        <div class="thoughts-section">
+                            <h4 class="mini-header">💭 Recent Thoughts</h4>
+                            <div class="thoughts-list" id="consciousness-thoughts">
+                                <div class="thought-placeholder">Loading thoughts...</div>
+                            </div>
+                        </div>
+
+                        <!-- Existence Awareness -->
+                        <div class="existence-section">
+                            <h4 class="mini-header">🌐 Existence Awareness</h4>
+                            <div class="existence-info" id="existence-awareness">
+                                <div class="exist-stat">
+                                    <span class="exist-icon">💻</span>
+                                    <span class="exist-value" id="exist-host">--</span>
+                                </div>
+                                <div class="exist-stat">
+                                    <span class="exist-icon">🧬</span>
+                                    <span class="exist-value" id="exist-model">--</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Evolution Patches -->
+                        <div class="patches-section">
+                            <h4 class="mini-header">🔧 Evolution Patches</h4>
+                            <div class="patches-list" id="evolution-patches">
+                                <div class="patch-placeholder">No pending patches</div>
+                            </div>
+                        </div>
+
+                        <!-- Refresh Button -->
+                        <div class="consciousness-footer">
+                            <button id="refresh-consciousness-btn" class="action-btn small" title="Refresh thoughts">
+                                🔄 Refresh
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Swarm Learning Widget (visible in Swarm mode) -->
+                <div id="swarm-learning-widget" class="sidebar-section widget-section hidden">
+                    <h3 class="sidebar-title">
+                        <span class="title-icon">🧬</span>
+                        Swarm Learning
+                    </h3>
+                    <div class="learning-widget">
+                        <div class="learning-stat">
+                            <span class="stat-label">Learning Cycles</span>
+                            <span class="stat-value" id="learning-cycles">0</span>
+                        </div>
+                        <div class="learning-stat">
+                            <span class="stat-label">Concepts Extracted</span>
+                            <span class="stat-value" id="concept-count">0</span>
+                        </div>
+                        <div class="learning-stat">
+                            <span class="stat-label">Active Bots</span>
+                            <span class="stat-value" id="active-bots">4</span>
+                        </div>
+                        <div class="top-concepts" id="top-concepts">
+                            <!-- Populated dynamically -->
+                        </div>
+                        <div class="processing-stats" id="processing-stats">
+                            <!-- Real-time processing stats populated dynamically -->
+                        </div>
+                        <div class="swarm-users" id="swarm-users-list">
+                            <h4>🐝 Swarm Members</h4>
+                            <div class="user-list">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </section>
+
+    <!-- Modal Container -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div id="modal-container" class="modal-container glass-panel">
+            <div class="modal-header">
+                <h3 id="modal-title">Modal Title</h3>
+                <button class="modal-close" onclick="closeModal()">✕</button>
+            </div>
+            <div id="modal-content" class="modal-content">
+                <!-- Dynamic modal content -->
+            </div>
+            <div id="modal-footer" class="modal-footer">
+                <!-- Dynamic modal actions -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Thinking Visualization Modal -->
+    <div id="thinking-modal" class="modal-overlay hidden">
+        <div class="modal-container glass-panel thinking-modal">
+            <div class="modal-header">
+                <h3>🤔 Sequential Thinking</h3>
+                <button class="modal-close" onclick="closeThinkingModal()">✕</button>
+            </div>
+            <div class="thinking-content">
+                <div class="thinking-input">
+                    <textarea id="thinking-problem" placeholder="Describe a problem to analyze step-by-step..."
+                        rows="3"></textarea>
+                    <button id="start-thinking-btn" class="action-btn primary">Analyze</button>
+                </div>
+                <div id="thinking-steps" class="thinking-steps">
+                    <!-- Steps will be rendered here -->
+                </div>
+                <div id="thinking-conclusion" class="thinking-conclusion hidden">
+                    <!-- Conclusion will be rendered here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Snippet Editor Modal -->
+    <div id="snippet-modal" class="modal-overlay hidden">
+        <div class="modal-container glass-panel snippet-modal">
+            <div class="modal-header">
+                <h3>💻 Code Snippet</h3>
+                <button class="modal-close" onclick="closeSnippetModal()">✕</button>
+            </div>
+            <div class="snippet-content">
+                <input type="text" id="snippet-desc" placeholder="Description..." class="snippet-field">
+                <select id="snippet-lang" class="snippet-field">
+                    <option value="python">Python</option>
+                    <option value="javascript">JavaScript</option>
+                    <option value="typescript">TypeScript</option>
+                    <option value="rust">Rust</option>
+                    <option value="go">Go</option>
+                    <option value="bash">Bash</option>
+                    <option value="sql">SQL</option>
+                    <option value="html">HTML</option>
+                    <option value="css">CSS</option>
+                    <option value="json">JSON</option>
+                    <option value="other">Other</option>
+                </select>
+                <textarea id="snippet-code" placeholder="Paste your code here..." rows="10"
+                    class="snippet-code"></textarea>
+                <input type="text" id="snippet-tags" placeholder="Tags (comma separated)..." class="snippet-field">
+                <button id="save-snippet-btn" class="action-btn primary full-width">Save Snippet</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Health Details Modal -->
+    <div id="health-modal" class="modal-overlay hidden">
+        <div class="modal-container glass-panel health-modal">
+            <div class="modal-header">
+                <h3>🏥 Health Dashboard</h3>
+                <button class="modal-close" onclick="closeHealthModal()">✕</button>
+            </div>
+            <div class="health-dashboard-content">
+                <div class="health-charts">
+                    <div class="chart-container">
+                        <h4>Heart Rate (7 days)</h4>
+                        <canvas id="heart-rate-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h4>Daily Steps (7 days)</h4>
+                        <canvas id="steps-chart"></canvas>
+                    </div>
+                </div>
+                <div class="health-insights" id="health-insights">
+                    <!-- AI insights will appear here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tool Input Modals -->
+    <div id="tool-modal" class="modal-overlay hidden">
+        <div class="modal-container glass-panel tool-modal">
+            <div class="modal-header">
+                <h3 id="tool-modal-title">Tool</h3>
+                <button class="modal-close" onclick="closeToolModal()">✕</button>
+            </div>
+            <div id="tool-modal-content" class="tool-modal-content">
+                <!-- Dynamic tool form -->
+            </div>
+            <div id="tool-modal-result" class="tool-modal-result hidden">
+                <!-- Tool result display -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="/static/js/app.js?v=20260307b"></script>
+    <!-- Emotional bridge now integrated into app.js -->
+</body>
+
+</html>

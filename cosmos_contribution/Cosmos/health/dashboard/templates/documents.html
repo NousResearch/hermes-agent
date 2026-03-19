@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD:cosmos/health/dashboard/templates/documents.html
+    <title>Documents - cosmos Health</title>
+=======
+    <title>Documents - Cosmos Health</title>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/documents.html
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        .nav-links a {
+            color: #a0a0a0;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .nav-links a:hover, .nav-links a.active {
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .glass-card h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+
+        .upload-zone {
+            border: 2px dashed rgba(0, 212, 255, 0.3);
+            border-radius: 16px;
+            padding: 60px 40px;
+            text-align: center;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #00d4ff;
+            background: rgba(0, 212, 255, 0.05);
+        }
+
+        .upload-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        .upload-text {
+            font-size: 1.2rem;
+            color: #a0a0a0;
+            margin-bottom: 10px;
+        }
+
+        .upload-hint {
+            color: #606060;
+            font-size: 0.9rem;
+        }
+
+        .doc-type-selector {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .doc-type-btn {
+            padding: 12px 24px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: #a0a0a0;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .doc-type-btn:hover, .doc-type-btn.active {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .results-section {
+            display: none;
+        }
+
+        .results-section.active {
+            display: block;
+        }
+
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            margin-bottom: 10px;
+        }
+
+        .result-item .test-name {
+            font-weight: 600;
+        }
+
+        .result-item .test-value {
+            font-size: 1.3rem;
+            font-weight: bold;
+        }
+
+        .result-item .test-value.normal {
+            color: #00ff88;
+        }
+
+        .result-item .test-value.abnormal {
+            color: #ff6b6b;
+        }
+
+        .result-item .test-range {
+            color: #808080;
+            font-size: 0.9rem;
+        }
+
+        .processing-indicator {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .processing-indicator.active {
+            display: block;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(0, 212, 255, 0.2);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .history-section h4 {
+            margin-bottom: 15px;
+            color: #a0a0a0;
+        }
+
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .history-item:hover {
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .history-item .doc-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .history-item .doc-icon {
+            font-size: 1.5rem;
+        }
+
+        .history-item .doc-date {
+            color: #808080;
+            font-size: 0.9rem;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .confidence-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Document Parser</h1>
+            <nav class="nav-links">
+                <a href="/health">Dashboard</a>
+                <a href="/nutrition">Nutrition</a>
+                <a href="/documents" class="active">Documents</a>
+                <a href="/insights">Insights</a>
+            </nav>
+        </header>
+
+        <!-- Document Type Selector -->
+        <div class="glass-card">
+            <h3>Document Type</h3>
+            <div class="doc-type-selector">
+                <button class="doc-type-btn active" data-type="lab_result" onclick="selectDocType(this)">
+                    Lab Results
+                </button>
+                <button class="doc-type-btn" data-type="prescription" onclick="selectDocType(this)">
+                    Prescription
+                </button>
+                <button class="doc-type-btn" data-type="nutrition_label" onclick="selectDocType(this)">
+                    Nutrition Label
+                </button>
+                <button class="doc-type-btn" data-type="medical_report" onclick="selectDocType(this)">
+                    Medical Report
+                </button>
+            </div>
+        </div>
+
+        <!-- Upload Zone -->
+        <div class="glass-card">
+            <h3>Upload Document</h3>
+            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">&#128196;</div>
+                <div class="upload-text">Click or drag & drop to upload</div>
+                <div class="upload-hint">Supports JPG, PNG, PDF (Max 10MB)</div>
+            </div>
+            <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFileSelect(event)">
+
+            <!-- Processing Indicator -->
+            <div class="processing-indicator" id="processingIndicator">
+                <div class="spinner"></div>
+                <div>Processing document with DeepSeek OCR2...</div>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="glass-card results-section" id="resultsSection">
+            <h3>Parsed Results</h3>
+            <div id="resultsContainer"></div>
+        </div>
+
+        <!-- Document History -->
+        <div class="glass-card history-section">
+            <h4>Recent Documents</h4>
+            <div id="historyList">
+                <div class="history-item">
+                    <div class="doc-info">
+                        <span class="doc-icon">&#128196;</span>
+                        <div>
+                            <div>Blood Work Results</div>
+                            <div class="doc-date">Jan 15, 2025</div>
+                        </div>
+                    </div>
+                    <span style="color: #00ff88;">8 tests</span>
+                </div>
+                <div class="history-item">
+                    <div class="doc-info">
+                        <span class="doc-icon">&#128138;</span>
+                        <div>
+                            <div>Prescription - Vitamin D</div>
+                            <div class="doc-date">Jan 10, 2025</div>
+                        </div>
+                    </div>
+                    <span style="color: #00d4ff;">Active</span>
+                </div>
+                <div class="history-item">
+                    <div class="doc-info">
+                        <span class="doc-icon">&#127860;</span>
+                        <div>
+                            <div>Nutrition Label - Protein Bar</div>
+                            <div class="doc-date">Jan 8, 2025</div>
+                        </div>
+                    </div>
+                    <span style="color: #808080;">Saved</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedDocType = 'lab_result';
+
+        // Drag and drop handling
+        const uploadZone = document.getElementById('uploadZone');
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                processFile(files[0]);
+            }
+        });
+
+        function selectDocType(btn) {
+            document.querySelectorAll('.doc-type-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            selectedDocType = btn.dataset.type;
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                processFile(file);
+            }
+        }
+
+        async function processFile(file) {
+            // Show processing indicator
+            document.getElementById('processingIndicator').classList.add('active');
+            document.getElementById('resultsSection').classList.remove('active');
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('doc_type', selectedDocType);
+
+            try {
+                const response = await fetch('/api/documents/parse', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                // Hide processing indicator
+                document.getElementById('processingIndicator').classList.remove('active');
+
+                // Show results
+                displayResults(data);
+
+            } catch (error) {
+                console.error('Error processing document:', error);
+                document.getElementById('processingIndicator').classList.remove('active');
+                alert('Error processing document. Please try again.');
+            }
+        }
+
+        function displayResults(data) {
+            const container = document.getElementById('resultsContainer');
+            const section = document.getElementById('resultsSection');
+
+            if (!data.success || !data.results || data.results.length === 0) {
+                // Show demo message
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #a0a0a0;">
+                        <div style="font-size: 3rem; margin-bottom: 20px;">&#128300;</div>
+                        <h4 style="color: #fff; margin-bottom: 10px;">DeepSeek OCR2 Integration Required</h4>
+                        <p>${data.message || 'Document parsing requires DeepSeek OCR2 API integration.'}</p>
+                        <p style="margin-top: 20px; font-size: 0.9rem;">
+                            Configure your DEEPSEEK_API_KEY or DEEPINFRA_API_KEY environment variable to enable OCR parsing.
+                        </p>
+                    </div>
+                `;
+                section.classList.add('active');
+                return;
+            }
+
+            // Display parsed results based on document type
+            if (selectedDocType === 'lab_result') {
+                container.innerHTML = data.results.map(result => `
+                    <div class="result-item">
+                        <div>
+                            <div class="test-name">${result.test_name}</div>
+                            <div class="test-range">Reference: ${result.reference_range_low || '?'} - ${result.reference_range_high || '?'} ${result.unit}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="test-value ${result.is_abnormal ? 'abnormal' : 'normal'}">
+                                ${result.value} ${result.unit}
+                            </div>
+                            <span class="confidence-badge">${Math.round(result.confidence * 100)}% confidence</span>
+                        </div>
+                    </div>
+                `).join('');
+            } else if (selectedDocType === 'prescription') {
+                container.innerHTML = data.results.map(rx => `
+                    <div class="result-item">
+                        <div>
+                            <div class="test-name">${rx.medication_name}</div>
+                            <div class="test-range">${rx.dosage} - ${rx.frequency}</div>
+                            <div class="test-range">${rx.instructions}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div>Refills: ${rx.refills_remaining}</div>
+                            <span class="confidence-badge">${Math.round(rx.confidence * 100)}% confidence</span>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                container.innerHTML = `<pre style="color: #a0a0a0;">${JSON.stringify(data.results, null, 2)}</pre>`;
+            }
+
+            section.classList.add('active');
+        }
+    </script>
+</body>
+</html>

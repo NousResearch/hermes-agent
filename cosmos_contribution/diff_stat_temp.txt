@@ -1,0 +1,24 @@
+ cosmos/web/cosmosynapse/engine/swarm_awareness.py |   2 +-
+ data/archival/06c19e96f8d5462c.emb                | Bin 0 -> 3472 bytes
+ data/archival/06c19e96f8d5462c.json               |   1 +
+ data/archival/0d2c3726ae584bf9.emb                | Bin 0 -> 3472 bytes
+ data/archival/0d2c3726ae584bf9.json               |   1 +
+ data/archival/3a70e1740fce3944.emb                | Bin 0 -> 3472 bytes
+ data/archival/3a70e1740fce3944.json               |   1 +
+ data/archival/80cc164855a5784a.emb                | Bin 0 -> 3472 bytes
+ data/archival/80cc164855a5784a.json               |   1 +
+ data/archival/90486d855977eaf4.json               |   1 +
+ data/archival/a37f7bd4dd1d512f.emb                | Bin 0 -> 3472 bytes
+ data/archival/a37f7bd4dd1d512f.json               |   1 +
+ data/archival/a7241809a7882b88.emb                | Bin 0 -> 3472 bytes
+ data/archival/a7241809a7882b88.json               |   1 +
+ data/archival/b893e42a51273355.emb                | Bin 0 -> 3472 bytes
+ data/archival/b893e42a51273355.json               |   1 +
+ data/archival/c3922add55fa2849.emb                | Bin 0 -> 3472 bytes
+ data/archival/c3922add55fa2849.json               |   1 +
+ data/archival/d5dd82ec840659ea.emb                | Bin 0 -> 3472 bytes
+ data/archival/d5dd82ec840659ea.json               |   1 +
+ openclaw_rl_policy.json                           |  18 ------------------
+ quantum_debug.log                                 |   8 ++++++++
+ scripts/test_model_load.py                        |  15 +++++++++++++++
+ 23 files changed, 34 insertions(+), 19 deletions(-)

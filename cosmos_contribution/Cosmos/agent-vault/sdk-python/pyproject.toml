@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dropclaw"
+version = "1.0.0"
+description = "DropClaw SDK — Permanent Encrypted On-Chain Storage for AI Agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Proprietary"}
+authors = [{name = "Farnsworth"}]
+keywords = ["dropclaw", "blockchain", "storage", "encryption", "monad", "ai-agents"]
+dependencies = [
+    "httpx>=0.24.0",
+    "cryptography>=41.0.0",
+]
+
+[project.urls]
+Homepage = "https://dropclaw.cloud"

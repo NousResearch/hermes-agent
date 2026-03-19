@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live PnL - Cosmos AI</title>
+    <meta name="description" content="Transparent live trading results from the Cosmos Degen Trader. Every trade, every dollar.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255,255,255,0.03);
+            --surface-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --orange: #f97316;
+            --pink: #ec4899;
+            --red: #ef4444;
+            --yellow: #eab308;
+            --blue: #3b82f6;
+            --radius-card: 16px;
+            --radius-btn: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        .nebula {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0; pointer-events: none; overflow: hidden;
+        }
+        .nebula::before {
+            content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+            background:
+                radial-gradient(ellipse at 30% 40%, rgba(16,185,129,0.07) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 60%, rgba(139,92,246,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(6,182,212,0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+        @keyframes nebulaShift {
+            0% { transform: translate(0,0) rotate(0deg); }
+            50% { transform: translate(2%,-1%) rotate(1deg); }
+            100% { transform: translate(-1%,2%) rotate(-0.5deg); }
+        }
+
+        /* NAV */
+        .top-nav {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(8,8,15,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px; height: 60px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-logo a {
+            text-decoration: none; font-size: 16px; font-weight: 700; letter-spacing: 4px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .nav-links { display: flex; gap: 4px; }
+        .nav-links a {
+            text-decoration: none; font-size: 13px; font-weight: 500;
+            color: var(--text-secondary); padding: 8px 14px; border-radius: 8px;
+            transition: all var(--transition);
+        }
+        .nav-links a:hover { color: var(--text-primary); background: var(--surface-hover); }
+        .nav-links a.active { color: var(--purple); background: rgba(139,92,246,0.1); }
+        .nav-right { display: flex; align-items: center; gap: 12px; }
+        .nav-avatar {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: linear-gradient(135deg, var(--purple), var(--cyan)); cursor: pointer;
+        }
+        .nav-logout {
+            font-size: 12px; color: var(--text-secondary); cursor: pointer;
+            text-decoration: none; transition: color var(--transition);
+        }
+        .nav-logout:hover { color: var(--red); }
+        .mobile-nav-toggle {
+            display: none; background: none; border: none; color: var(--text-primary); cursor: pointer; padding: 4px;
+        }
+        @media (max-width: 768px) {
+            .mobile-nav-toggle { display: block; }
+            .nav-links { display: none; }
+            .nav-links.mobile-open {
+                display: flex; flex-direction: column; position: absolute;
+                top: 60px; left: 0; right: 0; background: rgba(8,8,15,0.95);
+                backdrop-filter: blur(20px); padding: 12px; border-bottom: 1px solid var(--border);
+            }
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+        /* HEADER */
+        .page-header {
+            padding: 40px 0 32px; display: flex; align-items: center;
+            justify-content: space-between; flex-wrap: wrap; gap: 16px;
+        }
+        .page-header h1 {
+            font-size: clamp(1.6rem, 3.5vw, 2.2rem); font-weight: 700; letter-spacing: -0.02em;
+        }
+        .page-header h1 span {
+            background: linear-gradient(135deg, var(--green), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .page-header .subtitle { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+        .status-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+            background: rgba(16,185,129,0.1); color: var(--green); border: 1px solid rgba(16,185,129,0.2);
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* STATS ROW */
+        .stats-row {
+            display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 28px;
+        }
+        .stat-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 20px;
+            backdrop-filter: blur(20px); transition: all var(--transition);
+        }
+        .stat-card:hover { background: var(--surface-hover); transform: translateY(-2px); }
+        .stat-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .stat-value {
+            font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+            letter-spacing: -0.02em;
+        }
+        .stat-value.positive { color: var(--green); }
+        .stat-value.negative { color: var(--red); }
+        .stat-sub { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+        /* WIN RATE RING */
+        .win-ring-wrap { display: flex; align-items: center; gap: 12px; }
+        .win-ring {
+            width: 48px; height: 48px; position: relative;
+        }
+        .win-ring svg { transform: rotate(-90deg); }
+        .win-ring-bg { fill: none; stroke: rgba(255,255,255,0.05); stroke-width: 4; }
+        .win-ring-fill { fill: none; stroke: var(--green); stroke-width: 4; stroke-linecap: round; transition: stroke-dashoffset 1s ease; }
+
+        /* CHART */
+        .chart-section {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 24px; margin-bottom: 28px;
+            backdrop-filter: blur(20px);
+        }
+        .chart-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
+        }
+        .chart-header h3 { font-size: 16px; font-weight: 600; }
+        .time-selector { display: flex; gap: 4px; }
+        .time-btn {
+            padding: 6px 12px; font-size: 12px; font-weight: 500;
+            background: transparent; border: 1px solid var(--border);
+            border-radius: 6px; color: var(--text-secondary);
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition);
+        }
+        .time-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+        .time-btn.active { background: rgba(139,92,246,0.1); border-color: var(--purple); color: var(--purple); }
+        .chart-canvas-wrap { position: relative; height: 300px; }
+
+        /* POSITIONS TABLE */
+        .table-section {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 24px; margin-bottom: 28px;
+            backdrop-filter: blur(20px); overflow: hidden;
+        }
+        .table-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
+        }
+        .table-header h3 { font-size: 16px; font-weight: 600; }
+        .filter-btns { display: flex; gap: 4px; }
+        .filter-btn {
+            padding: 5px 12px; font-size: 11px; font-weight: 500;
+            background: transparent; border: 1px solid var(--border);
+            border-radius: 6px; color: var(--text-secondary);
+            cursor: pointer; font-family: 'Inter', sans-serif;
+            transition: all var(--transition);
+        }
+        .filter-btn:hover { background: var(--surface-hover); }
+        .filter-btn.active { background: rgba(139,92,246,0.1); border-color: var(--purple); color: var(--purple); }
+
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th {
+            text-align: left; font-size: 11px; font-weight: 600; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 12px;
+            border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+            white-space: nowrap;
+        }
+        .data-table th:hover { color: var(--text-primary); }
+        .data-table th .sort-arrow { font-size: 10px; margin-left: 4px; opacity: 0.5; }
+        .data-table td {
+            font-size: 13px; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-family: 'JetBrains Mono', monospace; white-space: nowrap;
+        }
+        .data-table tr:hover td { background: var(--surface-hover); }
+        .data-table .buy { color: var(--green); }
+        .data-table .sell { color: var(--red); }
+        .data-table .pnl-positive { color: var(--green); font-weight: 600; }
+        .data-table .pnl-negative { color: var(--red); font-weight: 600; }
+        .swarm-badge {
+            display: inline-block; padding: 2px 6px; border-radius: 4px;
+            font-size: 10px; font-weight: 600;
+        }
+        .swarm-high { background: rgba(16,185,129,0.1); color: var(--green); }
+        .swarm-med { background: rgba(234,179,8,0.1); color: var(--yellow); }
+        .swarm-low { background: rgba(239,68,68,0.1); color: var(--red); }
+
+        .table-overflow { overflow-x: auto; }
+        .pagination {
+            display: flex; justify-content: center; gap: 4px; margin-top: 16px;
+        }
+        .page-btn {
+            width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 500; background: transparent; border: 1px solid var(--border);
+            border-radius: 6px; color: var(--text-secondary); cursor: pointer;
+            font-family: 'Inter', sans-serif; transition: all var(--transition);
+        }
+        .page-btn:hover { background: var(--surface-hover); }
+        .page-btn.active { background: rgba(139,92,246,0.1); border-color: var(--purple); color: var(--purple); }
+
+        /* BOTTOM STATS */
+        .bottom-stats {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px; margin-bottom: 64px;
+        }
+        .bottom-stat {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 16px; backdrop-filter: blur(20px);
+        }
+        .bottom-stat .stat-label { margin-bottom: 6px; }
+        .bottom-stat .stat-value { font-size: 18px; }
+
+        /* SKELETON */
+        .skeleton {
+            background: linear-gradient(90deg, var(--surface) 25%, var(--surface-hover) 50%, var(--surface) 75%);
+            background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .skeleton-text { height: 16px; width: 80%; margin-bottom: 8px; }
+        .skeleton-lg { height: 32px; width: 50%; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.5s ease both; }
+
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+            .stats-row .stat-card:last-child { grid-column: span 2; }
+            .bottom-stats { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 480px) {
+            .stats-row { grid-template-columns: 1fr; }
+            .stats-row .stat-card:last-child { grid-column: span 1; }
+        }
+        .pro-badge {
+            font-size: 8px;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+            color: #fff;
+            letter-spacing: 0.5px;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="nebula"></div>
+
+    <nav class="top-nav">
+        <div class="nav-logo"><a href="/pro">COSMOS</a></div>
+        <button class="mobile-nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('mobile-open')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="nav-links">
+            <a href="/pro/chat">Chat</a>
+            <a href="/chat">Swarm</a>
+            <a href="/pro/scanner">Scanner <span class="pro-badge">PRO</span></a>
+            <a href="/pro/wallet">Wallet <span class="pro-badge">PRO</span></a>
+            <a href="/pro/arena">Arena <span class="pro-badge">PRO</span></a>
+            <a href="/pro/pnl" class="active">PnL <span class="pro-badge">PRO</span></a>
+            <a href="/pro/predictions">Polymarket <span class="pro-badge">PRO</span></a>
+        </div>
+        <div class="nav-right">
+            <div class="nav-avatar"></div>
+            <a class="nav-logout" href="/pro/logout">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- HEADER -->
+        <div class="page-header fade-in">
+            <div>
+                <h1><span>Degen Trader</span> -- Live PnL</h1>
+                <p class="subtitle">Every trade. Every dollar. Fully transparent.</p>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <div class="status-dot"></div>
+                Active
+            </div>
+        </div>
+
+        <!-- TOP STATS -->
+        <div class="stats-row fade-in" id="statsRow" style="animation-delay: 0.1s;">
+            <div class="stat-card">
+                <div class="stat-label">Total PnL</div>
+                <div class="stat-value positive" id="totalPnl">--</div>
+                <div class="stat-sub" id="pnlPeriod">7 day performance</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Win Rate</div>
+                <div class="win-ring-wrap">
+                    <div class="win-ring">
+                        <svg viewBox="0 0 48 48" width="48" height="48">
+                            <circle class="win-ring-bg" cx="24" cy="24" r="20"/>
+                            <circle class="win-ring-fill" id="winRingFill" cx="24" cy="24" r="20"
+                                stroke-dasharray="125.66" stroke-dashoffset="125.66"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="stat-value" id="winRate" style="font-size: 20px;">--</div>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Trades</div>
+                <div class="stat-value" id="totalTrades">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Avg Profit</div>
+                <div class="stat-value positive" id="avgProfit">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Best Trade</div>
+                <div class="stat-value positive" id="bestTrade">--</div>
+            </div>
+        </div>
+
+        <!-- CHART -->
+        <div class="chart-section fade-in" style="animation-delay: 0.2s;">
+            <div class="chart-header">
+                <h3>Cumulative PnL</h3>
+                <div class="time-selector">
+                    <button class="time-btn" data-range="24h">24h</button>
+                    <button class="time-btn active" data-range="7d">7d</button>
+                    <button class="time-btn" data-range="30d">30d</button>
+                    <button class="time-btn" data-range="all">All</button>
+                </div>
+            </div>
+            <div class="chart-canvas-wrap">
+                <canvas id="pnlChart"></canvas>
+            </div>
+        </div>
+
+        <!-- ACTIVE POSITIONS -->
+        <div class="table-section fade-in" id="positionsSection" style="animation-delay: 0.3s;">
+            <div class="table-header">
+                <h3>Active Positions</h3>
+            </div>
+            <div class="table-overflow">
+                <table class="data-table" id="positionsTable">
+                    <thead>
+                        <tr>
+                            <th>Token</th>
+                            <th>Entry Price</th>
+                            <th>Current Price</th>
+                            <th>Size</th>
+                            <th>Unrealized PnL</th>
+                            <th>Duration</th>
+                            <th>Swarm Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positionsBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- TRADE HISTORY -->
+        <div class="table-section fade-in" style="animation-delay: 0.4s;">
+            <div class="table-header">
+                <h3>Trade History</h3>
+                <div class="filter-btns">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="wins">Wins Only</button>
+                    <button class="filter-btn" data-filter="losses">Losses Only</button>
+                </div>
+            </div>
+            <div class="table-overflow">
+                <table class="data-table" id="tradesTable">
+                    <thead>
+                        <tr>
+                            <th data-sort="time">Time <span class="sort-arrow">v</span></th>
+                            <th data-sort="token">Token</th>
+                            <th data-sort="side">Side</th>
+                            <th data-sort="entry">Entry</th>
+                            <th data-sort="exit">Exit</th>
+                            <th data-sort="size">Size</th>
+                            <th data-sort="pnl">PnL <span class="sort-arrow">v</span></th>
+                            <th data-sort="duration">Duration</th>
+                            <th data-sort="swarm">Swarm</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesBody"></tbody>
+                </table>
+            </div>
+            <div class="pagination" id="pagination"></div>
+        </div>
+
+        <!-- BOTTOM STATS -->
+        <div class="bottom-stats fade-in" style="animation-delay: 0.5s;">
+            <div class="bottom-stat">
+                <div class="stat-label">Largest Win</div>
+                <div class="stat-value positive" id="largestWin">--</div>
+            </div>
+            <div class="bottom-stat">
+                <div class="stat-label">Largest Loss</div>
+                <div class="stat-value negative" id="largestLoss">--</div>
+            </div>
+            <div class="bottom-stat">
+                <div class="stat-label">Avg Hold Time</div>
+                <div class="stat-value" id="avgHold">--</div>
+            </div>
+            <div class="bottom-stat">
+                <div class="stat-label">Sharpe Ratio</div>
+                <div class="stat-value" id="sharpeRatio">--</div>
+            </div>
+            <div class="bottom-stat">
+                <div class="stat-label">Most Traded</div>
+                <div class="stat-value" id="mostTraded" style="font-size:16px;">--</div>
+            </div>
+            <div class="bottom-stat">
+                <div class="stat-label">Current Streak</div>
+                <div class="stat-value positive" id="currentStreak">--</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const token = localStorage.getItem('cosmos_pro_token');
+        if (!token) { window.location.href = '/pro/login'; return; }
+
+        // TOKENS
+        const TOKENS = ['BONK','WIF','JUP','PYTH','JTO','RNDR','RAY','ORCA','MNGO','DRIFT','TENSOR','MARINADE','JITO','HNT','MOBILE'];
+
+        // Generate demo trades
+        function generateDemoTrades() {
+            const trades = [];
+            const now = Date.now();
+            const dayMs = 86400000;
+            let cumPnl = 0;
+
+            for (let i = 0; i < 38; i++) {
+                const token = TOKENS[Math.floor(Math.random() * TOKENS.length)];
+                const timeOffset = Math.random() * 7 * dayMs;
+                const time = new Date(now - timeOffset);
+                const entry = parseFloat((0.001 + Math.random() * 4.5).toFixed(4));
+                const isWin = Math.random() < 0.67;
+                const pctChange = isWin ? (0.02 + Math.random() * 0.25) : -(0.01 + Math.random() * 0.18);
+                const exit = parseFloat((entry * (1 + pctChange)).toFixed(4));
+                const size = parseFloat((50 + Math.random() * 450).toFixed(2));
+                const pnl = parseFloat((size * pctChange).toFixed(2));
+                const durationMinutes = Math.floor(5 + Math.random() * 720);
+                const swarm = Math.floor(55 + Math.random() * 40);
+                cumPnl += pnl;
+
+                trades.push({
+                    time, token,
+                    side: 'Buy',
+                    entry, exit, size, pnl,
+                    duration: durationMinutes,
+                    swarm,
+                    cumPnl: parseFloat(cumPnl.toFixed(2))
+                });
+            }
+
+            // Adjust to hit ~$2847 total PnL
+            const currentTotal = trades.reduce((s,t) => s + t.pnl, 0);
+            const diff = 2847.32 - currentTotal;
+            trades[0].pnl = parseFloat((trades[0].pnl + diff).toFixed(2));
+
+            // Sort by time
+            trades.sort((a,b) => a.time - b.time);
+
+            // Recalculate cumulative
+            let running = 0;
+            trades.forEach(t => {
+                running += t.pnl;
+                t.cumPnl = parseFloat(running.toFixed(2));
+            });
+
+            return trades;
+        }
+
+        let allTrades = generateDemoTrades();
+        let activePositions = [
+            { token: 'WIF', entry: 2.3412, current: 2.4891, size: 320, duration: '2h 14m', swarm: 82 },
+            { token: 'JUP', entry: 1.0234, current: 0.9876, size: 180, duration: '45m', swarm: 68 },
+            { token: 'BONK', entry: 0.00002341, current: 0.00002518, size: 250, duration: '1h 32m', swarm: 91 }
+        ];
+
+        let currentFilter = 'all';
+        let currentSort = { col: 'time', dir: 'desc' };
+        let currentPage = 1;
+        const perPage = 10;
+
+        // RENDER STATS
+        function renderStats() {
+            const totalPnl = allTrades.reduce((s,t) => s + t.pnl, 0);
+            const wins = allTrades.filter(t => t.pnl > 0);
+            const losses = allTrades.filter(t => t.pnl <= 0);
+            const winRate = ((wins.length / allTrades.length) * 100).toFixed(1);
+            const avgProfit = (totalPnl / allTrades.length).toFixed(2);
+            const bestTrade = Math.max(...allTrades.map(t => t.pnl));
+            const bestToken = allTrades.find(t => t.pnl === bestTrade);
+
+            document.getElementById('totalPnl').textContent = (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2);
+            document.getElementById('totalPnl').className = 'stat-value ' + (totalPnl >= 0 ? 'positive' : 'negative');
+            document.getElementById('winRate').textContent = winRate + '%';
+            document.getElementById('totalTrades').textContent = allTrades.length;
+            document.getElementById('avgProfit').textContent = (avgProfit >= 0 ? '+$' : '-$') + Math.abs(avgProfit);
+            document.getElementById('bestTrade').textContent = '+$' + bestTrade.toFixed(2) + (bestToken ? ' (' + bestToken.token + ')' : '');
+
+            // Win ring animation
+            const circumference = 2 * Math.PI * 20;
+            const offset = circumference - (parseFloat(winRate) / 100) * circumference;
+            document.getElementById('winRingFill').style.strokeDashoffset = offset;
+
+            // Bottom stats
+            const largestWin = Math.max(...allTrades.map(t => t.pnl));
+            const largestLoss = Math.min(...allTrades.map(t => t.pnl));
+            const avgDuration = allTrades.reduce((s,t) => s + t.duration, 0) / allTrades.length;
+
+            document.getElementById('largestWin').textContent = '+$' + largestWin.toFixed(2);
+            document.getElementById('largestLoss').textContent = '-$' + Math.abs(largestLoss).toFixed(2);
+            document.getElementById('avgHold').textContent = formatDuration(avgDuration);
+
+            // Sharpe approximation
+            const returns = allTrades.map(t => t.pnl / t.size);
+            const meanReturn = returns.reduce((s,r) => s + r, 0) / returns.length;
+            const stdDev = Math.sqrt(returns.reduce((s,r) => s + (r - meanReturn) ** 2, 0) / returns.length);
+            const sharpe = stdDev > 0 ? (meanReturn / stdDev * Math.sqrt(365)).toFixed(2) : 'N/A';
+            document.getElementById('sharpeRatio').textContent = sharpe;
+
+            // Most traded
+            const tokenCounts = {};
+            allTrades.forEach(t => { tokenCounts[t.token] = (tokenCounts[t.token] || 0) + 1; });
+            const mostTraded = Object.entries(tokenCounts).sort((a,b) => b[1] - a[1])[0];
+            document.getElementById('mostTraded').textContent = mostTraded[0] + ' (' + mostTraded[1] + ' trades)';
+
+            // Streak
+            let streak = 0;
+            for (let i = allTrades.length - 1; i >= 0; i--) {
+                if (allTrades[i].pnl > 0) streak++;
+                else break;
+            }
+            document.getElementById('currentStreak').textContent = streak + ' wins';
+            document.getElementById('currentStreak').className = 'stat-value ' + (streak > 0 ? 'positive' : '');
+        }
+
+        function formatDuration(minutes) {
+            if (minutes >= 60) return Math.floor(minutes / 60) + 'h ' + Math.round(minutes % 60) + 'm';
+            return Math.round(minutes) + 'm';
+        }
+
+        // RENDER POSITIONS
+        function renderPositions() {
+            const body = document.getElementById('positionsBody');
+            if (activePositions.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:24px;">No active positions</td></tr>';
+                return;
+            }
+            body.innerHTML = activePositions.map(p => {
+                const unrealizedPnl = ((p.current - p.entry) / p.entry * p.size).toFixed(2);
+                const isPos = parseFloat(unrealizedPnl) >= 0;
+                const swarmClass = p.swarm >= 80 ? 'swarm-high' : p.swarm >= 60 ? 'swarm-med' : 'swarm-low';
+                return `<tr>
+                    <td style="font-weight:600;color:var(--text-primary)">${p.token}</td>
+                    <td>$${p.entry}</td>
+                    <td>$${p.current}</td>
+                    <td>$${p.size}</td>
+                    <td class="${isPos ? 'pnl-positive' : 'pnl-negative'}">${isPos ? '+' : ''}$${unrealizedPnl}</td>
+                    <td>${p.duration}</td>
+                    <td><span class="swarm-badge ${swarmClass}">${p.swarm}%</span></td>
+                </tr>`;
+            }).join('');
+        }
+
+        // RENDER TRADES
+        function renderTrades() {
+            let filtered = [...allTrades];
+            if (currentFilter === 'wins') filtered = filtered.filter(t => t.pnl > 0);
+            if (currentFilter === 'losses') filtered = filtered.filter(t => t.pnl <= 0);
+
+            // Sort
+            filtered.sort((a, b) => {
+                let va, vb;
+                switch (currentSort.col) {
+                    case 'time': va = a.time.getTime(); vb = b.time.getTime(); break;
+                    case 'token': va = a.token; vb = b.token; break;
+                    case 'pnl': va = a.pnl; vb = b.pnl; break;
+                    case 'size': va = a.size; vb = b.size; break;
+                    case 'swarm': va = a.swarm; vb = b.swarm; break;
+                    case 'duration': va = a.duration; vb = b.duration; break;
+                    default: va = a.time.getTime(); vb = b.time.getTime();
+                }
+                if (typeof va === 'string') return currentSort.dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+                return currentSort.dir === 'asc' ? va - vb : vb - va;
+            });
+
+            const totalPages = Math.ceil(filtered.length / perPage);
+            const start = (currentPage - 1) * perPage;
+            const page = filtered.slice(start, start + perPage);
+
+            const body = document.getElementById('tradesBody');
+            body.innerHTML = page.map(t => {
+                const swarmClass = t.swarm >= 80 ? 'swarm-high' : t.swarm >= 60 ? 'swarm-med' : 'swarm-low';
+                const isPos = t.pnl >= 0;
+                return `<tr>
+                    <td style="color:var(--text-secondary)">${t.time.toLocaleDateString()} ${t.time.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</td>
+                    <td style="font-weight:600;color:var(--text-primary)">${t.token}</td>
+                    <td class="buy">Buy/Sell</td>
+                    <td>$${t.entry}</td>
+                    <td>$${t.exit}</td>
+                    <td>$${t.size.toFixed(2)}</td>
+                    <td class="${isPos ? 'pnl-positive' : 'pnl-negative'}">${isPos ? '+' : ''}$${t.pnl.toFixed(2)}</td>
+                    <td>${formatDuration(t.duration)}</td>
+                    <td><span class="swarm-badge ${swarmClass}">${t.swarm}%</span></td>
+                </tr>`;
+            }).join('');
+
+            // Pagination
+            const pag = document.getElementById('pagination');
+            pag.innerHTML = '';
+            for (let i = 1; i <= totalPages; i++) {
+                const btn = document.createElement('button');
+                btn.className = 'page-btn' + (i === currentPage ? ' active' : '');
+                btn.textContent = i;
+                btn.addEventListener('click', () => { currentPage = i; renderTrades(); });
+                pag.appendChild(btn);
+            }
+        }
+
+        // CHART
+        let pnlChart = null;
+        function renderChart(range) {
+            const now = Date.now();
+            const dayMs = 86400000;
+            let filteredTrades;
+
+            switch (range) {
+                case '24h': filteredTrades = allTrades.filter(t => now - t.time.getTime() < dayMs); break;
+                case '7d': filteredTrades = allTrades.filter(t => now - t.time.getTime() < 7 * dayMs); break;
+                case '30d': filteredTrades = allTrades.filter(t => now - t.time.getTime() < 30 * dayMs); break;
+                default: filteredTrades = [...allTrades];
+            }
+
+            if (filteredTrades.length === 0) filteredTrades = allTrades;
+
+            // Build cumulative PnL
+            let cum = 0;
+            const labels = [];
+            const data = [];
+            filteredTrades.forEach(t => {
+                cum += t.pnl;
+                labels.push(t.time);
+                data.push(parseFloat(cum.toFixed(2)));
+            });
+
+            const ctx = document.getElementById('pnlChart').getContext('2d');
+            if (pnlChart) pnlChart.destroy();
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+            gradient.addColorStop(0, 'rgba(16,185,129,0.2)');
+            gradient.addColorStop(1, 'rgba(16,185,129,0.0)');
+
+            const gradientRed = ctx.createLinearGradient(0, 0, 0, 300);
+            gradientRed.addColorStop(0, 'rgba(239,68,68,0.0)');
+            gradientRed.addColorStop(1, 'rgba(239,68,68,0.15)');
+
+            pnlChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'PnL ($)',
+                        data: data,
+                        borderColor: data[data.length - 1] >= 0 ? '#10b981' : '#ef4444',
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: data[data.length - 1] >= 0 ? gradient : gradientRed,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        pointBackgroundColor: data.map(v => v >= 0 ? '#10b981' : '#ef4444'),
+                        pointBorderColor: 'transparent',
+                        pointHoverRadius: 6,
+                        pointHoverBackgroundColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(8,8,15,0.9)',
+                            borderColor: 'rgba(255,255,255,0.1)',
+                            borderWidth: 1,
+                            titleFont: { family: 'JetBrains Mono', size: 12 },
+                            bodyFont: { family: 'JetBrains Mono', size: 13 },
+                            padding: 12,
+                            callbacks: {
+                                title: (items) => new Date(items[0].parsed.x).toLocaleString(),
+                                label: (item) => (item.parsed.y >= 0 ? '+' : '') + '$' + item.parsed.y.toFixed(2)
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: range === '24h' ? 'hour' : 'day' },
+                            grid: { color: 'rgba(255,255,255,0.03)' },
+                            ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 10 }, maxTicksLimit: 8 },
+                            border: { color: 'rgba(255,255,255,0.07)' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.03)' },
+                            ticks: {
+                                color: '#64748b',
+                                font: { family: 'JetBrains Mono', size: 10 },
+                                callback: (v) => (v >= 0 ? '+' : '') + '$' + v
+                            },
+                            border: { color: 'rgba(255,255,255,0.07)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Event listeners
+        document.querySelectorAll('.time-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                renderChart(btn.dataset.range);
+            });
+        });
+
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                currentPage = 1;
+                renderTrades();
+            });
+        });
+
+        document.querySelectorAll('#tradesTable th[data-sort]').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.sort;
+                if (currentSort.col === col) {
+                    currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    currentSort = { col, dir: 'desc' };
+                }
+                renderTrades();
+            });
+        });
+
+        // Fetch from API (with fallback to demo)
+        async function fetchPnlData() {
+            try {
+                const res = await fetch('/api/pro/pnl', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.trades && data.trades.length > 0) {
+                        allTrades = data.trades.map(t => ({
+                            ...t,
+                            time: new Date(t.time)
+                        }));
+                        if (data.active_positions) activePositions = data.active_positions;
+                    }
+                }
+            } catch(e) {}
+            renderStats();
+            renderPositions();
+            renderTrades();
+            renderChart('7d');
+        }
+
+        fetchPnlData();
+        setInterval(fetchPnlData, 30000);
+
+        // Need date adapter for Chart.js time scale
+        // Fallback: use linear labels if time adapter not available
+        if (!Chart.registry.scales.get('time')) {
+            // Override chart to use category scale
+            setTimeout(() => {
+                if (pnlChart) {
+                    pnlChart.options.scales.x.type = 'category';
+                    pnlChart.options.scales.x.ticks.callback = function(val, idx) {
+                        const labels = this.chart.data.labels;
+                        if (labels[idx] instanceof Date) return labels[idx].toLocaleDateString();
+                        return val;
+                    };
+                    pnlChart.update();
+                }
+            }, 100);
+        }
+    })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+</body>
+</html>

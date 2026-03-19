@@ -1,0 +1,17 @@
+{
+  "name": "dropclaw",
+  "version": "1.0.0",
+  "description": "DropClaw — Permanent Encrypted On-Chain Storage for AI Agents on Monad",
+  "main": "stub.js",
+  "files": [
+    "stub.js",
+    "README.md"
+  ],
+  "keywords": ["dropclaw", "blockchain", "storage", "encryption", "monad", "ai-agents", "x402", "on-chain"],
+  "author": "Farnsworth",
+  "license": "Proprietary",
+  "homepage": "https://dropclaw.cloud",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,19 @@
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+2026-03-13 13:54:52.178 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-13 13:54:52.180 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-13 13:54:52,198 - evolution_engine - INFO - EvolutionEngine initialized - 296 patterns, 169 cycles
+2026-03-13 13:54:54,034 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+Error during verification: invalid syntax (lyapunov_lock.py, line 177)
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\__init__.py", line 11, in <module>
+    from .emotional_state_api import (
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\emotional_state_api.py", line 45, in <module>
+    from .lyapunov_lock import LyapunovGatekeeper, StabilityReport, LYAPUNOV_STABILITY_THRESHOLD
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\lyapunov_lock.py", line 177
+    def validate_token_stream(self, tokens:  current_physics: 
+                                                            ^
+SyntaxError: invalid syntax

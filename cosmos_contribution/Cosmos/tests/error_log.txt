@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+SUCCESS: Aliased 'Cosmos' to 'cosmos'
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+  File "D:\Cosmos\Cosmos\tests\verify_memory_persistence.py", line 38, in <module>
+    from cosmos.core.collective.dialogue_memory import get_dialogue_memory, DeliberationResult, AgentTurn, RoundType
+  File "D:\Cosmos\Cosmos\core\collective\__init__.py", line 10, in <module>
+    from .organism import (
+  File "D:\Cosmos\Cosmos\core\collective\organism.py", line 131, in <module>
+    class CollectiveOrganism:
+  File "D:\Cosmos\Cosmos\core\collective\organism.py", line 163, in CollectiveOrganism
+    def _get_state_path(self) -> Path:
+                                 ^^^^
+NameError: name 'Path' is not defined

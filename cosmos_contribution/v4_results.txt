@@ -1,0 +1,91 @@
+2026-03-02 18:17:26.108 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-02 18:17:26.111 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-02 18:17:26,133 - evolution_engine - INFO - EvolutionEngine initialized - 262 patterns, 153 cycles
+2026-03-02 18:17:28,174 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+2026-03-02 18:17:28.286 | INFO     | Cosmos.core.cross_agent_memory:__init__:806 - ChaosBuffer initialized (size=50, threshold=0.45)
+2026-03-02 18:17:28.286 | INFO     | Cosmos.core.cross_agent_memory:__init__:806 - ChaosBuffer initialized (size=50, threshold=0.45)
+2026-03-02 18:17:28.286 | INFO     | Cosmos.core.cross_agent_memory:__init__:806 - ChaosBuffer initialized (size=10, threshold=0.01)
+2026-03-02 18:17:28.286 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.7926 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.286 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.6972 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.286 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8383 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8405 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9297 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9677 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9126 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9489 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9271 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8649 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9314 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9358 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.9062 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8701 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.6700 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.6866 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8167 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+2026-03-02 18:17:28.289 | WARNING  | Cosmos.core.cross_agent_memory:inject_entropy:835 - [CHAOS] Drift 0.8268 > threshold 0.01 ù RECOVERY SIGNAL EMITTED
+INFO:swarm_plasticity:[PLASTICITY] Initialized with default synaptic weights
+INFO:swarm_plasticity:[PLASTICITY] INIT | LOGIC: DeepSeek=1.00 | Claude=0.60 | Gemini=0.40
+INFO:swarm_plasticity:[PLASTICITY] INIT | EMPATHY: DeepSeek=0.20 | Claude=1.00 | Gemini=0.80
+INFO:swarm_plasticity:[PLASTICITY] INIT | CREATIVITY: DeepSeek=0.30 | Claude=0.50 | Gemini=1.00
+INFO:swarm_plasticity:[PLASTICITY] Loaded synaptic weights from test_synaptic_weights.json
+INFO:swarm_plasticity:[PLASTICITY] INIT | LOGIC: DeepSeek=1.00 | Claude=0.60 | Gemini=0.40
+INFO:swarm_plasticity:[PLASTICITY] INIT | EMPATHY: DeepSeek=0.20 | Claude=1.00 | Gemini=0.80
+INFO:swarm_plasticity:[PLASTICITY] INIT | CREATIVITY: DeepSeek=0.30 | Claude=0.50 | Gemini=1.00
+INFO:swarm_plasticity:[PLASTICITY] Imported peer weights (trust=0.50, peer_epoch=42)
+2026-03-02 18:17:29.400 | WARNING  | Cosmos.integration.quantum.ibm_quantum:<module>:56 - Qiskit import error: No module named 'qiskit_aer'. Run: pip install qiskit qiskit-ibm-runtime qiskit-aer
+D:\Cosmos\Cosmos\memory\unified_knowledge_graph.py:164: RuntimeWarning: coroutine 'KnowledgeGraphV2.initialize' was never awaited
+  self._base_graph.initialize()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+INFO:UNIFIED_KG:[UKG] Initialized with KnowledgeGraphV2 base
+INFO:UNIFIED_KG:[UKG] Unified Knowledge Graph initialized
+D:\Cosmos\Cosmos\memory\unified_knowledge_graph.py:264: RuntimeWarning: coroutine 'KnowledgeGraphV2.add_temporal_relationship' was never awaited
+  self._base_graph.add_temporal_relationship(
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+INFO:UNIFIED_KG:[UKG] Initialized with KnowledgeGraphV2 base
+INFO:UNIFIED_KG:[UKG] Unified Knowledge Graph initialized
+============================================================
+  COSMOS V4.0 ARCHITECTURE VERIFICATION
+============================================================
+
+--- 1. Lyapunov Threshold ---
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+  [PASS] lyapunov_lock threshold = 0.45
+  [PASS] swarm_plasticity threshold = 0.45
+
+--- 2. ChaosBuffer ---
+  [PASS] ChaosBuffer import & init
+  [PASS] ChaosBuffer entropy injection & stats
+  [PASS] ChaosBuffer recovery trigger on high drift
+
+--- 3. Dark Matter P2P Anchor ---
+[QUANTUM] No token provided. Running in simulation mode.
+  [PASS] anchor_for_p2p() serialization
+  [PASS] get_divergence() calculation
+  [PASS] apply_peer_anchor() merge
+
+--- 4. Async Event Loop ---
+  [PASS] EventType enum & CNSEvent dataclass
+  [PASS] CosmosCNS has async event methods
+
+--- 5. Hebbian Transfer Learning ---
+  [PASS] export_weights() serialization
+  [PASS] import_peer_weights() phi-dampened merge
+
+--- 6. Fault-Tolerant P2P ---
+  [PASS] StateCheckpoint & PeerInfo dataclasses
+  [PASS] SwarmFabric has broadcast_state_checkpoint
+
+--- 7. 12D Knowledge Graph ---
+  [PASS] SynapticConnection properties
+  [PASS] UnifiedKnowledgeGraph add + query_by_phase
+  [PASS] get_12d_topology() export
+
+--- 8. Web Search for All Models ---
+  [PASS] should_search() detection + format_search_context()
+
+============================================================
+  RESULTS: 18/18 passed, 0 failed
+  ALL COSMOS V4.0 VERIFICATION TESTS PASSED
+============================================================

@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD:cosmos/health/dashboard/templates/insights.html
+    <title>Insights - cosmos Health</title>
+=======
+    <title>Insights - Cosmos Health</title>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/insights.html
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        .nav-links a {
+            color: #a0a0a0;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .nav-links a:hover, .nav-links a.active {
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .glass-card h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+
+        .category-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .category-tab {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            color: #a0a0a0;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .category-tab:hover, .category-tab.active {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .insight-card {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-left: 4px solid #00d4ff;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .insight-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 30px rgba(0, 212, 255, 0.1);
+        }
+
+        .insight-card.high-priority {
+            border-left-color: #ff6b6b;
+        }
+
+        .insight-card.medium-priority {
+            border-left-color: #ffd93d;
+        }
+
+        .insight-card.low-priority {
+            border-left-color: #00ff88;
+        }
+
+        .insight-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+
+        .insight-category {
+            display: inline-block;
+            padding: 4px 12px;
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .insight-priority {
+            display: flex;
+            gap: 3px;
+        }
+
+        .priority-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .priority-dot.active {
+            background: #00d4ff;
+        }
+
+        .insight-title {
+            font-size: 1.3rem;
+            color: #fff;
+            margin-bottom: 10px;
+        }
+
+        .insight-message {
+            color: #b0b0b0;
+            line-height: 1.6;
+            margin-bottom: 15px;
+        }
+
+        .insight-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .action-step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 15px;
+            background: rgba(0, 212, 255, 0.1);
+            border-radius: 10px;
+            font-size: 0.9rem;
+        }
+
+        .action-step .step-icon {
+            color: #00d4ff;
+        }
+
+        .related-metrics {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .metric-tag {
+            padding: 4px 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #808080;
+        }
+
+        .recommendation-card {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(0, 255, 136, 0.1));
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+
+        .rec-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .rec-icon {
+            width: 50px;
+            height: 50px;
+            background: rgba(0, 212, 255, 0.2);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+
+        .rec-title {
+            font-size: 1.2rem;
+            color: #fff;
+        }
+
+        .rec-category {
+            color: #00d4ff;
+            font-size: 0.9rem;
+        }
+
+        .rec-content {
+            color: #b0b0b0;
+            line-height: 1.6;
+        }
+
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 136, 0.2));
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: #00d4ff;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #808080;
+        }
+
+        .loading .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 212, 255, 0.2);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px;
+            color: #808080;
+        }
+
+        .empty-state .icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Health Insights</h1>
+            <nav class="nav-links">
+                <a href="/health">Dashboard</a>
+                <a href="/nutrition">Nutrition</a>
+                <a href="/documents">Documents</a>
+                <a href="/insights" class="active">Insights</a>
+            </nav>
+        </header>
+
+        <!-- Category Tabs -->
+        <div class="category-tabs">
+            <button class="category-tab active" onclick="filterCategory('all')">All</button>
+            <button class="category-tab" onclick="filterCategory('activity')">Activity</button>
+            <button class="category-tab" onclick="filterCategory('sleep')">Sleep</button>
+            <button class="category-tab" onclick="filterCategory('recovery')">Recovery</button>
+            <button class="category-tab" onclick="filterCategory('heart')">Heart Health</button>
+            <button class="category-tab" onclick="filterCategory('nutrition')">Nutrition</button>
+        </div>
+
+        <!-- AI Recommendations Section -->
+        <div class="glass-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3>Personalized Recommendations</h3>
+                <span class="ai-badge">
+                    <span>&#10024;</span> Powered by Swarm AI
+                </span>
+            </div>
+            <div id="recommendationsContainer">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>Analyzing your health data...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Insights Section -->
+        <div class="glass-card">
+            <h3>Health Insights</h3>
+            <div id="insightsContainer">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>Generating insights...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Correlations Section -->
+        <div class="glass-card">
+            <h3>Discovered Patterns</h3>
+            <div id="correlationsContainer">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>Finding patterns in your data...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allInsights = [];
+        let allRecommendations = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadInsights();
+            loadRecommendations();
+        });
+
+        async function loadInsights() {
+            try {
+                const response = await fetch('/api/health/insights');
+                const data = await response.json();
+
+                allInsights = data.insights;
+                displayInsights(allInsights);
+
+            } catch (error) {
+                console.error('Error loading insights:', error);
+                document.getElementById('insightsContainer').innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">&#128300;</div>
+                        <div>Unable to load insights</div>
+                    </div>
+                `;
+            }
+        }
+
+        async function loadRecommendations() {
+            try {
+                const response = await fetch('/api/recommendations');
+                const data = await response.json();
+
+                allRecommendations = data.recommendations;
+                displayRecommendations(allRecommendations);
+
+            } catch (error) {
+                console.error('Error loading recommendations:', error);
+                document.getElementById('recommendationsContainer').innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">&#129302;</div>
+                        <div>Unable to load AI recommendations</div>
+                    </div>
+                `;
+            }
+        }
+
+        function displayInsights(insights) {
+            const container = document.getElementById('insightsContainer');
+
+            if (insights.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">&#128161;</div>
+                        <div>No insights available yet</div>
+                        <p style="margin-top: 10px;">Keep tracking your health to receive personalized insights!</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = insights.map(insight => {
+                const priorityClass = insight.priority >= 4 ? 'high-priority' :
+                                     insight.priority >= 3 ? 'medium-priority' : 'low-priority';
+
+                return `
+                    <div class="insight-card ${priorityClass}" data-category="${insight.category}">
+                        <div class="insight-header">
+                            <span class="insight-category">${insight.category}</span>
+                            <div class="insight-priority">
+                                ${[1,2,3,4,5].map(i =>
+                                    `<div class="priority-dot ${i <= insight.priority ? 'active' : ''}"></div>`
+                                ).join('')}
+                            </div>
+                        </div>
+                        <div class="insight-title">${insight.title}</div>
+                        <div class="insight-message">${insight.message}</div>
+                        ${insight.related_metrics ? `
+                            <div class="related-metrics">
+                                ${insight.related_metrics.map(m =>
+                                    `<span class="metric-tag">${m}</span>`
+                                ).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function displayRecommendations(recommendations) {
+            const container = document.getElementById('recommendationsContainer');
+
+            if (recommendations.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">&#129302;</div>
+                        <div>No recommendations available</div>
+                        <p style="margin-top: 10px;">Our AI swarm will generate personalized recommendations based on your health data.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const icons = {
+                activity: '&#127939;',
+                sleep: '&#128164;',
+                recovery: '&#9889;',
+                heart: '&#10084;',
+                nutrition: '&#127860;',
+                stress: '&#129488;'
+            };
+
+            container.innerHTML = recommendations.map(rec => `
+                <div class="recommendation-card">
+                    <div class="rec-header">
+                        <div class="rec-icon">${icons[rec.category] || '&#128161;'}</div>
+                        <div>
+                            <div class="rec-title">${rec.title}</div>
+                            <div class="rec-category">${rec.category}</div>
+                        </div>
+                    </div>
+                    <div class="rec-content">${rec.description}</div>
+                </div>
+            `).join('');
+        }
+
+        function filterCategory(category) {
+            // Update tabs
+            document.querySelectorAll('.category-tab').forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.textContent.toLowerCase().includes(category) ||
+                    (category === 'all' && tab.textContent === 'All')) {
+                    tab.classList.add('active');
+                }
+            });
+
+            // Filter insights
+            if (category === 'all') {
+                displayInsights(allInsights);
+            } else {
+                const filtered = allInsights.filter(i => i.category === category);
+                displayInsights(filtered);
+            }
+        }
+
+        // Load correlations (using trends endpoint)
+        async function loadCorrelations() {
+            try {
+                const response = await fetch('/api/health/trends?days=14');
+                const data = await response.json();
+
+                const container = document.getElementById('correlationsContainer');
+
+                if (data.trends.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="icon">&#128200;</div>
+                            <div>Not enough data to find patterns</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = data.trends.map(trend => `
+                    <div class="insight-card" style="border-left-color: ${
+                        trend.direction === 'increasing' ? '#00ff88' :
+                        trend.direction === 'decreasing' ? '#ff6b6b' : '#ffd93d'
+                    }">
+                        <div class="insight-title">${trend.metric_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</div>
+                        <div class="insight-message">${trend.description}</div>
+                        <div class="related-metrics">
+                            <span class="metric-tag">Change: ${trend.change_percent > 0 ? '+' : ''}${trend.change_percent.toFixed(1)}%</span>
+                            <span class="metric-tag">Confidence: ${(trend.confidence * 100).toFixed(0)}%</span>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Error loading correlations:', error);
+            }
+        }
+
+        // Load correlations after insights
+        setTimeout(loadCorrelations, 1000);
+    </script>
+</body>
+</html>

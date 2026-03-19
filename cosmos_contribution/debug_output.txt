@@ -1,0 +1,61 @@
+2026-03-08 23:57:40.666 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-08 23:57:40.669 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-08 23:57:40,689 - evolution_engine - INFO - EvolutionEngine initialized - 290 patterns, 167 cycles
+2026-03-08 23:57:43,857 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+    [INIT]  Testing torch import (10s timeout)...
+    [WARN]  torch import timed out ù setting COSMOS_SKIP_TORCH=1
+            TTS voice cloning disabled; server will use fallback voice.
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+DEBUG: Loaded Server Module: D:\Cosmos\Cosmos\web\server.py
+
+    +==================================================================+
+    |             * COSMOS Neural Interface v3.0                    |
+    |                  + 12D CST Emotional Engine                      |
+    |                  + FULL LIVE MODE                                |
+    +==================================================================+
+    |  Web Interface:    http://localhost:8081                           |
+    |  Emotional API:    http://localhost:8765                           |
+    |  Mode:             FULL LIVE                                          |
+Traceback (most recent call last):
+    +==================================================================+
+    |  Active Capabilities:                                            |
+    |    Ollama (llama3.1:8b) | Gemini API | ChatGPT API | IBM Quantum Bridge |
+    +==================================================================+
+    |  Emotional Endpoints:                                            |
+    |    GET  /state         - Current cosmos_packet                 |
+    |    GET  /stream        - SSE token stream                        |
+    |    WS   /ws            - WebSocket tokens                        |
+    |    GET  /system_prompt - LLM steering prompt                     |
+    +==================================================================+
+    
+    [INIT]  Testing Quantum Bridge Connection...
+[QUANTUM] No token provided. Running in simulation mode.
+[QUANTUM] connect() called with no API token; remaining in simulation mode.
+    [WARN]  Quantum Bridge Offline - System will run in DETERMINISTIC mode.
+  File "D:\Cosmos\run_web.py", line 218, in <module>
+Exception in thread Thread-3 (start_emotional_server):
+Traceback (most recent call last):
+    main()
+  File "D:\Cosmos\run_web.py", line 91, in start_emotional_server
+  File "D:\Cosmos\run_web.py", line 193, in main
+    run_server(host=host, port=port)
+
+======================================================================
+  File "D:\Cosmos\emotional_api\emotion_server.py", line 206, in run_server
+    print(f"    \U0001f3ad Emotional API Server starting on port {args.emotion_port}...")
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    print("  \U0001f3ad cosmos 12D CST TOKEN SERVER")
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f3ad' in position 4: character maps to <undefined>
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f3ad' in position 2: character maps to <undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\corys\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075, in _bootstrap_inner

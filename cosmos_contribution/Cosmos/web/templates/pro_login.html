@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Cosmos AI</title>
+    <meta name="description" content="Connect to Cosmos AI - The Neural Swarm platform.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255, 255, 255, 0.03);
+            --border: rgba(255, 255, 255, 0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --purple-hover: #7c3aed;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --red: #ef4444;
+            --radius-card: 16px;
+            --radius-input: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Nebula background */
+        .nebula {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .nebula::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(6, 182, 212, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 60% 80%, rgba(16, 185, 129, 0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+
+        .nebula::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background:
+                radial-gradient(ellipse at 70% 60%, rgba(139, 92, 246, 0.05) 0%, transparent 40%),
+                radial-gradient(ellipse at 30% 30%, rgba(6, 182, 212, 0.04) 0%, transparent 40%);
+            animation: nebulaShift 25s ease-in-out infinite alternate-reverse;
+        }
+
+        @keyframes nebulaShift {
+            0% { transform: translate(0, 0) rotate(0deg); }
+            33% { transform: translate(2%, -1%) rotate(1deg); }
+            66% { transform: translate(-1%, 2%) rotate(-0.5deg); }
+            100% { transform: translate(1%, -2%) rotate(0.5deg); }
+        }
+
+        /* Logo */
+        .logo {
+            position: relative;
+            z-index: 1;
+            margin-bottom: 40px;
+            text-align: center;
+        }
+
+        .logo a {
+            text-decoration: none;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 6px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            transition: opacity var(--transition);
+        }
+
+        .logo a:hover {
+            opacity: 0.8;
+        }
+
+        /* Card */
+        .auth-card {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 420px;
+            padding: 40px 36px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .auth-card h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .auth-card .subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        /* Connect buttons */
+        .connect-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .btn-connect {
+            width: 100%;
+            padding: 15px 24px;
+            border: none;
+            border-radius: var(--radius-input);
+            font-family: 'Inter', sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-connect:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn-connect:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-connect:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-connect svg {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        /* X (Twitter) button */
+        .btn-x {
+            background: #000;
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .btn-x:hover:not(:disabled) {
+            background: #1a1a1a;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Wallet button */
+        .btn-wallet {
+            background: linear-gradient(135deg, var(--purple), var(--purple-hover));
+            color: #fff;
+        }
+
+        .btn-wallet:hover:not(:disabled) {
+            box-shadow: 0 8px 24px rgba(139, 92, 246, 0.3);
+        }
+
+        /* Spinner */
+        .btn-connect .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        .btn-connect.loading .btn-text {
+            visibility: hidden;
+        }
+
+        .btn-connect.loading svg {
+            visibility: hidden;
+        }
+
+        .btn-connect.loading .spinner {
+            display: block;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        @keyframes spin {
+            to { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+
+        /* Error message */
+        .error-msg {
+            display: none;
+            padding: 12px 16px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: var(--radius-input);
+            color: #fca5a5;
+            font-size: 13px;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .error-msg.visible {
+            display: block;
+        }
+
+        /* Phantom install message */
+        .phantom-msg {
+            display: none;
+            text-align: center;
+            padding: 12px 16px;
+            background: rgba(139, 92, 246, 0.06);
+            border: 1px solid rgba(139, 92, 246, 0.15);
+            border-radius: var(--radius-input);
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: -4px;
+            line-height: 1.5;
+        }
+
+        .phantom-msg.visible {
+            display: block;
+        }
+
+        .phantom-msg a {
+            color: var(--purple);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color var(--transition);
+        }
+
+        .phantom-msg a:hover {
+            color: var(--cyan);
+        }
+
+        /* Divider */
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        .divider span {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        /* Footer text */
+        .auth-footer {
+            text-align: center;
+            margin-top: 28px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Responsive */
+        @media (max-width: 480px) {
+            body {
+                padding: 24px 16px;
+                justify-content: flex-start;
+                padding-top: 60px;
+            }
+
+            .auth-card {
+                padding: 32px 24px;
+            }
+
+            .logo {
+                margin-bottom: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="nebula"></div>
+
+<div class="logo">
+    <a href="/pro">COSMOS</a>
+</div>
+
+<div class="auth-card">
+    <h1>Welcome to Cosmos</h1>
+    <p class="subtitle">Connect to start chatting with 11 AI agents</p>
+
+    <div class="error-msg" id="errorMsg"></div>
+
+    <div class="connect-buttons">
+        <button type="button" class="btn-connect btn-x" id="xBtn">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+            </svg>
+            <span class="btn-text">Connect with X</span>
+            <span class="spinner"></span>
+        </button>
+
+        <button type="button" class="btn-connect btn-wallet" id="walletBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="6" width="20" height="14" rx="2"/>
+                <path d="M2 10h20"/>
+                <path d="M16 14h2"/>
+                <path d="M6 2h8l4 4"/>
+            </svg>
+            <span class="btn-text">Connect Wallet</span>
+            <span class="spinner"></span>
+        </button>
+
+        <div class="phantom-msg" id="phantomMsg">
+            Phantom wallet not detected. <a href="https://phantom.app" target="_blank" rel="noopener">Install Phantom</a> to connect with Solana.
+        </div>
+    </div>
+
+    <div class="auth-footer">
+        New here? Your account is created automatically when you connect.
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    var errorMsg = document.getElementById('errorMsg');
+    var phantomMsg = document.getElementById('phantomMsg');
+    var xBtn = document.getElementById('xBtn');
+    var walletBtn = document.getElementById('walletBtn');
+
+    function showError(msg) {
+        errorMsg.textContent = msg;
+        errorMsg.classList.add('visible');
+    }
+
+    function hideError() {
+        errorMsg.classList.remove('visible');
+    }
+
+    function storeAuthAndRedirect(data) {
+        if (data.token) {
+            localStorage.setItem('cosmos_token', data.token);
+        }
+        if (data.user) {
+            localStorage.setItem('cosmos_user', JSON.stringify(data.user));
+        }
+        // If new user, redirect to plan selection; otherwise go to chat
+        if (data.new_user) {
+            window.location.href = '/pro/signup?token=' + encodeURIComponent(data.token);
+        } else {
+            window.location.href = '/pro/chat';
+        }
+    }
+
+    // Check URL params on load (X OAuth callback)
+    var params = new URLSearchParams(window.location.search);
+    var tokenParam = params.get('token');
+    var userParam = params.get('user');
+    var newUserParam = params.get('new_user');
+
+    if (tokenParam) {
+        localStorage.setItem('cosmos_token', tokenParam);
+        if (userParam) {
+            try {
+                var decoded = decodeURIComponent(userParam);
+                localStorage.setItem('cosmos_user', decoded);
+            } catch (e) {
+                localStorage.setItem('cosmos_user', userParam);
+            }
+        }
+        if (newUserParam === 'true') {
+            window.location.href = '/pro/signup?token=' + encodeURIComponent(tokenParam);
+        } else {
+            window.location.href = '/pro/chat';
+        }
+    }
+
+    // Connect with X
+    xBtn.addEventListener('click', function() {
+        xBtn.classList.add('loading');
+        xBtn.disabled = true;
+        hideError();
+        window.location.href = '/api/pro/auth/x/login';
+    });
+
+    // Connect Wallet (Phantom / Solana)
+    walletBtn.addEventListener('click', async function() {
+        hideError();
+        phantomMsg.classList.remove('visible');
+
+        var provider = window.phantom?.solana || window.solana;
+
+        if (!provider || !provider.isPhantom) {
+            phantomMsg.classList.add('visible');
+            return;
+        }
+
+        walletBtn.classList.add('loading');
+        walletBtn.disabled = true;
+
+        try {
+            var resp = await provider.connect();
+            var publicKey = resp.publicKey.toString();
+
+            // Sign a message to prove ownership
+            var message = 'Sign in to Cosmos AI';
+            var encodedMessage = new TextEncoder().encode(message);
+            var signedMessage = await provider.signMessage(encodedMessage, 'utf8');
+
+            // Convert signature to base64 for transport
+            var signatureBase64 = btoa(String.fromCharCode.apply(null, signedMessage.signature));
+
+            var res = await fetch('/api/pro/auth/wallet', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    publicKey: publicKey,
+                    signature: signatureBase64,
+                    message: message
+                })
+            });
+
+            var data = await res.json();
+
+            if (!res.ok) {
+                showError(data.error || data.message || 'Wallet authentication failed.');
+                walletBtn.classList.remove('loading');
+                walletBtn.disabled = false;
+                return;
+            }
+
+            storeAuthAndRedirect(data);
+        } catch (err) {
+            walletBtn.classList.remove('loading');
+            walletBtn.disabled = false;
+
+            if (err.code === 4001) {
+                showError('Wallet connection was rejected.');
+            } else {
+                showError('Wallet connection failed. Please try again.');
+            }
+        }
+    });
+
+    // Check if already authenticated
+    var existingToken = localStorage.getItem('cosmos_token');
+    if (existingToken && !tokenParam) {
+        fetch('/api/pro/auth/verify', {
+            headers: { 'Authorization': 'Bearer ' + existingToken }
+        }).then(function(res) {
+            if (res.ok) {
+                window.location.href = '/pro/chat';
+            }
+        }).catch(function() {});
+    }
+})();
+</script>
+
+</body>
+</html>

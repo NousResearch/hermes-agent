@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosmos-ai"
+version = "2.1.0-alpha"
+description = "Self-evolving companion AI with MemGPT-style memory, LangGraph agent swarm, and conversation export"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "cosmos Team"}
+]
+keywords = ["ai", "llm", "memory", "agents", "evolution", "mcp", "export", "knowledge-graph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Core LLM
+    "ollama>=0.4.0",
+    "google-generativeai>=0.8.0",  # Gemini AI
+    "openai>=1.0.0",  # OpenAI-compatible APIs
+
+    # Memory
+    "faiss-cpu>=1.8.0",
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+    "networkx>=3.0",
+
+    # Agents
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-community>=0.3.0",
+
+    # RAG
+    "llama-index>=0.11.0",
+    "rank-bm25>=0.2.0",
+
+    # Evolution
+    "deap>=1.4.0",
+    "stable-baselines3>=2.3.0",
+    "peft>=0.13.0",
+
+    # MCP Server
+    "mcp>=1.0.0",
+
+    # UI
+    "streamlit>=1.38.0",
+
+    # Utilities
+    "pyyaml>=6.0",
+    "loguru>=0.7.0",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "aiohttp>=3.9.0",
+    "httpx>=0.27.0",
+    "opencv-python-headless>=4.8.0",
+    "pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "black>=24.0.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+gpu = [
+    "faiss-gpu>=1.8.0",
+    "torch>=2.0.0",
+]
+
+local = [
+    "llama-cpp-python>=0.3.0",  # Requires C++ build tools
+]
+
+[project.scripts]
+cosmos = "cosmos.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cosmos*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

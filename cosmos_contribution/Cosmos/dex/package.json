@@ -1,0 +1,21 @@
+{
+    "name": "dexai",
+    "version": "1.0.0",
+    "description": "DEXAI - Farnsworth AI-Powered DEX Screener",
+    "main": "server.js",
+    "scripts": {
+        "dev": "node server.js",
+        "start": "NODE_ENV=production node server.js",
+        "build": "echo 'No build step needed'"
+    },
+    "dependencies": {
+        "express": "^4.18.2",
+        "cors": "^2.8.5",
+        "ws": "^8.14.2",
+        "@solana/web3.js": "^1.87.6",
+        "node-fetch": "^3.3.2"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

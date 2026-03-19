@@ -1,0 +1,18 @@
+2026-03-12 22:12:47.039 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+Traceback (most recent call last):
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+Error during verification: expected 'else' after 'if' expression (orchestration.py, line 174)
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\__init__.py", line 6, in <module>
+    from .server import app, main
+  File "d:\Cosmos\Cosmos\web\server.py", line 200, in <module>
+    from cosmos.core.collective import organism as collective_organism
+  File "d:\Cosmos\Cosmos\core\collective\__init__.py", line 19, in <module>
+    from .orchestration import (
+  File "d:\Cosmos\Cosmos\core\collective\orchestration.py", line 174
+    if any(other in self.state.participants if other != speaker):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: expected 'else' after 'if' expression

@@ -1,0 +1,38 @@
+# Implementation Plan - Hybrid Hermes-4.3-36B Integration
+
+The goal is to integrate the `Hermes-4.3-36B` model as a primary components within the Cosmos CNS using a **Hybrid Cascade** approach. Since the local PC has 16GB RAM and limited VRAM, we will use a small local model for speed and offload heavy reasoning to a cloud-hosted Hermes-36B.
+
+## Proposed Changes
+
+### [Cosmos Core]
+
+#### [MODIFY] [model_manager.py](file:///d:/Cosmos/Cosmos/core/model_manager.py)
+- Define a `hermes-36b-cloud` model profile.
+- Configure it to use `BackendType.OPENAI_COMPATIBLE` or `BackendType.GEMINI` (pointing to a Hermes-compatible endpoint like OpenRouter).
+- Ensure a local "companion" model (e.g., `qwen2.5-1.5b` or `phi-3.5-mini`) is defined for the cascade base.
+
+#### [MODIFY] [llm_backend.py](file:///d:/Cosmos/Cosmos/core/llm_backend.py)
+- Update [CascadeBackend](file:///d:/Cosmos/Cosmos/core/llm_backend.py#1227-1353) to support a local-to-cloud transition.
+- Implement specialized "Complexity Estimation" for Hermes-specific tasks (RL feedback, skill synthesis).
+
+### [Cosmos Integration]
+
+#### [MODIFY] [hermes_bridge.py](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py)
+- Configure the [HermesRuntime](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py#505-639) to use the [CascadeBackend](file:///d:/Cosmos/Cosmos/core/llm_backend.py#1227-1353).
+- This allows the Hermes AIAgent to start fast on local hardware but escalate to the full 36B model for complex plans/coding.
+
+## Verification Plan
+
+### Automated Tests
+- Verification script to check the Cascade escalation logic:
+  ```python
+  import asyncio
+  from Cosmos.core.model_manager import ModelManager
+  mm = ModelManager()
+  # Test if complexity > 0.7 triggers the cloud backend
+  ```
+
+### Manual Verification
+- Run a simple query (local response).
+- Run a complex coding task (should trigger "Escalating to Hermes-36B-Cloud" log).
+- Verify [hermes_bridge](file:///d:/Cosmos/Cosmos/integration/hermes_bridge.py#739-745) properly records the escalated turn rewards.

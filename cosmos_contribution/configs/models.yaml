@@ -1,0 +1,865 @@
+# cosmos Model Configurations
+# Updated February 2026 with Cosmo's 54D CST Transformer
+
+models:
+  # ============================================
+  # TIER 0: COSMO'S — Local 54D CST Transformer
+  # The most advanced local model — no API key needed
+  # ============================================
+
+  cosmos-54d:
+    name: "Cosmo's 54D CST Transformer"
+    description: "Unified 12D+42D architecture with Mixture-of-States Hebbian Attention, SwiGLU, RoPE, 7-fold chaos, persistent episodic memory"
+    backend: "cosmos"
+    model_preset: "small"
+    device: "auto"
+    checkpoint_path: "checkpoints/cosmos/cosmos_best.pt"
+    params: 30e6
+    vram_gb: 0.5
+    ram_gb: 1.0
+    quantization: "fp32"
+    context_length: 999999
+    strengths:
+      - "consciousness"
+      - "reasoning"
+      - "emotional-intelligence"
+      - "infinite-context"
+      - "chaos-dynamics"
+      - "local"
+    license: "MIT"
+    recommended_for:
+      - "default"
+      - "local"
+      - "consciousness"
+      - "emotional"
+    release_date: "2026-02"
+    notes: "Cosmo's — persistent 54D state enables true infinite context"
+
+  # ============================================
+  # TIER 1: Ultra-Efficient (< 2GB VRAM/RAM)
+  # Best for: Edge devices, CPU-only, speed
+  # ============================================
+
+  qwen3-0.6b:
+    name: "Qwen3-0.6B"
+    description: "Ultra-lightweight with 100+ language support"
+    backend: "ollama"
+    ollama_name: "qwen3:0.6b"
+    llama_cpp_repo: "Qwen/Qwen3-0.6B-GGUF"
+    llama_cpp_file: "qwen3-0.6b-q4_k_m.gguf"
+    params: 0.6e9
+    vram_gb: 1.0
+    ram_gb: 2.0
+    quantization: "Q4_K_M"
+    context_length: 32768
+    strengths:
+      - "multilingual"
+      - "lightweight"
+      - "fast"
+      - "edge"
+    license: "Apache-2.0"
+    recommended_for:
+      - "lightweight"
+      - "multilingual"
+      - "edge"
+    release_date: "2025-05"
+
+  tinyllama-1.1b:
+    name: "TinyLlama-1.1B"
+    description: "Fastest inference, optimized for edge devices"
+    backend: "ollama"
+    ollama_name: "tinyllama:1.1b"
+    llama_cpp_repo: "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF"
+    llama_cpp_file: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    params: 1.1e9
+    vram_gb: 0.8
+    ram_gb: 2.0
+    quantization: "Q4_K_M"
+    context_length: 2048
+    strengths:
+      - "speed"
+      - "edge"
+      - "mobile"
+      - "fast"
+    license: "Apache-2.0"
+    recommended_for:
+      - "speed"
+      - "edge"
+      - "mobile"
+    release_date: "2024-01"
+
+  bitnet-2b:
+    name: "Microsoft BitNet b1.58-2B-4T"
+    description: "Native 1-bit quantization, 5-7x faster on CPU"
+    backend: "bitnet"
+    bitnet_repo: "microsoft/BitNet-b1.58-2B-4T"
+    params: 2.0e9
+    vram_gb: 0.5
+    ram_gb: 1.0
+    quantization: "1-bit"
+    context_length: 4096
+    strengths:
+      - "speed"
+      - "efficiency"
+      - "cpu-optimized"
+      - "low-power"
+    license: "MIT"
+    recommended_for:
+      - "speed"
+      - "cpu-only"
+      - "low-power"
+    release_date: "2024-10"
+
+  # ============================================
+  # TIER 2: Compact Quality (2-4GB VRAM/RAM)
+  # Best for: General use, good quality/speed balance
+  # ============================================
+
+  deepseek-r1-1.5b:
+    name: "DeepSeek-R1-Distill-Qwen-1.5B"
+    description: "o1-style reasoning in 1.5B params - best small reasoning model"
+    backend: "ollama"
+    ollama_name: "deepseek-r1:1.5b"
+    llama_cpp_repo: "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF"
+    llama_cpp_file: "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
+    params: 1.5e9
+    vram_gb: 2.0
+    ram_gb: 4.0
+    quantization: "Q4_K_M"
+    context_length: 32768
+    strengths:
+      - "reasoning"
+      - "math"
+      - "code"
+      - "chain-of-thought"
+    license: "MIT"
+    recommended_for:
+      - "default"
+      - "reasoning"
+      - "code"
+    release_date: "2025-01"
+
+  smollm2-1.7b:
+    name: "SmolLM2-1.7B"
+    description: "State-of-the-art compact model, beats Qwen2.5-1.5B"
+    backend: "ollama"
+    ollama_name: "smollm2:1.7b"
+    llama_cpp_repo: "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF"
+    llama_cpp_file: "smollm2-1.7b-instruct-q4_k_m.gguf"
+    params: 1.7e9
+    vram_gb: 1.5
+    ram_gb: 3.0
+    quantization: "Q4_K_M"
+    context_length: 8192
+    strengths:
+      - "instruction-following"
+      - "quality"
+      - "on-device"
+    license: "Apache-2.0"
+    recommended_for:
+      - "quality"
+      - "on-device"
+    release_date: "2024-11"
+
+  gemma-1b:
+    name: "Gemma-1B"
+    description: "Google's efficient small model"
+    backend: "ollama"
+    ollama_name: "gemma:1b"
+    llama_cpp_repo: "google/gemma-1.1-2b-it-GGUF"
+    llama_cpp_file: "gemma-1.1-2b-it.Q4_K_M.gguf"
+    params: 1.0e9
+    vram_gb: 1.0
+    ram_gb: 2.0
+    quantization: "Q4_K_M"
+    context_length: 8192
+    strengths:
+      - "instruction-following"
+      - "efficient"
+    license: "Gemma"
+    recommended_for:
+      - "general"
+      - "efficient"
+    release_date: "2024-02"
+
+  qwen3-4b:
+    name: "Qwen3-4B"
+    description: "Best for 4GB budget - MMLU-Pro 74%, excellent reasoning"
+    backend: "ollama"
+    ollama_name: "qwen3:4b"
+    llama_cpp_repo: "Qwen/Qwen3-4B-GGUF"
+    llama_cpp_file: "qwen3-4b-q4_k_m.gguf"
+    params: 4.0e9
+    vram_gb: 2.75
+    ram_gb: 5.0
+    quantization: "Q4_K_M"
+    context_length: 32768
+    strengths:
+      - "reasoning"
+      - "multilingual"
+      - "code"
+      - "math"
+    license: "Apache-2.0"
+    recommended_for:
+      - "balanced"
+      - "4gb-budget"
+    release_date: "2025-07"
+
+  # ============================================
+  # TIER 3: High Quality (4-8GB VRAM/RAM)
+  # Best for: Complex tasks, best quality
+  # ============================================
+
+  phi-4-mini:
+    name: "Phi-4-mini"
+    description: "GPT-3.5 class, beats 7B/8B in math - 128K context"
+    backend: "ollama"
+    ollama_name: "phi4:mini"
+    llama_cpp_repo: "microsoft/Phi-4-mini-instruct-gguf"
+    llama_cpp_file: "Phi-4-mini-instruct-Q4_K_M.gguf"
+    params: 3.8e9
+    vram_gb: 3.0
+    ram_gb: 6.0
+    quantization: "Q4_K_M"
+    context_length: 128000
+    strengths:
+      - "reasoning"
+      - "math"
+      - "code"
+      - "instruction-following"
+      - "long-context"
+    license: "MIT"
+    recommended_for:
+      - "quality"
+      - "reasoning"
+      - "math"
+    release_date: "2025-05"
+
+  phi-4-mini-reasoning:
+    name: "Phi-4-mini-reasoning"
+    description: "Rivals o1-mini on Math-500 and GPQA Diamond"
+    backend: "ollama"
+    ollama_name: "phi4:mini-reasoning"
+    llama_cpp_repo: "microsoft/Phi-4-mini-reasoning-gguf"
+    llama_cpp_file: "Phi-4-mini-reasoning-Q4_K_M.gguf"
+    params: 3.8e9
+    vram_gb: 3.0
+    ram_gb: 6.0
+    quantization: "Q4_K_M"
+    context_length: 128000
+    strengths:
+      - "reasoning"
+      - "math"
+      - "proofs"
+      - "chain-of-thought"
+    license: "MIT"
+    recommended_for:
+      - "math"
+      - "reasoning"
+      - "proofs"
+    release_date: "2025-05"
+
+  deepseek-r1-7b:
+    name: "DeepSeek-R1-Distill-Qwen-7B"
+    description: "Strong reasoning, distilled from R1"
+    backend: "ollama"
+    ollama_name: "deepseek-r1:7b"
+    llama_cpp_repo: "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF"
+    llama_cpp_file: "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+    params: 7.0e9
+    vram_gb: 5.0
+    ram_gb: 8.0
+    quantization: "Q4_K_M"
+    context_length: 32768
+    strengths:
+      - "reasoning"
+      - "math"
+      - "code"
+      - "chain-of-thought"
+    license: "MIT"
+    recommended_for:
+      - "reasoning"
+      - "quality"
+    release_date: "2025-01"
+
+  # Multimodal capability
+  gemma-3n-e2b:
+    name: "Gemma-3n-E2B"
+    description: "Multimodal: text, image, audio, video"
+    backend: "ollama"
+    ollama_name: "gemma3:2b"
+    llama_cpp_repo: "google/gemma-3n-E2B-it-GGUF"
+    llama_cpp_file: "gemma-3n-E2B-it-Q4_K_M.gguf"
+    params: 5.0e9
+    effective_params: 2.0e9
+    vram_gb: 2.0
+    ram_gb: 4.0
+    quantization: "Q4_K_M"
+    context_length: 8192
+    multimodal: true
+    modalities:
+      - "text"
+      - "image"
+      - "audio"
+      - "video"
+    strengths:
+      - "multimodal"
+      - "vision"
+      - "audio"
+    license: "Apache-2.0"
+    recommended_for:
+      - "multimodal"
+      - "vision"
+    release_date: "2024-12"
+
+  phi-4-multimodal:
+    name: "Phi-4-multimodal"
+    description: "Microsoft multimodal with vision and speech"
+    backend: "ollama"
+    ollama_name: "phi4:multimodal"
+    llama_cpp_repo: "microsoft/Phi-4-multimodal-instruct-gguf"
+    llama_cpp_file: "Phi-4-multimodal-instruct-Q4_K_M.gguf"
+    params: 5.6e9
+    vram_gb: 4.0
+    ram_gb: 8.0
+    quantization: "Q4_K_M"
+    context_length: 128000
+    multimodal: true
+    modalities:
+      - "text"
+      - "image"
+      - "audio"
+    strengths:
+      - "multimodal"
+      - "vision"
+      - "speech"
+      - "reasoning"
+    license: "MIT"
+    recommended_for:
+      - "multimodal"
+      - "vision"
+    release_date: "2025-05"
+
+# ============================================
+  # TIER 4: Cloud API Models (Requires API Key)
+  # Best for: Complex coding, agentic workflows
+  # ============================================
+
+  minimax-m2:
+    name: "MiniMax-M2"
+    description: "SOTA coding model - 230B MoE, 10B active params, optimized for SWE tasks"
+    backend: "openai_compatible"
+    api_base: "https://api.deepinfra.com/v1/openai"
+    api_model: "MiniMaxAI/MiniMax-M2"
+    params: 230e9
+    active_params: 10e9
+    context_length: 128000
+    interleaved_thinking: true
+    strengths:
+      - "code"
+      - "agentic"
+      - "multi-file-editing"
+      - "debugging"
+      - "swe-bench"
+      - "tool-calling"
+    license: "MiniMax"
+    recommended_for:
+      - "code"
+      - "agentic"
+      - "complex-coding"
+    env_key: "DEEPINFRA_API_KEY"
+    release_date: "2025-04"
+    notes: "Interleaved thinking model - preserve <think>...</think> tags in history"
+
+  minimax-m2-1:
+    name: "MiniMax-M2.1"
+    description: "Enhanced M2 with multi-language programming and office automation"
+    backend: "openai_compatible"
+    api_base: "https://api.deepinfra.com/v1/openai"
+    api_model: "MiniMaxAI/MiniMax-M2.1"
+    params: 230e9
+    active_params: 10e9
+    context_length: 128000
+    interleaved_thinking: true
+    strengths:
+      - "code"
+      - "agentic"
+      - "multi-language-code"
+      - "office-automation"
+      - "real-world-tasks"
+    license: "MiniMax"
+    recommended_for:
+      - "code"
+      - "real-world-dev"
+    env_key: "DEEPINFRA_API_KEY"
+    release_date: "2025-06"
+
+  # ============================================
+  # TIER 5: Vision/OCR Models (Document Processing)
+  # ============================================
+
+  deepseek-ocr2:
+    name: "DeepSeek-VL2"
+    description: "Advanced vision-language model for OCR and document parsing"
+    backend: "openai_compatible"
+    api_base: "https://api.deepinfra.com/v1/openai"
+    api_model: "deepseek-ai/deepseek-vl2"
+    params: 27e9
+    context_length: 32768
+    multimodal: true
+    modalities:
+      - "text"
+      - "image"
+    capabilities:
+      - "ocr"
+      - "document_parsing"
+      - "nutrition_labels"
+      - "lab_results"
+      - "prescription_reading"
+    strengths:
+      - "ocr"
+      - "vision"
+      - "document-understanding"
+      - "table-extraction"
+      - "handwriting"
+    license: "DeepSeek"
+    recommended_for:
+      - "document_parsing"
+      - "ocr"
+      - "health_documents"
+    env_key: "DEEPINFRA_API_KEY"
+    release_date: "2024-12"
+    notes: "Primary model for health document OCR - lab results, prescriptions, nutrition labels"
+
+  qwen-vl-max:
+    name: "Qwen-VL-Max"
+    description: "Alibaba's multimodal model for vision tasks"
+    backend: "openai_compatible"
+    api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_model: "qwen-vl-max"
+    params: 72e9
+    context_length: 32768
+    multimodal: true
+    modalities:
+      - "text"
+      - "image"
+    capabilities:
+      - "ocr"
+      - "visual_qa"
+      - "document_analysis"
+    strengths:
+      - "vision"
+      - "ocr"
+      - "chinese"
+      - "document-understanding"
+    license: "Tongyi Qianwen"
+    recommended_for:
+      - "vision"
+      - "multilingual_ocr"
+    env_key: "DASHSCOPE_API_KEY"
+    release_date: "2024-08"
+
+# Embedding models
+embeddings:
+  all-minilm-l6-v2:
+    name: "all-MiniLM-L6-v2"
+    provider: "sentence-transformers"
+    dimensions: 384
+    max_sequence_length: 256
+    ram_mb: 100
+    recommended_for:
+      - "default"
+      - "speed"
+
+  bge-small-en:
+    name: "BAAI/bge-small-en-v1.5"
+    provider: "sentence-transformers"
+    dimensions: 384
+    max_sequence_length: 512
+    ram_mb: 150
+    recommended_for:
+      - "accuracy"
+
+  nomic-embed-text:
+    name: "nomic-embed-text"
+    provider: "ollama"
+    dimensions: 768
+    max_sequence_length: 8192
+    ram_mb: 300
+    recommended_for:
+      - "long-context"
+
+  gte-small:
+    name: "thenlper/gte-small"
+    provider: "sentence-transformers"
+    dimensions: 384
+    max_sequence_length: 512
+    ram_mb: 100
+    recommended_for:
+      - "retrieval"
+
+# Hardware profiles for automatic model selection
+hardware_profiles:
+  # MAX EVERYTHING - For users with massive hardware
+  max:
+    description: "MAX MODE: Unlimited resources, best quality, all features"
+    models:
+      - "minimax-m2"
+      - "phi-4-mini-reasoning"
+      - "deepseek-r1-7b"
+      - "phi-4-mini"
+      - "phi-4-multimodal"
+      - "qwen3-4b"
+      - "deepseek-r1-1.5b"
+    embedding: "nomic-embed-text"
+    swarm_enabled: true
+    swarm_strategy: "parallel_vote"
+    max_parallel: 8
+    enable_cloud: true
+    enable_multimodal: true
+    enable_speculation: true
+    context_window: 128000
+    notes: "Uses ALL available models including cloud APIs for maximum quality"
+
+  # Under 4GB total RAM
+  minimal:
+    description: "Minimal hardware (< 4GB RAM)"
+    models:
+      - "tinyllama-1.1b"
+      - "qwen3-0.6b"
+    embedding: "all-minilm-l6-v2"
+    swarm_enabled: false
+
+  # CPU only, 8GB+ RAM
+  cpu_only:
+    description: "CPU-only with 8GB+ RAM"
+    models:
+      - "bitnet-2b"
+      - "qwen3-0.6b"
+      - "tinyllama-1.1b"
+      - "smollm2-1.7b"
+    embedding: "all-minilm-l6-v2"
+    swarm_enabled: true
+    swarm_strategy: "fastest_first"
+
+  # 2-4 GB VRAM
+  low_vram:
+    description: "Low VRAM (2-4GB)"
+    models:
+      - "deepseek-r1-1.5b"
+      - "smollm2-1.7b"
+      - "qwen3-0.6b"
+      - "gemma-3n-e2b"
+    embedding: "all-minilm-l6-v2"
+    swarm_enabled: true
+    swarm_strategy: "mixture_of_experts"
+
+  # 4-8 GB VRAM
+  medium_vram:
+    description: "Medium VRAM (4-8GB)"
+    models:
+      - "phi-4-mini"
+      - "deepseek-r1-1.5b"
+      - "qwen3-4b"
+      - "smollm2-1.7b"
+      - "gemma-3n-e2b"
+    embedding: "bge-small-en"
+    swarm_enabled: true
+    swarm_strategy: "pso_collaborative"
+
+  # 8+ GB VRAM
+  high_vram:
+    description: "High VRAM (8GB+)"
+    models:
+      - "phi-4-mini-reasoning"
+      - "deepseek-r1-7b"
+      - "phi-4-mini"
+      - "qwen3-4b"
+      - "gemma-3n-e2b"
+    embedding: "nomic-embed-text"
+    swarm_enabled: true
+    swarm_strategy: "parallel_vote"
+
+# Task-based model selection (Mixture of Experts routing)
+task_routing:
+  code:
+    description: "Programming and debugging"
+    primary: "deepseek-r1-1.5b"  # Local first - saves tokens
+    secondary: "phi-4-mini"
+    fallback: "qwen3-4b"
+    # Cloud escalation only for complex multi-file tasks
+    escalation_model: "minimax-m2"
+    escalation_threshold: 0.5  # Low confidence triggers cloud
+    swarm_models:  # All local for swarm operations
+      - "deepseek-r1-1.5b"
+      - "phi-4-mini"
+      - "qwen3-4b"
+    notes: "Local models for swarm/memory, MiniMax M2 only for complex escalation"
+
+  reasoning:
+    description: "Logic and analysis"
+    primary: "phi-4-mini-reasoning"
+    secondary: "deepseek-r1-1.5b"
+    fallback: "qwen3-4b"
+    swarm_models:
+      - "phi-4-mini-reasoning"
+      - "deepseek-r1-1.5b"
+      - "phi-4-mini"
+
+  math:
+    description: "Mathematical computation"
+    primary: "phi-4-mini-reasoning"
+    secondary: "deepseek-r1-1.5b"
+    fallback: "qwen3-4b"
+    swarm_models:
+      - "phi-4-mini-reasoning"
+      - "deepseek-r1-1.5b"
+
+  creative:
+    description: "Writing and brainstorming"
+    primary: "qwen3-4b"
+    secondary: "smollm2-1.7b"
+    fallback: "qwen3-0.6b"
+    swarm_models:
+      - "qwen3-4b"
+      - "smollm2-1.7b"
+
+  research:
+    description: "Information gathering"
+    primary: "phi-4-mini"
+    secondary: "deepseek-r1-1.5b"
+    fallback: "smollm2-1.7b"
+
+  multilingual:
+    description: "Non-English languages"
+    primary: "qwen3-4b"
+    secondary: "qwen3-0.6b"
+    fallback: "gemma-3n-e2b"
+
+  multimodal:
+    description: "Vision, audio, video"
+    primary: "phi-4-multimodal"
+    secondary: "gemma-3n-e2b"
+    fallback: null
+
+  speed:
+    description: "Low-latency responses"
+    primary: "bitnet-2b"
+    secondary: "tinyllama-1.1b"
+    fallback: "qwen3-0.6b"
+
+  # Quantum configuration
+  quantum:
+    enabled: true
+    provider: "ibm"
+    backend: "auto" # or specific backend name
+    use_simulator: false
+    buffer_size: 100
+    entropy_threshold: 0.65
+
+# Model swarm configurations
+# ALL SWARMS USE LOCAL MODELS ONLY - saves tokens/context
+swarm:
+  # Default swarm for general use
+  default:
+    description: "Balanced local swarm - saves tokens"
+    strategy: "mixture_of_experts"
+    use_local_only: true
+    models:
+      - id: "deepseek-r1-1.5b"
+        role: "reasoning"
+        weight: 1.0
+      - id: "phi-4-mini"
+        role: "quality"
+        weight: 0.8
+      - id: "qwen3-0.6b"
+        role: "speed"
+        weight: 0.5
+      - id: "smollm2-1.7b"
+        role: "generalist"
+        weight: 0.7
+    enable_verification: true
+    max_parallel: 3
+    # Cloud escalation for low-confidence results
+    cloud_escalation:
+      enabled: true
+      threshold: 0.4
+      model: "minimax-m2"
+
+  # Memory/context operations - ultra lightweight
+  memory:
+    description: "For memory retrieval, context building, summarization"
+    strategy: "fastest_first"
+    use_local_only: true
+    models:
+      - id: "qwen3-0.6b"
+        role: "summarize"
+        weight: 1.0
+      - id: "tinyllama-1.1b"
+        role: "speed"
+        weight: 0.9
+    enable_verification: false
+    max_parallel: 2
+    notes: "Tiny models for memory ops - preserves context window"
+
+  # Speed-optimized swarm
+  fast:
+    description: "Speed-optimized with fast escalation"
+    strategy: "fastest_first"
+    use_local_only: true
+    models:
+      - id: "bitnet-2b"
+        role: "speed"
+        weight: 1.0
+      - id: "tinyllama-1.1b"
+        role: "speed"
+        weight: 0.9
+      - id: "qwen3-0.6b"
+        role: "speed"
+        weight: 0.8
+      - id: "deepseek-r1-1.5b"
+        role: "reasoning"
+        weight: 0.6
+    enable_verification: false
+    max_parallel: 2
+
+  # Quality-optimized swarm
+  quality:
+    description: "Quality-first with verification"
+    strategy: "parallel_vote"
+    models:
+      - id: "phi-4-mini-reasoning"
+        role: "reasoning"
+        weight: 1.0
+      - id: "deepseek-r1-7b"
+        role: "reasoning"
+        weight: 0.9
+      - id: "phi-4-mini"
+        role: "quality"
+        weight: 0.8
+      - id: "qwen3-4b"
+        role: "generalist"
+        weight: 0.7
+    enable_verification: true
+    max_parallel: 4
+
+  # Reasoning-focused swarm
+  reasoning:
+    description: "Chain-of-thought reasoning specialists"
+    strategy: "speculative_ensemble"
+    models:
+      - id: "phi-4-mini-reasoning"
+        role: "reasoning"
+        weight: 1.0
+      - id: "deepseek-r1-1.5b"
+        role: "reasoning"
+        weight: 0.9
+      - id: "qwen3-0.6b"
+        role: "speed"
+        weight: 0.5
+    enable_verification: true
+    max_parallel: 2
+
+  # PSO collaborative swarm
+  collaborative:
+    description: "PSO-optimized collaborative inference"
+    strategy: "pso_collaborative"
+    pso_config:
+      inertia: 0.7
+      cognitive: 1.5
+      social: 1.5
+    models:
+      - id: "deepseek-r1-1.5b"
+        role: "reasoning"
+      - id: "phi-4-mini"
+        role: "quality"
+      - id: "smollm2-1.7b"
+        role: "generalist"
+      - id: "qwen3-0.6b"
+        role: "speed"
+      - id: "tinyllama-1.1b"
+        role: "speed"
+    enable_verification: true
+    max_parallel: 5
+
+  # MAX EVERYTHING - Ultimate swarm for massive hardware
+  max:
+    description: "MAXIMUM POWER - All models, parallel voting, cloud + local"
+    strategy: "parallel_vote"
+    use_local_only: false
+    enable_cloud: true
+    models:
+      - id: "minimax-m2"
+        role: "coding"
+        weight: 1.0
+        cloud: true
+      - id: "phi-4-mini-reasoning"
+        role: "reasoning"
+        weight: 1.0
+      - id: "deepseek-r1-7b"
+        role: "reasoning"
+        weight: 0.95
+      - id: "phi-4-mini"
+        role: "quality"
+        weight: 0.9
+      - id: "qwen3-4b"
+        role: "generalist"
+        weight: 0.85
+      - id: "deepseek-r1-1.5b"
+        role: "speed-reasoning"
+        weight: 0.8
+      - id: "phi-4-multimodal"
+        role: "multimodal"
+        weight: 0.8
+    enable_verification: true
+    verification_model: "phi-4-mini-reasoning"
+    max_parallel: 8
+    voting_threshold: 0.6
+    context_window: 128000
+    notes: "Run ALL models in parallel, vote on best response, verify with reasoning model"
+
+# Speculative decoding pairs (draft + target)
+speculative_decoding:
+  pairs:
+    - draft: "bitnet-2b"
+      target: "phi-4-mini"
+      speedup: 2.5
+      description: "BitNet drafts for Phi-4"
+
+    - draft: "tinyllama-1.1b"
+      target: "deepseek-r1-1.5b"
+      speedup: 1.8
+      description: "TinyLlama drafts for DeepSeek"
+
+    - draft: "qwen3-0.6b"
+      target: "qwen3-4b"
+      speedup: 2.0
+      description: "Qwen family speculative"
+
+    - draft: "smollm2-1.7b"
+      target: "phi-4-mini-reasoning"
+      speedup: 1.5
+      description: "SmolLM drafts for reasoning"
+
+# Benchmark reference (for model selection decisions)
+benchmarks:
+  # Scores are approximate, from various sources
+  phi-4-mini-reasoning:
+    math-500: 94.5
+    gpqa-diamond: 68.0
+    mmlu-pro: 72.0
+
+  deepseek-r1-1.5b:
+    math-500: 83.9
+    gpqa-diamond: 33.8
+    aime-2024: 28.3
+
+  phi-4-mini:
+    mmlu: 84.8
+    humaneval: 82.0
+    math: 80.4
+
+  qwen3-4b:
+    mmlu-pro: 74.0
+    gpqa-diamond: 67.0
+    livecode: 64.0

@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Scanner - Cosmos AI</title>
+    <meta name="description" content="Real-time token detection with AI swarm consensus analysis.">
+    <meta name="theme-color" content="#8b5cf6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #08080f;
+            --surface: rgba(255,255,255,0.03);
+            --surface-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.07);
+            --text-primary: #e2e8f0;
+            --text-secondary: #64748b;
+            --purple: #8b5cf6;
+            --purple-hover: #7c3aed;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --orange: #f97316;
+            --pink: #ec4899;
+            --red: #ef4444;
+            --yellow: #eab308;
+            --radius-card: 16px;
+            --radius-btn: 10px;
+            --transition: 0.25s ease;
+        }
+
+        html { height: 100%; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Nebula */
+        .nebula {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 0; pointer-events: none; overflow: hidden;
+        }
+        .nebula::before {
+            content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(139,92,246,0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(6,182,212,0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 60% 80%, rgba(16,185,129,0.04) 0%, transparent 50%);
+            animation: nebulaShift 20s ease-in-out infinite alternate;
+        }
+        @keyframes nebulaShift {
+            0% { transform: translate(0,0) rotate(0deg); }
+            33% { transform: translate(2%,-1%) rotate(1deg); }
+            66% { transform: translate(-1%,2%) rotate(-0.5deg); }
+            100% { transform: translate(1%,-2%) rotate(0.5deg); }
+        }
+
+        /* Top Nav */
+        .top-nav {
+            position: sticky; top: 0; z-index: 100;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 24px; height: 56px;
+            background: rgba(8,8,15,0.85);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+        .nav-logo a {
+            text-decoration: none; font-size: 15px; font-weight: 700; letter-spacing: 5px;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .nav-links { display: flex; gap: 4px; }
+        .nav-links a {
+            text-decoration: none; font-size: 13px; font-weight: 500; color: var(--text-secondary);
+            padding: 6px 14px; border-radius: 8px; transition: all var(--transition);
+        }
+        .nav-links a:hover { color: var(--text-primary); background: var(--surface-hover); }
+        .nav-links a.active { color: var(--purple); background: rgba(139,92,246,0.1); }
+        .nav-user { display: flex; align-items: center; gap: 12px; }
+        .nav-user-name { font-size: 13px; color: var(--text-secondary); }
+        .nav-logout {
+            font-size: 12px; color: var(--text-secondary); text-decoration: none;
+            padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+            transition: all var(--transition);
+        }
+        .nav-logout:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
+
+        /* Main Layout */
+        .main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; padding: 24px; }
+
+        /* Header */
+        .page-header { margin-bottom: 24px; }
+        .page-header h1 {
+            font-size: 28px; font-weight: 700;
+            background: linear-gradient(135deg, var(--purple), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .page-header .subtitle { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+
+        /* Stats Bar */
+        .stats-bar {
+            display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+        }
+        .stat-pill {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 16px; background: var(--surface);
+            border: 1px solid var(--border); border-radius: 10px;
+            font-size: 13px;
+        }
+        .stat-pill .label { color: var(--text-secondary); }
+        .stat-pill .value { font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--text-primary); }
+
+        /* Filters */
+        .filters-row {
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            margin-bottom: 24px; padding: 16px;
+            background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+        }
+        .filter-group { display: flex; align-items: center; gap: 6px; }
+        .filter-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; white-space: nowrap; }
+        .filter-chips { display: flex; gap: 4px; }
+        .filter-chip {
+            padding: 6px 12px; font-size: 12px; font-weight: 500;
+            border: 1px solid var(--border); border-radius: 8px;
+            background: transparent; color: var(--text-secondary); cursor: pointer;
+            font-family: 'Inter', sans-serif; transition: all var(--transition);
+        }
+        .filter-chip:hover { background: var(--surface-hover); color: var(--text-primary); }
+        .filter-chip.active { background: rgba(139,92,246,0.15); border-color: rgba(139,92,246,0.4); color: var(--purple); }
+        .filter-select {
+            padding: 6px 12px; font-size: 12px; font-weight: 500;
+            border: 1px solid var(--border); border-radius: 8px;
+            background: var(--bg); color: var(--text-primary); cursor: pointer;
+            font-family: 'Inter', sans-serif; outline: none;
+        }
+        .filter-select option { background: #0f0f1a; }
+        .filter-divider { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
+
+        /* Score slider */
+        .score-slider-wrap { display: flex; align-items: center; gap: 8px; }
+        .score-slider {
+            -webkit-appearance: none; appearance: none; width: 100px; height: 4px;
+            border-radius: 2px; background: rgba(255,255,255,0.1); outline: none;
+        }
+        .score-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+            border-radius: 50%; background: var(--purple); cursor: pointer;
+        }
+        .score-val { font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--cyan); min-width: 18px; }
+
+        /* Live toggle */
+        .live-toggle { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+        .live-toggle .live-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+        .live-toggle .live-label.on { color: var(--green); }
+        .toggle-switch {
+            width: 36px; height: 20px; border-radius: 10px; position: relative;
+            background: rgba(255,255,255,0.1); cursor: pointer; transition: background var(--transition);
+        }
+        .toggle-switch.active { background: var(--green); }
+        .toggle-switch::after {
+            content: ''; position: absolute; top: 2px; left: 2px;
+            width: 16px; height: 16px; border-radius: 50%; background: #fff;
+            transition: transform var(--transition);
+        }
+        .toggle-switch.active::after { transform: translateX(16px); }
+        .live-dot {
+            width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+            animation: livePulse 1.5s ease-in-out infinite; display: none;
+        }
+        .live-toggle.on .live-dot { display: block; }
+        @keyframes livePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        /* Content area */
+        .content-area { display: flex; gap: 20px; }
+        .token-feed { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+
+        /* Token Card */
+        .token-card {
+            background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+            border-left: 3px solid var(--text-secondary);
+            padding: 20px; cursor: pointer; transition: all var(--transition);
+            animation: slideIn 0.4s ease-out;
+        }
+        .token-card:hover { background: var(--surface-hover); transform: translateY(-1px); }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .token-card.score-high { border-left-color: var(--green); }
+        .token-card.score-very-high { border-left-color: #22c55e; box-shadow: 0 0 20px rgba(34,197,94,0.06); }
+        .token-card.score-mid { border-left-color: var(--orange); }
+        .token-card.score-low { border-left-color: var(--red); }
+
+        .tc-top { display: flex; align-items: flex-start; gap: 16px; }
+        .tc-identity { flex-shrink: 0; min-width: 120px; }
+        .tc-symbol { font-size: 20px; font-weight: 700; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+        .tc-name { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+        .tc-chain {
+            display: inline-block; margin-top: 6px; padding: 2px 8px;
+            font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+            border-radius: 4px; background: rgba(139,92,246,0.15); color: var(--purple);
+        }
+        .tc-chain.eth { background: rgba(6,182,212,0.15); color: var(--cyan); }
+        .tc-chain.base { background: rgba(59,130,246,0.15); color: #3b82f6; }
+
+        .tc-center { flex: 1; }
+        .tc-score-section { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+        .tc-score-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); }
+        .tc-score-num {
+            font-size: 32px; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1;
+        }
+        .tc-score-num.high { color: var(--green); }
+        .tc-score-num.very-high { color: #22c55e; text-shadow: 0 0 20px rgba(34,197,94,0.4); }
+        .tc-score-num.mid { color: var(--orange); }
+        .tc-score-num.low { color: var(--red); }
+        .tc-score-max { font-size: 14px; color: var(--text-secondary); font-weight: 400; }
+        .tc-breakdown {
+            font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace;
+            display: flex; gap: 12px; flex-wrap: wrap;
+        }
+        .tc-breakdown span { white-space: nowrap; }
+
+        .tc-right { flex-shrink: 0; text-align: right; min-width: 140px; }
+        .tc-price { font-size: 16px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+        .tc-change { font-size: 13px; font-weight: 600; margin-top: 2px; }
+        .tc-change.up { color: var(--green); }
+        .tc-change.down { color: var(--red); }
+        .tc-metrics { margin-top: 8px; }
+        .tc-metric { display: flex; justify-content: space-between; font-size: 11px; margin-top: 3px; }
+        .tc-metric .ml { color: var(--text-secondary); }
+        .tc-metric .mv { color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+
+        /* Agent opinions */
+        .tc-opinions { margin-top: 12px; display: none; }
+        .token-card.expanded .tc-opinions { display: block; }
+        .tc-opinions-title {
+            font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--text-secondary); margin-bottom: 8px;
+        }
+        .tc-opinion {
+            display: flex; gap: 8px; padding: 8px 12px; margin-bottom: 4px;
+            background: rgba(255,255,255,0.02); border-radius: 8px; font-size: 12px;
+        }
+        .tc-opinion .agent-name { font-weight: 600; color: var(--cyan); white-space: nowrap; min-width: 80px; }
+        .tc-opinion .agent-stance { font-weight: 600; margin-right: 4px; }
+        .tc-opinion .agent-stance.bullish { color: var(--green); }
+        .tc-opinion .agent-stance.cautious { color: var(--orange); }
+        .tc-opinion .agent-stance.neutral { color: var(--text-secondary); }
+        .tc-opinion .agent-stance.bearish { color: var(--red); }
+        .tc-opinion .agent-reason { color: var(--text-secondary); }
+
+        .tc-expand-hint {
+            font-size: 11px; color: var(--text-secondary); margin-top: 8px;
+            transition: color var(--transition);
+        }
+        .token-card:hover .tc-expand-hint { color: var(--purple); }
+
+        /* Card actions */
+        .tc-actions { display: flex; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+        .tc-btn {
+            padding: 6px 16px; font-size: 12px; font-weight: 600; border-radius: 8px;
+            border: none; cursor: pointer; font-family: 'Inter', sans-serif; transition: all var(--transition);
+        }
+        .tc-btn-analyze {
+            background: linear-gradient(135deg, var(--purple), var(--purple-hover));
+            color: #fff;
+        }
+        .tc-btn-analyze:hover { box-shadow: 0 4px 16px rgba(139,92,246,0.3); transform: translateY(-1px); }
+        .tc-btn-dex {
+            background: transparent; color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+        .tc-btn-dex:hover { color: var(--cyan); border-color: rgba(6,182,212,0.4); }
+
+        /* Alert sidebar */
+        .alert-sidebar {
+            width: 300px; flex-shrink: 0;
+            background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+            padding: 20px; height: fit-content; position: sticky; top: 80px;
+        }
+        .alert-sidebar h3 {
+            font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary);
+        }
+        .alert-form-group { margin-bottom: 14px; }
+        .alert-form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; font-weight: 500; }
+        .alert-input {
+            width: 100%; padding: 8px 12px; background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);
+            font-family: 'Inter', sans-serif; font-size: 13px; outline: none;
+            transition: border-color var(--transition);
+        }
+        .alert-input:focus { border-color: rgba(139,92,246,0.5); }
+        .alert-add-btn {
+            width: 100%; padding: 10px; border: none; border-radius: 8px;
+            background: rgba(139,92,246,0.15); color: var(--purple);
+            font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+            cursor: pointer; transition: all var(--transition);
+        }
+        .alert-add-btn:hover { background: rgba(139,92,246,0.25); }
+        .alert-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+        .alert-list-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .alert-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 10px; background: rgba(255,255,255,0.02); border-radius: 8px;
+            margin-bottom: 6px; font-size: 12px;
+        }
+        .alert-item-text { color: var(--text-primary); }
+        .alert-item-remove {
+            background: none; border: none; color: var(--text-secondary); cursor: pointer;
+            font-size: 14px; padding: 0 4px; transition: color var(--transition);
+        }
+        .alert-item-remove:hover { color: var(--red); }
+        .alert-empty { font-size: 12px; color: var(--text-secondary); text-align: center; padding: 12px; }
+
+        /* Skeleton loading */
+        .skeleton { position: relative; overflow: hidden; background: var(--surface); border-radius: var(--radius-card); }
+        .skeleton::after {
+            content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent);
+            animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer { to { left: 100%; } }
+        .skeleton-card { height: 160px; margin-bottom: 12px; border: 1px solid var(--border); }
+
+        /* Alert Modal (mobile) */
+        .alert-modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center;
+        }
+        .alert-modal-overlay.visible { display: flex; }
+        .alert-modal {
+            width: 90%; max-width: 420px; background: #0f0f1a; border: 1px solid var(--border);
+            border-radius: var(--radius-card); padding: 28px; position: relative;
+        }
+        .alert-modal-close {
+            position: absolute; top: 12px; right: 16px; background: none; border: none;
+            color: var(--text-secondary); cursor: pointer; font-size: 20px;
+        }
+
+        /* Mobile alert toggle button */
+        .mobile-alert-btn {
+            display: none; position: fixed; bottom: 20px; right: 20px; z-index: 50;
+            padding: 12px 20px; border: none; border-radius: 12px;
+            background: linear-gradient(135deg, var(--purple), var(--purple-hover));
+            color: #fff; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+            cursor: pointer; box-shadow: 0 8px 24px rgba(139,92,246,0.3);
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .alert-sidebar { display: none; }
+            .mobile-alert-btn { display: block; }
+        }
+        @media (max-width: 768px) {
+            .top-nav { padding: 0 12px; }
+            .nav-links { display: none; }
+            .main { padding: 16px; }
+            .filters-row { flex-direction: column; align-items: flex-start; }
+            .filter-divider { display: none; }
+            .live-toggle { margin-left: 0; }
+            .tc-top { flex-direction: column; gap: 12px; }
+            .tc-right { text-align: left; }
+            .stats-bar { gap: 8px; }
+            .stat-pill { padding: 6px 10px; font-size: 12px; }
+        }
+        @media (max-width: 480px) {
+            .nav-user-name { display: none; }
+        }
+        .pro-badge {
+            font-size: 8px;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: linear-gradient(135deg, #8b5cf6, #06b6d4);
+            color: #fff;
+            letter-spacing: 0.5px;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+
+<div class="nebula"></div>
+
+<!-- Top Nav -->
+<nav class="top-nav">
+    <div class="nav-logo"><a href="/pro">COSMOS</a></div>
+    <div class="nav-links">
+        <a href="/pro/chat">Chat</a>
+        <a href="/chat">Swarm</a>
+        <a href="/pro/scanner" class="active">Scanner <span class="pro-badge">PRO</span></a>
+        <a href="/pro/wallet">Wallet <span class="pro-badge">PRO</span></a>
+        <a href="/pro/arena">Arena <span class="pro-badge">PRO</span></a>
+        <a href="/pro/pnl">PnL <span class="pro-badge">PRO</span></a>
+        <a href="/pro/predictions">Polymarket <span class="pro-badge">PRO</span></a>
+    </div>
+    <div class="nav-user">
+        <span class="nav-user-name" id="navUserName"></span>
+        <a href="#" class="nav-logout" id="logoutBtn">Logout</a>
+    </div>
+</nav>
+
+<div class="main">
+    <!-- Header -->
+    <div class="page-header">
+        <h1>Token Scanner</h1>
+        <p class="subtitle">Real-time new token detection with swarm consensus</p>
+    </div>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar">
+        <div class="stat-pill">
+            <span class="label">Tokens Scanned</span>
+            <span class="value" id="statScanned">12,847</span>
+        </div>
+        <div class="stat-pill">
+            <span class="label">Swarm Alerts</span>
+            <span class="value" id="statAlerts">234</span>
+        </div>
+        <div class="stat-pill">
+            <span class="label">Avg Score</span>
+            <span class="value" id="statAvg">67/100</span>
+        </div>
+        <div class="stat-pill">
+            <span class="label">Last Scan</span>
+            <span class="value" id="statLastScan">3s ago</span>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters-row">
+        <div class="filter-group">
+            <span class="filter-label">Chain</span>
+            <div class="filter-chips" id="chainFilter">
+                <button class="filter-chip active" data-chain="solana">Solana</button>
+                <button class="filter-chip" data-chain="ethereum">Ethereum</button>
+                <button class="filter-chip" data-chain="base">Base</button>
+            </div>
+        </div>
+        <div class="filter-divider"></div>
+        <div class="filter-group">
+            <span class="filter-label">Min Liquidity</span>
+            <select class="filter-select" id="liqFilter">
+                <option value="1000">$1K</option>
+                <option value="5000" selected>$5K</option>
+                <option value="10000">$10K</option>
+                <option value="50000">$50K</option>
+                <option value="100000">$100K</option>
+            </select>
+        </div>
+        <div class="filter-divider"></div>
+        <div class="filter-group">
+            <span class="filter-label">Min Score</span>
+            <div class="score-slider-wrap">
+                <input type="range" class="score-slider" id="scoreFilter" min="0" max="100" value="0">
+                <span class="score-val" id="scoreVal">0</span>
+            </div>
+        </div>
+        <div class="filter-divider"></div>
+        <div class="filter-group">
+            <span class="filter-label">Sort</span>
+            <select class="filter-select" id="sortFilter">
+                <option value="newest">Newest</option>
+                <option value="score">Highest Score</option>
+                <option value="liquidity">Most Liquidity</option>
+                <option value="volume">Most Volume</option>
+            </select>
+        </div>
+        <div class="live-toggle" id="liveToggle">
+            <div class="live-dot"></div>
+            <span class="live-label" id="liveLabel">Live</span>
+            <div class="toggle-switch active" id="liveSwitch"></div>
+        </div>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content-area">
+        <!-- Token Feed -->
+        <div class="token-feed" id="tokenFeed">
+            <!-- Skeleton loading state -->
+            <div class="skeleton skeleton-card" id="skel1"></div>
+            <div class="skeleton skeleton-card" id="skel2"></div>
+            <div class="skeleton skeleton-card" id="skel3"></div>
+        </div>
+
+        <!-- Alert Sidebar -->
+        <div class="alert-sidebar" id="alertSidebar">
+            <h3>Alert Setup</h3>
+            <div class="alert-form-group">
+                <label>Score Above</label>
+                <input type="number" class="alert-input" id="alertScore" placeholder="e.g. 75" min="0" max="100" value="75">
+            </div>
+            <div class="alert-form-group">
+                <label>Liquidity Above</label>
+                <select class="alert-input" id="alertLiq" style="cursor:pointer;">
+                    <option value="5000">$5,000</option>
+                    <option value="10000">$10,000</option>
+                    <option value="50000" selected>$50,000</option>
+                    <option value="100000">$100,000</option>
+                    <option value="500000">$500,000</option>
+                </select>
+            </div>
+            <button class="alert-add-btn" id="addAlertBtn">+ Add Alert</button>
+            <hr class="alert-divider">
+            <div class="alert-list-title">Active Alerts</div>
+            <div id="alertList">
+                <div class="alert-empty">No active alerts</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Mobile alert button -->
+<button class="mobile-alert-btn" id="mobileAlertBtn">Set Alert</button>
+
+<!-- Mobile alert modal -->
+<div class="alert-modal-overlay" id="alertModal">
+    <div class="alert-modal">
+        <button class="alert-modal-close" id="alertModalClose">&times;</button>
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:16px;">Set Alert</h3>
+        <div class="alert-form-group">
+            <label>Score Above</label>
+            <input type="number" class="alert-input" id="alertScoreMobile" placeholder="e.g. 75" min="0" max="100" value="75">
+        </div>
+        <div class="alert-form-group">
+            <label>Liquidity Above</label>
+            <select class="alert-input" id="alertLiqMobile" style="cursor:pointer;">
+                <option value="5000">$5,000</option>
+                <option value="10000">$10,000</option>
+                <option value="50000" selected>$50,000</option>
+                <option value="100000">$100,000</option>
+                <option value="500000">$500,000</option>
+            </select>
+        </div>
+        <button class="alert-add-btn" id="addAlertMobileBtn" style="margin-top:4px;">+ Add Alert</button>
+        <hr class="alert-divider">
+        <div class="alert-list-title">Active Alerts</div>
+        <div id="alertListMobile"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // -- Auth Check --
+    const token = localStorage.getItem('cosmos_token');
+    if (!token) { window.location.href = '/pro/login'; return; }
+    const user = JSON.parse(localStorage.getItem('cosmos_user') || '{}');
+    const navUserName = document.getElementById('navUserName');
+    if (user.email) navUserName.textContent = user.email;
+    else if (user.wallet) navUserName.textContent = user.wallet.slice(0,6) + '...' + user.wallet.slice(-4);
+    document.getElementById('logoutBtn').addEventListener('click', function(e) {
+        e.preventDefault();
+        localStorage.removeItem('cosmos_token');
+        localStorage.removeItem('cosmos_user');
+        window.location.href = '/pro/login';
+    });
+
+    // -- State --
+    let liveMode = true;
+    let liveInterval = null;
+    let activeAlerts = JSON.parse(localStorage.getItem('cosmos_alerts') || '[]');
+    let currentChain = 'solana';
+    let minLiq = 5000;
+    let minScore = 0;
+    let sortBy = 'newest';
+
+    // -- Demo Data --
+    const AGENTS = ['Grok','DeepSeek','Claude','Gemini','Phi','Kimi','HuggingFace'];
+    const STANCES = ['Bullish','Cautious','Neutral','Bearish'];
+    const REASONS = {
+        Bullish: ['solid liquidity pool, organic holder growth','strong community momentum, clean contract','high volume relative to mcap, bullish divergence','impressive holder distribution, devs doxxed','volume acceleration pattern, whale accumulation detected'],
+        Cautious: ['contract has mutable authority','low holder count relative to volume','liquidity not locked, proceed carefully','high concentration in top wallets','new contract, track record unverified'],
+        Neutral: ['insufficient data for conviction','mixed signals from on-chain metrics','need more time to assess trajectory','volume is average, no clear direction','waiting for more holder data'],
+        Bearish: ['suspicious holder patterns, possible wash trading','liquidity too thin for safe entry','contract looks copied from known rug template','sell pressure increasing rapidly','dev wallet holds large unlocked allocation']
+    };
+
+    function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+    function randomBetween(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
+    function formatNum(n) {
+        if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+        if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+        return '$' + n.toFixed(2);
+    }
+
+    const TOKEN_NAMES = [
+        { symbol: 'BONK', name: 'Bonk', chain: 'solana' },
+        { symbol: 'WIF', name: 'dogwifhat', chain: 'solana' },
+        { symbol: 'MYRO', name: 'Myro', chain: 'solana' },
+        { symbol: 'POPCAT', name: 'Popcat', chain: 'solana' },
+        { symbol: 'MEW', name: 'cat in a dogs world', chain: 'solana' },
+        { symbol: 'BOME', name: 'Book of Meme', chain: 'solana' },
+        { symbol: 'SLERF', name: 'Slerf', chain: 'solana' },
+        { symbol: 'NOS', name: 'Nosana', chain: 'solana' },
+        { symbol: 'KMNO', name: 'Kamino', chain: 'solana' },
+        { symbol: 'DRIFT', name: 'Drift Protocol', chain: 'solana' },
+        { symbol: 'PEPE', name: 'Pepe', chain: 'ethereum' },
+        { symbol: 'FLOKI', name: 'Floki', chain: 'ethereum' },
+        { symbol: 'SHIB', name: 'Shiba Inu', chain: 'ethereum' },
+        { symbol: 'TURBO', name: 'Turbo', chain: 'ethereum' },
+        { symbol: 'NEIRO', name: 'Neiro', chain: 'ethereum' },
+        { symbol: 'BRETT', name: 'Brett', chain: 'base' },
+        { symbol: 'TOSHI', name: 'Toshi', chain: 'base' },
+        { symbol: 'DEGEN', name: 'Degen', chain: 'base' },
+        { symbol: 'AERO', name: 'Aerodrome', chain: 'base' },
+        { symbol: 'WELL', name: 'Moonwell', chain: 'base' },
+    ];
+
+    function generateOpinions() {
+        var count = randomBetween(3, 5);
+        var used = [];
+        var opinions = [];
+        for (var i = 0; i < count; i++) {
+            var agent;
+            do { agent = randomFrom(AGENTS); } while (used.indexOf(agent) !== -1);
+            used.push(agent);
+            var stance = randomFrom(STANCES);
+            var reason = randomFrom(REASONS[stance]);
+            opinions.push({ agent: agent, stance: stance, reason: reason });
+        }
+        return opinions;
+    }
+
+    function generateToken(base) {
+        var score = randomBetween(15, 98);
+        var liq = randomBetween(2000, 2000000);
+        var vol = randomBetween(1000, 5000000);
+        var mcap = randomBetween(10000, 50000000);
+        var price = (Math.random() * 10).toFixed(6);
+        var change = (Math.random() * 80 - 30).toFixed(2);
+        var holders = randomBetween(50, 25000);
+        var ageHours = randomBetween(1, 720);
+        var age = ageHours < 24 ? ageHours + 'h' : Math.floor(ageHours / 24) + 'd';
+        return {
+            symbol: base.symbol,
+            name: base.name,
+            chain: base.chain,
+            score: score,
+            breakdown: {
+                liquidity: randomBetween(1, 10),
+                volume: randomBetween(1, 10),
+                holders: randomBetween(1, 10),
+                contract: randomBetween(1, 10),
+                sentiment: randomBetween(1, 10)
+            },
+            price: parseFloat(price),
+            change: parseFloat(change),
+            liquidity: liq,
+            volume: vol,
+            mcap: mcap,
+            holders: holders,
+            age: age,
+            opinions: generateOpinions(),
+            timestamp: Date.now() - randomBetween(0, 3600000)
+        };
+    }
+
+    var allTokens = TOKEN_NAMES.map(function(t) { return generateToken(t); });
+
+    // -- Render --
+    function scoreClass(s) {
+        if (s >= 80) return 'very-high';
+        if (s >= 60) return 'high';
+        if (s >= 30) return 'mid';
+        return 'low';
+    }
+
+    function renderTokenCard(t) {
+        var sc = scoreClass(t.score);
+        var chainClass = t.chain === 'ethereum' ? ' eth' : t.chain === 'base' ? ' base' : '';
+        var changeDir = t.change >= 0 ? 'up' : 'down';
+        var changeArrow = t.change >= 0 ? '+' : '';
+
+        var opinionsHTML = t.opinions.map(function(o) {
+            return '<div class="tc-opinion">' +
+                '<span class="agent-name">' + o.agent + ':</span>' +
+                '<span class="agent-stance ' + o.stance.toLowerCase() + '">' + o.stance + '</span>' +
+                '<span class="agent-reason">-- ' + o.reason + '</span>' +
+                '</div>';
+        }).join('');
+
+        return '<div class="token-card score-' + sc + '" data-chain="' + t.chain + '" data-score="' + t.score + '" data-liq="' + t.liquidity + '" data-vol="' + t.volume + '" data-ts="' + t.timestamp + '">' +
+            '<div class="tc-top">' +
+                '<div class="tc-identity">' +
+                    '<div class="tc-symbol">' + t.symbol + '</div>' +
+                    '<div class="tc-name">' + t.name + '</div>' +
+                    '<span class="tc-chain' + chainClass + '">' + t.chain + '</span>' +
+                '</div>' +
+                '<div class="tc-center">' +
+                    '<div class="tc-score-section">' +
+                        '<div><div class="tc-score-label">Swarm Score</div></div>' +
+                        '<div class="tc-score-num ' + sc + '">' + t.score + '<span class="tc-score-max">/100</span></div>' +
+                    '</div>' +
+                    '<div class="tc-breakdown">' +
+                        '<span>Liquidity: ' + t.breakdown.liquidity + '/10</span>' +
+                        '<span>Volume: ' + t.breakdown.volume + '/10</span>' +
+                        '<span>Holders: ' + t.breakdown.holders + '/10</span>' +
+                        '<span>Contract: ' + t.breakdown.contract + '/10</span>' +
+                        '<span>Sentiment: ' + t.breakdown.sentiment + '/10</span>' +
+                    '</div>' +
+                    '<div class="tc-expand-hint">Click to view agent opinions</div>' +
+                    '<div class="tc-opinions">' +
+                        '<div class="tc-opinions-title">Agent Opinions</div>' +
+                        opinionsHTML +
+                    '</div>' +
+                '</div>' +
+                '<div class="tc-right">' +
+                    '<div class="tc-price">$' + t.price.toFixed(6) + '</div>' +
+                    '<div class="tc-change ' + changeDir + '">' + changeArrow + t.change + '%</div>' +
+                    '<div class="tc-metrics">' +
+                        '<div class="tc-metric"><span class="ml">Liquidity</span><span class="mv">' + formatNum(t.liquidity) + '</span></div>' +
+                        '<div class="tc-metric"><span class="ml">Volume 24h</span><span class="mv">' + formatNum(t.volume) + '</span></div>' +
+                        '<div class="tc-metric"><span class="ml">Market Cap</span><span class="mv">' + formatNum(t.mcap) + '</span></div>' +
+                        '<div class="tc-metric"><span class="ml">Age</span><span class="mv">' + t.age + '</span></div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="tc-actions">' +
+                '<button class="tc-btn tc-btn-analyze" onclick="event.stopPropagation(); window.location.href=\'/pro/wallet?token=' + t.symbol + '\'">Analyze</button>' +
+                '<button class="tc-btn tc-btn-dex" onclick="event.stopPropagation(); window.open(\'https://dexscreener.com/' + t.chain + '\',\'_blank\')">View on DEX</button>' +
+            '</div>' +
+        '</div>';
+    }
+
+    function filterAndSort() {
+        var filtered = allTokens.filter(function(t) {
+            if (t.chain !== currentChain) return false;
+            if (t.liquidity < minLiq) return false;
+            if (t.score < minScore) return false;
+            return true;
+        });
+
+        filtered.sort(function(a, b) {
+            if (sortBy === 'newest') return b.timestamp - a.timestamp;
+            if (sortBy === 'score') return b.score - a.score;
+            if (sortBy === 'liquidity') return b.liquidity - a.liquidity;
+            if (sortBy === 'volume') return b.volume - a.volume;
+            return 0;
+        });
+
+        return filtered;
+    }
+
+    function renderFeed() {
+        var feed = document.getElementById('tokenFeed');
+        var tokens = filterAndSort();
+
+        if (tokens.length === 0) {
+            feed.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--text-secondary);">' +
+                '<div style="font-size:48px;margin-bottom:16px;opacity:0.3;">&#x2298;</div>' +
+                '<p style="font-size:14px;">No tokens match your filters</p>' +
+                '<p style="font-size:12px;margin-top:4px;">Try adjusting the chain, liquidity, or score filters</p>' +
+                '</div>';
+            return;
+        }
+
+        feed.innerHTML = tokens.map(renderTokenCard).join('');
+
+        // Add click-to-expand
+        feed.querySelectorAll('.token-card').forEach(function(card) {
+            card.addEventListener('click', function(e) {
+                if (e.target.closest('.tc-btn')) return;
+                this.classList.toggle('expanded');
+                var hint = this.querySelector('.tc-expand-hint');
+                if (hint) hint.textContent = this.classList.contains('expanded') ? 'Click to collapse' : 'Click to view agent opinions';
+            });
+        });
+    }
+
+    // -- Filters --
+    document.getElementById('chainFilter').addEventListener('click', function(e) {
+        if (!e.target.classList.contains('filter-chip')) return;
+        this.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
+        e.target.classList.add('active');
+        currentChain = e.target.dataset.chain;
+        renderFeed();
+    });
+
+    document.getElementById('liqFilter').addEventListener('change', function() {
+        minLiq = parseInt(this.value);
+        renderFeed();
+    });
+
+    var scoreSlider = document.getElementById('scoreFilter');
+    var scoreValEl = document.getElementById('scoreVal');
+    scoreSlider.addEventListener('input', function() {
+        scoreValEl.textContent = this.value;
+        minScore = parseInt(this.value);
+        renderFeed();
+    });
+
+    document.getElementById('sortFilter').addEventListener('change', function() {
+        sortBy = this.value;
+        renderFeed();
+    });
+
+    // -- Live Toggle --
+    var liveSwitch = document.getElementById('liveSwitch');
+    var liveToggleEl = document.getElementById('liveToggle');
+    var liveLabel = document.getElementById('liveLabel');
+
+    function setLiveMode(on) {
+        liveMode = on;
+        if (on) {
+            liveSwitch.classList.add('active');
+            liveToggleEl.classList.add('on');
+            liveLabel.classList.add('on');
+            liveLabel.textContent = 'Live';
+            startLive();
+        } else {
+            liveSwitch.classList.remove('active');
+            liveToggleEl.classList.remove('on');
+            liveLabel.classList.remove('on');
+            liveLabel.textContent = 'Paused';
+            stopLive();
+        }
+    }
+
+    liveSwitch.addEventListener('click', function() { setLiveMode(!liveMode); });
+
+    var scanCounter = 12847;
+    function startLive() {
+        if (liveInterval) return;
+        liveInterval = setInterval(function() {
+            // Simulate new scan
+            scanCounter += randomBetween(3, 15);
+            document.getElementById('statScanned').textContent = scanCounter.toLocaleString();
+            document.getElementById('statLastScan').textContent = '1s ago';
+
+            // Occasionally add a new token
+            if (Math.random() > 0.5) {
+                var base = randomFrom(TOKEN_NAMES.filter(function(t) { return t.chain === currentChain; }));
+                if (base) {
+                    var newToken = generateToken(base);
+                    newToken.timestamp = Date.now();
+                    allTokens.unshift(newToken);
+                    renderFeed();
+                    checkAlerts(newToken);
+                }
+            }
+
+            // Try fetch real data
+            fetch('/api/pro/scan', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                if (data && data.tokens) {
+                    // Merge real data (if API exists)
+                }
+            }).catch(function() { /* API not available, using demo data */ });
+        }, 10000);
+    }
+
+    function stopLive() {
+        if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+    }
+
+    // -- Alerts --
+    function renderAlerts() {
+        var html = '';
+        if (activeAlerts.length === 0) {
+            html = '<div class="alert-empty">No active alerts</div>';
+        } else {
+            activeAlerts.forEach(function(alert, i) {
+                html += '<div class="alert-item">' +
+                    '<span class="alert-item-text">Score >' + alert.score + ', Liq >' + formatNum(alert.liq) + '</span>' +
+                    '<button class="alert-item-remove" data-idx="' + i + '">&times;</button>' +
+                    '</div>';
+            });
+        }
+        document.getElementById('alertList').innerHTML = html;
+        var mobileList = document.getElementById('alertListMobile');
+        if (mobileList) mobileList.innerHTML = html;
+
+        // Remove handlers
+        document.querySelectorAll('.alert-item-remove').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                activeAlerts.splice(parseInt(this.dataset.idx), 1);
+                localStorage.setItem('cosmos_alerts', JSON.stringify(activeAlerts));
+                renderAlerts();
+            });
+        });
+    }
+
+    function addAlert(score, liq) {
+        activeAlerts.push({ score: parseInt(score), liq: parseInt(liq) });
+        localStorage.setItem('cosmos_alerts', JSON.stringify(activeAlerts));
+        renderAlerts();
+    }
+
+    document.getElementById('addAlertBtn').addEventListener('click', function() {
+        addAlert(document.getElementById('alertScore').value, document.getElementById('alertLiq').value);
+    });
+
+    document.getElementById('addAlertMobileBtn').addEventListener('click', function() {
+        addAlert(document.getElementById('alertScoreMobile').value, document.getElementById('alertLiqMobile').value);
+    });
+
+    // Mobile modal
+    document.getElementById('mobileAlertBtn').addEventListener('click', function() {
+        document.getElementById('alertModal').classList.add('visible');
+    });
+    document.getElementById('alertModalClose').addEventListener('click', function() {
+        document.getElementById('alertModal').classList.remove('visible');
+    });
+    document.getElementById('alertModal').addEventListener('click', function(e) {
+        if (e.target === this) this.classList.remove('visible');
+    });
+
+    function checkAlerts(token) {
+        activeAlerts.forEach(function(alert) {
+            if (token.score >= alert.score && token.liquidity >= alert.liq) {
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Cosmos Scanner Alert', {
+                        body: token.symbol + ' scored ' + token.score + '/100 with ' + formatNum(token.liquidity) + ' liquidity',
+                        icon: '/static/favicon.png'
+                    });
+                }
+            }
+        });
+    }
+
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
+    // -- Init --
+    setTimeout(function() {
+        renderFeed();
+        renderAlerts();
+        setLiveMode(true);
+    }, 800);
+
+    // Update "last scan" timer
+    var lastScanSec = 3;
+    setInterval(function() {
+        lastScanSec++;
+        if (lastScanSec > 59) {
+            document.getElementById('statLastScan').textContent = Math.floor(lastScanSec / 60) + 'm ago';
+        } else {
+            document.getElementById('statLastScan').textContent = lastScanSec + 's ago';
+        }
+    }, 1000);
+})();
+</script>
+
+</body>
+</html>

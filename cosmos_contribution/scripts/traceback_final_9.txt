@@ -1,0 +1,17 @@
+DEBUG: nexus.py: Loading module...
+DEBUG: nexus.py: Creating Nexus instance...
+DEBUG: nexus.py: Nexus instance created
+2026-03-13 14:19:37.530 | INFO     | cosmos.core.collective.organism:__init__:158 - Collective Organism initialized - Generation 1
+2026-03-13 14:19:37.532 | INFO     | cosmos.core.collective.orchestration:__init__:91 - SwarmOrchestrator initialized - consciousness training mode
+2026-03-13 14:19:37,553 - evolution_engine - INFO - EvolutionEngine initialized - 296 patterns, 169 cycles
+2026-03-13 14:19:39,445 - internal_monologue - INFO - [InternalMonologue] No saved thoughts found, starting fresh
+Error during verification: invalid syntax (emeth_harmonizer.py, line 170)
+Traceback (most recent call last):
+  File "d:\Cosmos\scripts\verify_12d_mapping.py", line 14, in <module>
+    from Cosmos.web.cosmosynapse.engine.synaptic_field import SynapticField
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\__init__.py", line 67, in <module>
+    from .emeth_harmonizer import (
+  File "d:\Cosmos\Cosmos\web\cosmosynapse\engine\emeth_harmonizer.py", line 170
+    def filter_signals(self, thoughts:  user_physics:  min_weight: float = 0.1) -> list:
+                                                    ^
+SyntaxError: invalid syntax

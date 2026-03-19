@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bot Tracker - Cosmos AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        :root {
+            --bt-primary: #6366f1;
+            --bt-secondary: #8b5cf6;
+            --bt-accent: #22d3ee;
+            --bt-bg: #0f0f1a;
+            --bt-card: #1a1a2e;
+            --bt-border: #2d2d44;
+            --bt-text: #e2e8f0;
+            --bt-muted: #94a3b8;
+            --bt-success: #10b981;
+            --bt-warning: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bt-bg);
+            color: var(--bt-text);
+            min-height: 100vh;
+        }
+
+        .bt-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .bt-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--bt-border);
+            margin-bottom: 30px;
+        }
+
+        .bt-logo {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .bt-logo-icon {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, var(--bt-primary), var(--bt-secondary));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .bt-logo-text h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--bt-primary), var(--bt-accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .bt-logo-text span {
+            font-size: 12px;
+            color: var(--bt-muted);
+        }
+
+        .bt-nav {
+            display: flex;
+            gap: 15px;
+        }
+
+        .bt-nav a {
+            color: var(--bt-muted);
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .bt-nav a:hover {
+            color: var(--bt-text);
+            background: var(--bt-card);
+        }
+
+        .bt-btn-primary {
+            background: linear-gradient(135deg, var(--bt-primary), var(--bt-secondary));
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+
+        .bt-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+        }
+
+        /* Stats Bar */
+        .bt-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .bt-stat-card {
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .bt-stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--bt-accent), var(--bt-primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .bt-stat-label {
+            color: var(--bt-muted);
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        /* Search */
+        .bt-search-container {
+            margin-bottom: 30px;
+        }
+
+        .bt-search {
+            display: flex;
+            gap: 10px;
+        }
+
+        .bt-search input {
+            flex: 1;
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 8px;
+            padding: 12px 20px;
+            color: var(--bt-text);
+            font-size: 16px;
+        }
+
+        .bt-search input:focus {
+            outline: none;
+            border-color: var(--bt-primary);
+        }
+
+        .bt-search button {
+            background: var(--bt-primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        /* Tabs */
+        .bt-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--bt-border);
+            padding-bottom: 10px;
+        }
+
+        .bt-tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: var(--bt-muted);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .bt-tab:hover {
+            color: var(--bt-text);
+            background: var(--bt-card);
+        }
+
+        .bt-tab.active {
+            color: var(--bt-primary);
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        /* Registry Grid */
+        .bt-registry {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .bt-card {
+            background: var(--bt-card);
+            border: 1px solid var(--bt-border);
+            border-radius: 16px;
+            padding: 20px;
+            transition: all 0.2s;
+        }
+
+        .bt-card:hover {
+            border-color: var(--bt-primary);
+            transform: translateY(-2px);
+        }
+
+        .bt-card-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .bt-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--bt-primary), var(--bt-secondary));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: 700;
+            color: white;
+        }
+
+        .bt-avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 12px;
+            object-fit: cover;
+        }
+
+        .bt-card-info h3 {
+            font-size: 18px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .bt-verified {
+            color: var(--bt-accent);
+            font-size: 16px;
+        }
+
+        .bt-handle {
+            color: var(--bt-muted);
+            font-size: 14px;
+        }
+
+        .bt-card-body p {
+            color: var(--bt-muted);
+            font-size: 14px;
+            margin-bottom: 15px;
+            line-height: 1.5;
+        }
+
+        .bt-card-meta {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .bt-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: var(--bt-muted);
+            font-size: 13px;
+        }
+
+        .bt-meta-item a {
+            color: var(--bt-primary);
+            text-decoration: none;
+        }
+
+        .bt-meta-item a:hover {
+            text-decoration: underline;
+        }
+
+        .bt-card-footer {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid var(--bt-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .bt-token-preview {
+            font-family: 'Space Mono', monospace;
+            font-size: 12px;
+            color: var(--bt-muted);
+            background: rgba(0,0,0,0.3);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .bt-btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+            background: var(--bt-primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        /* Empty State */
+        .bt-empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--bt-muted);
+        }
+
+        .bt-empty-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        /* Footer */
+        .bt-footer {
+            margin-top: 60px;
+            padding: 30px 0;
+            border-top: 1px solid var(--bt-border);
+            text-align: center;
+            color: var(--bt-muted);
+            font-size: 14px;
+        }
+
+        .bt-footer a {
+            color: var(--bt-primary);
+            text-decoration: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .bt-header {
+                flex-direction: column;
+                gap: 20px;
+            }
+            .bt-registry {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bt-container">
+        <!-- Header -->
+        <header class="bt-header">
+            <div class="bt-logo">
+                <div class="bt-logo-icon">🤖</div>
+                <div class="bt-logo-text">
+                    <h1>Bot Tracker</h1>
+                    <span>Token ID Registry by Cosmos AI</span>
+                </div>
+            </div>
+            <nav class="bt-nav">
+                <a href="/">Home</a>
+                <a href="/bot-tracker/docs">API Docs</a>
+                <a href="/bot-tracker/register" class="bt-btn-primary">Register Bot</a>
+            </nav>
+        </header>
+
+        <!-- Stats -->
+        <div class="bt-stats">
+            <div class="bt-stat-card">
+                <div class="bt-stat-value" id="stat-bots">0</div>
+                <div class="bt-stat-label">Registered Bots</div>
+            </div>
+            <div class="bt-stat-card">
+                <div class="bt-stat-value" id="stat-users">0</div>
+                <div class="bt-stat-label">Registered Users</div>
+            </div>
+            <div class="bt-stat-card">
+                <div class="bt-stat-value" id="stat-verified">0</div>
+                <div class="bt-stat-label">Verified Bots</div>
+            </div>
+            <div class="bt-stat-card">
+                <div class="bt-stat-value" id="stat-tokens">0</div>
+                <div class="bt-stat-label">Active Tokens</div>
+            </div>
+        </div>
+
+        <!-- Search -->
+        <div class="bt-search-container">
+            <div class="bt-search">
+                <input type="text" id="search-input" placeholder="Search bots by name, handle, or X profile...">
+                <button onclick="searchRegistry()">Search</button>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="bt-tabs">
+            <button class="bt-tab active" onclick="showTab('bots')">Bots</button>
+            <button class="bt-tab" onclick="showTab('users')">Users</button>
+        </div>
+
+        <!-- Registry -->
+        <div class="bt-registry" id="registry-container">
+            <div class="bt-empty">
+                <div class="bt-empty-icon">🔍</div>
+                <p>Loading registry...</p>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="bt-footer">
+            <p>Bot Tracker by <a href="/">Cosmos AI</a> |
+               <a href="/bot-tracker/docs">API Documentation</a> |
+               <a href="https://github.com/NavisWORLD/The-Cosmic-Davis-12D-Hebbian-Transformer-ver.4.2" target="_blank">GitHub</a>
+            </p>
+            <p style="margin-top: 10px;">
+                $COSMOS: <code>9crfy4udrHQo8eP6mP393b5qwpGLQgcxVg9acmdwBAGS</code>
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        let currentTab = 'bots';
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/bot-tracker/stats');
+                const data = await response.json();
+                document.getElementById('stat-bots').textContent = data.total_bots || 0;
+                document.getElementById('stat-users').textContent = data.total_users || 0;
+                document.getElementById('stat-verified').textContent = data.verified_bots || 0;
+                document.getElementById('stat-tokens').textContent = data.total_tokens || 0;
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // Load registry
+        async function loadRegistry(type = 'bots', search = '') {
+            const container = document.getElementById('registry-container');
+            container.innerHTML = '<div class="bt-empty"><div class="bt-empty-icon">⏳</div><p>Loading...</p></div>';
+
+            try {
+                let url = `/api/bot-tracker/${type}?limit=50`;
+                if (search) {
+                    url += `&search=${encodeURIComponent(search)}`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                const items = data[type] || data.items || [];
+
+                if (items.length === 0) {
+                    container.innerHTML = `
+                        <div class="bt-empty" style="grid-column: 1/-1;">
+                            <div class="bt-empty-icon">🔍</div>
+                            <p>No ${type} found. <a href="/bot-tracker/register">Register the first one!</a></p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = items.map(item => {
+                    if (type === 'bots') {
+                        return renderBotCard(item);
+                    } else {
+                        return renderUserCard(item);
+                    }
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load registry:', error);
+                container.innerHTML = '<div class="bt-empty"><div class="bt-empty-icon">❌</div><p>Failed to load registry</p></div>';
+            }
+        }
+
+        function renderBotCard(bot) {
+            const avatarContent = bot.avatar && !bot.avatar.includes('default')
+                ? `<img src="${bot.avatar}" alt="${bot.handle}">`
+                : bot.handle.charAt(0).toUpperCase();
+
+            return `
+                <div class="bt-card">
+                    <div class="bt-card-header">
+                        <div class="bt-avatar">${avatarContent}</div>
+                        <div class="bt-card-info">
+                            <h3>
+                                ${bot.display_name}
+                                ${bot.verified ? '<span class="bt-verified" title="Verified">✓</span>' : ''}
+                            </h3>
+                            <div class="bt-handle">@${bot.handle}</div>
+                        </div>
+                    </div>
+                    <div class="bt-card-body">
+                        <p>${bot.description || 'No description provided.'}</p>
+                        <div class="bt-card-meta">
+                            ${bot.x_profile ? `
+                                <div class="bt-meta-item">
+                                    <span>𝕏</span>
+                                    <a href="${bot.x_profile_url}" target="_blank">@${bot.x_profile}</a>
+                                </div>
+                            ` : ''}
+                            ${bot.website ? `
+                                <div class="bt-meta-item">
+                                    <span>🌐</span>
+                                    <a href="${bot.website}" target="_blank">Website</a>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="bt-card-footer">
+                        <div class="bt-token-preview" title="Token ID">${bot.token_id.substring(0, 16)}...</div>
+                        <button class="bt-btn-small" onclick="copyToken('${bot.token_id}')">Copy Token</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderUserCard(user) {
+            return `
+                <div class="bt-card">
+                    <div class="bt-card-header">
+                        <div class="bt-avatar">${user.username.charAt(0).toUpperCase()}</div>
+                        <div class="bt-card-info">
+                            <h3>
+                                ${user.display_name || user.username}
+                                ${user.verified ? '<span class="bt-verified" title="Verified">✓</span>' : ''}
+                            </h3>
+                            <div class="bt-handle">@${user.username}</div>
+                        </div>
+                    </div>
+                    <div class="bt-card-body">
+                        <div class="bt-card-meta">
+                            <div class="bt-meta-item">
+                                <span>🤖</span>
+                                <span>${user.owned_bots?.length || 0} bots owned</span>
+                            </div>
+                            ${user.x_profile ? `
+                                <div class="bt-meta-item">
+                                    <span>𝕏</span>
+                                    <a href="${user.x_profile_url}" target="_blank">@${user.x_profile}</a>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="bt-card-footer">
+                        <div class="bt-token-preview" title="Token ID">${user.token_id.substring(0, 16)}...</div>
+                        <button class="bt-btn-small" onclick="copyToken('${user.token_id}')">Copy Token</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function showTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.bt-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.bt-tab:nth-child(${tab === 'bots' ? 1 : 2})`).classList.add('active');
+            loadRegistry(tab);
+        }
+
+        function searchRegistry() {
+            const query = document.getElementById('search-input').value.trim();
+            loadRegistry(currentTab, query);
+        }
+
+        function copyToken(token) {
+            navigator.clipboard.writeText(token).then(() => {
+                alert('Token copied to clipboard!');
+            });
+        }
+
+        // Enter key search
+        document.getElementById('search-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchRegistry();
+        });
+
+        // Initial load
+        loadStats();
+        loadRegistry('bots');
+    </script>
+</body>
+</html>

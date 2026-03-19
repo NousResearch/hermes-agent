@@ -45,6 +45,8 @@ from dotenv import load_dotenv
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 _user_env = _hermes_home / ".env"
 _project_env = Path(__file__).parent / '.env'
+_root_env = Path(__file__).parent.parent / '.env' # The main Cosmos folder
+
 if _user_env.exists():
     try:
         load_dotenv(dotenv_path=_user_env, encoding="utf-8")
@@ -57,6 +59,12 @@ elif _project_env.exists():
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=_project_env, encoding="latin-1")
     logger.info("Loaded environment variables from %s", _project_env)
+elif _root_env.exists():
+    try:
+        load_dotenv(dotenv_path=_root_env, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=_root_env, encoding="latin-1")
+    logger.info("Loaded environment variables from %s", _root_env)
 else:
     logger.info("No .env file found. Using system environment variables.")
 

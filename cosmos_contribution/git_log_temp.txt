@@ -1,0 +1,15 @@
+6c61f7e|2026-03-14 17:58:58 -0700|fix: resolve SwarmAwareness argument mismatch in CNS core loop
+280c8ef|2026-03-14 17:38:20 -0700|feat: complete 12D/54D system restoration, quantum bridge v5, and model fixes
+e9f693e|2026-03-14 16:42:30 -0700|docs: finalize 12D/54D branding & Hermes showcase (CC BY 4.0)
+dbcd111|2026-03-14 15:11:41 -0700|Update README and LICENSE (CC BY 4.0/Zenodo) and consolidate Hermes/Quantum Bridge V5 updates
+8c1912c|2026-03-14 11:38:09 -0700|
+c241854|2026-03-12 20:53:47 -0700|update
+620ec96|2026-03-11 18:13:17 -0700|update
+6fc76bb|2026-03-10 02:55:29 -0700|up
+f1c1720|2026-03-10 02:41:51 -0700|up
+de9d2dc|2026-03-10 02:41:12 -0700|up
+12eff8b|2026-03-10 00:43:17 -0700|up
+0aa4316|2026-03-10 00:24:56 -0700|update'
+2e737c1|2026-03-09 10:18:36 -0700|u[date ]
+99e2f7f|2026-03-08 10:57:19 -0700|update
+fb40c3d|2026-03-08 10:56:00 -0700|update

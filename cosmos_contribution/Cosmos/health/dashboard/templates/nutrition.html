@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD:cosmos/health/dashboard/templates/nutrition.html
+    <title>Nutrition - cosmos Health</title>
+=======
+    <title>Nutrition - Cosmos Health</title>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/nutrition.html
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        .nav-links a {
+            color: #a0a0a0;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .nav-links a:hover, .nav-links a.active {
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .glass-card h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+
+        .macros-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .macro-card {
+            text-align: center;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+        }
+
+        .macro-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+        }
+
+        .macro-label {
+            color: #808080;
+            margin-top: 5px;
+        }
+
+        .macro-progress {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .macro-progress-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .calories .macro-value { color: #ff6b6b; }
+        .calories .macro-progress-bar { background: #ff6b6b; }
+        .protein .macro-value { color: #00d4ff; }
+        .protein .macro-progress-bar { background: #00d4ff; }
+        .carbs .macro-value { color: #ffd93d; }
+        .carbs .macro-progress-bar { background: #ffd93d; }
+        .fat .macro-value { color: #00ff88; }
+        .fat .macro-progress-bar { background: #00ff88; }
+
+        .meal-section {
+            margin-bottom: 20px;
+        }
+
+        .meal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .meal-title {
+            font-size: 1.2rem;
+            color: #fff;
+        }
+
+        .meal-calories {
+            color: #808080;
+        }
+
+        .meal-items {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .meal-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+
+        .meal-item-name {
+            font-weight: 500;
+        }
+
+        .meal-item-details {
+            color: #808080;
+            font-size: 0.9rem;
+        }
+
+        .add-meal-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #00d4ff, #00ff88);
+            border: none;
+            border-radius: 12px;
+            color: #1a1a2e;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .add-meal-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.3);
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 200px;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1a1a2e;
+            border-radius: 20px;
+            padding: 30px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #808080;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #a0a0a0;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 1rem;
+        }
+
+        .food-search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .food-result-item {
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .food-result-item:hover {
+            background: rgba(0, 212, 255, 0.2);
+        }
+
+        .selected-foods {
+            margin-top: 15px;
+        }
+
+        .selected-food-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: rgba(0, 212, 255, 0.1);
+            border-radius: 8px;
+            margin-bottom: 5px;
+        }
+
+        .remove-food {
+            background: none;
+            border: none;
+            color: #ff6b6b;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+<<<<<<< HEAD:cosmos/health/dashboard/templates/nutrition.html
+            <h1>cosmos Nutrition</h1>
+=======
+            <h1>Cosmos Nutrition</h1>
+>>>>>>> dd5db7d5307d56ce54f13e61b92f95333530d4d1:cosmos/health/dashboard/templates/nutrition.html
+            <nav class="nav-links">
+                <a href="/health">Dashboard</a>
+                <a href="/nutrition" class="active">Nutrition</a>
+                <a href="/documents">Documents</a>
+                <a href="/insights">Insights</a>
+            </nav>
+        </header>
+
+        <!-- Macros Summary -->
+        <div class="glass-card">
+            <h3>Today's Nutrition</h3>
+            <div class="macros-summary">
+                <div class="macro-card calories">
+                    <div class="macro-value" id="totalCalories">0</div>
+                    <div class="macro-label">/ <span id="targetCalories">2000</span> kcal</div>
+                    <div class="macro-progress">
+                        <div class="macro-progress-bar" id="caloriesProgress" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="macro-card protein">
+                    <div class="macro-value" id="totalProtein">0g</div>
+                    <div class="macro-label">Protein</div>
+                    <div class="macro-progress">
+                        <div class="macro-progress-bar" id="proteinProgress" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="macro-card carbs">
+                    <div class="macro-value" id="totalCarbs">0g</div>
+                    <div class="macro-label">Carbs</div>
+                    <div class="macro-progress">
+                        <div class="macro-progress-bar" id="carbsProgress" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="macro-card fat">
+                    <div class="macro-value" id="totalFat">0g</div>
+                    <div class="macro-label">Fat</div>
+                    <div class="macro-progress">
+                        <div class="macro-progress-bar" id="fatProgress" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Macros Chart -->
+        <div class="glass-card">
+            <h3>Macro Distribution</h3>
+            <div class="chart-wrapper">
+                <canvas id="macrosChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Meals -->
+        <div class="glass-card">
+            <h3>Today's Meals</h3>
+
+            <div class="meal-section">
+                <div class="meal-header">
+                    <span class="meal-title">Breakfast</span>
+                    <span class="meal-calories" id="breakfastCalories">0 kcal</span>
+                </div>
+                <div class="meal-items" id="breakfastItems">
+                    <div class="meal-item" style="color: #808080;">No items logged</div>
+                </div>
+            </div>
+
+            <div class="meal-section">
+                <div class="meal-header">
+                    <span class="meal-title">Lunch</span>
+                    <span class="meal-calories" id="lunchCalories">0 kcal</span>
+                </div>
+                <div class="meal-items" id="lunchItems">
+                    <div class="meal-item" style="color: #808080;">No items logged</div>
+                </div>
+            </div>
+
+            <div class="meal-section">
+                <div class="meal-header">
+                    <span class="meal-title">Dinner</span>
+                    <span class="meal-calories" id="dinnerCalories">0 kcal</span>
+                </div>
+                <div class="meal-items" id="dinnerItems">
+                    <div class="meal-item" style="color: #808080;">No items logged</div>
+                </div>
+            </div>
+
+            <div class="meal-section">
+                <div class="meal-header">
+                    <span class="meal-title">Snacks</span>
+                    <span class="meal-calories" id="snackCalories">0 kcal</span>
+                </div>
+                <div class="meal-items" id="snackItems">
+                    <div class="meal-item" style="color: #808080;">No items logged</div>
+                </div>
+            </div>
+
+            <button class="add-meal-btn" onclick="openMealModal()">+ Log Meal</button>
+        </div>
+    </div>
+
+    <!-- Add Meal Modal -->
+    <div class="modal" id="mealModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Log Meal</h3>
+                <button class="modal-close" onclick="closeMealModal()">&times;</button>
+            </div>
+
+            <div class="form-group">
+                <label>Meal Type</label>
+                <select id="mealType">
+                    <option value="breakfast">Breakfast</option>
+                    <option value="lunch">Lunch</option>
+                    <option value="dinner">Dinner</option>
+                    <option value="snack">Snack</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Search Foods</label>
+                <input type="text" id="foodSearch" placeholder="Search for a food..." oninput="searchFoods()">
+                <div class="food-search-results" id="searchResults"></div>
+            </div>
+
+            <div class="selected-foods" id="selectedFoods">
+                <label>Selected Foods</label>
+            </div>
+
+            <div class="form-group">
+                <label>Notes (optional)</label>
+                <input type="text" id="mealNotes" placeholder="Any notes about this meal...">
+            </div>
+
+            <button class="add-meal-btn" onclick="saveMeal()">Save Meal</button>
+        </div>
+    </div>
+
+    <script>
+        let macrosChart = null;
+        let selectedFoods = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadDailyNutrition();
+            initMacrosChart();
+        });
+
+        async function loadDailyNutrition() {
+            try {
+                const response = await fetch('/api/nutrition/daily');
+                const data = await response.json();
+
+                // Update totals
+                document.getElementById('totalCalories').textContent = Math.round(data.totals.calories);
+                document.getElementById('totalProtein').textContent = Math.round(data.totals.protein_g) + 'g';
+                document.getElementById('totalCarbs').textContent = Math.round(data.totals.carbs_g) + 'g';
+                document.getElementById('totalFat').textContent = Math.round(data.totals.fat_g) + 'g';
+
+                // Update targets
+                document.getElementById('targetCalories').textContent = data.targets.calories;
+
+                // Update progress bars
+                const calPct = Math.min(100, (data.totals.calories / data.targets.calories) * 100);
+                document.getElementById('caloriesProgress').style.width = calPct + '%';
+
+                const protPct = Math.min(100, (data.totals.protein_g / data.targets.protein_g) * 100);
+                document.getElementById('proteinProgress').style.width = protPct + '%';
+
+                // Update chart
+                if (macrosChart) {
+                    macrosChart.data.datasets[0].data = [
+                        data.totals.protein_g,
+                        data.totals.carbs_g,
+                        data.totals.fat_g
+                    ];
+                    macrosChart.update();
+                }
+
+                // Update meals display
+                updateMealsDisplay(data.meals);
+
+            } catch (error) {
+                console.error('Error loading nutrition:', error);
+            }
+        }
+
+        function updateMealsDisplay(meals) {
+            const containers = {
+                breakfast: document.getElementById('breakfastItems'),
+                lunch: document.getElementById('lunchItems'),
+                dinner: document.getElementById('dinnerItems'),
+                snack: document.getElementById('snackItems')
+            };
+
+            // Clear all
+            Object.values(containers).forEach(c => c.innerHTML = '');
+
+            // Group meals by type
+            const grouped = { breakfast: [], lunch: [], dinner: [], snack: [] };
+            meals.forEach(meal => {
+                if (grouped[meal.meal_type]) {
+                    grouped[meal.meal_type].push(meal);
+                }
+            });
+
+            // Render each group
+            for (const [type, mealList] of Object.entries(grouped)) {
+                const container = containers[type];
+                if (mealList.length === 0) {
+                    container.innerHTML = '<div class="meal-item" style="color: #808080;">No items logged</div>';
+                } else {
+                    let totalCal = 0;
+                    mealList.forEach(meal => {
+                        totalCal += meal.total_nutrients.calories;
+                        container.innerHTML += `
+                            <div class="meal-item">
+                                <div>
+                                    <div class="meal-item-name">${meal.foods.length} item(s)</div>
+                                    <div class="meal-item-details">${Math.round(meal.total_nutrients.calories)} kcal | ${Math.round(meal.total_nutrients.protein_g)}g protein</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    document.getElementById(type + 'Calories').textContent = Math.round(totalCal) + ' kcal';
+                }
+            }
+        }
+
+        function initMacrosChart() {
+            const ctx = document.getElementById('macrosChart').getContext('2d');
+            macrosChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Protein', 'Carbs', 'Fat'],
+                    datasets: [{
+                        data: [0, 0, 0],
+                        backgroundColor: ['#00d4ff', '#ffd93d', '#00ff88'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#e0e0e0' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function openMealModal() {
+            document.getElementById('mealModal').classList.add('active');
+            selectedFoods = [];
+            updateSelectedFoodsDisplay();
+        }
+
+        function closeMealModal() {
+            document.getElementById('mealModal').classList.remove('active');
+        }
+
+        async function searchFoods() {
+            const query = document.getElementById('foodSearch').value;
+            if (query.length < 2) {
+                document.getElementById('searchResults').innerHTML = '';
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/nutrition/foods?query=${encodeURIComponent(query)}`);
+                const data = await response.json();
+
+                const results = document.getElementById('searchResults');
+                results.innerHTML = data.foods.map(food => `
+                    <div class="food-result-item" onclick='addFood(${JSON.stringify(food)})'>
+                        <div>${food.name}</div>
+                        <div style="color: #808080; font-size: 0.9rem;">
+                            ${Math.round(food.nutrients.calories)} kcal | ${food.serving_size}${food.serving_unit}
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Error searching foods:', error);
+            }
+        }
+
+        function addFood(food) {
+            selectedFoods.push({ ...food, servings: 1 });
+            updateSelectedFoodsDisplay();
+            document.getElementById('foodSearch').value = '';
+            document.getElementById('searchResults').innerHTML = '';
+        }
+
+        function removeFood(index) {
+            selectedFoods.splice(index, 1);
+            updateSelectedFoodsDisplay();
+        }
+
+        function updateSelectedFoodsDisplay() {
+            const container = document.getElementById('selectedFoods');
+            if (selectedFoods.length === 0) {
+                container.innerHTML = '<label>Selected Foods</label><div style="color: #808080;">No foods selected</div>';
+                return;
+            }
+
+            container.innerHTML = '<label>Selected Foods</label>' + selectedFoods.map((food, i) => `
+                <div class="selected-food-item">
+                    <div>
+                        <div>${food.name}</div>
+                        <div style="color: #808080; font-size: 0.9rem;">${Math.round(food.nutrients.calories * food.servings)} kcal</div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" value="${food.servings}" min="0.5" step="0.5" style="width: 60px; padding: 5px;"
+                               onchange="selectedFoods[${i}].servings = parseFloat(this.value); updateSelectedFoodsDisplay();">
+                        <span>servings</span>
+                        <button class="remove-food" onclick="removeFood(${i})">&#10005;</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function saveMeal() {
+            if (selectedFoods.length === 0) {
+                alert('Please add at least one food item');
+                return;
+            }
+
+            const mealData = {
+                meal_type: document.getElementById('mealType').value,
+                foods: selectedFoods.map(f => ({ food_id: f.id, servings: f.servings })),
+                notes: document.getElementById('mealNotes').value
+            };
+
+            try {
+                const response = await fetch('/api/nutrition/meals', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(mealData)
+                });
+
+                if (response.ok) {
+                    closeMealModal();
+                    loadDailyNutrition();
+                } else {
+                    alert('Error saving meal');
+                }
+            } catch (error) {
+                console.error('Error saving meal:', error);
+            }
+        }
+    </script>
+</body>
+</html>

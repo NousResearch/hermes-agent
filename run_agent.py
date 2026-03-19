@@ -969,6 +969,18 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+
+        # Read explicit context_length override from model config
+        _model_cfg = _agent_cfg.get("model", {})
+        if isinstance(_model_cfg, dict):
+            _config_context_length = _model_cfg.get("context_length")
+        else:
+            _config_context_length = None
+        if _config_context_length is not None:
+            try:
+                _config_context_length = int(_config_context_length)
+            except (TypeError, ValueError):
+                _config_context_length = None
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -980,6 +992,7 @@ class AIAgent:
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
+            config_context_length=_config_context_length,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0

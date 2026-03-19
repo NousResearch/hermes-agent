@@ -24,11 +24,41 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _auto_detect_local_model(base_url: str) -> str:
+    """Query a local server for its model name when only one model is loaded."""
+    if not base_url:
+        return ""
+    try:
+        import requests
+        url = base_url.rstrip("/")
+        if not url.endswith("/v1"):
+            url += "/v1"
+        resp = requests.get(url + "/models", timeout=5)
+        if resp.ok:
+            models = resp.json().get("data", [])
+            if len(models) == 1:
+                model_id = models[0].get("id", "")
+                if model_id:
+                    return model_id
+    except Exception:
+        pass
+    return ""
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
-        return dict(model_cfg)
+        cfg = dict(model_cfg)
+        default = cfg.get("default", "").strip()
+        base_url = cfg.get("base_url", "").strip()
+        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_fallback = not default or default == "anthropic/claude-opus-4.6"
+        if is_local and is_fallback and base_url:
+            detected = _auto_detect_local_model(base_url)
+            if detected:
+                cfg["default"] = detected
+        return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
     return {}

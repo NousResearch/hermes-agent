@@ -15,7 +15,7 @@ All settings are stored in the `~/.hermes/` directory for easy access.
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
 ├── auth.json       # OAuth provider credentials (Nous Portal, etc.)
-├── SOUL.md         # Optional: global persona (agent embodies this personality)
+├── SOUL.md         # Primary agent identity (slot #1 in system prompt)
 ├── memories/       # Persistent memory (MEMORY.md, USER.md)
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
 ├── cron/           # Scheduled jobs
@@ -63,6 +63,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
+| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
+| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -72,7 +74,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
-| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
+| **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
@@ -117,6 +120,59 @@ model:
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
+### GitHub Copilot
+
+Hermes supports GitHub Copilot as a first-class provider with two modes:
+
+**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
+
+```bash
+hermes chat --provider copilot --model gpt-5.4
+```
+
+**Authentication options** (checked in this order):
+
+1. `COPILOT_GITHUB_TOKEN` environment variable
+2. `GH_TOKEN` environment variable
+3. `GITHUB_TOKEN` environment variable
+4. `gh auth token` CLI fallback
+
+If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
+
+:::warning Token types
+The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
+
+| Type | Prefix | How to get |
+|------|--------|------------|
+| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
+| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
+| GitHub App token | `ghu_` | Via GitHub App installation |
+
+If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
+:::
+
+**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
+
+**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
+
+```bash
+hermes chat --provider copilot-acp --model copilot-acp
+# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "copilot"
+  default: "gpt-5.4"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
+| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
+| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
 ### First-Class Chinese AI Providers
 
 These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
@@ -131,11 +187,11 @@ hermes chat --provider kimi-coding --model moonshot-v1-auto
 # Requires: KIMI_API_KEY in ~/.hermes/.env
 
 # MiniMax (global endpoint)
-hermes chat --provider minimax --model MiniMax-Text-01
+hermes chat --provider minimax --model MiniMax-M2.7
 # Requires: MINIMAX_API_KEY in ~/.hermes/.env
 
 # MiniMax (China endpoint)
-hermes chat --provider minimax-cn --model MiniMax-Text-01
+hermes chat --provider minimax-cn --model MiniMax-M2.7
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
 
 # Alibaba Cloud / DashScope (Qwen models)
@@ -358,6 +414,29 @@ LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
 
 ---
 
+### Context Length Detection
+
+Hermes automatically detects your model's context length by querying the endpoint's `/v1/models` response. For most setups this works out of the box. If detection fails (the model name doesn't match, the endpoint doesn't expose `/v1/models`, etc.), Hermes falls back to a high default and probes downward on context-length errors.
+
+To set the context length explicitly, add `context_length` to your model config:
+
+```yaml
+model:
+  default: "qwen3.5:9b"
+  base_url: "http://localhost:8080/v1"
+  context_length: 131072  # tokens
+```
+
+This takes highest priority — it overrides auto-detection, cached values, and hardcoded defaults.
+
+:::tip When to set this manually
+- Your model shows "2M context" in the status bar (detection failed)
+- You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
+- You're running behind a proxy that doesn't expose `/v1/models`
+:::
+
+---
+
 ### Choosing the Right Setup
 
 | Use Case | Recommended |
@@ -443,7 +522,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
@@ -681,13 +760,54 @@ node_modules/
 
 ## Context Compression
 
+Hermes automatically compresses long conversations to stay within your model's context window. The compression summarizer is a separate LLM call — you can point it at any provider or endpoint.
+
+All compression settings live in `config.yaml` (no environment variables).
+
+### Full reference
+
+```yaml
+compression:
+  enabled: true                                     # Toggle compression on/off
+  threshold: 0.50                                   # Compress at this % of context limit
+  summary_model: "google/gemini-3-flash-preview"    # Model for summarization
+  summary_provider: "auto"                          # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
+  summary_base_url: null                            # Custom OpenAI-compatible endpoint (overrides provider)
+```
+
+### Common setups
+
+**Default (auto-detect) — no configuration needed:**
 ```yaml
 compression:
   enabled: true
-  threshold: 0.50              # Compress at 50% of context limit by default
-  summary_model: "google/gemini-3-flash-preview"   # Model for summarization
-  # summary_provider: "auto"   # "auto", "openrouter", "nous", "main"
+  threshold: 0.50
 ```
+Uses the first available provider (OpenRouter → Nous → Codex) with Gemini Flash.
+
+**Force a specific provider** (OAuth or API-key based):
+```yaml
+compression:
+  summary_provider: nous
+  summary_model: gemini-3-flash
+```
+Works with any provider: `nous`, `openrouter`, `codex`, `anthropic`, `main`, etc.
+
+**Custom endpoint** (self-hosted, Ollama, zai, DeepSeek, etc.):
+```yaml
+compression:
+  summary_model: glm-4.7
+  summary_base_url: https://api.z.ai/api/coding/paas/v4
+```
+Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
+
+### How the three knobs interact
+
+| `summary_provider` | `summary_base_url` | Result |
+|---------------------|---------------------|--------|
+| `auto` (default) | not set | Auto-detect best available provider |
+| `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
+| any | set | Use the custom endpoint directly (provider ignored) |
 
 The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
 
@@ -711,17 +831,31 @@ Budget pressure is enabled by default. The agent sees warnings naturally as part
 
 ## Auxiliary Models
 
-Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via OpenRouter or Nous Portal — you don't need to configure anything.
+Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.
 
-To use a different model, add an `auxiliary` section to `~/.hermes/config.yaml`:
+### The universal config pattern
+
+Every model slot in Hermes — auxiliary tasks, compression, fallback — uses the same three knobs:
+
+| Key | What it does | Default |
+|-----|-------------|---------|
+| `provider` | Which provider to use for auth and routing | `"auto"` |
+| `model` | Which model to request | provider's default |
+| `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
+
+When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
+
+Available providers: `auto`, `openrouter`, `nous`, `codex`, `copilot`, `anthropic`, `main`, `zai`, `kimi-coding`, `minimax`, and any provider registered in the [provider registry](/docs/reference/environment-variables).
+
+### Full auxiliary config reference
 
 ```yaml
 auxiliary:
   # Image analysis (vision_analyze tool + browser screenshots)
   vision:
-    provider: "auto"           # "auto", "openrouter", "nous", "main"
+    provider: "auto"           # "auto", "openrouter", "nous", "codex", "main", etc.
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
-    base_url: ""               # direct OpenAI-compatible endpoint (takes precedence over provider)
+    base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
 
   # Web page summarization + browser page text extraction
@@ -730,7 +864,18 @@ auxiliary:
     model: ""                  # e.g. "google/gemini-2.5-flash"
     base_url: ""
     api_key: ""
+
+  # Dangerous command approval classifier
+  approval:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
 ```
+
+:::info
+Context compression has its own top-level `compression:` block with `summary_provider`, `summary_model`, and `summary_base_url` — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](#fallback-model) above. All three follow the same provider/model/base_url pattern.
+:::
 
 ### Changing the Vision Model
 
@@ -817,18 +962,22 @@ If you use Codex OAuth as your main model provider, vision works automatically �
 **Vision requires a multimodal model.** If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
 :::
 
-### Environment Variables
+### Environment Variables (legacy)
 
-You can also configure auxiliary models via environment variables instead of `config.yaml`:
+Auxiliary models can also be configured via environment variables. However, `config.yaml` is the preferred method — it's easier to manage and supports all options including `base_url` and `api_key`.
 
 | Setting | Environment Variable |
 |---------|---------------------|
 | Vision provider | `AUXILIARY_VISION_PROVIDER` |
 | Vision model | `AUXILIARY_VISION_MODEL` |
+| Vision endpoint | `AUXILIARY_VISION_BASE_URL` |
+| Vision API key | `AUXILIARY_VISION_API_KEY` |
 | Web extract provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
 | Web extract model | `AUXILIARY_WEB_EXTRACT_MODEL` |
-| Compression provider | `CONTEXT_COMPRESSION_PROVIDER` |
-| Compression model | `CONTEXT_COMPRESSION_MODEL` |
+| Web extract endpoint | `AUXILIARY_WEB_EXTRACT_BASE_URL` |
+| Web extract API key | `AUXILIARY_WEB_EXTRACT_API_KEY` |
+
+Compression and fallback model settings are config.yaml-only.
 
 :::tip
 Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
@@ -859,7 +1008,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
   elevenlabs:
@@ -868,6 +1017,11 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
 ```
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
@@ -1015,6 +1169,21 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
 
+## Unauthorized DM Behavior
+
+Control what Hermes does when an unknown user sends a direct message:
+
+```yaml
+unauthorized_dm_behavior: pair
+
+whatsapp:
+  unauthorized_dm_behavior: ignore
+```
+
+- `pair` is the default. Hermes denies access, but replies with a one-time pairing code in DMs.
+- `ignore` silently drops unauthorized DMs.
+- Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
+
 ## Quick Commands
 
 Define custom commands that run shell commands without invoking the LLM — zero token usage, instant execution. Especially useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
@@ -1154,7 +1323,7 @@ delegation:
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 
-The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
@@ -1173,15 +1342,15 @@ Hermes uses two different context scopes:
 
 | File | Purpose | Scope |
 |------|---------|-------|
+| `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
 | `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
-| `SOUL.md` | Default persona for this Hermes instance | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
 | `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
 | `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
 
+- **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
+- If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
-- **SOUL.md** is now global to the Hermes instance and is loaded only from `HERMES_HOME`.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- An empty `SOUL.md` contributes nothing to the system prompt.
 - All loaded context files are capped at 20,000 characters with smart truncation.
 
 See also:

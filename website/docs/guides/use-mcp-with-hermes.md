@@ -37,8 +37,13 @@ That last part matters. Good MCP usage is not just “connect everything.” It 
 
 ## Step 1: install MCP support
 
+If you installed Hermes with the standard install script, MCP support is already included (the installer runs `uv pip install -e ".[all]"`).
+
+If you installed without extras and need to add MCP separately:
+
 ```bash
-pip install hermes-agent[mcp]
+cd ~/.hermes/hermes-agent
+uv pip install -e ".[mcp]"
 ```
 
 For npm-based servers, make sure Node.js and `npx` are available.

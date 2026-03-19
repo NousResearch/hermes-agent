@@ -330,28 +330,34 @@ def build_skills_system_prompt(
     # Each entry: (skill_name, description)
     # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
     # -> category "mlops/training", skill "axolotl"
+    # Load disabled skill names once for the entire scan
+    try:
+        from tools.skills_tool import _get_disabled_skill_names
+        disabled = _get_disabled_skill_names()
+    except Exception:
+        disabled = set()
+
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
+        is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
         if not is_compatible:
-            continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:
-            # Category is everything between skills_dir and the skill folder
-            # e.g. parts = ("mlops", "training", "axolotl", "SKILL.md")
-            #   → category = "mlops/training", skill_name = "axolotl"
-            # e.g. parts = ("github", "github-auth", "SKILL.md")
-            #   → category = "github", skill_name = "github-auth"
             skill_name = parts[-2]
             category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
         else:
             category = "general"
             skill_name = skill_file.parent.name
+        # Respect user's disabled skills config
+        fm_name = frontmatter.get("name", skill_name)
+        if fm_name in disabled or skill_name in disabled:
+            continue
+        # Skip skills whose conditional activation rules exclude them
+        conditions = _read_skill_conditions(skill_file)
+        if not _skill_should_show(conditions, available_tools, available_toolsets):
+            continue
         skills_by_category.setdefault(category, []).append((skill_name, desc))
 
     if not skills_by_category:
@@ -423,11 +429,42 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def build_context_files_prompt(cwd: Optional[str] = None) -> str:
+def load_soul_md() -> Optional[str]:
+    """Load SOUL.md from HERMES_HOME and return its content, or None.
+
+    Used as the agent identity (slot #1 in the system prompt).  When this
+    returns content, ``build_context_files_prompt`` should be called with
+    ``skip_soul=True`` so SOUL.md isn't injected twice.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+
+    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    if not soul_path.exists():
+        return None
+    try:
+        content = soul_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "SOUL.md")
+        content = _truncate_content(content, "SOUL.md")
+        return content
+    except Exception as e:
+        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+        return None
+
+
+def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
     Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
     and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
+
+    When *skip_soul* is True, SOUL.md is not included here (it was already
+    loaded via ``load_soul_md()`` for the identity slot).
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -517,23 +554,11 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         hermes_md_content = _truncate_content(hermes_md_content, ".hermes.md")
         sections.append(hermes_md_content)
 
-    # SOUL.md from HERMES_HOME only
-    try:
-        from hermes_cli.config import ensure_hermes_home
-        ensure_hermes_home()
-    except Exception as e:
-        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
-
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
-    if soul_path.exists():
-        try:
-            content = soul_path.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, "SOUL.md")
-                content = _truncate_content(content, "SOUL.md")
-                sections.append(content)
-        except Exception as e:
-            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    if not skip_soul:
+        soul_content = load_soul_md()
+        if soul_content:
+            sections.append(soul_content)
 
     if not sections:
         return ""

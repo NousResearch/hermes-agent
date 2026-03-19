@@ -21,9 +21,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Start a new conversation (reset history) |
-| `/reset` | Reset conversation only (keep screen) |
-| `/clear` | Clear screen and reset conversation (fresh start) |
+| `/new` (alias: `/reset`) | Start a new session (fresh session ID + history) |
+| `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history |
 | `/save` | Save the current conversation |
 | `/retry` | Retry the last message (resend to agent) |
@@ -31,6 +30,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
+| `/stop` | Kill all running background processes |
 | `/background <prompt>` | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
@@ -58,6 +58,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/skills` | Search, install, inspect, or manage skills from online registries |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/reload-mcp` | Reload MCP servers from config.yaml |
+| `/plugins` | List installed plugins and their status |
 
 ### Info
 
@@ -95,7 +96,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/new` | Start a new conversation. |
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info. |
-| `/stop` | Interrupt the running agent without queuing a follow-up prompt. |
+| `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/model [provider:model]` | Show or change the model, including provider switches. |
 | `/provider` | Show provider availability and auth status. |
 | `/personality [name]` | Set a personality overlay for the session. |
@@ -119,7 +120,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, and `/verbose` are **CLI-only** commands.
-- `/status`, `/stop`, `/sethome`, `/resume`, and `/update` are **messaging-only** commands.
+- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/verbose`, and `/plugins` are **CLI-only** commands.
+- `/status`, `/sethome`, and `/update` are **messaging-only** commands.
 - `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

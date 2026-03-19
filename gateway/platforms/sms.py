@@ -79,6 +79,7 @@ class SmsAdapter(BasePlatformAdapter):
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
         self._runner = None
+        self._http_session: Optional["aiohttp.ClientSession"] = None
 
     def _basic_auth_header(self) -> str:
         """Build HTTP Basic auth header value for Twilio."""
@@ -106,6 +107,7 @@ class SmsAdapter(BasePlatformAdapter):
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
         await site.start()
+        self._http_session = aiohttp.ClientSession()
         self._running = True
 
         logger.info(
@@ -116,6 +118,9 @@ class SmsAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        if self._http_session:
+            await self._http_session.close()
+            self._http_session = None
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -140,7 +145,8 @@ class SmsAdapter(BasePlatformAdapter):
             "Authorization": self._basic_auth_header(),
         }
 
-        async with aiohttp.ClientSession() as session:
+        session = self._http_session or aiohttp.ClientSession()
+        try:
             for chunk in chunks:
                 form_data = aiohttp.FormData()
                 form_data.add_field("From", self._from_number)
@@ -167,6 +173,10 @@ class SmsAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.error("[sms] send error to %s: %s", _redact_phone(chat_id), e)
                     return SendResult(success=False, error=str(e))
+        finally:
+            # Close session only if we created a fallback (no persistent session)
+            if not self._http_session and session:
+                await session.close()
 
         return last_result
 

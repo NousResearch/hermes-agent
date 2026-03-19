@@ -130,17 +130,8 @@ if _config_path.exists():
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)
-        _compression_cfg = _cfg.get("compression", {})
-        if _compression_cfg and isinstance(_compression_cfg, dict):
-            _compression_env_map = {
-                "enabled": "CONTEXT_COMPRESSION_ENABLED",
-                "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
-                "summary_model": "CONTEXT_COMPRESSION_MODEL",
-                "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
-            }
-            for _cfg_key, _env_var in _compression_env_map.items():
-                if _cfg_key in _compression_cfg:
-                    os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        # Compression config is read directly from config.yaml by run_agent.py
+        # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).
         # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
@@ -251,6 +242,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
     }
 
 
@@ -441,6 +434,16 @@ class GatewayRunner:
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
     
+    # -- Setup skill availability ----------------------------------------
+
+    def _has_setup_skill(self) -> bool:
+        """Check if the hermes-agent-setup skill is installed."""
+        try:
+            from tools.skill_manager_tool import _find_skill
+            return _find_skill("hermes-agent-setup") is not None
+        except Exception:
+            return False
+
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
@@ -610,6 +613,8 @@ class GatewayRunner:
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
+            "command": runtime_kwargs.get("command"),
+            "args": list(runtime_kwargs.get("args") or []),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
@@ -1171,6 +1176,13 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.API_SERVER:
+            from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
+            if not check_api_server_requirements():
+                logger.warning("API Server: aiohttp not installed")
+                return None
+            return APIServerAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1249,6 +1261,13 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
         return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform."""
+        config = getattr(self, "config", None)
+        if config and hasattr(config, "get_unauthorized_dm_behavior"):
+            return config.get_unauthorized_dm_behavior(platform)
+        return "pair"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1269,7 +1288,7 @@ class GatewayRunner:
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm":
+            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
@@ -1422,6 +1441,12 @@ class GatewayRunner:
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
+        if canonical == "approve":
+            return await self._handle_approve_command(event)
+
+        if canonical == "deny":
+            return await self._handle_deny_command(event)
+
         if canonical == "update":
             return await self._handle_update_command(event)
 
@@ -1499,32 +1524,9 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
-        # Check for pending exec approval responses
-        session_key_preview = self._session_key_for_source(source)
-        if session_key_preview in self._pending_approvals:
-            user_text = event.text.strip().lower()
-            if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
-                approval = self._pending_approvals.pop(session_key_preview)
-                cmd = approval["command"]
-                pattern_keys = approval.get("pattern_keys", [])
-                if not pattern_keys:
-                    pk = approval.get("pattern_key", "")
-                    pattern_keys = [pk] if pk else []
-                logger.info("User approved dangerous command: %s...", cmd[:60])
-                from tools.terminal_tool import terminal_tool
-                from tools.approval import approve_session
-                for pk in pattern_keys:
-                    approve_session(session_key_preview, pk)
-                result = terminal_tool(command=cmd, force=True)
-                return f"✅ Command approved and executed.\n\n```\n{result[:3500]}\n```"
-            elif user_text in ("no", "n", "deny", "cancel", "nope"):
-                self._pending_approvals.pop(session_key_preview)
-                return "❌ Command denied."
-            elif user_text in ("full", "show", "view", "show full", "view full"):
-                # Show full command without consuming the approval
-                cmd = self._pending_approvals[session_key_preview]["command"]
-                return f"Full command:\n\n```\n{cmd}\n```\n\nReply yes/no to approve or deny."
-            # If it's not clearly an approval/denial, fall through to normal processing
+        # Pending exec approvals are handled by /approve and /deny commands above.
+        # No bare text matching — "yes" in normal conversation must not trigger
+        # execution of a dangerous command.
         
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
@@ -1631,10 +1633,6 @@ class GatewayRunner:
                         ).lower() in ("true", "1", "yes")
             except Exception:
                 pass
-
-            # Check env override for disabling compression entirely
-            if os.getenv("CONTEXT_COMPRESSION_ENABLED", "").lower() in ("false", "0", "no"):
-                _hyg_compression_enabled = False
 
             if _hyg_compression_enabled:
                 _hyg_context_length = get_model_context_length(_hyg_model)
@@ -1876,6 +1874,37 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
+                # If STT failed, send a direct message to the user so they
+                # know voice isn't configured — don't rely on the agent to
+                # relay the error clearly.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(m in message_text for m in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            # Point to setup skill if it's installed
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id, _stt_msg,
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
 
         # -----------------------------------------------------------------
         # Enrich document messages with context notes for the agent
@@ -2013,9 +2042,22 @@ class GatewayRunner:
             # Check if the agent encountered a dangerous command needing approval
             try:
                 from tools.approval import pop_pending
+                import time as _time
                 pending = pop_pending(session_key)
                 if pending:
+                    pending["timestamp"] = _time.time()
                     self._pending_approvals[session_key] = pending
+                    # Append structured instructions so the user knows how to respond
+                    cmd_preview = pending.get("command", "")
+                    if len(cmd_preview) > 200:
+                        cmd_preview = cmd_preview[:200] + "..."
+                    approval_hint = (
+                        f"\n\n⚠️ **Dangerous command requires approval:**\n"
+                        f"```\n{cmd_preview}\n```\n"
+                        f"Reply `/approve` to execute, `/approve session` to approve this pattern "
+                        f"for the session, or `/deny` to cancel."
+                    )
+                    response = (response or "") + approval_hint
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             
@@ -2128,23 +2170,41 @@ class GatewayRunner:
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
             status_code = getattr(e, "status_code", None)
+            _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
             elif status_code == 429:
-                status_hint = " You are being rate-limited. Please wait a moment and try again."
+                # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
+                _err_body = getattr(e, "response", None)
+                _err_json = {}
+                try:
+                    if _err_body is not None:
+                        _err_json = _err_body.json().get("error", {})
+                except Exception:
+                    pass
+                if _err_json.get("type") == "usage_limit_reached":
+                    _resets_in = _err_json.get("resets_in_seconds")
+                    if _resets_in and _resets_in > 0:
+                        import math
+                        _hours = math.ceil(_resets_in / 3600)
+                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                    else:
+                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                else:
+                    status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
-            elif status_code == 400:
-                # 400 with a large session is almost always a context overflow.
-                # Give specific guidance instead of a generic error. (#1630)
-                _hist_len = len(history) if 'history' in locals() else 0
+            elif status_code in (400, 500):
+                # 400 with a large session is context overflow.
+                # 500 with a large session often means the payload is too large
+                # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
                         "/reset to start fresh."
                     )
-                else:
+                elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
@@ -3632,6 +3692,78 @@ class GatewayRunner:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
 
+    # ------------------------------------------------------------------
+    # /approve & /deny — explicit dangerous-command approval
+    # ------------------------------------------------------------------
+
+    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+
+    async def _handle_approve_command(self, event: MessageEvent) -> str:
+        """Handle /approve command — execute a pending dangerous command.
+
+        Usage:
+            /approve          — approve and execute the pending command
+            /approve session  — approve and remember for this session
+            /approve always   — approve this pattern permanently
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        if session_key not in self._pending_approvals:
+            return "No pending command to approve."
+
+        import time as _time
+        approval = self._pending_approvals[session_key]
+
+        # Check for timeout
+        ts = approval.get("timestamp", 0)
+        if _time.time() - ts > self._APPROVAL_TIMEOUT_SECONDS:
+            self._pending_approvals.pop(session_key, None)
+            return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
+
+        self._pending_approvals.pop(session_key)
+        cmd = approval["command"]
+        pattern_keys = approval.get("pattern_keys", [])
+        if not pattern_keys:
+            pk = approval.get("pattern_key", "")
+            pattern_keys = [pk] if pk else []
+
+        # Determine approval scope from args
+        args = event.get_command_args().strip().lower()
+        from tools.approval import approve_session, approve_permanent
+
+        if args in ("always", "permanent", "permanently"):
+            for pk in pattern_keys:
+                approve_permanent(pk)
+            scope_msg = " (pattern approved permanently)"
+        elif args in ("session", "ses"):
+            for pk in pattern_keys:
+                approve_session(session_key, pk)
+            scope_msg = " (pattern approved for this session)"
+        else:
+            # One-time approval — just approve for session so the immediate
+            # replay works, but don't advertise it as session-wide
+            for pk in pattern_keys:
+                approve_session(session_key, pk)
+            scope_msg = ""
+
+        logger.info("User approved dangerous command via /approve: %s...%s", cmd[:60], scope_msg)
+        from tools.terminal_tool import terminal_tool
+        result = terminal_tool(command=cmd, force=True)
+        return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+
+    async def _handle_deny_command(self, event: MessageEvent) -> str:
+        """Handle /deny command — reject a pending dangerous command."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        if session_key not in self._pending_approvals:
+            return "No pending command to deny."
+
+        self._pending_approvals.pop(session_key)
+        logger.info("User denied dangerous command via /deny")
+        return "❌ Command denied."
+
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
 
@@ -3927,7 +4059,13 @@ class GatewayRunner:
             The enriched message string with transcriptions prepended.
         """
         if not getattr(self.config, "stt_enabled", True):
-            disabled_note = "[The user sent voice message(s), but transcription is disabled in config.]"
+            disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
+            if self._has_setup_skill():
+                disabled_note += (
+                    " You have a skill called hermes-agent-setup that can help "
+                    "users configure Hermes features including voice, tools, and more."
+                )
+            disabled_note += "]"
             if user_text:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
@@ -3954,11 +4092,20 @@ class GatewayRunner:
                         "No STT provider" in error
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
-                        enriched_parts.append(
+                        _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
-                            "to it right now~ No STT provider is configured "
-                            "(';w;') Let them know!]"
+                            "to it right now — no STT provider is configured. "
+                            "A direct message has already been sent to the user "
+                            "with setup instructions."
                         )
+                        if self._has_setup_skill():
+                            _no_stt_note += (
+                                " You have a skill called hermes-agent-setup "
+                                "that can help users configure Hermes features "
+                                "including voice, tools, and more."
+                            )
+                        _no_stt_note += "]"
+                        enriched_parts.append(_no_stt_note)
                     else:
                         enriched_parts.append(
                             "[The user sent a voice message but I had trouble "

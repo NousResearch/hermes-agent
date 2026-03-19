@@ -6,12 +6,12 @@ description: "Customize Hermes Agent's personality with a global SOUL.md, built-
 
 # Personality & SOUL.md
 
-Hermes Agent's personality is customizable, but there are two different layers that matter:
+Hermes Agent's personality is fully customizable. `SOUL.md` is the **primary identity** — it's the first thing in the system prompt and defines who the agent is.
 
-- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and is loaded automatically for that Hermes instance
+- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and serves as the agent's identity (slot #1 in the system prompt)
 - built-in or custom `/personality` presets — session-level system-prompt overlays
 
-If you want a stable default voice that follows you across sessions, `SOUL.md` is the right tool.
+If you want to change who Hermes is — or replace it with an entirely different agent persona — edit `SOUL.md`.
 
 ## How SOUL.md works now
 
@@ -29,15 +29,16 @@ $HERMES_HOME/SOUL.md
 
 ### Important behavior
 
+- **SOUL.md is the agent's primary identity.** It occupies slot #1 in the system prompt, replacing the hardcoded default identity.
 - Hermes creates a starter `SOUL.md` automatically if one does not exist yet
 - Existing user `SOUL.md` files are never overwritten
 - Hermes loads `SOUL.md` only from `HERMES_HOME`
 - Hermes does not look in the current working directory for `SOUL.md`
-- If `SOUL.md` exists but is empty, Hermes adds nothing from it to the prompt
+- If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
-- Hermes does not add wrapper language like "If SOUL.md is present..." around the file anymore
+- SOUL.md is **not** duplicated in the context files section — it appears only once, as the identity
 
-That makes `SOUL.md` a true per-user or per-instance default personality, not a repo-local trick.
+That makes `SOUL.md` a true per-user or per-instance identity, not just an additive layer.
 
 ## Why this design
 
@@ -117,13 +118,13 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 
 ## What Hermes injects into the prompt
 
-If `SOUL.md` contains text, Hermes injects the file's text itself — not a wrapper explanation.
+`SOUL.md` content goes directly into slot #1 of the system prompt — the agent identity position. No wrapper language is added around it.
 
-So the system prompt gets the content directly, after:
+The content goes through:
 - prompt-injection scanning
 - truncation if it is too large
 
-If the file is empty or whitespace-only, nothing from `SOUL.md` is added.
+If the file is empty, whitespace-only, or cannot be read, Hermes falls back to a built-in default identity ("You are Hermes Agent, an intelligent AI assistant created by Nous Research..."). This fallback also applies when `skip_context_files` is set (e.g., in subagent/delegation contexts).
 
 ## Security scanning
 
@@ -242,14 +243,16 @@ That gives you:
 ## How personality interacts with the full prompt
 
 At a high level, the prompt stack includes:
-1. default Hermes identity
-2. memory/user context
-3. skills guidance
-4. context files such as `AGENTS.md`, `.cursorrules`, and global `SOUL.md`
-5. platform-specific formatting hints
-6. optional system-prompt overlays such as `/personality`
+1. **SOUL.md** (agent identity — or built-in fallback if SOUL.md is unavailable)
+2. tool-aware behavior guidance
+3. memory/user context
+4. skills guidance
+5. context files (`AGENTS.md`, `.cursorrules`)
+6. timestamp
+7. platform-specific formatting hints
+8. optional system-prompt overlays such as `/personality`
 
-So `SOUL.md` is important, but it is one layer in a broader system.
+`SOUL.md` is the foundation — everything else builds on top of it.
 
 ## Related docs
 

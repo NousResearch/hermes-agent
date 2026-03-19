@@ -71,6 +71,7 @@ class KasiaAdapter(BasePlatformAdapter):
     """Bridge-backed Kasia adapter."""
 
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "kasia-bridge"
+    _DEFAULT_SEND_WAIT_MS = 5000
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.KASIA)
@@ -85,6 +86,9 @@ class KasiaAdapter(BasePlatformAdapter):
         self._indexer_url = config.extra.get("indexer_url", "")
         self._node_url = config.extra.get("node_wborsh_url", "")
         self._network = config.extra.get("network", "mainnet") or "mainnet"
+        self._send_wait_ms = int(
+            config.extra.get("send_wait_ms", self._DEFAULT_SEND_WAIT_MS)
+        )
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_log: Optional[Path] = None
         self._bridge_log_fh = None
@@ -147,6 +151,10 @@ class KasiaAdapter(BasePlatformAdapter):
             env["KASIA_INDEXER_URL"] = self._indexer_url
             env["KASIA_NODE_WBORSH_URL"] = self._node_url
             env["KASIA_NETWORK"] = self._network
+            if "max_multipart_parts" in self.config.extra:
+                env["KASIA_MAX_MULTIPARTS"] = str(
+                    self.config.extra["max_multipart_parts"]
+                )
 
             self._bridge_process = subprocess.Popen(
                 [
@@ -244,12 +252,22 @@ class KasiaAdapter(BasePlatformAdapter):
             data = await self._request_json(
                 "POST",
                 "/send",
-                payload={"chatId": chat_id, "message": str(content or "").strip()},
-                total=30,
+                payload={
+                    "chatId": chat_id,
+                    "message": str(content or "").strip(),
+                    "waitMs": self._send_wait_ms,
+                },
+                total=max(10, int(self._send_wait_ms / 1000) + 10),
             )
+            if data.get("status") in {"failed", "rejected"}:
+                return SendResult(
+                    success=False,
+                    error=data.get("error") or "Kasia send failed",
+                    raw_response=data,
+                )
             return SendResult(
                 success=True,
-                message_id=data.get("txId") or data.get("messageId"),
+                message_id=data.get("txId") or data.get("jobId") or data.get("messageId"),
                 raw_response=data,
             )
         except Exception as error:

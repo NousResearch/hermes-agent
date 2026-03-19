@@ -25,6 +25,8 @@ class TestKasiaConfigLoading:
         monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "ws://127.0.0.1:17110")
         monkeypatch.setenv("KASIA_NETWORK", "mainnet")
         monkeypatch.setenv("KASIA_BRIDGE_PORT", "3011")
+        monkeypatch.setenv("KASIA_SEND_WAIT_MS", "7000")
+        monkeypatch.setenv("KASIA_MAX_MULTIPARTS", "6")
         monkeypatch.setenv("KASIA_HOME_CHANNEL", "kaspa:qhomeaddress")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
@@ -40,6 +42,8 @@ class TestKasiaConfigLoading:
         assert kasia_config.extra["node_wborsh_url"] == "ws://127.0.0.1:17110"
         assert kasia_config.extra["network"] == "mainnet"
         assert kasia_config.extra["bridge_port"] == 3011
+        assert kasia_config.extra["send_wait_ms"] == 7000
+        assert kasia_config.extra["max_multipart_parts"] == 6
         assert kasia_config.home_channel.chat_id == "kaspa:qhomeaddress"
 
     def test_connected_platforms_includes_kasia(self, monkeypatch):
@@ -288,21 +292,44 @@ class TestKasiaAdapter:
         assert result.raw_response["wallet"]["usedPendingInput"] is True
 
     @pytest.mark.asyncio
-    async def test_send_does_not_retry_or_split_in_adapter(self):
+    async def test_send_accepts_queued_bridge_job(self):
         from gateway.platforms.kasia import KasiaAdapter
 
         adapter = KasiaAdapter(self._make_config())
         adapter._mark_connected()
         adapter._request_json = AsyncMock(
-            side_effect=RuntimeError(
-                "Kasia bridge error (500) on /send: transaction is not standard"
-            )
+            return_value={
+                "status": "queued",
+                "jobId": "job-123",
+                "partCount": 3,
+                "completedParts": 0,
+            }
+        )
+
+        result = await adapter.send("kaspa:qpeeraddress", "hello")
+
+        assert result.success is True
+        assert result.message_id == "job-123"
+        assert result.raw_response["status"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_send_surfaces_rejected_bridge_job(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._mark_connected()
+        adapter._request_json = AsyncMock(
+            return_value={
+                "status": "rejected",
+                "jobId": "job-456",
+                "error": "Message is too long for Kasia delivery.",
+            }
         )
 
         result = await adapter.send("kaspa:qpeeraddress", "A" * 450)
 
         assert result.success is False
-        assert "transaction is not standard" in result.error
+        assert "too long" in result.error
         adapter._request_json.assert_awaited_once()
 
     @pytest.mark.asyncio

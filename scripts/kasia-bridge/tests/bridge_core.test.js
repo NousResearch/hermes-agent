@@ -44,26 +44,31 @@ class FakeWalletClient {
 
   async hydrateSendState() {}
 
+  canFitContextualPayload() {
+    return true;
+  }
+
   async sendPayloadTransaction(payload) {
     this.sentTransactions.push(payload);
     return `tx-${this.sentTransactions.length}`;
   }
 }
 
-class OversizeOnceWalletClient extends FakeWalletClient {
+class PreflightChunkingWalletClient extends FakeWalletClient {
   constructor() {
     super();
-    this.failedOnce = false;
+    this.maxPayloadBytes = 420;
   }
 
+  canFitContextualPayload(payloadBytes) {
+    return payloadBytes.length <= this.maxPayloadBytes;
+  }
+}
+
+class SlowWalletClient extends FakeWalletClient {
   async sendPayloadTransaction(payload) {
     this.sentTransactions.push(payload);
-    if (!this.failedOnce) {
-      this.failedOnce = true;
-      throw new Error(
-        "RPC Server (remote error) -> transaction is not standard: transaction transient (storage) mass of 131124 is larger than max allowed size of 100000"
-      );
-    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
     return `tx-${this.sentTransactions.length}`;
   }
 }
@@ -122,9 +127,9 @@ test("send rejects when there is no active conversation", async () => {
   );
 });
 
-test("oversize contextual sends are retried as chunked bridge messages", async () => {
+test("preflight chunking splits oversized contextual messages before send", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
-  const walletClient = new OversizeOnceWalletClient();
+  const walletClient = new PreflightChunkingWalletClient();
   const bridge = new KasiaBridgeCore({
     stateDir,
     indexerUrl: "http://indexer.invalid",
@@ -151,16 +156,17 @@ test("oversize contextual sends are retried as chunked bridge messages", async (
   const result = await bridge.send({
     chatId: VALID_CONTACT_ADDRESS,
     message: "A".repeat(700),
+    waitMs: 250,
   });
 
   assert.equal(result.status, "sent");
   assert.ok(result.partCount > 1);
   assert.equal(result.txIds.length, result.partCount);
   assert.equal(result.txId, result.txIds[result.txIds.length - 1]);
-  assert.ok(walletClient.sentTransactions.length >= 3);
+  assert.equal(walletClient.sentTransactions.length, result.partCount);
 });
 
-test("non-size wallet send errors still surface from bridge send", async () => {
+test("non-size wallet send errors surface as failed send jobs", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
   const bridge = new KasiaBridgeCore({
     stateDir,
@@ -185,13 +191,92 @@ test("non-size wallet send errors still surface from bridge send", async () => {
     pending_handshake: null,
   };
 
-  await assert.rejects(
-    bridge.send({
-      chatId: VALID_CONTACT_ADDRESS,
-      message: "hello",
-    }),
-    /node offline/
-  );
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "hello",
+    waitMs: 100,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /node offline/);
+});
+
+test("send returns a queued job when waitMs expires before submission completes", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: new SlowWalletClient(),
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const queued = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "hello async kasia",
+    waitMs: 1,
+  });
+
+  assert.ok(["queued", "running"].includes(queued.status));
+  assert.ok(queued.jobId);
+
+  const completed = await bridge.waitForSendJob(queued.jobId, 500);
+  assert.equal(completed.status, "sent");
+  assert.equal(completed.partCount, 1);
+});
+
+test("preflight rejects messages that exceed the Kasia multipart cap", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new PreflightChunkingWalletClient();
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+    contextualMessageTargetChars: 80,
+    maxMultipartParts: 2,
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "B".repeat(500),
+    waitMs: 50,
+  });
+
+  assert.equal(result.status, "rejected");
+  assert.match(result.error, /caps Kasia sends at 2 parts/i);
+  assert.equal(walletClient.sentTransactions.length, 0);
 });
 
 test("state persists across restart and preserves conversation cursors", async () => {

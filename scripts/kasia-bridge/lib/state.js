@@ -15,6 +15,7 @@ export function createEmptyState(wallet = {}) {
       network: wallet.network || null,
       send_state: wallet.send_state || {},
     },
+    send_jobs: {},
     conversations: {},
     cursors: {
       handshakes_block_time: 0,
@@ -40,6 +41,46 @@ function normalizeConversation(peerAddress, existing = {}) {
   };
 }
 
+function normalizeSendJob(existing = {}) {
+  const jobId = String(existing.job_id || existing.jobId || "").trim();
+  if (!jobId) {
+    return null;
+  }
+
+  const txIds = Array.isArray(existing.tx_ids || existing.txIds)
+    ? (existing.tx_ids || existing.txIds).filter(
+        (value) => typeof value === "string" && value.trim()
+      )
+    : [];
+
+  return {
+    job_id: jobId,
+    chat_id: String(existing.chat_id || existing.chatId || "").trim() || null,
+    status: String(existing.status || "queued").trim() || "queued",
+    created_ms: Number(existing.created_ms || existing.createdMs || 0),
+    updated_ms: Number(existing.updated_ms || existing.updatedMs || 0),
+    started_ms:
+      existing.started_ms == null && existing.startedMs == null
+        ? null
+        : Number(existing.started_ms ?? existing.startedMs),
+    finished_ms:
+      existing.finished_ms == null && existing.finishedMs == null
+        ? null
+        : Number(existing.finished_ms ?? existing.finishedMs),
+    total_parts: Number(existing.total_parts || existing.totalParts || 0),
+    completed_parts: Number(
+      existing.completed_parts || existing.completedParts || 0
+    ),
+    tx_ids: txIds,
+    last_tx_id:
+      String(existing.last_tx_id || existing.lastTxId || "").trim() || null,
+    error: existing.error == null ? null : String(existing.error),
+    message_preview:
+      String(existing.message_preview || existing.messagePreview || "").trim() ||
+      null,
+  };
+}
+
 function normalizeState(state, wallet = {}) {
   const base = createEmptyState(wallet);
   const normalized = {
@@ -60,6 +101,7 @@ function normalizeState(state, wallet = {}) {
       ...base.cursors,
       ...(state?.cursors || {}),
     },
+    send_jobs: {},
     processed_tx_ids: Array.isArray(state?.processed_tx_ids)
       ? state.processed_tx_ids.filter((value) => typeof value === "string")
       : [],
@@ -73,6 +115,16 @@ function normalizeState(state, wallet = {}) {
     const normalizedConversation = normalizeConversation(peerAddress, conversation);
     normalized.conversations[normalizedConversation.peer_address] =
       normalizedConversation;
+  }
+
+  for (const [jobId, job] of Object.entries(state?.send_jobs || {})) {
+    const normalizedJob = normalizeSendJob({
+      job_id: jobId,
+      ...(job || {}),
+    });
+    if (normalizedJob) {
+      normalized.send_jobs[normalizedJob.job_id] = normalizedJob;
+    }
   }
 
   return normalized;

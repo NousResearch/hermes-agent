@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import {
@@ -38,7 +39,47 @@ function encodeIndexerAlias(alias) {
   return Buffer.from(String(alias || ""), "utf8").toString("hex");
 }
 
-const DEFAULT_CONTEXTUAL_MESSAGE_MAX_CHARS = 240;
+const DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS = 240;
+const DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS = 40;
+const DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS = 8;
+const DEFAULT_MAX_SEND_JOBS = 100;
+const DEFAULT_SEND_JOB_PREVIEW_CHARS = 120;
+
+function isTerminalSendJobStatus(status) {
+  return status === "sent" || status === "failed" || status === "rejected";
+}
+
+function buildSendJobPreview(message, maxChars = DEFAULT_SEND_JOB_PREVIEW_CHARS) {
+  const normalized = String(message || "").trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function toPublicSendJob(job) {
+  if (!job) {
+    return null;
+  }
+  return {
+    jobId: job.job_id,
+    chatId: job.chat_id,
+    status: job.status,
+    createdMs: job.created_ms,
+    updatedMs: job.updated_ms,
+    startedMs: job.started_ms,
+    finishedMs: job.finished_ms,
+    partCount: job.total_parts,
+    completedParts: job.completed_parts,
+    txId: job.last_tx_id,
+    txIds: [...(job.tx_ids || [])],
+    error: job.error,
+    messagePreview: job.message_preview,
+  };
+}
 
 function isPayloadTooLargeError(error) {
   const text = String(error?.message || error || "").toLowerCase();
@@ -49,7 +90,11 @@ function isPayloadTooLargeError(error) {
   );
 }
 
-function truncateMessage(content, maxLength = DEFAULT_CONTEXTUAL_MESSAGE_MAX_CHARS) {
+function truncateMessage(
+  content,
+  maxLength = DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS,
+  { annotateParts = true } = {}
+) {
   const text = String(content || "");
   if (text.length <= maxLength) {
     return [text];
@@ -132,7 +177,7 @@ function truncateMessage(content, maxLength = DEFAULT_CONTEXTUAL_MESSAGE_MAX_CHA
     chunks.push(fullChunk);
   }
 
-  if (chunks.length > 1) {
+  if (annotateParts && chunks.length > 1) {
     const total = chunks.length;
     return chunks.map((chunk, index) => `${chunk} (${index + 1}/${total})`);
   }
@@ -153,6 +198,9 @@ export class KasiaBridgeCore {
     maxQueueSize = 100,
     pollLimit = 50,
     processedTxLimit = 1000,
+    contextualMessageTargetChars = DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS,
+    maxMultipartParts = DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS,
+    maxSendJobs = DEFAULT_MAX_SEND_JOBS,
     randomBytesFn,
     nowFn = () => Date.now(),
   }) {
@@ -167,6 +215,9 @@ export class KasiaBridgeCore {
     this.maxQueueSize = maxQueueSize;
     this.pollLimit = pollLimit;
     this.processedTxLimit = processedTxLimit;
+    this.contextualMessageTargetChars = contextualMessageTargetChars;
+    this.maxMultipartParts = maxMultipartParts;
+    this.maxSendJobs = maxSendJobs;
     this.randomBytesFn = randomBytesFn;
     this.nowFn = nowFn;
 
@@ -181,6 +232,9 @@ export class KasiaBridgeCore {
     this.state = createEmptyState();
     this.messageQueue = [];
     this.walletInfo = null;
+    this._sendJobTail = Promise.resolve();
+    this._sendJobWaiters = new Map();
+    this._closing = false;
   }
 
   async init() {
@@ -192,6 +246,7 @@ export class KasiaBridgeCore {
     });
     this.walletClient.loadSendState?.(this.state.wallet.send_state || {});
     await this.walletClient.hydrateSendState?.();
+    this._markInterruptedSendJobs();
     await this._saveState();
 
     try {
@@ -204,12 +259,16 @@ export class KasiaBridgeCore {
   }
 
   async close() {
+    this._closing = true;
     await this._saveState();
     await this.walletClient.close?.();
   }
 
   health() {
     const sendState = this.walletClient.exportSendState?.() || {};
+    const activeSendJobCount = Object.values(this.state.send_jobs || {}).filter(
+      (job) => !isTerminalSendJobStatus(job.status)
+    ).length;
     return {
       status: this.walletClient.isConnected ? "connected" : "starting",
       walletAddress: this.state.wallet.address,
@@ -223,6 +282,7 @@ export class KasiaBridgeCore {
       reservedOutpointCount: Array.isArray(sendState.reserved_outpoints)
         ? sendState.reserved_outpoints.length
         : 0,
+      activeSendJobCount,
     };
   }
 
@@ -237,6 +297,12 @@ export class KasiaBridgeCore {
       type: "dm",
       chat_id: String(chatId).trim(),
     };
+  }
+
+  getSendJob(jobId) {
+    return toPublicSendJob(
+      this.state.send_jobs[String(jobId || "").trim()] || null
+    );
   }
 
   async respondToHandshake(chatId) {
@@ -287,11 +353,82 @@ export class KasiaBridgeCore {
     };
   }
 
-  async send({ chatId, message }) {
+  async send({ chatId, message, waitMs = 0 }) {
     if (!message || !String(message).trim()) {
       throw new Error("Message is required");
     }
 
+    const conversation = this._requireActiveConversation(chatId);
+    const text = String(message).trim();
+    const plan = this._planConversationMessage(conversation, text);
+    const job = await this._createSendJob({
+      chatId: conversation.peer_address,
+      message: text,
+      totalParts: plan.partCount,
+    });
+
+    if (plan.status === "rejected") {
+      await this._updateSendJob(job.job_id, {
+        status: "rejected",
+        error: plan.error,
+        finished_ms: this.nowFn(),
+      });
+      return this.getSendJob(job.job_id);
+    }
+
+    this._scheduleSendJob(job.job_id, conversation.peer_address, plan.chunks);
+
+    if (Number(waitMs) > 0) {
+      return await this.waitForSendJob(job.job_id, Number(waitMs));
+    }
+
+    return this.getSendJob(job.job_id);
+  }
+
+  async waitForSendJob(jobId, waitMs = 0) {
+    const normalizedJobId = String(jobId || "").trim();
+    if (!normalizedJobId) {
+      throw new Error("Send job id is required");
+    }
+
+    const current = this.getSendJob(normalizedJobId);
+    if (!current || waitMs <= 0 || isTerminalSendJobStatus(current.status)) {
+      return current;
+    }
+
+    return await new Promise((resolve) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        const waiters = this._sendJobWaiters.get(normalizedJobId);
+        if (waiters) {
+          waiters.delete(onUpdate);
+          if (waiters.size === 0) {
+            this._sendJobWaiters.delete(normalizedJobId);
+          }
+        }
+      };
+
+      const onUpdate = () => {
+        const latest = this.getSendJob(normalizedJobId);
+        if (!latest || isTerminalSendJobStatus(latest.status)) {
+          cleanup();
+          resolve(latest);
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(this.getSendJob(normalizedJobId));
+      }, Math.max(1, Number(waitMs)));
+
+      const waiters = this._sendJobWaiters.get(normalizedJobId) || new Set();
+      waiters.add(onUpdate);
+      this._sendJobWaiters.set(normalizedJobId, waiters);
+      onUpdate();
+    });
+  }
+
+  _requireActiveConversation(chatId) {
     const conversation = this.state.conversations[String(chatId).trim()];
     if (
       !conversation ||
@@ -303,40 +440,243 @@ export class KasiaBridgeCore {
         `No active Kasia conversation found for ${chatId}. Wait for an inbound handshake before sending.`
       );
     }
+    return conversation;
+  }
 
-    const text = String(message);
-    let txResults;
+  _planConversationMessage(conversation, text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) {
+      return {
+        status: "rejected",
+        partCount: 0,
+        error: "Message is required",
+      };
+    }
+
+    let targetChars = Math.min(
+      Math.max(DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS, trimmed.length),
+      this.contextualMessageTargetChars
+    );
+
+    while (targetChars >= DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS) {
+      const rawChunks =
+        trimmed.length > targetChars
+          ? truncateMessage(trimmed, targetChars, { annotateParts: false })
+          : [trimmed];
+
+      if (rawChunks.length > this.maxMultipartParts) {
+        return {
+          status: "rejected",
+          partCount: rawChunks.length,
+          error: `Message is too long for Kasia delivery. Hermes caps Kasia sends at ${this.maxMultipartParts} parts.`,
+        };
+      }
+
+      const chunks =
+        rawChunks.length > 1
+          ? rawChunks.map(
+              (chunk, index) => `${chunk} (${index + 1}/${rawChunks.length})`
+            )
+          : rawChunks;
+
+      if (chunks.every((chunk) => this._conversationChunkFits(conversation, chunk))) {
+        return {
+          status: "ready",
+          chunks,
+          partCount: chunks.length,
+        };
+      }
+
+      if (targetChars === DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS) {
+        break;
+      }
+      targetChars = Math.max(
+        DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS,
+        Math.min(targetChars - 1, Math.floor(targetChars * 0.75))
+      );
+    }
+
+    return {
+      status: "rejected",
+      partCount: 0,
+      error:
+        "Message is too large for Kasia delivery after preflight sizing. Please shorten it and try again.",
+    };
+  }
+
+  _conversationChunkFits(conversation, message) {
     try {
-      txResults = [await this._sendConversationMessageChunk(conversation, text)];
-    } catch (error) {
-      if (!isPayloadTooLargeError(error)) {
-        throw error;
+      const payloadBytes = buildContextualMessageTransactionPayload({
+        recipientAddress: conversation.peer_address,
+        alias: conversation.our_alias,
+        message: String(message),
+        randomBytesFn: this.randomBytesFn,
+      });
+      if (typeof this.walletClient.canFitContextualPayload === "function") {
+        return this.walletClient.canFitContextualPayload(payloadBytes);
       }
-      const chunks = truncateMessage(text);
-      if (chunks.length <= 1) {
-        throw error;
+      return String(message).length <= this.contextualMessageTargetChars;
+    } catch {
+      return false;
+    }
+  }
+
+  async _createSendJob({ chatId, message, totalParts }) {
+    const nowMs = this.nowFn();
+    const job = {
+      job_id: randomUUID(),
+      chat_id: String(chatId || "").trim() || null,
+      status: "queued",
+      created_ms: nowMs,
+      updated_ms: nowMs,
+      started_ms: null,
+      finished_ms: null,
+      total_parts: Number(totalParts || 0),
+      completed_parts: 0,
+      tx_ids: [],
+      last_tx_id: null,
+      error: null,
+      message_preview: buildSendJobPreview(message),
+    };
+    this.state.send_jobs[job.job_id] = job;
+    this._pruneSendJobs();
+    await this._saveState();
+    this._notifySendJobWaiters(job.job_id);
+    return job;
+  }
+
+  async _updateSendJob(jobId, updates = {}) {
+    const job = this.state.send_jobs[String(jobId || "").trim()];
+    if (!job) {
+      return null;
+    }
+
+    Object.assign(job, updates);
+    job.updated_ms = this.nowFn();
+    job.total_parts = Math.max(0, Number(job.total_parts || 0));
+    job.completed_parts = Math.max(
+      0,
+      Math.min(job.total_parts || 0, Number(job.completed_parts || 0))
+    );
+    job.tx_ids = Array.isArray(job.tx_ids)
+      ? job.tx_ids.filter((value) => typeof value === "string" && value.trim())
+      : [];
+    job.last_tx_id =
+      String(job.last_tx_id || "").trim() || job.tx_ids[job.tx_ids.length - 1] || null;
+    if (isTerminalSendJobStatus(job.status) && job.finished_ms == null) {
+      job.finished_ms = this.nowFn();
+    }
+
+    this._pruneSendJobs();
+    await this._saveState();
+    this._notifySendJobWaiters(job.job_id);
+    return job;
+  }
+
+  _pruneSendJobs() {
+    const entries = Object.entries(this.state.send_jobs || {});
+    if (entries.length <= this.maxSendJobs) {
+      return;
+    }
+
+    entries
+      .sort(
+        (left, right) =>
+          Number(left[1]?.created_ms || 0) - Number(right[1]?.created_ms || 0)
+      )
+      .slice(0, entries.length - this.maxSendJobs)
+      .forEach(([jobId]) => {
+        delete this.state.send_jobs[jobId];
+      });
+  }
+
+  _markInterruptedSendJobs() {
+    const nowMs = this.nowFn();
+    for (const job of Object.values(this.state.send_jobs || {})) {
+      if (isTerminalSendJobStatus(job.status)) {
+        continue;
       }
-      txResults = [];
-      for (const chunk of chunks) {
-        txResults.push(
-          await this._sendConversationMessageChunk(conversation, chunk)
-        );
+      job.status = "failed";
+      job.error = "Kasia bridge restarted before the send job completed.";
+      job.updated_ms = nowMs;
+      job.finished_ms = nowMs;
+    }
+  }
+
+  _notifySendJobWaiters(jobId) {
+    const waiters = this._sendJobWaiters.get(jobId);
+    if (!waiters || waiters.size === 0) {
+      return;
+    }
+    for (const waiter of [...waiters]) {
+      try {
+        waiter();
+      } catch {}
+    }
+  }
+
+  _scheduleSendJob(jobId, chatId, chunks) {
+    const previous = this._sendJobTail;
+    const task = (async () => {
+      await previous.catch(() => {});
+      if (this._closing) {
+        await this._updateSendJob(jobId, {
+          status: "failed",
+          error: "Kasia bridge stopped before the send job completed.",
+        });
+        return;
       }
+
+      try {
+        await this._runSendJob(jobId, chatId, chunks);
+      } catch (error) {
+        await this._updateSendJob(jobId, {
+          status: "failed",
+          error: error?.message || String(error),
+        });
+      }
+    })();
+
+    this._sendJobTail = task.then(() => {}, () => {});
+    return task;
+  }
+
+  async _runSendJob(jobId, chatId, chunks) {
+    const conversation = this._requireActiveConversation(chatId);
+    await this._updateSendJob(jobId, {
+      status: "running",
+      started_ms: this.nowFn(),
+      total_parts: chunks.length,
+      completed_parts: 0,
+      error: null,
+    });
+
+    const txResults = [];
+    for (let index = 0; index < chunks.length; index += 1) {
+      const result = await this._sendConversationMessageChunk(
+        conversation,
+        chunks[index]
+      );
+      const txId = result?.txId || result?.messageId || result;
+      txResults.push(result);
+      await this._updateSendJob(jobId, {
+        status: "running",
+        completed_parts: index + 1,
+        tx_ids: txResults
+          .map((entry) => entry?.txId || entry?.messageId || entry)
+          .filter(Boolean),
+        last_tx_id: txId || null,
+      });
     }
 
     touchConversation(conversation, new Date(this.nowFn()).toISOString());
-    await this._saveState();
-
-    const txIds = txResults.map((result) => result?.txId || result).filter(Boolean);
-    const lastResult = txResults[txResults.length - 1];
-    return {
+    await this._updateSendJob(jobId, {
       status: "sent",
-      txId: txIds[txIds.length - 1],
-      txIds,
-      partCount: txResults.length,
-      chatId: conversation.peer_address,
-      wallet: typeof lastResult === "object" ? lastResult : undefined,
-    };
+      completed_parts: chunks.length,
+      tx_ids: txResults
+        .map((entry) => entry?.txId || entry?.messageId || entry)
+        .filter(Boolean),
+    });
   }
 
   async _sendConversationMessageChunk(conversation, message) {

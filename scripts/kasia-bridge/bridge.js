@@ -53,6 +53,14 @@ const seedPhrase = process.env.KASIA_SEED_PHRASE || "";
 const indexerUrl = process.env.KASIA_INDEXER_URL || "";
 const nodeUrl = process.env.KASIA_NODE_WBORSH_URL || "";
 const network = process.env.KASIA_NETWORK || "mainnet";
+const maxMultipartParts = Number.parseInt(
+  process.env.KASIA_MAX_MULTIPARTS || "8",
+  10
+);
+const contextualMessageTargetChars = Number.parseInt(
+  process.env.KASIA_TARGET_MESSAGE_CHARS || "240",
+  10
+);
 
 if (!seedPhrase || !indexerUrl || !nodeUrl) {
   console.error(
@@ -69,6 +77,8 @@ const core = new KasiaBridgeCore({
   nodeUrl,
   network,
   seedPhrase,
+  maxMultipartParts,
+  contextualMessageTargetChars,
   logger: console,
 });
 await core.init();
@@ -113,7 +123,17 @@ const server = createServer(async (req, res) => {
       const result = await core.send({
         chatId: body.chatId,
         message: body.message,
+        waitMs: body.waitMs,
       });
+      return sendJson(res, 200, result);
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/send/")) {
+      const jobId = decodeURIComponent(url.pathname.slice("/send/".length));
+      const result = core.getSendJob(jobId);
+      if (!result) {
+        return sendJson(res, 404, { error: "Send job not found" });
+      }
       return sendJson(res, 200, result);
     }
 

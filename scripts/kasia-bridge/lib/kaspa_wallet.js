@@ -38,6 +38,7 @@ const DEFAULT_RESERVED_OUTPOINT_TTL_MS = 120_000;
 const DEFAULT_PENDING_OUTPUT_TTL_MS = 600_000;
 const DUST_THRESHOLD_SOMPI = 10_000n;
 const DEFAULT_LOCAL_PENDING_RETENTION_MS = 30_000;
+const SYNTHETIC_PREVIEW_INPUT_AMOUNT_SOMPI = 10_000_000_000n;
 
 function toBigInt(value, fallback = 0n) {
   if (typeof value === "bigint") {
@@ -894,6 +895,36 @@ export class KaspaWalletClient {
       privateKeyHex: this.identity.privateKeyHex,
       network: this.identity.network,
     };
+  }
+
+  canFitContextualPayload(payloadBytes) {
+    if (!this.identity?.scriptPublicKey) {
+      throw new Error("Wallet client is not initialized");
+    }
+
+    try {
+      previewRawSelfSpend({
+        entries: [
+          {
+            address: this.identity.address,
+            amount: SYNTHETIC_PREVIEW_INPUT_AMOUNT_SOMPI,
+            scriptPublicKey: this.identity.scriptPublicKey,
+            blockDaaScore: 1n,
+            isCoinbase: false,
+            outpoint: {
+              transactionId: "0".repeat(64),
+              index: 0,
+            },
+          },
+        ],
+        payloadBytes,
+        networkId: this.identity.networkId,
+        scriptPublicKey: this.identity.scriptPublicKey,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async sendPayloadTransaction({

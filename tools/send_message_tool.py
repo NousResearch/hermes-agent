@@ -599,19 +599,24 @@ async def _send_kasia(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3010)
+        send_wait_ms = int(extra.get("send_wait_ms", 5000))
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://127.0.0.1:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
-                timeout=aiohttp.ClientTimeout(total=30),
+                json={"chatId": chat_id, "message": message, "waitMs": send_wait_ms},
+                timeout=aiohttp.ClientTimeout(total=max(10, int(send_wait_ms / 1000) + 10)),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    if data.get("status") in {"failed", "rejected"}:
+                        return {"error": data.get("error") or "Kasia send failed"}
                     return {
                         "success": True,
                         "platform": "kasia",
                         "chat_id": chat_id,
-                        "message_id": data.get("txId") or data.get("messageId"),
+                        "message_id": data.get("txId") or data.get("jobId") or data.get("messageId"),
+                        "job_id": data.get("jobId"),
+                        "status": data.get("status"),
                     }
                 body = await resp.text()
                 return {"error": f"Kasia bridge error ({resp.status}): {body}"}

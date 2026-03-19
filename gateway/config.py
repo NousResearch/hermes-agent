@@ -675,6 +675,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 config.platforms[Platform.KASIA].extra["bridge_port"] = int(kasia_bridge_port)
             except ValueError:
                 logger.warning("Invalid KASIA_BRIDGE_PORT=%r (expected integer)", kasia_bridge_port)
+        kasia_send_wait_ms = os.getenv("KASIA_SEND_WAIT_MS", "").strip()
+        if kasia_send_wait_ms:
+            try:
+                config.platforms[Platform.KASIA].extra["send_wait_ms"] = int(kasia_send_wait_ms)
+            except ValueError:
+                logger.warning("Invalid KASIA_SEND_WAIT_MS=%r (expected integer)", kasia_send_wait_ms)
+        kasia_max_multipart = os.getenv("KASIA_MAX_MULTIPARTS", "").strip()
+        if kasia_max_multipart:
+            try:
+                config.platforms[Platform.KASIA].extra["max_multipart_parts"] = int(kasia_max_multipart)
+            except ValueError:
+                logger.warning("Invalid KASIA_MAX_MULTIPARTS=%r (expected integer)", kasia_max_multipart)
         kasia_home = os.getenv("KASIA_HOME_CHANNEL")
         if kasia_home:
             config.platforms[Platform.KASIA].home_channel = HomeChannel(
@@ -832,5 +844,4 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 

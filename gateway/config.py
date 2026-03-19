@@ -669,6 +669,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "node_wborsh_url": os.getenv("KASIA_NODE_WBORSH_URL", ""),
             "network": os.getenv("KASIA_NETWORK", ""),
         })
+        kasia_fee_policy = os.getenv("KASIA_FEE_POLICY", "").strip()
+        if kasia_fee_policy:
+            config.platforms[Platform.KASIA].extra["fee_policy"] = kasia_fee_policy
         kasia_bridge_port = os.getenv("KASIA_BRIDGE_PORT", "").strip()
         if kasia_bridge_port:
             try:
@@ -844,4 +847,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-

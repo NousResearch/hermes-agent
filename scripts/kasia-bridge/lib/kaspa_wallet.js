@@ -39,6 +39,12 @@ const DEFAULT_PENDING_OUTPUT_TTL_MS = 600_000;
 const DUST_THRESHOLD_SOMPI = 10_000n;
 const DEFAULT_LOCAL_PENDING_RETENTION_MS = 30_000;
 const SYNTHETIC_PREVIEW_INPUT_AMOUNT_SOMPI = 10_000_000_000n;
+const DEFAULT_FEE_POLICY = "priority";
+const DEFAULT_FEE_ESTIMATE_TTL_MS = 15_000;
+const DEFAULT_AUTO_FEE_TARGET_SECONDS = 8;
+const DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM = 1;
+const DEFAULT_NORMAL_FEE_RATE_SOMPI_PER_GRAM = 2;
+const DEFAULT_PRIORITY_FEE_RATE_SOMPI_PER_GRAM = 6;
 
 function toBigInt(value, fallback = 0n) {
   if (typeof value === "bigint") {
@@ -58,6 +64,94 @@ function toBigInt(value, fallback = 0n) {
 function toNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toPositiveNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+export function normalizeFeePolicy(value, fallback = DEFAULT_FEE_POLICY) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "low" ||
+    normalized === "normal" ||
+    normalized === "priority" ||
+    normalized === "auto"
+  ) {
+    return normalized;
+  }
+  return normalizeFeePolicy(
+    fallback === value ? DEFAULT_FEE_POLICY : fallback,
+    DEFAULT_FEE_POLICY
+  );
+}
+
+function getFallbackFeeRate(policy = DEFAULT_FEE_POLICY) {
+  switch (normalizeFeePolicy(policy)) {
+    case "low":
+      return DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM;
+    case "normal":
+    case "auto":
+      return DEFAULT_NORMAL_FEE_RATE_SOMPI_PER_GRAM;
+    case "priority":
+    default:
+      return DEFAULT_PRIORITY_FEE_RATE_SOMPI_PER_GRAM;
+  }
+}
+
+function getFirstPositiveBucket(buckets = []) {
+  if (!Array.isArray(buckets)) {
+    return null;
+  }
+  return buckets.find((bucket) => toPositiveNumber(bucket?.feerate) != null) || null;
+}
+
+function getLastPositiveBucket(buckets = []) {
+  if (!Array.isArray(buckets)) {
+    return null;
+  }
+  for (let index = buckets.length - 1; index >= 0; index -= 1) {
+    if (toPositiveNumber(buckets[index]?.feerate) != null) {
+      return buckets[index];
+    }
+  }
+  return null;
+}
+
+export function selectFeeRateFromEstimate(
+  feeEstimate,
+  policy = DEFAULT_FEE_POLICY,
+  { autoTargetSeconds = DEFAULT_AUTO_FEE_TARGET_SECONDS } = {}
+) {
+  const estimate =
+    feeEstimate && typeof feeEstimate.estimate === "object"
+      ? feeEstimate.estimate
+      : feeEstimate || {};
+  const priorityRate = toPositiveNumber(estimate?.priorityBucket?.feerate);
+  const firstNormalBucket = getFirstPositiveBucket(estimate?.normalBuckets);
+  const lastNormalBucket = getLastPositiveBucket(estimate?.normalBuckets);
+  const lowBucket =
+    getFirstPositiveBucket(estimate?.lowBuckets) || lastNormalBucket;
+  const normalRate = toPositiveNumber(firstNormalBucket?.feerate);
+  const lowRate = toPositiveNumber(lowBucket?.feerate);
+
+  switch (normalizeFeePolicy(policy)) {
+    case "low":
+      return lowRate || normalRate || priorityRate || null;
+    case "normal":
+      return normalRate || priorityRate || lowRate || null;
+    case "auto": {
+      const normalSeconds = toPositiveNumber(firstNormalBucket?.estimatedSeconds);
+      if (normalRate && (normalSeconds == null || normalSeconds <= autoTargetSeconds)) {
+        return normalRate;
+      }
+      return priorityRate || normalRate || lowRate || null;
+    }
+    case "priority":
+    default:
+      return priorityRate || normalRate || lowRate || null;
+  }
 }
 
 function normalizeOutpoint(outpoint = {}) {
@@ -368,6 +462,7 @@ export function previewRawSelfSpend({
   payloadBytes,
   networkId,
   scriptPublicKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const normalizedEntries = normalizeUtxoList(entries);
@@ -389,7 +484,11 @@ export function previewRawSelfSpend({
   );
   transaction.outputs = [new TransactionOutput(totalInput, scriptPublicKey)];
 
-  let fee = calculateTransactionFee(networkId, transaction, 1);
+  let fee = calculateTransactionFee(
+    networkId,
+    transaction,
+    feeRateSompiPerGram
+  );
   let outputAmount = totalInput - toBigInt(fee, 0n);
   if (outputAmount <= dustThresholdSompi) {
     throw new Error("Insufficient funds after fee");
@@ -400,7 +499,7 @@ export function previewRawSelfSpend({
     throw new Error("Transaction is not standard: storage mass too large");
   }
 
-  fee = calculateTransactionFee(networkId, transaction, 1);
+  fee = calculateTransactionFee(networkId, transaction, feeRateSompiPerGram);
   outputAmount = totalInput - toBigInt(fee, 0n);
   if (outputAmount <= dustThresholdSompi) {
     throw new Error("Insufficient funds after fee");
@@ -426,6 +525,7 @@ export function buildRawSelfSpendTransaction({
   networkId,
   scriptPublicKey,
   privateKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const preview = previewRawSelfSpend({
@@ -433,6 +533,7 @@ export function buildRawSelfSpendTransaction({
     payloadBytes,
     networkId,
     scriptPublicKey,
+    feeRateSompiPerGram,
     dustThresholdSompi,
   });
   const signedTransaction = signTransaction(
@@ -453,6 +554,7 @@ export function previewRawDirectedSpend({
   networkId,
   destinationScriptPublicKey,
   changeScriptPublicKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const normalizedEntries = normalizeUtxoList(entries);
@@ -483,7 +585,11 @@ export function previewRawDirectedSpend({
     new TransactionOutput(totalInput - spendAmount, changeScriptPublicKey),
   ];
   transaction.outputs = outputs;
-  let fee = calculateTransactionFee(networkId, transaction, 1);
+  let fee = calculateTransactionFee(
+    networkId,
+    transaction,
+    feeRateSompiPerGram
+  );
   let changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
 
   if (changeAmount > dustThresholdSompi) {
@@ -497,7 +603,7 @@ export function previewRawDirectedSpend({
       Object.assign(transaction, {
         outputs: [new TransactionOutput(spendAmount, destinationScriptPublicKey)],
       }),
-      1
+      feeRateSompiPerGram
     );
     changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
     outputs = [new TransactionOutput(spendAmount, destinationScriptPublicKey)];
@@ -512,7 +618,7 @@ export function previewRawDirectedSpend({
     throw new Error("Transaction is not standard: storage mass too large");
   }
 
-  fee = calculateTransactionFee(networkId, transaction, 1);
+  fee = calculateTransactionFee(networkId, transaction, feeRateSompiPerGram);
   if (outputs.length === 2) {
     changeAmount = totalInput - spendAmount - toBigInt(fee, 0n);
     if (changeAmount <= dustThresholdSompi) {
@@ -553,6 +659,7 @@ export function buildRawDirectedSpendTransaction({
   destinationScriptPublicKey,
   changeScriptPublicKey,
   privateKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const preview = previewRawDirectedSpend({
@@ -562,6 +669,7 @@ export function buildRawDirectedSpendTransaction({
     networkId,
     destinationScriptPublicKey,
     changeScriptPublicKey,
+    feeRateSompiPerGram,
     dustThresholdSompi,
   });
   const signedTransaction = signTransaction(
@@ -582,6 +690,7 @@ export function selectContextualRawEntries({
   payloadBytes,
   networkId,
   scriptPublicKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const trackedPending = sortByAmountDescending(
@@ -594,6 +703,7 @@ export function selectContextualRawEntries({
         payloadBytes,
         networkId,
         scriptPublicKey,
+        feeRateSompiPerGram,
         dustThresholdSompi,
       });
       return [entry];
@@ -622,6 +732,7 @@ export function selectContextualRawEntries({
         payloadBytes,
         networkId,
         scriptPublicKey,
+        feeRateSompiPerGram,
         dustThresholdSompi,
       });
       return [...selected];
@@ -644,6 +755,7 @@ export function selectDirectedRawEntries({
   networkId,
   destinationScriptPublicKey,
   changeScriptPublicKey,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const trackedPending = sortByAmountDescending(
@@ -658,6 +770,7 @@ export function selectDirectedRawEntries({
         networkId,
         destinationScriptPublicKey,
         changeScriptPublicKey,
+        feeRateSompiPerGram,
         dustThresholdSompi,
       });
       return [entry];
@@ -688,6 +801,7 @@ export function selectDirectedRawEntries({
         networkId,
         destinationScriptPublicKey,
         changeScriptPublicKey,
+        feeRateSompiPerGram,
         dustThresholdSompi,
       });
       return [...selected];
@@ -708,6 +822,7 @@ export function selectCompactionRawEntries({
   scriptPublicKey,
   maxInputs = DEFAULT_COMPACTION_MAX_INPUTS,
   minOutputAmount = DUST_THRESHOLD_SOMPI,
+  feeRateSompiPerGram = DEFAULT_LOW_FEE_RATE_SOMPI_PER_GRAM,
   dustThresholdSompi = DUST_THRESHOLD_SOMPI,
 }) {
   const confirmed = sortByAmountDescending(dedupeUtxos(matureUtxos));
@@ -732,6 +847,7 @@ export function selectCompactionRawEntries({
         payloadBytes: new Uint8Array(),
         networkId,
         scriptPublicKey,
+        feeRateSompiPerGram,
         dustThresholdSompi,
       });
       if (preview.outputAmount < minOutputAmount) {
@@ -823,6 +939,8 @@ export class KaspaWalletClient {
     seedPhrase,
     nodeUrl,
     network,
+    feePolicy = DEFAULT_FEE_POLICY,
+    feeEstimateTtlMs = DEFAULT_FEE_ESTIMATE_TTL_MS,
     nowFn = () => Date.now(),
     visibilityRetries = DEFAULT_SEND_VISIBILITY_RETRIES,
     visibilityDelayMs = DEFAULT_SEND_VISIBILITY_DELAY_MS,
@@ -834,6 +952,8 @@ export class KaspaWalletClient {
     this.seedPhrase = seedPhrase;
     this.nodeUrl = nodeUrl;
     this.network = network || "mainnet";
+    this.feePolicy = normalizeFeePolicy(feePolicy);
+    this.feeEstimateTtlMs = Math.max(1000, toNumber(feeEstimateTtlMs, DEFAULT_FEE_ESTIMATE_TTL_MS));
     this.nowFn = nowFn;
     this.visibilityRetries = visibilityRetries;
     this.visibilityDelayMs = visibilityDelayMs;
@@ -849,6 +969,11 @@ export class KaspaWalletClient {
     this.isConnected = false;
     this.sendState = normalizeSendState(DEFAULT_SEND_STATE);
     this._sendTail = Promise.resolve();
+    this._feeEstimateCache = {
+      estimate: null,
+      fetched_at_ms: 0,
+    };
+    this._lastResolvedFeeRate = getFallbackFeeRate(this.feePolicy);
   }
 
   loadSendState(sendState = {}) {
@@ -897,6 +1022,63 @@ export class KaspaWalletClient {
     };
   }
 
+  getFeePolicy() {
+    return this.feePolicy;
+  }
+
+  getLastResolvedFeeRate() {
+    return this._lastResolvedFeeRate;
+  }
+
+  async resolveFeeRate(policy = this.feePolicy) {
+    const normalizedPolicy = normalizeFeePolicy(policy, this.feePolicy);
+    const fallbackRate = getFallbackFeeRate(normalizedPolicy);
+    if (!this.rpc?.getFeeEstimate) {
+      this._lastResolvedFeeRate = fallbackRate;
+      return fallbackRate;
+    }
+
+    try {
+      const estimate = await this._getFeeEstimate();
+      const resolvedRate = selectFeeRateFromEstimate(estimate, normalizedPolicy);
+      if (resolvedRate != null) {
+        this._lastResolvedFeeRate = resolvedRate;
+        return resolvedRate;
+      }
+    } catch {
+      if (this._feeEstimateCache?.estimate) {
+        const cachedRate = selectFeeRateFromEstimate(
+          this._feeEstimateCache.estimate,
+          normalizedPolicy
+        );
+        if (cachedRate != null) {
+          this._lastResolvedFeeRate = cachedRate;
+          return cachedRate;
+        }
+      }
+    }
+
+    this._lastResolvedFeeRate = fallbackRate;
+    return fallbackRate;
+  }
+
+  async _getFeeEstimate() {
+    const nowMs = this.nowFn();
+    if (
+      this._feeEstimateCache?.estimate &&
+      this._feeEstimateCache.fetched_at_ms + this.feeEstimateTtlMs > nowMs
+    ) {
+      return this._feeEstimateCache.estimate;
+    }
+
+    const estimate = await this.rpc.getFeeEstimate();
+    this._feeEstimateCache = {
+      estimate,
+      fetched_at_ms: nowMs,
+    };
+    return estimate;
+  }
+
   canFitContextualPayload(payloadBytes) {
     if (!this.identity?.scriptPublicKey) {
       throw new Error("Wallet client is not initialized");
@@ -932,6 +1114,7 @@ export class KaspaWalletClient {
     amountSompi,
     payloadBytes,
     priorityFeeSompi = 0n,
+    feePolicy = this.feePolicy,
     strategy = "default",
   }) {
     return await this._enqueueSend(async () =>
@@ -940,6 +1123,7 @@ export class KaspaWalletClient {
         amountSompi,
         payloadBytes,
         priorityFeeSompi,
+        feePolicy,
         strategy,
       })
     );
@@ -965,6 +1149,7 @@ export class KaspaWalletClient {
     amountSompi,
     payloadBytes,
     priorityFeeSompi = 0n,
+    feePolicy = this.feePolicy,
     strategy = "default",
   }) {
     if (!this.identity || !this.utxoContext || !this.rpc) {
@@ -976,10 +1161,12 @@ export class KaspaWalletClient {
     const isSelfSend = destination === receiveAddress;
     const sendStrategy =
       strategy === "default" ? (isSelfSend ? "contextual" : "direct") : strategy;
+    const feeRateSompiPerGram = await this.resolveFeeRate(feePolicy);
 
     if (sendStrategy === "contextual") {
       return this._sendRawContextualPayloadTransaction({
         payloadBytes,
+        feeRateSompiPerGram,
       });
     }
 
@@ -987,6 +1174,7 @@ export class KaspaWalletClient {
       destination,
       amountSompi,
       payloadBytes,
+      feeRateSompiPerGram,
     });
   }
 
@@ -994,6 +1182,7 @@ export class KaspaWalletClient {
     destination,
     amountSompi,
     payloadBytes,
+    feeRateSompiPerGram,
   }) {
     let lastError = null;
     for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
@@ -1019,12 +1208,14 @@ export class KaspaWalletClient {
           networkId: this.identity.networkId,
           destinationScriptPublicKey: payToAddressScript(new Address(destination)),
           changeScriptPublicKey: this.identity.scriptPublicKey,
+          feeRateSompiPerGram,
         });
         const submission = await this._submitRawDirectedSpend({
           entries: selectedEntries,
           destinationAddress: destination,
           amountSompi,
           payloadBytes,
+          feeRateSompiPerGram,
         });
         return this._finalizeSubmittedTransactions([submission]);
       } catch (error) {
@@ -1044,10 +1235,11 @@ export class KaspaWalletClient {
           threshold: this.compactionInputThreshold,
         })
       ) {
-        await this._compactMatureUtxos(
-          availableMatureUtxos,
-          this.identity.address
-        );
+        await this._compactSpendableUtxosRaw({
+          matureUtxos: availableMatureUtxos,
+          pendingUtxos: availablePendingUtxos,
+          feeRateSompiPerGram,
+        });
         continue;
       }
 
@@ -1071,7 +1263,10 @@ export class KaspaWalletClient {
     );
   }
 
-  async _sendRawContextualPayloadTransaction({ payloadBytes }) {
+  async _sendRawContextualPayloadTransaction({
+    payloadBytes,
+    feeRateSompiPerGram,
+  }) {
     let lastError = null;
 
     for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
@@ -1101,6 +1296,7 @@ export class KaspaWalletClient {
           await this._compactSpendableUtxosRaw({
             matureUtxos: availableMatureUtxos,
             pendingUtxos: availablePendingUtxos,
+            feeRateSompiPerGram,
           });
           continue;
         } catch (error) {
@@ -1119,8 +1315,13 @@ export class KaspaWalletClient {
           payloadBytes,
           networkId: this.identity.networkId,
           scriptPublicKey: this.identity.scriptPublicKey,
+          feeRateSompiPerGram,
         });
-        const submission = await this._submitRawSelfSpend(selectedEntries, payloadBytes);
+        const submission = await this._submitRawSelfSpend(
+          selectedEntries,
+          payloadBytes,
+          feeRateSompiPerGram
+        );
         return this._finalizeSubmittedTransactions([submission]);
       } catch (error) {
         if (!isLikelyInsufficientFundsError(error)) {
@@ -1208,13 +1409,14 @@ export class KaspaWalletClient {
     };
   }
 
-  async _submitRawSelfSpend(entries, payloadBytes) {
+  async _submitRawSelfSpend(entries, payloadBytes, feeRateSompiPerGram) {
     const rawTransaction = buildRawSelfSpendTransaction({
       entries,
       payloadBytes,
       networkId: this.identity.networkId,
       scriptPublicKey: this.identity.scriptPublicKey,
       privateKey: this.identity.privateKey,
+      feeRateSompiPerGram,
     });
     const txId = await this._submitRawTransaction(
       rawTransaction.transaction,
@@ -1235,6 +1437,7 @@ export class KaspaWalletClient {
     destinationAddress,
     amountSompi,
     payloadBytes,
+    feeRateSompiPerGram,
   }) {
     const rawTransaction = buildRawDirectedSpendTransaction({
       entries,
@@ -1246,6 +1449,7 @@ export class KaspaWalletClient {
       ),
       changeScriptPublicKey: this.identity.scriptPublicKey,
       privateKey: this.identity.privateKey,
+      feeRateSompiPerGram,
     });
     const txId = await this._submitRawTransaction(
       rawTransaction.transaction,
@@ -1302,15 +1506,24 @@ export class KaspaWalletClient {
     throw new Error("Submitted transaction did not return a transaction id");
   }
 
-  async _compactSpendableUtxosRaw({ matureUtxos, pendingUtxos }) {
+  async _compactSpendableUtxosRaw({
+    matureUtxos,
+    pendingUtxos,
+    feeRateSompiPerGram,
+  }) {
     const selectedEntries = selectCompactionRawEntries({
       matureUtxos,
       pendingUtxos,
       networkId: this.identity.networkId,
       scriptPublicKey: this.identity.scriptPublicKey,
       maxInputs: this.compactionMaxInputs,
+      feeRateSompiPerGram,
     });
-    await this._submitRawSelfSpend(selectedEntries, new Uint8Array());
+    await this._submitRawSelfSpend(
+      selectedEntries,
+      new Uint8Array(),
+      feeRateSompiPerGram
+    );
     this.sendState.last_compaction_ms = this.nowFn();
     await delay(this.visibilityDelayMs);
   }

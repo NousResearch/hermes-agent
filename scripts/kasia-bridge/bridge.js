@@ -53,6 +53,7 @@ const seedPhrase = process.env.KASIA_SEED_PHRASE || "";
 const indexerUrl = process.env.KASIA_INDEXER_URL || "";
 const nodeUrl = process.env.KASIA_NODE_WBORSH_URL || "";
 const network = process.env.KASIA_NETWORK || "mainnet";
+const feePolicy = process.env.KASIA_FEE_POLICY || "priority";
 const maxMultipartParts = Number.parseInt(
   process.env.KASIA_MAX_MULTIPARTS || "8",
   10
@@ -77,6 +78,7 @@ const core = new KasiaBridgeCore({
   nodeUrl,
   network,
   seedPhrase,
+  feePolicy,
   maxMultipartParts,
   contextualMessageTargetChars,
   logger: console,

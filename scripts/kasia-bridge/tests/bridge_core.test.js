@@ -333,6 +333,59 @@ test("state persists across restart and preserves conversation cursors", async (
   assert.equal(restarted.state.cursors.handshakes_block_time, 100);
 });
 
+test("bridge serializes concurrent state saves without temp-file collisions", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: new FakeWalletClient(),
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+
+  bridge.state.send_jobs["job-1"] = {
+    job_id: "job-1",
+    chat_id: VALID_CONTACT_ADDRESS,
+    status: "queued",
+    created_ms: 1,
+    updated_ms: 1,
+    total_parts: 1,
+    completed_parts: 0,
+    tx_ids: [],
+    last_tx_id: null,
+    error: null,
+    message_preview: "first",
+  };
+  const firstSave = bridge._saveState();
+
+  bridge.state.send_jobs["job-2"] = {
+    job_id: "job-2",
+    chat_id: VALID_CONTACT_ADDRESS,
+    status: "queued",
+    created_ms: 2,
+    updated_ms: 2,
+    total_parts: 1,
+    completed_parts: 0,
+    tx_ids: [],
+    last_tx_id: null,
+    error: null,
+    message_preview: "second",
+  };
+  const secondSave = bridge._saveState();
+
+  await Promise.all([firstSave, secondSave]);
+
+  const savedState = JSON.parse(
+    await readFile(join(stateDir, "state.json"), "utf8")
+  );
+  assert.ok(savedState.send_jobs["job-1"]);
+  assert.ok(savedState.send_jobs["job-2"]);
+});
+
 test("duplicate transactions are deduplicated by tx id", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
   const bridge = new KasiaBridgeCore({

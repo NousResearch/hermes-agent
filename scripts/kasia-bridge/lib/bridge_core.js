@@ -197,6 +197,7 @@ export class KasiaBridgeCore {
     nodeUrl,
     network,
     seedPhrase,
+    feePolicy = "priority",
     walletClient,
     fetchImpl,
     logger = console,
@@ -215,6 +216,7 @@ export class KasiaBridgeCore {
     this.nodeUrl = nodeUrl;
     this.network = network || "mainnet";
     this.seedPhrase = seedPhrase;
+    this.feePolicy = String(feePolicy || "priority");
     this.fetchImpl = fetchImpl || fetch;
     this.logger = logger;
     this.maxQueueSize = maxQueueSize;
@@ -232,6 +234,7 @@ export class KasiaBridgeCore {
         seedPhrase,
         nodeUrl,
         network: this.network,
+        feePolicy: this.feePolicy,
       });
 
     this.state = createEmptyState();
@@ -239,6 +242,7 @@ export class KasiaBridgeCore {
     this.walletInfo = null;
     this._sendJobTail = Promise.resolve();
     this._sendJobWaiters = new Map();
+    this._saveStateTail = Promise.resolve();
     this._closing = false;
   }
 
@@ -280,6 +284,8 @@ export class KasiaBridgeCore {
       network: this.state.wallet.network || this.network,
       indexerUrl: this.indexerUrl,
       nodeUrl: this.nodeUrl,
+      feePolicy: this.walletClient.getFeePolicy?.() || this.feePolicy,
+      feeRateSompiPerGram: this.walletClient.getLastResolvedFeeRate?.() || null,
       lastSyncMs: this.state.last_sync_ms,
       pendingOutputCount: Array.isArray(sendState.pending_outputs)
         ? sendState.pending_outputs.length
@@ -873,6 +879,11 @@ export class KasiaBridgeCore {
 
   async _saveState() {
     this.state.wallet.send_state = this.walletClient.exportSendState?.() || {};
-    await saveState(this.statePath, this.state);
+    const snapshot = JSON.parse(JSON.stringify(this.state));
+    const write = this._saveStateTail
+      .catch(() => {})
+      .then(() => saveState(this.statePath, snapshot));
+    this._saveStateTail = write;
+    await write;
   }
 }

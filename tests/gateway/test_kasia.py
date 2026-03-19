@@ -24,6 +24,7 @@ class TestKasiaConfigLoading:
         monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
         monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "ws://127.0.0.1:17110")
         monkeypatch.setenv("KASIA_NETWORK", "mainnet")
+        monkeypatch.setenv("KASIA_FEE_POLICY", "priority")
         monkeypatch.setenv("KASIA_BRIDGE_PORT", "3011")
         monkeypatch.setenv("KASIA_SEND_WAIT_MS", "7000")
         monkeypatch.setenv("KASIA_MAX_MULTIPARTS", "6")
@@ -41,6 +42,7 @@ class TestKasiaConfigLoading:
         assert kasia_config.extra["indexer_url"] == "https://indexer.example.com"
         assert kasia_config.extra["node_wborsh_url"] == "ws://127.0.0.1:17110"
         assert kasia_config.extra["network"] == "mainnet"
+        assert kasia_config.extra["fee_policy"] == "priority"
         assert kasia_config.extra["bridge_port"] == 3011
         assert kasia_config.extra["send_wait_ms"] == 7000
         assert kasia_config.extra["max_multipart_parts"] == 6
@@ -352,3 +354,37 @@ class TestKasiaAdapter:
 
         assert result is False
         popen_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_fee_policy_to_bridge_environment(self, tmp_path):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        adapter = KasiaAdapter(self._make_config(fee_policy="normal"))
+        adapter._bridge_script = bridge_script
+        adapter._request_json = AsyncMock(return_value={"status": "connected"})
+
+        popen_calls = {}
+
+        def fake_popen(*args, **kwargs):
+            popen_calls["env"] = kwargs.get("env", {}).copy()
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        def fake_create_task(coro):
+            coro.close()
+            return SimpleNamespace(cancel=lambda: None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ), patch("gateway.platforms.kasia.asyncio.create_task", side_effect=fake_create_task):
+            result = await adapter.connect()
+
+        assert result is True
+        assert popen_calls["env"]["KASIA_FEE_POLICY"] == "normal"

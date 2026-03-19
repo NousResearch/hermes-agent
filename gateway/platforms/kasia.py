@@ -86,6 +86,7 @@ class KasiaAdapter(BasePlatformAdapter):
         self._indexer_url = config.extra.get("indexer_url", "")
         self._node_url = config.extra.get("node_wborsh_url", "")
         self._network = config.extra.get("network", "mainnet") or "mainnet"
+        self._fee_policy = str(config.extra.get("fee_policy", "priority") or "priority")
         self._send_wait_ms = int(
             config.extra.get("send_wait_ms", self._DEFAULT_SEND_WAIT_MS)
         )
@@ -151,6 +152,7 @@ class KasiaAdapter(BasePlatformAdapter):
             env["KASIA_INDEXER_URL"] = self._indexer_url
             env["KASIA_NODE_WBORSH_URL"] = self._node_url
             env["KASIA_NETWORK"] = self._network
+            env["KASIA_FEE_POLICY"] = self._fee_policy
             if "max_multipart_parts" in self.config.extra:
                 env["KASIA_MAX_MULTIPARTS"] = str(
                     self.config.extra["max_multipart_parts"]

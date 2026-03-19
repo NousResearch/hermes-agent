@@ -813,6 +813,14 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "KASIA_FEE_POLICY": {
+        "description": "Kasia fee policy for outbound transactions (priority, normal, low, or auto). Default: priority.",
+        "prompt": "Kasia fee policy",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "KASIA_ALLOWED_USERS": {
         "description": "Comma-separated Kasia addresses allowed to use Hermes",
         "prompt": "Allowed Kasia addresses (comma-separated)",

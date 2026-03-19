@@ -8,10 +8,12 @@ import {
   buildRawSelfSpendTransaction,
   deriveWalletIdentity,
   makeOutpointKey,
+  normalizeFeePolicy,
   normalizeSendState,
   previewRawDirectedSpend,
   previewRawSelfSpend,
   reconcileSendState,
+  selectFeeRateFromEstimate,
   selectDirectedRawEntries,
   selectContextualRawEntries,
   shouldCompactSend,
@@ -39,6 +41,127 @@ function utxo({ txId, index, amount, blockDaaScore = 1, isCoinbase = false }) {
     scriptPublicKey: TEST_IDENTITY.scriptPublicKey,
   };
 }
+
+test("normalizeFeePolicy defaults invalid values back to priority", () => {
+  assert.equal(normalizeFeePolicy("priority"), "priority");
+  assert.equal(normalizeFeePolicy("NORMAL"), "normal");
+  assert.equal(normalizeFeePolicy(""), "priority");
+  assert.equal(normalizeFeePolicy("weird"), "priority");
+  assert.equal(normalizeFeePolicy("bogus", "low"), "low");
+});
+
+test("selectFeeRateFromEstimate maps low normal priority and auto to live node buckets", () => {
+  const estimate = {
+    estimate: {
+      priorityBucket: {
+        feerate: 6.393,
+        estimatedSeconds: 0.1,
+      },
+      normalBuckets: [
+        {
+          feerate: 1.913,
+          estimatedSeconds: 3.7,
+        },
+        {
+          feerate: 1.5,
+          estimatedSeconds: 8.5,
+        },
+      ],
+      lowBuckets: [
+        {
+          feerate: 1.15,
+          estimatedSeconds: 17.1,
+        },
+      ],
+    },
+  };
+
+  assert.equal(selectFeeRateFromEstimate(estimate, "low"), 1.15);
+  assert.equal(selectFeeRateFromEstimate(estimate, "normal"), 1.913);
+  assert.equal(selectFeeRateFromEstimate(estimate, "priority"), 6.393);
+  assert.equal(selectFeeRateFromEstimate(estimate, "auto"), 1.913);
+  assert.equal(
+    selectFeeRateFromEstimate(estimate, "auto", { autoTargetSeconds: 2 }),
+    6.393
+  );
+});
+
+test("previewRawSelfSpend charges more fee when the selected fee rate is higher", () => {
+  const entries = [utxo({ txId: hexId("a"), index: 0, amount: 1_000_000 })];
+  const payloadBytes = new Uint8Array(Buffer.from("hello", "utf8"));
+
+  const normalPreview = previewRawSelfSpend({
+    entries,
+    payloadBytes,
+    networkId: TEST_IDENTITY.networkId,
+    scriptPublicKey: TEST_IDENTITY.scriptPublicKey,
+    feeRateSompiPerGram: 2,
+  });
+  const priorityPreview = previewRawSelfSpend({
+    entries,
+    payloadBytes,
+    networkId: TEST_IDENTITY.networkId,
+    scriptPublicKey: TEST_IDENTITY.scriptPublicKey,
+    feeRateSompiPerGram: 6,
+  });
+
+  assert.ok(priorityPreview.fee > normalPreview.fee);
+  assert.ok(priorityPreview.outputAmount < normalPreview.outputAmount);
+});
+
+test("KaspaWalletClient caches fee estimates and falls back to the selected policy default", async () => {
+  let nowMs = 10_000;
+  let feeEstimateCalls = 0;
+  const client = new KaspaWalletClient({
+    seedPhrase: TEST_SEED,
+    nodeUrl: "wss://example.invalid",
+    network: "mainnet",
+    feePolicy: "priority",
+    feeEstimateTtlMs: 5_000,
+    nowFn: () => nowMs,
+  });
+
+  client.rpc = {
+    getFeeEstimate: async () => {
+      feeEstimateCalls += 1;
+      return {
+        estimate: {
+          priorityBucket: { feerate: 6.2, estimatedSeconds: 0.2 },
+          normalBuckets: [{ feerate: 1.8, estimatedSeconds: 4.5 }],
+          lowBuckets: [{ feerate: 1.1, estimatedSeconds: 15 }],
+        },
+      };
+    },
+  };
+
+  assert.equal(await client.resolveFeeRate("priority"), 6.2);
+  assert.equal(await client.resolveFeeRate("priority"), 6.2);
+  assert.equal(feeEstimateCalls, 1);
+
+  nowMs += 6_000;
+  assert.equal(await client.resolveFeeRate("normal"), 1.8);
+  assert.equal(feeEstimateCalls, 2);
+
+  client.rpc.getFeeEstimate = async () => {
+    throw new Error("fee estimates unavailable");
+  };
+  assert.equal(await client.resolveFeeRate("priority"), 6.2);
+
+  const fallbackClient = new KaspaWalletClient({
+    seedPhrase: TEST_SEED,
+    nodeUrl: "wss://example.invalid",
+    network: "mainnet",
+    feePolicy: "priority",
+  });
+  fallbackClient.rpc = {
+    getFeeEstimate: async () => {
+      throw new Error("offline");
+    },
+  };
+  assert.equal(await fallbackClient.resolveFeeRate("priority"), 6);
+  assert.equal(await fallbackClient.resolveFeeRate("normal"), 2);
+  assert.equal(await fallbackClient.resolveFeeRate("low"), 1);
+});
 
 test("buildCandidateUtxoPlans prefers tracked pending self-change before confirmed prefixes", () => {
   const pending = utxo({
@@ -913,7 +1036,7 @@ test("direct sends can compact before retrying a fragmented raw spend", async ()
       };
     }
 
-    async _compactMatureUtxos() {
+    async _compactSpendableUtxosRaw() {
       this.didCompact = true;
       this.compactionCount += 1;
     }

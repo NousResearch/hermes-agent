@@ -144,7 +144,9 @@ export async function loadState(statePath, wallet = {}) {
 
 export async function saveState(statePath, state) {
   await mkdir(dirname(statePath), { recursive: true });
-  const tempPath = `${statePath}.tmp`;
+  const tempPath = `${statePath}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(16)
+    .slice(2)}.tmp`;
   const payload = `${JSON.stringify(state, null, 2)}\n`;
   await writeFile(tempPath, payload, "utf8");
   await rename(tempPath, statePath);

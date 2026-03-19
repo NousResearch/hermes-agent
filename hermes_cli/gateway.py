@@ -1660,6 +1660,7 @@ def _setup_kasia():
     print_info(f"  Indexer: {get_env_value('KASIA_INDEXER_URL')}")
     print_info(f"  Node: {get_env_value('KASIA_NODE_WBORSH_URL')}")
     print_info(f"  Network: {get_env_value('KASIA_NETWORK') or 'mainnet'}")
+    print_info(f"  Fee policy: {get_env_value('KASIA_FEE_POLICY') or 'priority'}")
 
 
 def gateway_setup():

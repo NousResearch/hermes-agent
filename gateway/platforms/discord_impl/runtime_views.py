@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
+import os
 from typing import Any, Optional
 
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_context, build_session_context_prompt
 from hermes_cli.commands import (
     CommandDef,
     format_gateway_command_signature,
@@ -64,6 +66,26 @@ class DiscordWhoamiSnapshot:
     source: SessionSource
     target_source: SessionSource
     session_key: str
+
+
+@dataclass(frozen=True)
+class DiscordContextSnapshot:
+    session_id: str
+    session_key: str
+    source: SessionSource
+    target_source: SessionSource
+    message_count: int
+    role_counts: dict[str, int]
+    transcript_tokens: int
+    context_prompt_tokens: int
+    context_prompt_chars: int
+    current_model: str
+    current_provider: str
+    connected_platforms: tuple[str, ...]
+    context_files: tuple[str, ...]
+    skill_commands: tuple[str, ...]
+    has_soul: bool
+    context_prompt: str
 
 
 def _format_timestamp(value: datetime) -> str:
@@ -263,6 +285,84 @@ def collect_discord_status_snapshot(runner: Any, event: MessageEvent) -> Discord
     )
 
 
+def _estimate_tokens(messages: list[dict[str, str]]) -> int:
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        return int(estimate_messages_tokens_rough(messages) or 0)
+    except Exception:
+        return 0
+
+
+def _extract_context_file_names(context_prompt: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for line in context_prompt.splitlines():
+        if line.startswith("## "):
+            names.append(line[3:].strip())
+    return tuple(names)
+
+
+def collect_discord_context_snapshot(runner: Any, event: MessageEvent) -> DiscordContextSnapshot:
+    """Collect a Discord-native snapshot of the current transcript and prompt context."""
+    target_source = runner._command_target_source_for_event(event)
+    session_entry = runner.session_store.get_or_create_session(target_source)
+    history = runner.session_store.load_transcript(session_entry.session_id)
+    role_counts: dict[str, int] = {}
+    transcript_messages: list[dict[str, str]] = []
+    for item in history:
+        role = str(item.get("role") or "unknown")
+        role_counts[role] = role_counts.get(role, 0) + 1
+        content = str(item.get("content") or "")
+        if content:
+            transcript_messages.append({"role": role, "content": content})
+
+    current_state = runner._load_current_model_selection()
+    current_model = str(current_state.get("current_model") or "")
+    current_provider = str(current_state.get("current_provider") or "")
+    connected_platforms = tuple(sorted(platform.value for platform in getattr(runner, "adapters", {}).keys()))
+
+    cwd = os.environ.get("TERMINAL_CWD") or os.environ.get("MESSAGING_CWD") or os.getcwd()
+    try:
+        from agent.prompt_builder import (
+            build_context_files_prompt,
+            build_skills_system_prompt,
+            load_soul_md,
+        )
+
+        soul = load_soul_md() or ""
+        context_files_prompt = build_context_files_prompt(cwd, skip_soul=bool(soul))
+        skills_prompt = build_skills_system_prompt()
+    except Exception:
+        soul = ""
+        context_files_prompt = ""
+        skills_prompt = ""
+
+    session_context = build_session_context(target_source, runner.config, session_entry)
+    session_context_prompt = build_session_context_prompt(session_context)
+    prompt_parts = [part for part in (soul, skills_prompt, context_files_prompt, session_context_prompt) if part]
+    context_prompt = "\n\n".join(prompt_parts)
+    skill_commands = tuple(sorted(_load_skill_commands().keys()))
+
+    return DiscordContextSnapshot(
+        session_id=session_entry.session_id,
+        session_key=session_entry.session_key,
+        source=runner._session_source_for_event(event),
+        target_source=target_source,
+        message_count=len(history),
+        role_counts=role_counts,
+        transcript_tokens=_estimate_tokens(transcript_messages),
+        context_prompt_tokens=_estimate_tokens([{"role": "system", "content": context_prompt}]) if context_prompt else 0,
+        context_prompt_chars=len(context_prompt),
+        current_model=current_model,
+        current_provider=current_provider,
+        connected_platforms=connected_platforms,
+        context_files=_extract_context_file_names(context_files_prompt),
+        skill_commands=skill_commands,
+        has_soul=bool(soul),
+        context_prompt=context_prompt,
+    )
+
+
 def render_discord_status(snapshot: DiscordStatusSnapshot) -> str:
     """Render Discord status output in a multi-section, chat-readable format."""
     lines = [
@@ -359,6 +459,68 @@ def render_discord_status(snapshot: DiscordStatusSnapshot) -> str:
     return "\n".join(lines)
 
 
+def render_discord_context(snapshot: DiscordContextSnapshot, mode: str = "list") -> str:
+    """Render Discord context output in list, detail, or JSON form."""
+    mode = str(mode or "list").strip().lower()
+    if mode == "json":
+        payload = {
+            "session_id": snapshot.session_id,
+            "session_key": snapshot.session_key,
+            "source": snapshot.source.to_dict(),
+            "target_source": snapshot.target_source.to_dict(),
+            "message_count": snapshot.message_count,
+            "role_counts": snapshot.role_counts,
+            "transcript_tokens": snapshot.transcript_tokens,
+            "context_prompt_tokens": snapshot.context_prompt_tokens,
+            "context_prompt_chars": snapshot.context_prompt_chars,
+            "current_model": snapshot.current_model,
+            "current_provider": snapshot.current_provider,
+            "connected_platforms": list(snapshot.connected_platforms),
+            "context_files": list(snapshot.context_files),
+            "skill_commands": list(snapshot.skill_commands),
+            "has_soul": snapshot.has_soul,
+        }
+        return f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
+
+    lines = [
+        "🧠 **Hermes Context**",
+        "",
+        f"• Session ID: `{_short_id(snapshot.session_id)}`",
+        f"• Session Key: `{_short_id(snapshot.session_key, limit=18)}`",
+        f"• Chat: {snapshot.target_source.chat_name or snapshot.target_source.chat_id}",
+        f"• Messages: {snapshot.message_count}",
+        f"• Transcript Tokens: ~{snapshot.transcript_tokens:,}",
+        f"• Context Prompt: ~{snapshot.context_prompt_tokens:,} tokens / {snapshot.context_prompt_chars:,} chars",
+        f"• Model: `{snapshot.current_model or 'unknown'}`",
+    ]
+    if snapshot.current_provider:
+        lines.append(f"• Provider: `{snapshot.current_provider}`")
+    if snapshot.connected_platforms:
+        lines.append(f"• Connected Platforms: {', '.join(snapshot.connected_platforms)}")
+    if snapshot.role_counts:
+        role_summary = ", ".join(f"{role}={count}" for role, count in sorted(snapshot.role_counts.items()))
+        lines.append(f"• Roles: {role_summary}")
+
+    if mode != "detail":
+        return "\n".join(lines)
+
+    lines.extend(
+        [
+            "",
+            "**Prompt Sources**",
+            f"• SOUL.md Loaded: {_yes_no(snapshot.has_soul)}",
+            f"• Context Files: {', '.join(snapshot.context_files) if snapshot.context_files else 'none'}",
+            f"• Skill Commands Indexed: {', '.join(snapshot.skill_commands) if snapshot.skill_commands else 'none'}",
+            "",
+            "**Prompt Preview**",
+            "```text",
+            snapshot.context_prompt[:3500] + ("..." if len(snapshot.context_prompt) > 3500 else ""),
+            "```",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _render_command_lines(command_names: tuple[str, ...]) -> list[str]:
     lookup = _command_lookup()
     lines: list[str] = []
@@ -388,13 +550,13 @@ def render_discord_help() -> str:
         ),
         "",
         "**Session**",
-        *(_render_command_lines(("new", "retry", "undo", "thread", "resume", "title", "compress", "stop"))),
+        *(_render_command_lines(("new", "retry", "undo", "thread", "resume", "title", "compact", "context", "stop"))),
         "",
         "**Configuration**",
-        *(_render_command_lines(("model", "models", "provider", "reasoning", "personality", "voice"))),
+        *(_render_command_lines(("model", "models", "provider", "reasoning", "personality", "voice", "allowlist", "config"))),
         "",
         "**Info & Maintenance**",
-        *(_render_command_lines(("usage", "insights", "reload-mcp", "update"))),
+        *(_render_command_lines(("usage", "insights", "export-session", "reload-mcp", "update"))),
     ]
     if skill_cmds:
         lines.extend(

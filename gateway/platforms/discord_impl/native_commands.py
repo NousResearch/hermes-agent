@@ -106,6 +106,54 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
         DiscordChoiceSpec("max-age — hard focus lifetime", "max-age"),
         DiscordChoiceSpec("status — show current focus binding", "status"),
     )
+    context_choices = (
+        DiscordChoiceSpec("list — concise context summary", "list"),
+        DiscordChoiceSpec("detail — full context breakdown", "detail"),
+        DiscordChoiceSpec("json — machine-readable snapshot", "json"),
+    )
+    allowlist_choices = (
+        DiscordChoiceSpec("list — show approved command patterns", "list"),
+        DiscordChoiceSpec("add — permanently approve a pattern", "add"),
+        DiscordChoiceSpec("remove — remove a stored pattern", "remove"),
+    )
+    config_choices = (
+        DiscordChoiceSpec("show — show the current on-disk config", "show"),
+        DiscordChoiceSpec("get — read one config or env key", "get"),
+        DiscordChoiceSpec("set — write one config or env key", "set"),
+        DiscordChoiceSpec("unset — remove one config or env key", "unset"),
+    )
+    debug_choices = (
+        DiscordChoiceSpec("show — show runtime override status", "show"),
+        DiscordChoiceSpec("set — set a runtime override", "set"),
+        DiscordChoiceSpec("unset — remove a runtime override", "unset"),
+        DiscordChoiceSpec("reset — clear all runtime overrides", "reset"),
+    )
+    subagent_choices = (
+        DiscordChoiceSpec("list — list sub-agent runs", "list"),
+        DiscordChoiceSpec("kill — kill a sub-agent run", "kill"),
+        DiscordChoiceSpec("log — show sub-agent logs", "log"),
+        DiscordChoiceSpec("info — inspect a sub-agent run", "info"),
+        DiscordChoiceSpec("send — send input to a sub-agent", "send"),
+        DiscordChoiceSpec("steer — steer a sub-agent", "steer"),
+        DiscordChoiceSpec("spawn — spawn a sub-agent", "spawn"),
+    )
+    acp_choices = (
+        DiscordChoiceSpec("spawn — create an ACP session", "spawn"),
+        DiscordChoiceSpec("cancel — cancel ACP work", "cancel"),
+        DiscordChoiceSpec("steer — steer ACP work", "steer"),
+        DiscordChoiceSpec("close — close an ACP session", "close"),
+        DiscordChoiceSpec("status — show ACP status", "status"),
+        DiscordChoiceSpec("set-mode — update ACP mode", "set-mode"),
+        DiscordChoiceSpec("set — set ACP runtime options", "set"),
+        DiscordChoiceSpec("cwd — change ACP cwd", "cwd"),
+        DiscordChoiceSpec("permissions — change ACP permissions", "permissions"),
+        DiscordChoiceSpec("timeout — change ACP timeout", "timeout"),
+        DiscordChoiceSpec("model — change ACP model", "model"),
+        DiscordChoiceSpec("reset-options — clear ACP options", "reset-options"),
+        DiscordChoiceSpec("doctor — inspect ACP health", "doctor"),
+        DiscordChoiceSpec("install — install ACP tooling", "install"),
+        DiscordChoiceSpec("sessions — list ACP sessions", "sessions"),
+    )
 
     return (
         DiscordNativeCommandSpec(
@@ -128,6 +176,46 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             "Show the full command catalog",
             "simple",
             lambda: "/commands",
+        ),
+        DiscordNativeCommandSpec(
+            "context",
+            "Show context summary, detail, or JSON",
+            "simple",
+            lambda mode="": _join_command("/context", mode),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Context mode: list, detail, or json",
+                    choices=context_choices,
+                    default="list",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "export-session",
+            "Export the current session snapshot",
+            "simple",
+            lambda path="": _join_command("/export-session", path),
+            args=(
+                DiscordArgSpec(
+                    "path",
+                    "Optional export path (.html or .json). Leave empty for the default HTML export.",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "export",
+            "Alias for /export-session",
+            "simple",
+            lambda path="": _join_command("/export", path),
+            args=(
+                DiscordArgSpec(
+                    "path",
+                    "Optional export path (.html or .json). Leave empty for the default HTML export.",
+                ),
+            ),
         ),
         DiscordNativeCommandSpec(
             "whoami",
@@ -274,6 +362,19 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             followup_msg="Stop requested~",
         ),
         DiscordNativeCommandSpec(
+            "compact",
+            "Compress conversation context with optional instructions",
+            "simple",
+            lambda instructions="": _join_command("/compact", instructions),
+            args=(
+                DiscordArgSpec(
+                    "instructions",
+                    "Optional compression guidance for what to preserve.",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
             "compress",
             "Compress conversation context",
             "simple",
@@ -336,6 +437,130 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             lambda: "/reload-mcp",
         ),
         DiscordNativeCommandSpec(
+            "skill",
+            "Run a skill by name",
+            "dispatch",
+            lambda name="", input="": _join_command("/skill", name, input),
+            args=(
+                DiscordArgSpec(
+                    "name",
+                    "Skill name to invoke",
+                    default="",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "input",
+                    "Optional user input for the skill",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "subagents",
+            "Inspect or control sub-agent runs",
+            "simple",
+            lambda mode="", payload="": _join_command("/subagents", mode, payload),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Sub-agent action: list, kill, log, info, send, steer, or spawn",
+                    choices=subagent_choices,
+                    default="list",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "payload",
+                    "Optional sub-agent command arguments",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "kill",
+            "Abort a running sub-agent",
+            "simple",
+            lambda target="": _join_command("/kill", target),
+            args=(
+                DiscordArgSpec(
+                    "target",
+                    "Target sub-agent id, ordinal, or all",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "steer",
+            "Steer a running sub-agent",
+            "simple",
+            lambda target="", message="": _join_command("/steer", target, message),
+            args=(
+                DiscordArgSpec(
+                    "target",
+                    "Target sub-agent id or ordinal",
+                    default="",
+                ),
+                DiscordArgSpec(
+                    "message",
+                    "Steer message",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "tell",
+            "Alias for /steer",
+            "simple",
+            lambda target="", message="": _join_command("/tell", target, message),
+            args=(
+                DiscordArgSpec(
+                    "target",
+                    "Target sub-agent id or ordinal",
+                    default="",
+                ),
+                DiscordArgSpec(
+                    "message",
+                    "Steer message",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "acp",
+            "Inspect or control ACP runtime sessions",
+            "simple",
+            lambda mode="", payload="": _join_command("/acp", mode, payload),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "ACP action to run",
+                    choices=acp_choices,
+                    default="status",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "payload",
+                    "Optional ACP command arguments",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "bash",
+            "Run a host shell command through gateway control",
+            "simple",
+            lambda command="": _join_command("/bash", command),
+            args=(
+                DiscordArgSpec(
+                    "command",
+                    "Host shell command to run",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
             "voice",
             "Toggle voice reply mode",
             "dispatch",
@@ -381,6 +606,79 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
                 DiscordArgSpec(
                     "approval_id",
                     "Approval ID shown in the approval prompt footer. Optional for the current chat.",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "allowlist",
+            "Inspect or edit the command allowlist",
+            "simple",
+            lambda mode="", entry="": _join_command("/allowlist", mode, entry),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Allowlist action: list, add, or remove",
+                    choices=allowlist_choices,
+                    default="list",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "entry",
+                    "Pattern key to add or remove. Leave empty for list.",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "config",
+            "Show or update Hermes configuration",
+            "simple",
+            lambda mode="", key="", value="": _join_command("/config", mode, key, value),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Config action: show, get, set, or unset",
+                    choices=config_choices,
+                    default="show",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "key",
+                    "Dotted config path or env var name",
+                    default="",
+                ),
+                DiscordArgSpec(
+                    "value",
+                    "Value to set. YAML scalars and JSON-style lists work.",
+                    default="",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "debug",
+            "Inspect runtime override parity status",
+            "simple",
+            lambda mode="", key="", value="": _join_command("/debug", mode, key, value),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Debug action: show, set, unset, or reset",
+                    choices=debug_choices,
+                    default="show",
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "key",
+                    "Runtime override key",
+                    default="",
+                ),
+                DiscordArgSpec(
+                    "value",
+                    "Runtime override value",
+                    default="",
                 ),
             ),
         ),
@@ -481,7 +779,19 @@ def _resolve_arg_choices(
     interaction: Any | None = None,
     current_kwargs: Optional[dict[str, Any]] = None,
 ) -> tuple[DiscordChoiceSpec, ...]:
-    del adapter, spec, interaction, current_kwargs
+    del adapter, interaction, current_kwargs
+    if spec.name == "skill" and arg.name == "name":
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            choices: list[DiscordChoiceSpec] = []
+            for command_name, payload in sorted(get_skill_commands().items()):
+                value = command_name.lstrip("/")
+                description = str(payload.get("description") or "Skill command")
+                choices.append(DiscordChoiceSpec(value, value, description[:100] or None))
+            return tuple(choices)
+        except Exception:
+            return ()
     return arg.choices
 
 
@@ -691,6 +1001,58 @@ def _register_single_arg_command(tree: Any, adapter: Any, spec: DiscordNativeCom
             await _dispatch(adapter, interaction, _spec, mode=mode)
         return
 
+    if arg.name == "path":
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(path=arg.description)
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            path=arg.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(adapter, interaction, _spec, path=path)
+        return
+
+    if arg.name == "instructions":
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(instructions=arg.description)
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            instructions=arg.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(adapter, interaction, _spec, instructions=instructions)
+        return
+
+    if arg.name == "target":
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(target=arg.description)
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            target=arg.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(adapter, interaction, _spec, target=target)
+        return
+
+    if arg.name == "command":
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(command=arg.description)
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            command=arg.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(adapter, interaction, _spec, command=command)
+        return
+
     if arg.name == "decision":
         @tree.command(name=spec.name, description=spec.description)
         @discord.app_commands.describe(decision=arg.description)
@@ -761,8 +1123,139 @@ def _register_double_arg_command(tree: Any, adapter: Any, spec: DiscordNativeCom
             )
         return
 
+    if (first.name, second.name) == ("mode", "entry"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            mode=first.description,
+            entry=second.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            mode=first.default,
+            entry=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                mode=mode,
+                entry=entry,
+            )
+        return
+
+    if (first.name, second.name) == ("name", "input"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            name=first.description,
+            input=second.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            name=first.default,
+            input=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                name=name,
+                input=input,
+            )
+        return
+
+    if (first.name, second.name) == ("mode", "payload"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            mode=first.description,
+            payload=second.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            mode=first.default,
+            payload=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                mode=mode,
+                payload=payload,
+            )
+        return
+
+    if (first.name, second.name) == ("target", "message"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            target=first.description,
+            message=second.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            target=first.default,
+            message=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                target=target,
+                message=message,
+            )
+        return
+
     raise ValueError(
         f"Unsupported Discord command spec shape for {spec.name}:{first.name},{second.name}"
+    )
+
+
+def _register_triple_arg_command(tree: Any, adapter: Any, spec: DiscordNativeCommandSpec) -> None:
+    first, second, third = spec.args
+    choices_decorator, autocomplete_decorator = _build_choices_decorator(adapter, spec, first)
+    if choices_decorator is None:
+        choices_decorator = lambda fn: fn
+    if autocomplete_decorator is None:
+        autocomplete_decorator = lambda fn: fn
+
+    if (first.name, second.name, third.name) == ("mode", "key", "value"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            mode=first.description,
+            key=second.description,
+            value=third.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            mode=first.default,
+            key=second.default,
+            value=third.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                mode=mode,
+                key=key,
+                value=value,
+            )
+        return
+
+    raise ValueError(
+        f"Unsupported Discord command spec shape for {spec.name}:{first.name},{second.name},{third.name}"
     )
 
 
@@ -807,6 +1300,9 @@ def register_slash_commands(tree: Any, adapter: Any) -> None:
             continue
         if len(spec.args) == 2:
             _register_double_arg_command(tree, adapter, spec)
+            continue
+        if len(spec.args) == 3:
+            _register_triple_arg_command(tree, adapter, spec)
             continue
         raise ValueError(f"Unsupported Discord command spec shape for {spec.name}")
 

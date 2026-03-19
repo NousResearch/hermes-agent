@@ -13,6 +13,8 @@ import os
 import re
 import sys
 import threading
+import time
+import uuid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,34 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _permanent_approved: set = set()
 
+# Thread-local for sub-agent context detection
+_thread_local = threading.local()
+
+def set_subagent_context(is_subagent: bool):
+    """Mark the current thread as running a sub-agent."""
+    _thread_local.is_subagent = is_subagent
+
+def is_subagent_context() -> bool:
+    """Check if the current thread is running a sub-agent."""
+    return getattr(_thread_local, 'is_subagent', False)
+
+def submit_pending_blocking(session_key: str, approval: dict, timeout: float = 300) -> dict:
+    """Store a pending approval and BLOCK until resolved or timeout.
+
+    Uses the handle-based system internally so parallel sub-agents
+    on the same session work correctly.
+    """
+    handle = submit_pending_blocking_handle(session_key, approval)
+    result = handle.wait(timeout=timeout)
+    # If timed_out, clean up the waiter so it doesn't leak
+    if result.get("timed_out"):
+        resolve_pending(handle.request_id, approved=False)
+        return {
+            "approved": False,
+            "message": "⏰ Approval request timed out (5 minutes). Command was not executed.",
+        }
+    return result
+
 
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
@@ -158,6 +188,125 @@ def clear_session(session_key: str):
     with _lock:
         _session_approved.pop(session_key, None)
         _pending.pop(session_key, None)
+    # Also resolve and clean up any blocking waiters
+    with _blocking_lock:
+        req_ids = list(_session_to_requests.get(session_key, set()))
+    for rid in req_ids:
+        resolve_pending(rid, approved=False)
+
+
+# =========================================================================
+# Handle-based blocking approval for parallel sub-agents
+# =========================================================================
+
+_blocking_lock = threading.Lock()
+_blocking_waiters: dict[str, dict] = {}          # request_id → waiter dict
+_session_to_requests: dict[str, set] = {}         # session_key → set of request_ids
+
+
+class BlockingApprovalHandle:
+    """A handle returned by submit_pending_blocking_handle().
+
+    Allows a sub-agent thread to block on .wait(timeout) until the parent
+    resolves the approval via resolve_pending(request_id, approved).
+    """
+
+    def __init__(self, request_id: str, event: threading.Event):
+        self.request_id = request_id
+        self._event = event
+        self._result: dict | None = None
+
+    def wait(self, timeout: float) -> dict:
+        """Block until resolved or timeout.
+
+        Returns {"approved": True} or {"approved": False} on resolution,
+        or {"approved": False, "timed_out": True} on timeout.
+        """
+        signaled = self._event.wait(timeout=timeout)
+        if not signaled:
+            return {"approved": False, "timed_out": True}
+        if self._result is not None:
+            return self._result
+        return {"approved": False}
+
+
+def submit_pending_blocking_handle(session_key: str, approval: dict) -> BlockingApprovalHandle:
+    """Create a blocking handle for a sub-agent approval request.
+
+    The handle can be waited on from the sub-agent thread while the parent
+    session resolves it via resolve_pending().  Also calls submit_pending()
+    for backward compatibility with the polling-based flow.
+    """
+    request_id = uuid.uuid4().hex
+    event = threading.Event()
+    handle = BlockingApprovalHandle(request_id, event)
+
+    waiter = {
+        "handle": handle,
+        "event": event,
+        "approval": dict(approval),
+        "session_key": session_key,
+    }
+
+    with _blocking_lock:
+        _blocking_waiters[request_id] = waiter
+        _session_to_requests.setdefault(session_key, set()).add(request_id)
+
+    # Backward compat: also store in the legacy polling dict
+    submit_pending(session_key, approval)
+
+    return handle
+
+
+def resolve_pending(request_id: str, approved: bool) -> None:
+    """Resolve a pending blocking handle by request_id.
+
+    Sets the result on the handle and signals the event so the blocked
+    sub-agent thread can continue.  Removes the waiter from tracking.
+    """
+    with _blocking_lock:
+        waiter = _blocking_waiters.pop(request_id, None)
+        if waiter is None:
+            return
+        session_key = waiter["session_key"]
+        req_set = _session_to_requests.get(session_key)
+        if req_set is not None:
+            req_set.discard(request_id)
+            if not req_set:
+                _session_to_requests.pop(session_key, None)
+
+    handle: BlockingApprovalHandle = waiter["handle"]
+    handle._result = {"approved": approved}
+    waiter["event"].set()
+
+
+def has_blocking_waiters(session_key: str) -> bool:
+    """Return True if any blocking waiters exist for *session_key*."""
+    with _blocking_lock:
+        req_set = _session_to_requests.get(session_key)
+        return bool(req_set)
+
+
+def get_blocking_waiter_details(session_key: str) -> list[dict]:
+    """Return details for all blocked sub-agents on *session_key*.
+
+    Each dict contains at minimum: command, request_id, pattern_key, description.
+    """
+    with _blocking_lock:
+        req_ids = _session_to_requests.get(session_key, set()).copy()
+        results = []
+        for rid in req_ids:
+            waiter = _blocking_waiters.get(rid)
+            if waiter is None:
+                continue
+            appr = waiter["approval"]
+            results.append({
+                "command": appr.get("command", ""),
+                "request_id": rid,
+                "pattern_key": appr.get("pattern_key", ""),
+                "description": appr.get("description", ""),
+            })
+    return results
 
 
 # =========================================================================
@@ -376,11 +525,17 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
-        submit_pending(session_key, {
+        pending_data = {
             "command": command,
             "pattern_key": pattern_key,
             "description": description,
-        })
+        }
+
+        if is_subagent_context():
+            # Sub-agent: block thread and wait for user to /approve or /deny
+            return submit_pending_blocking(session_key, pending_data)
+
+        submit_pending(session_key, pending_data)
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -526,12 +681,18 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway/async: single approval_required with combined description
     # Store all pattern keys so gateway replay approves all of them
     if is_gateway or is_ask:
-        submit_pending(session_key, {
+        pending_data = {
             "command": command,
             "pattern_key": primary_key,        # backward compat
             "pattern_keys": all_keys,           # all keys for replay
             "description": combined_desc,
-        })
+        }
+
+        if is_subagent_context():
+            # Sub-agent: block thread and wait for user to /approve or /deny
+            return submit_pending_blocking(session_key, pending_data)
+
+        submit_pending(session_key, pending_data)
         return {
             "approved": False,
             "pattern_key": primary_key,

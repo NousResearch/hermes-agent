@@ -33,4 +33,5 @@ export const {
   XPrv,
   XOnlyPublicKey,
   kaspaToSompi,
+  payToAddressScript,
 } = kaspa;

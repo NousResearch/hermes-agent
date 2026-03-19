@@ -15,6 +15,7 @@ import {
   UtxoEntries,
   UtxoProcessor,
   XPrv,
+  payToAddressScript,
 } from "./kaspa_sdk.js";
 
 const DEFAULT_SEND_STATE = Object.freeze({
@@ -22,8 +23,8 @@ const DEFAULT_SEND_STATE = Object.freeze({
   pending_outputs: [],
   last_compaction_ms: 0,
 });
-const DEFAULT_SEND_VISIBILITY_RETRIES = 4;
-const DEFAULT_SEND_VISIBILITY_DELAY_MS = 500;
+const DEFAULT_SEND_VISIBILITY_RETRIES = 10;
+const DEFAULT_SEND_VISIBILITY_DELAY_MS = 1000;
 const DEFAULT_MAX_CONFIRMED_INPUT_PLANS = 6;
 const DEFAULT_COMPACTION_INPUT_THRESHOLD = 3;
 const DEFAULT_COMPACTION_MAX_INPUTS = 12;
@@ -107,7 +108,55 @@ function normalizePendingOutput(entry = {}) {
     index: toNumber(entry.index, 0),
     amount: String(toBigInt(entry.amount, 0n)),
     created_ms: toNumber(entry.created_ms, 0),
+    observed_in_mempool: Boolean(
+      entry.observed_in_mempool ?? entry.observedInMempool
+    ),
   };
+}
+
+function outputAddress(output, networkId) {
+  try {
+    return normalizeAddressValue(
+      addressFromScriptPublicKey(output?.scriptPublicKey, networkId)
+    );
+  } catch {
+    return output?.verboseData?.scriptPublicKeyAddress || null;
+  }
+}
+
+function mempoolEntriesForAddress(mempoolResponse, address) {
+  const entries = Array.isArray(mempoolResponse?.entries)
+    ? mempoolResponse.entries
+    : [];
+  return entries.find((entry) => entry?.address === address) || null;
+}
+
+function pendingOutputsFromMempoolEntry(mempoolEntry, address, networkId, nowMs) {
+  const transaction = mempoolEntry?.transaction;
+  if (!transaction || !Array.isArray(transaction.outputs)) {
+    return [];
+  }
+
+  return transaction.outputs
+    .map((output, index) => {
+      if (outputAddress(output, networkId) !== address) {
+        return null;
+      }
+      const txId = normalizeAddressValue(transaction?.verboseData?.transactionId);
+      const key = makeOutpointKey(txId, index);
+      if (!key) {
+        return null;
+      }
+      return {
+        key,
+        tx_id: txId,
+        index,
+        amount: String(toBigInt(output?.value, 0n)),
+        created_ms: nowMs,
+        observed_in_mempool: true,
+      };
+    })
+    .filter(Boolean);
 }
 
 export function normalizeSendState(sendState = {}) {
@@ -304,6 +353,23 @@ function isLikelyInsufficientFundsError(error) {
   );
 }
 
+function shouldUseCandidatePlans({
+  sendStrategy,
+  trackedPendingUtxos = [],
+  sendState,
+}) {
+  if (sendStrategy !== "contextual") {
+    return false;
+  }
+  return (
+    trackedPendingUtxos.length > 0 ||
+    (Array.isArray(sendState?.pending_outputs) &&
+      sendState.pending_outputs.length > 0) ||
+    (Array.isArray(sendState?.reserved_outpoints) &&
+      sendState.reserved_outpoints.length > 0)
+  );
+}
+
 export function deriveWalletIdentity(seedPhrase, network) {
   const mnemonic = new Mnemonic(String(seedPhrase || "").trim());
   const seed = mnemonic.toSeed("");
@@ -313,12 +379,14 @@ export function deriveWalletIdentity(seedPhrase, network) {
   const publicKey = privateKey.toPublicKey();
   const networkId = new NetworkId(network);
   const address = publicKey.toAddress(networkId).toString();
+  const scriptPublicKey = payToAddressScript(new Address(address));
 
   return {
     address,
     privateKey,
     privateKeyHex: privateKey.toString(),
     publicKeyHex: publicKey.toString(),
+    scriptPublicKey,
     network,
     networkId,
   };
@@ -363,6 +431,10 @@ export class KaspaWalletClient {
 
   exportSendState() {
     return normalizeSendState(this.sendState);
+  }
+
+  async hydrateSendState() {
+    await this._hydrateMempoolSendState();
   }
 
   async init() {
@@ -451,17 +523,8 @@ export class KaspaWalletClient {
 
     let lastError = null;
     for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
-      let context = this._loadSendContext();
-      if (
-        context.availableMatureUtxos.length === 0 &&
-        context.availablePendingUtxos.length === 0
-      ) {
-        const chainBalance = await this._getOnChainBalance();
-        if (chainBalance > 0n) {
-          await this._rebuildUtxoContext();
-          context = this._loadSendContext();
-        }
-      }
+      await this._rebuildUtxoContext();
+      const context = this._loadSendContext();
       const availablePendingUtxos = Array.isArray(context.availablePendingUtxos)
         ? context.availablePendingUtxos
         : [];
@@ -471,14 +534,25 @@ export class KaspaWalletClient {
       const availableMatureUtxos = Array.isArray(context.availableMatureUtxos)
         ? context.availableMatureUtxos
         : [];
+      const plans = shouldUseCandidatePlans({
+        sendStrategy,
+        trackedPendingUtxos,
+        sendState: this.sendState,
+      })
+        ? buildCandidateUtxoPlans({
+            trackedPendingUtxos,
+            matureUtxos: availableMatureUtxos,
+            maxConfirmedPlans: this.maxConfirmedPlans,
+          })
+        : [
+            {
+              name: "context",
+              useFullContext: true,
+              usesPendingInputs: availablePendingUtxos.length > 0,
+            },
+          ];
       const directPass = await this._tryPlans(
-        [
-          {
-            name: "context",
-            useFullContext: true,
-            usesPendingInputs: availablePendingUtxos.length > 0,
-          },
-        ],
+        plans,
         {
           destination,
           receiveAddress,
@@ -584,7 +658,10 @@ export class KaspaWalletClient {
   async _tryPlans(plans, txOptions) {
     let lastError = null;
     for (const plan of plans) {
-      if (!Array.isArray(plan.entries) || plan.entries.length === 0) {
+      if (
+        !plan.useFullContext &&
+        (!Array.isArray(plan.entries) || plan.entries.length === 0)
+      ) {
         continue;
       }
       try {
@@ -754,6 +831,7 @@ export class KaspaWalletClient {
         index,
         amount: String(toBigInt(output?.value, 0n)),
         created_ms: nowMs,
+        observed_in_mempool: false,
       });
     });
 
@@ -850,6 +928,7 @@ export class KaspaWalletClient {
       processor: this.utxoProcessor,
     });
     await this.utxoContext.trackAddresses([this.identity.address]);
+    await this._hydrateMempoolSendState();
 
     const chainBalance = await this._getOnChainBalance();
     if (chainBalance <= 0n) {
@@ -864,6 +943,54 @@ export class KaspaWalletClient {
         return;
       }
       await delay(500);
+    }
+  }
+
+  async _hydrateMempoolSendState() {
+    try {
+      const mempool = await this.rpc?.getMempoolEntriesByAddresses?.({
+        addresses: [this.identity.address],
+        includeOrphanPool: true,
+        filterTransactionPool: false,
+      });
+      const addressEntry = mempoolEntriesForAddress(mempool, this.identity.address);
+      const nowMs = this.nowFn();
+      const reservedByKey = new Map();
+      const pendingByKey = new Map();
+
+      for (const mempoolEntry of addressEntry?.sending || []) {
+        const transaction = mempoolEntry?.transaction;
+        for (const input of transaction?.inputs || []) {
+          const key = makeOutpointKey(
+            input?.previousOutpoint?.transactionId,
+            input?.previousOutpoint?.index
+          );
+          if (!key) {
+            continue;
+          }
+          reservedByKey.set(key, {
+            key,
+            reserved_at_ms: nowMs,
+          });
+        }
+
+        for (const pendingOutput of pendingOutputsFromMempoolEntry(
+          mempoolEntry,
+          this.identity.address,
+          this.identity.networkId,
+          nowMs
+        )) {
+          pendingByKey.set(pendingOutput.key, pendingOutput);
+        }
+      }
+
+      this.sendState = normalizeSendState({
+        ...this.sendState,
+        reserved_outpoints: [...reservedByKey.values()],
+        pending_outputs: [...pendingByKey.values()],
+      });
+    } catch {
+      // Mempool hydration is a best-effort recovery path for restarts.
     }
   }
 }

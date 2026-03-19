@@ -6,6 +6,9 @@ import { join } from "node:path";
 
 import { KasiaBridgeCore } from "../lib/bridge_core.js";
 
+const VALID_CONTACT_ADDRESS =
+  "kaspa:qr9ssytsv8gsw5wrmp4lhnxdhprlg5g9ct9m37ngq9x9nhr7wm3ycxcrzs5e7";
+
 class FakeWalletClient {
   constructor() {
     this.isConnected = true;
@@ -39,9 +42,48 @@ class FakeWalletClient {
     return this.sendState;
   }
 
+  async hydrateSendState() {}
+
   async sendPayloadTransaction(payload) {
     this.sentTransactions.push(payload);
     return `tx-${this.sentTransactions.length}`;
+  }
+}
+
+class OversizeOnceWalletClient extends FakeWalletClient {
+  constructor() {
+    super();
+    this.failedOnce = false;
+  }
+
+  async sendPayloadTransaction(payload) {
+    this.sentTransactions.push(payload);
+    if (!this.failedOnce) {
+      this.failedOnce = true;
+      throw new Error(
+        "RPC Server (remote error) -> transaction is not standard: transaction transient (storage) mass of 131124 is larger than max allowed size of 100000"
+      );
+    }
+    return `tx-${this.sentTransactions.length}`;
+  }
+}
+
+class FailingWalletClient extends FakeWalletClient {
+  async sendPayloadTransaction(payload) {
+    this.sentTransactions.push(payload);
+    throw new Error("node offline");
+  }
+}
+
+class HydratingWalletClient extends FakeWalletClient {
+  async hydrateSendState() {
+    this.sendState = {
+      reserved_outpoints: [{ key: "mempool:0", reserved_at_ms: 21 }],
+      pending_outputs: [
+        { key: "mempool-pending:0", tx_id: "mempool-pending", index: 0, amount: "77", created_ms: 22 },
+      ],
+      last_compaction_ms: 0,
+    };
   }
 }
 
@@ -73,10 +115,82 @@ test("send rejects when there is no active conversation", async () => {
 
   await assert.rejects(
     bridge.send({
-      chatId: "kaspa:qcontactaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      chatId: VALID_CONTACT_ADDRESS,
       message: "hello",
     }),
     /No active Kasia conversation/
+  );
+});
+
+test("oversize contextual sends are retried as chunked bridge messages", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new OversizeOnceWalletClient();
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "A".repeat(700),
+  });
+
+  assert.equal(result.status, "sent");
+  assert.ok(result.partCount > 1);
+  assert.equal(result.txIds.length, result.partCount);
+  assert.equal(result.txId, result.txIds[result.txIds.length - 1]);
+  assert.ok(walletClient.sentTransactions.length >= 3);
+});
+
+test("non-size wallet send errors still surface from bridge send", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: new FailingWalletClient(),
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  await assert.rejects(
+    bridge.send({
+      chatId: VALID_CONTACT_ADDRESS,
+      message: "hello",
+    }),
+    /node offline/
   );
 });
 
@@ -187,6 +301,24 @@ test("wallet send state is loaded from disk and persisted back on save", async (
   assert.deepEqual(restartedWallet.loadedSendState, firstWallet.sendState);
   assert.equal(restarted.health().pendingOutputCount, 1);
   assert.equal(restarted.health().reservedOutpointCount, 1);
+});
+
+test("bridge init rehydrates wallet send state after loading persisted disk state", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: new HydratingWalletClient(),
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+
+  assert.equal(bridge.health().pendingOutputCount, 1);
+  assert.equal(bridge.health().reservedOutpointCount, 1);
 });
 
 test("contextual polling encodes aliases for the live indexer query shape", async () => {

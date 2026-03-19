@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   KaspaWalletClient,
   buildCandidateUtxoPlans,
+  deriveWalletIdentity,
   makeOutpointKey,
   normalizeSendState,
   reconcileSendState,
@@ -179,6 +180,11 @@ test("wallet planner passes plain address strings into transaction attempts", as
       this.utxoContext = {};
       this.rpc = {};
       this.planCalls = [];
+      this.rebuildCalls = 0;
+    }
+
+    async _rebuildUtxoContext() {
+      this.rebuildCalls += 1;
     }
 
     _loadSendContext() {
@@ -206,9 +212,285 @@ test("wallet planner passes plain address strings into transaction attempts", as
   });
 
   assert.equal(result.txId, "tx-ok");
+  assert.equal(wallet.rebuildCalls, 1);
   assert.equal(wallet.planCalls.length, 1);
   assert.equal(typeof wallet.planCalls[0].destination, "string");
   assert.equal(typeof wallet.planCalls[0].receiveAddress, "string");
+});
+
+test("wallet planner executes full-context plans without explicit entry arrays", async () => {
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = { address: "kaspa:qselfaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" };
+      this.utxoContext = {};
+      this.rpc = {};
+      this.rebuildCalls = 0;
+      this.submitCalls = 0;
+    }
+
+    async _rebuildUtxoContext() {
+      this.rebuildCalls += 1;
+    }
+
+    _loadSendContext() {
+      return {
+        trackedPendingUtxos: [],
+        availablePendingUtxos: [],
+        availableMatureUtxos: [utxo({ txId: "mature-1", index: 0, amount: 1_000_000 })],
+      };
+    }
+
+    async _submitPlan(plan) {
+      this.submitCalls += 1;
+      assert.equal(plan.useFullContext, true);
+      return [{ txId: "tx-context", inputCount: 1, usesPendingInputs: false }];
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  const result = await wallet._sendPayloadTransaction({
+    destinationAddress: "kaspa:qpeeraddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    amountSompi: 1000n,
+    payloadBytes: new Uint8Array(),
+    strategy: "direct",
+  });
+
+  assert.equal(wallet.rebuildCalls, 1);
+  assert.equal(wallet.submitCalls, 1);
+  assert.equal(result.txId, "tx-context");
+});
+
+test("contextual sends with tracked pending state switch to filtered candidate plans", async () => {
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = { address: "kaspa:qselfaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" };
+      this.utxoContext = {};
+      this.rpc = {};
+      this.planCalls = [];
+      this.sendState = normalizeSendState({
+        reserved_outpoints: [{ key: "spent:0", reserved_at_ms: 10 }],
+        pending_outputs: [
+          {
+            key: "pending-1:0",
+            tx_id: "pending-1",
+            index: 0,
+            amount: "1000",
+            created_ms: 11,
+          },
+        ],
+      });
+    }
+
+    async _rebuildUtxoContext() {}
+
+    _loadSendContext() {
+      return {
+        trackedPendingUtxos: [
+          utxo({ txId: "pending-1", index: 0, amount: 1000, blockDaaScore: 0 }),
+        ],
+        availablePendingUtxos: [
+          utxo({ txId: "pending-1", index: 0, amount: 1000, blockDaaScore: 0 }),
+        ],
+        availableMatureUtxos: [utxo({ txId: "mature-1", index: 0, amount: 2000 })],
+      };
+    }
+
+    async _tryPlans(plans, txOptions) {
+      this.planCalls.push({ plans, txOptions });
+      return {
+        success: true,
+        transactions: [{ txId: "tx-pending", inputCount: 1, usesPendingInputs: true }],
+      };
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  const result = await wallet._sendPayloadTransaction({
+    destinationAddress: "kaspa:qselfaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    amountSompi: 1000n,
+    payloadBytes: new Uint8Array(),
+    strategy: "contextual",
+  });
+
+  assert.equal(result.txId, "tx-pending");
+  assert.equal(wallet.planCalls.length, 1);
+  assert.equal(wallet.planCalls[0].plans[0].name, "pending-single");
+  assert.equal(wallet.planCalls[0].plans[0].useFullContext, undefined);
+});
+
+test("wallet rebuild hydrates reserved spends and pending self-change from mempool", async () => {
+  const identity = deriveWalletIdentity(
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "mainnet"
+  );
+
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = identity;
+      this.rpc = {
+        getMempoolEntriesByAddresses: async () => ({
+          entries: [
+            {
+              address: identity.address,
+              sending: [
+                {
+                  transaction: {
+                    inputs: [
+                      {
+                        previousOutpoint: {
+                          transactionId: "prev-1",
+                          index: 0,
+                        },
+                      },
+                    ],
+                    outputs: [
+                      {
+                        value: 1234n,
+                        scriptPublicKey: identity.scriptPublicKey,
+                      },
+                    ],
+                    verboseData: {
+                      transactionId: "pending-1",
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      };
+      this.utxoContext = {
+        matureLength: 1,
+        getMatureRange() {
+          return [utxo({ txId: "prev-1", index: 0, amount: 5000 })];
+        },
+        getPending() {
+          return [];
+        },
+      };
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  await wallet._hydrateMempoolSendState();
+  const context = wallet._loadSendContext();
+
+  assert.deepEqual(
+    wallet.sendState.reserved_outpoints.map((entry) => entry.key),
+    ["prev-1:0"]
+  );
+  assert.deepEqual(
+    wallet.sendState.pending_outputs.map((entry) => entry.key),
+    ["pending-1:0"]
+  );
+  assert.equal(context.trackedPendingUtxos.length, 0);
+  assert.equal(context.availablePendingUtxos.length, 0);
+});
+
+test("wallet mempool hydration clears stale persisted send state when mempool is empty", async () => {
+  const identity = deriveWalletIdentity(
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "mainnet"
+  );
+
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = identity;
+      this.rpc = {
+        getMempoolEntriesByAddresses: async () => ({
+          entries: [
+            {
+              address: identity.address,
+              sending: [],
+              receiving: [],
+            },
+          ],
+        }),
+      };
+      this.sendState = normalizeSendState({
+        reserved_outpoints: [{ key: "stale:0", reserved_at_ms: 10 }],
+        pending_outputs: [
+          { key: "stale-pending:0", tx_id: "stale-pending", index: 0, amount: "42", created_ms: 11 },
+        ],
+      });
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  await wallet._hydrateMempoolSendState();
+
+  assert.deepEqual(wallet.sendState.reserved_outpoints, []);
+  assert.deepEqual(wallet.sendState.pending_outputs, []);
+});
+
+test("local pending outputs wait for mempool visibility before becoming tracked inputs", async () => {
+  const identity = deriveWalletIdentity(
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "mainnet"
+  );
+
+  class ProbeWalletClient extends KaspaWalletClient {
+    constructor() {
+      super({
+        seedPhrase:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        nodeUrl: "ws://node.invalid",
+        network: "mainnet",
+      });
+      this.identity = identity;
+      this.utxoContext = {
+        matureLength: 0,
+        getMatureRange() {
+          return [];
+        },
+        getPending() {
+          return [];
+        },
+      };
+      this.sendState = normalizeSendState({
+        pending_outputs: [
+          {
+            key: "local-only:0",
+            tx_id: "local-only",
+            index: 0,
+            amount: "1000",
+            created_ms: 12,
+            observed_in_mempool: false,
+          },
+        ],
+      });
+    }
+  }
+
+  const wallet = new ProbeWalletClient();
+  const context = wallet._loadSendContext();
+
+  assert.equal(context.trackedPendingUtxos.length, 0);
+  assert.equal(context.availablePendingUtxos.length, 0);
 });
 
 test("wallet planner can compact before retrying a fragmented direct send", async () => {
@@ -226,6 +508,8 @@ test("wallet planner can compact before retrying a fragmented direct send", asyn
       this.didCompact = false;
       this.compactionCount = 0;
     }
+
+    async _rebuildUtxoContext() {}
 
     _loadSendContext() {
       return {

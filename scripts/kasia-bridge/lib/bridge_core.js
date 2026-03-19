@@ -38,6 +38,108 @@ function encodeIndexerAlias(alias) {
   return Buffer.from(String(alias || ""), "utf8").toString("hex");
 }
 
+const DEFAULT_CONTEXTUAL_MESSAGE_MAX_CHARS = 240;
+
+function isPayloadTooLargeError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("storage mass") ||
+    text.includes("larger than max allowed size") ||
+    text.includes("transaction is not standard")
+  );
+}
+
+function truncateMessage(content, maxLength = DEFAULT_CONTEXTUAL_MESSAGE_MAX_CHARS) {
+  const text = String(content || "");
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const indicatorReserve = 10;
+  const fenceClose = "\n```";
+  const chunks = [];
+  let remaining = text;
+  let carryLang = null;
+
+  while (remaining) {
+    const prefix = carryLang != null ? `\`\`\`${carryLang}\n` : "";
+    let headroom =
+      maxLength - indicatorReserve - prefix.length - fenceClose.length;
+    if (headroom < 1) {
+      headroom = Math.max(1, Math.floor(maxLength / 2));
+    }
+
+    if (prefix.length + remaining.length <= maxLength - indicatorReserve) {
+      chunks.push(prefix + remaining);
+      break;
+    }
+
+    const region = remaining.slice(0, headroom);
+    let splitAt = region.lastIndexOf("\n");
+    if (splitAt < Math.floor(headroom / 2)) {
+      splitAt = region.lastIndexOf(" ");
+    }
+    if (splitAt < 1) {
+      splitAt = headroom;
+    }
+
+    const candidate = remaining.slice(0, splitAt);
+    const backtickCount =
+      (candidate.match(/`/g) || []).length -
+      (candidate.match(/\\`/g) || []).length;
+    if (backtickCount % 2 === 1) {
+      let lastBacktick = candidate.lastIndexOf("`");
+      while (lastBacktick > 0 && candidate[lastBacktick - 1] === "\\") {
+        lastBacktick = candidate.lastIndexOf("`", lastBacktick - 1);
+      }
+      if (lastBacktick > 0) {
+        const safeSpace = candidate.lastIndexOf(" ", lastBacktick);
+        const safeNewline = candidate.lastIndexOf("\n", lastBacktick);
+        const safeSplit = Math.max(safeSpace, safeNewline);
+        if (safeSplit > Math.floor(headroom / 4)) {
+          splitAt = safeSplit;
+        }
+      }
+    }
+
+    const chunkBody = remaining.slice(0, splitAt);
+    remaining = remaining.slice(splitAt).trimStart();
+
+    let fullChunk = prefix + chunkBody;
+    let inCode = carryLang != null;
+    let lang = carryLang || "";
+    for (const line of chunkBody.split("\n")) {
+      const stripped = line.trim();
+      if (stripped.startsWith("```")) {
+        if (inCode) {
+          inCode = false;
+          lang = "";
+        } else {
+          inCode = true;
+          const tag = stripped.slice(3).trim();
+          lang = tag ? tag.split(/\s+/, 1)[0] : "";
+        }
+      }
+    }
+
+    if (inCode) {
+      fullChunk += fenceClose;
+      carryLang = lang;
+    } else {
+      carryLang = null;
+    }
+
+    chunks.push(fullChunk);
+  }
+
+  if (chunks.length > 1) {
+    const total = chunks.length;
+    return chunks.map((chunk, index) => `${chunk} (${index + 1}/${total})`);
+  }
+
+  return chunks;
+}
+
 export class KasiaBridgeCore {
   constructor({
     stateDir,
@@ -89,6 +191,7 @@ export class KasiaBridgeCore {
       network: this.walletInfo.network,
     });
     this.walletClient.loadSendState?.(this.state.wallet.send_state || {});
+    await this.walletClient.hydrateSendState?.();
     await this._saveState();
 
     try {
@@ -201,28 +304,54 @@ export class KasiaBridgeCore {
       );
     }
 
+    const text = String(message);
+    let txResults;
+    try {
+      txResults = [await this._sendConversationMessageChunk(conversation, text)];
+    } catch (error) {
+      if (!isPayloadTooLargeError(error)) {
+        throw error;
+      }
+      const chunks = truncateMessage(text);
+      if (chunks.length <= 1) {
+        throw error;
+      }
+      txResults = [];
+      for (const chunk of chunks) {
+        txResults.push(
+          await this._sendConversationMessageChunk(conversation, chunk)
+        );
+      }
+    }
+
+    touchConversation(conversation, new Date(this.nowFn()).toISOString());
+    await this._saveState();
+
+    const txIds = txResults.map((result) => result?.txId || result).filter(Boolean);
+    const lastResult = txResults[txResults.length - 1];
+    return {
+      status: "sent",
+      txId: txIds[txIds.length - 1],
+      txIds,
+      partCount: txResults.length,
+      chatId: conversation.peer_address,
+      wallet: typeof lastResult === "object" ? lastResult : undefined,
+    };
+  }
+
+  async _sendConversationMessageChunk(conversation, message) {
     const payloadBytes = buildContextualMessageTransactionPayload({
       recipientAddress: conversation.peer_address,
       alias: conversation.our_alias,
       message: String(message),
       randomBytesFn: this.randomBytesFn,
     });
-    const txResult = await this.walletClient.sendPayloadTransaction({
+    return await this.walletClient.sendPayloadTransaction({
       destinationAddress: this.walletInfo.address,
       amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
       payloadBytes,
       strategy: "contextual",
     });
-
-    touchConversation(conversation, new Date(this.nowFn()).toISOString());
-    await this._saveState();
-
-    return {
-      status: "sent",
-      txId: txResult.txId || txResult,
-      chatId: conversation.peer_address,
-      wallet: typeof txResult === "object" ? txResult : undefined,
-    };
   }
 
   async syncOnce() {

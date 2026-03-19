@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".aac"}
 _VOICE_EXTS = {".ogg", ".opus"}
 
 

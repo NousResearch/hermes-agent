@@ -102,6 +102,7 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
             "https://custom.example/v1",
             "custom-api-key",
             "custom/model",
+            "",  # context window size — skip
         ]
     )
     monkeypatch.setattr(
@@ -110,6 +111,10 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata",
+        lambda base_url, api_key="": {},
+    )
 
     setup_model_provider(config)
     save_config(config)

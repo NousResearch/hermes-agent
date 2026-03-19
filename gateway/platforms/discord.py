@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -51,23 +50,9 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
-
-
-def _clean_discord_id(entry: str) -> str:
-    """Strip common prefixes from a Discord user ID or username entry.
-
-    Users sometimes paste IDs with prefixes like ``user:123``, ``<@123>``,
-    or ``<@!123>`` from Discord's UI or other tools.  This normalises the
-    entry to just the bare ID or username.
-    """
-    entry = entry.strip()
-    # Strip Discord mention syntax: <@123> or <@!123>
-    if entry.startswith("<@") and entry.endswith(">"):
-        entry = entry.lstrip("<@!").rstrip(">")
-    # Strip "user:" prefix (seen in some Discord tools / onboarding pastes)
-    if entry.lower().startswith("user:"):
-        entry = entry[5:]
-    return entry.strip()
+from gateway.platforms.discord_impl import config as discord_config
+from gateway.platforms.discord_impl import intake as discord_intake
+from gateway.platforms.discord_impl import state as discord_state
 
 
 def check_discord_requirements() -> bool:
@@ -493,12 +478,9 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             
             # Parse allowed user entries (may contain usernames or IDs)
-            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
-            if allowed_env:
-                self._allowed_user_ids = {
-                    _clean_discord_id(uid) for uid in allowed_env.split(",")
-                    if uid.strip()
-                }
+            self._allowed_user_ids = discord_config.parse_allowed_users(
+                os.getenv("DISCORD_ALLOWED_USERS", "")
+            )
             
             adapter_self = self  # capture for closure
             
@@ -528,14 +510,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
                 #   "all"      — accept all bot messages
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through to handle_message
+                is_mentioned = bool(self._client.user and self._client.user in message.mentions)
+                if discord_intake.should_filter_bot_message(
+                    is_bot=getattr(message.author, "bot", False),
+                    policy=discord_config.get_bot_filter_policy(),
+                    is_mentioned=is_mentioned,
+                ):
+                    return
                 
                 await self._handle_message(message)
 
@@ -1752,86 +1733,44 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
-        parent = getattr(channel, "parent", None)
-        if parent is not None and getattr(parent, "id", None) is not None:
-            return str(parent.id)
-        parent_id = getattr(channel, "parent_id", None)
-        if parent_id is not None:
-            return str(parent_id)
-        return None
+        return discord_intake.get_parent_channel_id(channel)
 
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
-        if channel is None:
-            return False
-        forum_cls = getattr(discord, "ForumChannel", None)
-        if forum_cls and isinstance(channel, forum_cls):
-            return True
-        channel_type = getattr(channel, "type", None)
-        if channel_type is not None:
-            type_value = getattr(channel_type, "value", channel_type)
-            if type_value == 15:
-                return True
-        return False
+        return discord_intake.is_forum_parent(channel)
 
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
-        thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
-        parent = getattr(thread, "parent", None)
-        guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
-        guild_name = getattr(guild, "name", None)
-        parent_name = getattr(parent, "name", None)
-
-        if self._is_forum_parent(parent) and guild_name and parent_name:
-            return f"{guild_name} / {parent_name} / {thread_name}"
-        if parent_name and guild_name:
-            return f"{guild_name} / #{parent_name} / {thread_name}"
-        if parent_name:
-            return f"{parent_name} / {thread_name}"
-        return thread_name
+        return discord_intake.format_thread_chat_name(thread, self._is_forum_parent)
 
     # ------------------------------------------------------------------
     # Thread participation persistence
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _thread_state_path() -> Path:
+    def _thread_state_path():
         """Path to the persisted thread participation set."""
-        from hermes_cli.config import get_hermes_home
-        return get_hermes_home() / "discord_threads.json"
+        return discord_state.thread_state_path()
 
     @classmethod
     def _load_participated_threads(cls) -> set:
         """Load persisted thread IDs from disk."""
-        path = cls._thread_state_path()
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as e:
-            logger.debug("Could not load discord thread state: %s", e)
-        return set()
+        return discord_state.load_participated_threads()
 
     def _save_participated_threads(self) -> None:
         """Persist the current thread set to disk (best-effort)."""
-        path = self._thread_state_path()
-        try:
-            # Trim to most recent entries if over cap
-            thread_list = list(self._bot_participated_threads)
-            if len(thread_list) > self._MAX_TRACKED_THREADS:
-                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
-                self._bot_participated_threads = set(thread_list)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Could not save discord thread state: %s", e)
+        self._bot_participated_threads = discord_state.save_participated_threads(
+            self._bot_participated_threads,
+            max_threads=self._MAX_TRACKED_THREADS,
+        )
 
     def _track_thread(self, thread_id: str) -> None:
         """Add a thread to the participation set and persist."""
-        if thread_id not in self._bot_participated_threads:
-            self._bot_participated_threads.add(thread_id)
-            self._save_participated_threads()
+        self._bot_participated_threads = discord_state.track_thread(
+            self._bot_participated_threads,
+            thread_id,
+            max_threads=self._MAX_TRACKED_THREADS,
+        )
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
@@ -1852,34 +1791,36 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         if not isinstance(message.channel, discord.DMChannel):
-            free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            free_channels = discord_config.get_free_response_channels()
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            require_mention = discord_config.is_mention_required()
             is_free_channel = bool(channel_ids & free_channels)
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+            is_mentioned = bool(self._client.user and self._client.user in message.mentions)
 
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
-                    return
+            if discord_intake.should_skip_for_mention(
+                require_mention=require_mention,
+                is_free_channel=is_free_channel,
+                in_bot_thread=in_bot_thread,
+                is_mentioned=is_mentioned,
+            ):
+                return
 
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if is_mentioned and self._client.user:
+                message.content = discord_intake.strip_mention(message.content, self._client.user.id)
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread:
+            if discord_config.is_auto_thread_enabled():
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
@@ -1888,22 +1829,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._track_thread(thread_id)
 
         # Determine message type
-        msg_type = MessageType.TEXT
-        if message.content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif message.attachments:
-            # Check attachment types
-            for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        msg_type = MessageType.DOCUMENT
-                    break
+        msg_type = MessageType(
+            discord_intake.classify_message_type(message.content, message.attachments)
+        )
         
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel

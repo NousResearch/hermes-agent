@@ -67,7 +67,7 @@ rl = [
   "uvicorn[standard]>=0.24.0",
   "wandb>=0.15.0",
 ]
-#yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
+yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",

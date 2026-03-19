@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -9,14 +10,20 @@ mcp = FastMCP("__SERVER_NAME__")
 
 
 def _read_text(path: str) -> str:
-    return Path(path).expanduser().read_text(encoding="utf-8")
+    file_path = Path(path).expanduser()
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ValueError(f"File not found: {file_path}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"File is not valid UTF-8 text: {file_path}") from exc
 
 
 @mcp.tool
 def summarize_text_file(path: str, preview_chars: int = 1200) -> dict[str, int | str]:
     """Return basic metadata and a preview for a UTF-8 text file."""
     file_path = Path(path).expanduser()
-    text = file_path.read_text(encoding="utf-8")
+    text = _read_text(path)
     return {
         "path": str(file_path),
         "characters": len(text),
@@ -26,11 +33,11 @@ def summarize_text_file(path: str, preview_chars: int = 1200) -> dict[str, int |
 
 
 @mcp.tool
-def search_text_file(path: str, needle: str, max_matches: int = 20) -> dict[str, object]:
+def search_text_file(path: str, needle: str, max_matches: int = 20) -> dict[str, Any]:
     """Find matching lines in a UTF-8 text file."""
     file_path = Path(path).expanduser()
-    matches: list[dict[str, object]] = []
-    for line_number, line in enumerate(file_path.read_text(encoding="utf-8").splitlines(), start=1):
+    matches: list[dict[str, Any]] = []
+    for line_number, line in enumerate(_read_text(path).splitlines(), start=1):
         if needle.lower() in line.lower():
             matches.append({"line_number": line_number, "line": line})
             if len(matches) >= max_matches:

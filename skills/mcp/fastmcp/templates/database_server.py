@@ -64,7 +64,7 @@ def describe_table(table_name: str) -> list[dict[str, Any]]:
 def query(sql: str, limit: int = 50) -> dict[str, Any]:
     """Run a read-only SELECT query and return rows plus column names."""
     _reject_mutation(sql)
-    safe_limit = min(limit, MAX_ROWS)
+    safe_limit = max(0, min(limit, MAX_ROWS))
     wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"
     with _connect() as conn:
         cursor = conn.execute(wrapped_sql)

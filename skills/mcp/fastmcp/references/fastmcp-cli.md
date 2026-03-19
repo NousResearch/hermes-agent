@@ -52,7 +52,7 @@ fastmcp list http://127.0.0.1:8000/mcp --json
 Call a tool with key-value arguments:
 
 ```bash
-fastmcp call server.py search_items query=router limit=5 --json
+fastmcp call server.py search_resources query=router limit=5 --json
 ```
 
 Call a tool with a full JSON input payload:

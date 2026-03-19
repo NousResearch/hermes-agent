@@ -138,7 +138,7 @@ Use the FastMCP CLI for local validation:
 ```bash
 fastmcp inspect acme_server.py:mcp
 fastmcp list acme_server.py --json
-fastmcp call acme_server.py search_items query=router limit=5 --json
+fastmcp call acme_server.py search_resources query=router limit=5 --json
 ```
 
 For fast iterative debugging, run the server locally:
@@ -152,7 +152,7 @@ To test HTTP transport locally:
 ```bash
 fastmcp run acme_server.py:mcp --transport http --host 127.0.0.1 --port 8000
 fastmcp list http://127.0.0.1:8000/mcp --json
-fastmcp call http://127.0.0.1:8000/mcp search_items query=router --json
+fastmcp call http://127.0.0.1:8000/mcp search_resources query=router --json
 ```
 
 Always run at least one real `fastmcp call` against each new tool before claiming the server works.

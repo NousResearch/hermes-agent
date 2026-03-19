@@ -168,6 +168,101 @@ async def test_edit_message_truncates_oversized_content():
 
 
 @pytest.mark.asyncio
+async def test_delete_message_returns_success():
+    message = SimpleNamespace(delete=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+
+    result = await messaging.delete_message(_make_client(channel), "123", "456")
+
+    assert result.success is True
+    assert result.message_id == "456"
+    message.delete.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_add_and_remove_reaction_call_message_methods():
+    message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    client = _make_client(channel)
+    client.user = SimpleNamespace(id=999)
+
+    add_result = await messaging.add_reaction(client, "123", "456", "🔥")
+    remove_result = await messaging.remove_reaction(client, "123", "456", "🔥")
+
+    assert add_result.success is True
+    assert remove_result.success is True
+    message.add_reaction.assert_awaited_once_with("🔥")
+    message.remove_reaction.assert_awaited_once_with("🔥", client.user)
+
+
+@pytest.mark.asyncio
+async def test_remove_reaction_requires_client_user():
+    message = SimpleNamespace(remove_reaction=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+
+    result = await messaging.remove_reaction(_make_client(channel), "123", "456", "🔥")
+
+    assert result.success is False
+    assert result.error == "Client user unavailable"
+    message.remove_reaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_reactions_serializes_unicode_and_custom_emoji_users():
+    class _CustomEmoji:
+        id = 77
+        name = "party"
+
+        def __str__(self):
+            return "<:party:77>"
+
+    unicode_reaction = SimpleNamespace(
+        emoji="🔥",
+        count=2,
+        users=MagicMock(
+            return_value=_AsyncItemsIterator(
+                [SimpleNamespace(id=1, username="alan", discriminator="1234")]
+            )
+        ),
+    )
+    custom_reaction = SimpleNamespace(
+        emoji=_CustomEmoji(),
+        count=1,
+        users=MagicMock(
+            return_value=_AsyncItemsIterator([SimpleNamespace(id=2, name="bot-user")])
+        ),
+    )
+    message = SimpleNamespace(reactions=[unicode_reaction, custom_reaction])
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+
+    result = await messaging.list_reactions(_make_client(channel), "123", "456", limit=5)
+
+    assert result == [
+        {
+            "emoji": {"id": None, "name": "🔥", "raw": "🔥"},
+            "count": 2,
+            "users": [{"id": "1", "username": "alan", "tag": "alan#1234"}],
+        },
+        {
+            "emoji": {"id": "77", "name": "party", "raw": "<:party:77>"},
+            "count": 1,
+            "users": [{"id": "2", "username": "bot-user", "tag": "bot-user"}],
+        },
+    ]
+    unicode_reaction.users.assert_called_once_with(limit=5)
+    custom_reaction.users.assert_called_once_with(limit=5)
+
+
+@pytest.mark.asyncio
+async def test_list_reactions_returns_empty_when_message_missing():
+    channel = SimpleNamespace(fetch_message=AsyncMock(side_effect=RuntimeError("missing message")))
+
+    result = await messaging.list_reactions(_make_client(channel), "123", "456")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
 async def test_list_threads_returns_active_threads():
     active_thread = SimpleNamespace(
         id=10,

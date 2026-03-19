@@ -670,6 +670,70 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return result
 
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Delete a Discord message."""
+        result = await discord_messaging.delete_message(
+            self._client,
+            chat_id,
+            message_id,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to delete Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: Any,
+    ) -> SendResult:
+        """Add a reaction to a Discord message."""
+        result = await discord_messaging.add_reaction(
+            self._client,
+            chat_id,
+            message_id,
+            emoji,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to add reaction to Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: Any,
+    ) -> SendResult:
+        """Remove the connected bot's reaction from a Discord message."""
+        result = await discord_messaging.remove_reaction(
+            self._client,
+            chat_id,
+            message_id,
+            emoji,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to remove reaction from Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
     async def _send_file_attachment(
         self,
         chat_id: str,
@@ -1360,6 +1424,22 @@ class DiscordAdapter(BasePlatformAdapter):
             limit=limit,
             before=before,
             oldest_first=oldest_first,
+        )
+
+    async def list_reactions(
+        self,
+        chat_id: str,
+        message_id: str,
+        limit: int = 100,
+    ) -> list:
+        """List reactions for a Discord message."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_reactions(
+            self._client,
+            chat_id,
+            message_id,
+            limit=limit,
         )
 
     async def pin_message(

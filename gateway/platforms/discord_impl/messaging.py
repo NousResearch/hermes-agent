@@ -102,6 +102,38 @@ def _thread_dict(thread: Any) -> dict[str, Any]:
     }
 
 
+def _emoji_dict(emoji: Any) -> dict[str, Any]:
+    emoji_id = getattr(emoji, "id", None)
+    emoji_name = getattr(emoji, "name", None)
+    if emoji_name is None and isinstance(emoji, str):
+        emoji_name = emoji
+    return {
+        "id": str(emoji_id) if emoji_id is not None else None,
+        "name": emoji_name,
+        "raw": str(emoji) if emoji is not None else "",
+    }
+
+
+def _user_dict(user: Any) -> dict[str, Any]:
+    username = getattr(user, "username", None) or getattr(user, "name", None)
+    discriminator = getattr(user, "discriminator", None)
+    if username and discriminator and str(discriminator) != "0":
+        tag = f"{username}#{discriminator}"
+    else:
+        tag = username
+    return {
+        "id": str(getattr(user, "id", "")),
+        "username": username,
+        "tag": tag,
+    }
+
+
+def _normalize_emoji(emoji: Any) -> Any:
+    if isinstance(emoji, str):
+        return emoji.strip()
+    return emoji
+
+
 async def fetch_channel_message(
     client: Any,
     chat_id: str,
@@ -149,6 +181,116 @@ async def edit_message(
         return SendResult(success=False, error=str(exc))
 
     return SendResult(success=True, message_id=message_id)
+
+
+async def delete_message(
+    client: Any,
+    chat_id: str,
+    message_id: str,
+) -> SendResult:
+    """Delete a Discord message."""
+    if not client:
+        return SendResult(success=False, error="Not connected")
+
+    _channel, message, error = await fetch_channel_message(client, chat_id, message_id)
+    if error is not None:
+        return error
+
+    try:
+        await message.delete()
+    except Exception as exc:
+        return SendResult(success=False, error=str(exc))
+
+    return SendResult(success=True, message_id=message_id)
+
+
+async def add_reaction(
+    client: Any,
+    chat_id: str,
+    message_id: str,
+    emoji: Any,
+) -> SendResult:
+    """Add a reaction to a Discord message."""
+    if not client:
+        return SendResult(success=False, error="Not connected")
+
+    normalized_emoji = _normalize_emoji(emoji)
+    if not normalized_emoji:
+        return SendResult(success=False, error="Emoji is required")
+
+    _channel, message, error = await fetch_channel_message(client, chat_id, message_id)
+    if error is not None:
+        return error
+
+    try:
+        await message.add_reaction(normalized_emoji)
+    except Exception as exc:
+        return SendResult(success=False, error=str(exc))
+
+    return SendResult(success=True, message_id=message_id)
+
+
+async def remove_reaction(
+    client: Any,
+    chat_id: str,
+    message_id: str,
+    emoji: Any,
+) -> SendResult:
+    """Remove the connected bot's reaction from a Discord message."""
+    if not client:
+        return SendResult(success=False, error="Not connected")
+
+    normalized_emoji = _normalize_emoji(emoji)
+    if not normalized_emoji:
+        return SendResult(success=False, error="Emoji is required")
+
+    member = getattr(client, "user", None)
+    if member is None:
+        return SendResult(success=False, error="Client user unavailable")
+
+    _channel, message, error = await fetch_channel_message(client, chat_id, message_id)
+    if error is not None:
+        return error
+
+    try:
+        await message.remove_reaction(normalized_emoji, member)
+    except Exception as exc:
+        return SendResult(success=False, error=str(exc))
+
+    return SendResult(success=True, message_id=message_id)
+
+
+async def list_reactions(
+    client: Any,
+    chat_id: str,
+    message_id: str,
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List reactions on a Discord message with bounded user summaries."""
+    if not client:
+        return []
+
+    _channel, message, error = await fetch_channel_message(client, chat_id, message_id)
+    if error is not None or message is None:
+        return []
+
+    user_limit = _clamp_limit(limit, default=100, minimum=1, maximum=100)
+    summaries: list[dict[str, Any]] = []
+    for reaction in (getattr(message, "reactions", []) or []):
+        users_fn = getattr(reaction, "users", None)
+        try:
+            users = await _collect_items(users_fn(limit=user_limit)) if callable(users_fn) else []
+        except Exception:
+            users = []
+        summaries.append(
+            {
+                "emoji": _emoji_dict(getattr(reaction, "emoji", None)),
+                "count": int(getattr(reaction, "count", 0) or 0),
+                "users": [_user_dict(user) for user in users],
+            }
+        )
+    return summaries
 
 
 async def list_threads(

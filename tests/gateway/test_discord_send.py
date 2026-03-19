@@ -124,6 +124,43 @@ async def test_edit_message_returns_channel_error_for_missing_channel():
     assert result.error == "Channel 555 not found"
 
 
+@pytest.mark.asyncio
+async def test_delete_message_delegates_to_message_delete():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(delete=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.delete_message("555", "99")
+
+    assert result.success is True
+    assert result.message_id == "99"
+    message.delete.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_add_and_remove_reaction_delegate_to_message_methods():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=999),
+    )
+
+    add_result = await adapter.add_reaction("555", "99", "🔥")
+    remove_result = await adapter.remove_reaction("555", "99", "🔥")
+
+    assert add_result.success is True
+    assert remove_result.success is True
+    message.add_reaction.assert_awaited_once_with("🔥")
+    message.remove_reaction.assert_awaited_once_with("🔥", adapter._client.user)
+
+
 class _FakeHistoryIterator:
     def __init__(self, messages):
         self._messages = list(messages)
@@ -389,3 +426,32 @@ async def test_pin_and_unpin_message_delegate_to_message_methods():
     assert unpin_result.success is True
     message.pin.assert_awaited_once_with(reason="keep")
     message.unpin.assert_awaited_once_with(reason="drop")
+
+
+@pytest.mark.asyncio
+async def test_list_reactions_returns_serialized_summaries():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    reaction = SimpleNamespace(
+        emoji="🔥",
+        count=2,
+        users=MagicMock(
+            return_value=_FakeHistoryIterator([SimpleNamespace(id=1, username="alan", discriminator="1234")])
+        ),
+    )
+    message = SimpleNamespace(reactions=[reaction])
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.list_reactions("123", "456", limit=3)
+
+    assert result == [
+        {
+            "emoji": {"id": None, "name": "🔥", "raw": "🔥"},
+            "count": 2,
+            "users": [{"id": "1", "username": "alan", "tag": "alan#1234"}],
+        }
+    ]
+    reaction.users.assert_called_once_with(limit=3)

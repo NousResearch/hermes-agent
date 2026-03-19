@@ -1497,6 +1497,26 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
+        @tree.command(name="create-agent", description="Start onboarding a new Manifold AI agent")
+        @discord.app_commands.describe(
+            name="Name for the new agent",
+        )
+        async def slash_create_agent(
+            interaction: discord.Interaction,
+            name: str,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            thread_name = f"Onboarding: {name}"
+            # The message instructs the agent to load the create-agent skill and begin
+            prompt = (
+                f"I want to create a new agent called **{name}**. "
+                f"Load the `create-agent` skill and begin Phase 0. "
+                f"I am the Owner. My Discord ID is {interaction.user.id}."
+            )
+            await self._handle_thread_create_slash(
+                interaction, thread_name, prompt, auto_archive_duration=10080,
+            )
+
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(
             name="Thread name",
@@ -1939,8 +1959,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 media_urls.append(att.url)
                 media_types.append(content_type)
         
+        # Fetch the content of the referenced (replied-to) message so the
+        # agent can see what the user is replying to.
+        quoted_prefix = ""
+        if message.reference and message.reference.message_id:
+            try:
+                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                author_name = getattr(ref_msg.author, "display_name", None) or str(ref_msg.author)
+                if ref_msg.content:
+                    quoted_prefix = f'[Replying to {author_name}: "{ref_msg.content}"]\n\n'
+                elif ref_msg.embeds:
+                    embed_text = ref_msg.embeds[0].description or ref_msg.embeds[0].title or ""
+                    if embed_text:
+                        quoted_prefix = f'[Replying to {author_name}: "{embed_text}"]\n\n'
+            except Exception as e:
+                print(f"[Discord] Failed to fetch referenced message: {e}", flush=True)
+
         event = MessageEvent(
-            text=message.content,
+            text=quoted_prefix + message.content,
             message_type=msg_type,
             source=source,
             raw_message=message,

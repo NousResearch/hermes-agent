@@ -3507,6 +3507,22 @@ For more help on a command:
     skills_parser.set_defaults(func=cmd_skills)
 
     # =========================================================================
+    # provider command
+    # =========================================================================
+    provider_parser = subparsers.add_parser("provider", help="Manage provider presets")
+    provider_subparsers = provider_parser.add_subparsers(dest="provider_action")
+    provider_subparsers.add_parser("list", help="List all configured provider presets")
+    provider_set = provider_subparsers.add_parser("set", help="Switch to a provider preset")
+    provider_set.add_argument("name", help="Preset name to switch to")
+    provider_show = provider_subparsers.add_parser("show", help="Show details of a provider preset")
+    provider_show.add_argument("name", help="Preset name to show")
+    def cmd_provider(args):
+        from hermes_cli.provider_cmd import cmd_provider as _cmd
+        _cmd(args)
+    provider_parser.set_defaults(func=cmd_provider)
+
+
+    # =========================================================================
     # honcho command
     # =========================================================================
     honcho_parser = subparsers.add_parser(

@@ -2535,9 +2535,65 @@ class GatewayRunner:
             aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
             lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
 
+        # Show presets if any
+        from hermes_cli.runtime_provider import list_provider_presets, get_default_preset_name
+        presets = list_provider_presets()
+        if presets:
+            lines.append("")
+            lines.append("**Provider presets** (from config.yaml):")
+            default_preset = get_default_preset_name()
+            for pname, pcfg in presets.items():
+                ptype = pcfg.get("type", "openai-compatible")
+                pmodel = pcfg.get("model", "")
+                marker = " <- default" if pname == default_preset else ""
+                lines.append("* `{}` -- {} / {}{}".format(pname, ptype, pmodel, marker))
+            lines.append("")
+            lines.append("Switch preset: `/provider <name>`")
         lines.append("")
-        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Switch model: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
+
+        # Handle switching: /provider <name>
+        args = event.get_command_args().strip()
+        if args:
+            from hermes_cli.runtime_provider import get_provider_preset
+            preset = get_provider_preset(args)
+            if preset is None:
+                available = ", ".join(presets.keys()) if presets else "none"
+                return "Unknown provider preset: `{}`\nAvailable: {}".format(args, available)
+            ptype = preset.get("type", "openai-compatible")
+            pmodel = preset.get("model", "")
+            pbase_url = preset.get("base_url", "")
+            papi_key = preset.get("api_key", "")
+            if pmodel:
+                os.environ["HERMES_MODEL"] = pmodel
+            if papi_key:
+                os.environ["OPENAI_API_KEY"] = papi_key
+            if pbase_url:
+                os.environ["OPENAI_BASE_URL"] = pbase_url
+            else:
+                os.environ.pop("OPENAI_BASE_URL", None)
+            os.environ["HERMES_INFERENCE_PROVIDER"] = ptype
+            try:
+                import yaml as _yaml
+                config_path = _hermes_home / "config.yaml"
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = _yaml.safe_load(f) or {}
+                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                    user_config["model"] = {}
+                if pmodel:
+                    user_config["model"]["default"] = pmodel
+                user_config["model"]["provider"] = ptype
+                with open(config_path, "w", encoding="utf-8") as f:
+                    _yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return "Switched to preset `{}` (session only -- could not save: {})".format(args, e)
+            self._effective_model = None
+            self._effective_provider = None
+            return "Switched to provider preset `{}` ({} / {})\n_(takes effect on next message)_".format(args, ptype, pmodel)
+
         return "\n".join(lines)
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:

@@ -300,6 +300,13 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
 
+    # Provider presets — named provider configurations for easy switching.
+    # Use /provider <name> in gateway or "hermes provider set <name>" in CLI.
+    # Supports env var interpolation: ${ENV_VAR}
+    "providers": {},
+    # Default provider preset name to use on startup (empty = use model.provider)
+    "default_provider": "",
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

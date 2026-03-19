@@ -43,6 +43,50 @@ def _auto_detect_local_model(base_url: str) -> str:
     except Exception:
         pass
     return ""
+def _expand_env_vars(value: str) -> str:
+    """Expand ${ENV_VAR} patterns in config values."""
+    import re
+    def replacer(m):
+        return os.environ.get(m.group(1), m.group(0))
+    return re.sub(r"\$\{([^}]+)\}", replacer, value)
+
+
+def get_provider_preset(name: str) -> Optional[Dict[str, Any]]:
+    """Return a named provider preset from config, or None if not found."""
+    config = load_config()
+    presets = config.get("providers", {})
+    if not isinstance(presets, dict):
+        return None
+    preset = presets.get(name)
+    if not isinstance(preset, dict):
+        return None
+    result = {}
+    for k, v in preset.items():
+        result[k] = _expand_env_vars(str(v)) if isinstance(v, str) else v
+    return result
+
+
+def list_provider_presets() -> Dict[str, Dict[str, Any]]:
+    """Return all named provider presets from config."""
+    config = load_config()
+    presets = config.get("providers", {})
+    if not isinstance(presets, dict):
+        return {}
+    result = {}
+    for name, preset in presets.items():
+        if isinstance(preset, dict):
+            expanded = {}
+            for k, v in preset.items():
+                expanded[k] = _expand_env_vars(str(v)) if isinstance(v, str) else v
+            result[name] = expanded
+    return result
+
+
+def get_default_preset_name() -> Optional[str]:
+    """Return the configured default_provider preset name, or None."""
+    config = load_config()
+    name = config.get("default_provider", "")
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 def _get_model_config() -> Dict[str, Any]:

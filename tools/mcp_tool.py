@@ -97,10 +97,15 @@ try:
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
     try:
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamable_http_client
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    try:
+        from mcp.client.sse import sse_client
+        _MCP_SSE_AVAILABLE = True
+    except ImportError:
+        _MCP_SSE_AVAILABLE = False
     # Sampling types -- separated so older SDK versions don't break MCP support
     try:
         from mcp.types import (
@@ -685,7 +690,9 @@ class MCPServerTask:
     runs inside one asyncio Task so that anyio cancel-scopes created by
     the transport client are entered and exited in the same Task context.
 
-    Supports both stdio and HTTP/StreamableHTTP transports.
+    Supports stdio, HTTP/StreamableHTTP, and SSE transports.
+    When the config specifies a ``url`` without an explicit ``transport``
+    key, the server tries Streamable HTTP first and falls back to SSE.
     """
 
     __slots__ = (
@@ -741,17 +748,24 @@ class MCPServerTask:
                 await self._shutdown_event.wait()
 
     async def _run_http(self, config: dict):
-        """Run the server using HTTP/StreamableHTTP transport."""
-        if not _MCP_HTTP_AVAILABLE:
+        """Run the server using HTTP transport (streamable-http or SSE).
+
+        Transport selection order:
+        1. If config has ``transport: sse`` → use SSE directly.
+        2. If config has ``transport: streamable-http`` → use streamable HTTP.
+        3. Otherwise → try streamable HTTP first, fall back to SSE.
+        """
+        if not _MCP_HTTP_AVAILABLE and not _MCP_SSE_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
-                "mcp.client.streamable_http is not available. "
-                "Upgrade the mcp package to get HTTP support."
+                "neither mcp.client.streamable_http nor mcp.client.sse "
+                "is available. Run: uv pip install -e '.[mcp]' to install."
             )
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        transport = config.get("transport", "").lower()
 
         # OAuth 2.1 PKCE: resolve auth headers before connecting
         if self._auth_type == "oauth":
@@ -774,11 +788,65 @@ class MCPServerTask:
                 )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        async with streamablehttp_client(
+
+        # Determine transport order
+        if transport == "sse":
+            await self._connect_sse(url, headers, connect_timeout, sampling_kwargs)
+        elif transport == "streamable-http" or transport == "streamable_http":
+            await self._connect_streamable_http(url, headers, connect_timeout, sampling_kwargs)
+        else:
+            # Auto-detect: try streamable HTTP first, fall back to SSE
+            if _MCP_HTTP_AVAILABLE:
+                try:
+                    await self._connect_streamable_http(url, headers, connect_timeout, sampling_kwargs)
+                    return
+                except Exception as exc:
+                    if not _MCP_SSE_AVAILABLE:
+                        raise
+                    logger.info(
+                        "Streamable HTTP failed for '%s' (%s), "
+                        "falling back to SSE transport",
+                        self.name, exc,
+                    )
+            if _MCP_SSE_AVAILABLE:
+                await self._connect_sse(url, headers, connect_timeout, sampling_kwargs)
+            else:
+                raise ImportError(
+                    f"MCP server '{self.name}' requires HTTP transport but "
+                    "no suitable transport client is available."
+                )
+
+    async def _connect_streamable_http(
+        self, url: str, headers: dict, connect_timeout: float, sampling_kwargs: dict,
+    ):
+        """Connect via Streamable HTTP transport (MCP SDK v2)."""
+        import httpx
+        http_client = httpx.AsyncClient(
+            headers=headers or None,
+            timeout=httpx.Timeout(float(connect_timeout)),
+        )
+
+        async with http_client:
+            async with streamable_http_client(
+                url,
+                http_client=http_client,
+            ) as (read_stream, write_stream, *_rest):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
+
+    async def _connect_sse(
+        self, url: str, headers: dict, connect_timeout: float, sampling_kwargs: dict,
+    ):
+        """Connect via SSE (Server-Sent Events) transport."""
+        async with sse_client(
             url,
             headers=headers or None,
             timeout=float(connect_timeout),
-        ) as (read_stream, write_stream, _get_session_id):
+        ) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                 await session.initialize()
                 self.session = session

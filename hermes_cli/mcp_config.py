@@ -144,10 +144,28 @@ def _probe_single_server(
 
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+    except BaseException as exc:
+        raise _unwrap_exception_group(exc) from None
     finally:
         _stop_mcp_loop()
 
     return tools_found
+
+
+def _unwrap_exception_group(exc: BaseException) -> Exception:
+    """Extract the root-cause exception from anyio TaskGroup wrappers.
+
+    The MCP SDK uses anyio task groups, which wrap errors in
+    ``BaseExceptionGroup`` / ``ExceptionGroup``.  This makes error
+    messages opaque ("unhandled errors in a TaskGroup").  We unwrap
+    to surface the real cause (e.g. "401 Unauthorized").
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    # Return a plain Exception so callers can catch normally
+    if isinstance(exc, Exception):
+        return exc
+    return RuntimeError(str(exc))
 
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
@@ -187,19 +205,29 @@ def cmd_mcp_add(args):
     # ── Authentication ────────────────────────────────────────────────
 
     if url and auth_type == "oauth":
-        server_config["auth"] = "oauth"
         print()
         _info(f"Starting OAuth flow for '{name}'...")
+        oauth_ok = False
         try:
             from tools.mcp_oauth import get_auth_headers
             headers = get_auth_headers(name, url)
             if headers:
+                server_config["auth"] = "oauth"
                 _success("OAuth authenticated")
+                oauth_ok = True
             else:
-                _warning("OAuth flow did not complete — you may need to re-auth later")
+                _warning("OAuth flow did not complete")
         except Exception as exc:
             _warning(f"OAuth error: {exc}")
-            _info("You can retry auth later by starting a session.")
+
+        if not oauth_ok:
+            _info("This server may not support OAuth.")
+            if _confirm("Continue without authentication?", default=True):
+                # Don't store auth: oauth — server doesn't support it
+                pass
+            else:
+                _info("Cancelled.")
+                return
 
     elif url:
         # Prompt for API key / Bearer token for HTTP servers

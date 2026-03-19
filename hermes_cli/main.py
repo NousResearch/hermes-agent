@@ -4089,6 +4089,13 @@ For more help on a command:
         cmd_chat(args)
         return
     
+    # Execute the command — check for func first because nested subparsers
+    # (e.g. "hermes mcp add") may set func correctly while leaving
+    # args.command as None (known argparse quirk with nested subparsers).
+    if hasattr(args, 'func'):
+        args.func(args)
+        return
+
     # Default to chat if no command specified
     if args.command is None:
         args.query = None
@@ -4102,12 +4109,8 @@ For more help on a command:
             args.worktree = False
         cmd_chat(args)
         return
-    
-    # Execute the command
-    if hasattr(args, 'func'):
-        args.func(args)
-    else:
-        parser.print_help()
+
+    parser.print_help()
 
 
 if __name__ == "__main__":

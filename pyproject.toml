@@ -43,7 +43,7 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
 daytona = ["daytona>=0.148.0"]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.8.0"]
 messaging = ["python-telegram-bot>=20.0", "discord.py[voice]>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
@@ -56,7 +56,7 @@ pty = [
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 honcho = ["honcho-ai>=2.0.1"]
-mcp = ["mcp>=1.2.0"]
+mcp = ["mcp>=1.20.0", "httpx>=0.27.0"]
 homeassistant = ["aiohttp>=3.9.0"]
 sms = ["aiohttp>=3.9.0"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
@@ -67,7 +67,7 @@ rl = [
   "uvicorn[standard]>=0.24.0",
   "wandb>=0.15.0",
 ]
-yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
+#yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",

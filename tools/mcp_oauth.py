@@ -50,6 +50,8 @@ _TOKEN_DIR = _HERMES_HOME / "mcp-tokens"
 _CALLBACK_HOST = "127.0.0.1"
 _CALLBACK_PORT_RANGE = (18400, 18500)  # try ports in this range
 _TOKEN_EXPIRY_BUFFER_SECS = 60  # refresh 60s before actual expiry
+# User-Agent header — Cloudflare blocks Python's default urllib UA
+_OAUTH_USER_AGENT = "Hermes-Agent/1.0 (OAuth PKCE Client)"
 
 
 # ── PKCE ─────────────────────────────────────────────────────────────────────
@@ -71,34 +73,116 @@ def generate_pkce() -> tuple[str, str]:
 def discover_oauth_metadata(server_url: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
     """Fetch OAuth 2.0 Authorization Server metadata.
 
-    Tries ``/.well-known/oauth-authorization-server`` first, then
-    ``/.well-known/openid-configuration`` as a fallback.
+    Implements RFC 9728 Protected Resource Metadata discovery:
+
+    1. Check ``/.well-known/oauth-protected-resource`` on the MCP server
+       to find the authorization server URL.
+    2. Fetch metadata from the authorization server's well-known endpoint.
+    3. Fall back to checking the MCP server's own well-known URLs.
+    4. Fall back to parsing the ``WWW-Authenticate`` header from a 401.
 
     Returns the metadata dict, or ``None`` if discovery fails.
     """
     parsed = urllib.parse.urlparse(server_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Step 1: RFC 9728 — discover auth server via protected resource metadata
+    auth_server_url = _discover_auth_server_from_resource(base, timeout)
+    if auth_server_url:
+        metadata = _fetch_auth_server_metadata(auth_server_url, timeout)
+        if metadata:
+            return metadata
+
+    # Step 2: Check MCP server's own well-known endpoints
     well_known_paths = [
         "/.well-known/oauth-authorization-server",
         "/.well-known/openid-configuration",
     ]
-
     for path in well_known_paths:
         url = base + path
-        try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(data, dict) and "authorization_endpoint" in data:
-                        logger.debug("OAuth metadata discovered at %s", url)
-                        return data
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
-                OSError, ValueError) as e:
-            logger.debug("OAuth discovery failed for %s: %s", url, e)
-            continue
+        metadata = _fetch_json_metadata(url, timeout)
+        if metadata and "authorization_endpoint" in metadata:
+            logger.debug("OAuth metadata discovered at %s", url)
+            return metadata
 
+    # Step 3: Parse WWW-Authenticate from 401 response
+    auth_server_url = _discover_auth_server_from_401(server_url, timeout)
+    if auth_server_url:
+        metadata = _fetch_auth_server_metadata(auth_server_url, timeout)
+        if metadata:
+            return metadata
+
+    return None
+
+
+def _fetch_json_metadata(url: str, timeout: float) -> Optional[Dict[str, Any]]:
+    """Fetch and parse a JSON metadata document from a URL."""
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": _OAUTH_USER_AGENT,
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict):
+                    return data
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+            OSError, ValueError) as e:
+        logger.debug("Failed to fetch metadata from %s: %s", url, e)
+    return None
+
+
+def _discover_auth_server_from_resource(base_url: str, timeout: float) -> Optional[str]:
+    """Discover the authorization server from RFC 9728 protected resource metadata."""
+    url = base_url.rstrip("/") + "/.well-known/oauth-protected-resource"
+    data = _fetch_json_metadata(url, timeout)
+    if data:
+        servers = data.get("authorization_servers", [])
+        if servers and isinstance(servers, list):
+            auth_server = servers[0]
+            logger.debug("Discovered auth server %s from protected resource metadata", auth_server)
+            return auth_server
+    return None
+
+
+def _discover_auth_server_from_401(server_url: str, timeout: float) -> Optional[str]:
+    """Parse the authorization server URL from a 401 WWW-Authenticate header."""
+    try:
+        req = urllib.request.Request(server_url, headers={
+            "Accept": "application/json",
+            "User-Agent": _OAUTH_USER_AGENT,
+        })
+        urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            www_auth = e.headers.get("WWW-Authenticate", "")
+            # Parse authorization_uri from Bearer challenge
+            # e.g. Bearer realm="mcp", authorization_uri="https://clerk.example.com"
+            import re
+            match = re.search(r'authorization_uri="([^"]+)"', www_auth)
+            if match:
+                auth_uri = match.group(1)
+                logger.debug("Discovered auth server %s from WWW-Authenticate header", auth_uri)
+                return auth_uri
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        logger.debug("Failed to probe %s for WWW-Authenticate: %s", server_url, e)
+    return None
+
+
+def _fetch_auth_server_metadata(auth_server_url: str, timeout: float) -> Optional[Dict[str, Any]]:
+    """Fetch OAuth metadata from an authorization server's well-known endpoints."""
+    auth_base = auth_server_url.rstrip("/")
+    well_known_paths = [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/openid-configuration",
+    ]
+    for path in well_known_paths:
+        url = auth_base + path
+        data = _fetch_json_metadata(url, timeout)
+        if data and "authorization_endpoint" in data:
+            logger.debug("OAuth metadata discovered at %s", url)
+            return data
     return None
 
 
@@ -126,6 +210,7 @@ def register_client(
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",  # public client
+        "scope": "openid profile email",
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -134,6 +219,7 @@ def register_client(
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": _OAUTH_USER_AGENT,
         },
         method="POST",
     )
@@ -240,7 +326,10 @@ def refresh_access_token(
     req = urllib.request.Request(
         token_endpoint,
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": _OAUTH_USER_AGENT,
+        },
         method="POST",
     )
 
@@ -449,8 +538,13 @@ def start_auth_flow(
     state = secrets.token_urlsafe(16)
 
     # Step 4: Build authorization URL
-    scopes = metadata.get("scopes_supported", [])
-    scope_str = " ".join(scopes) if scopes else ""
+    # Only request scopes that our registered client is allowed to use.
+    # Don't blindly send all scopes_supported — servers may advertise
+    # scopes that dynamically registered clients can't access.
+    _SAFE_SCOPES = {"openid", "profile", "email", "offline_access"}
+    supported = set(metadata.get("scopes_supported", []))
+    scopes = _SAFE_SCOPES & supported if supported else set()
+    scope_str = " ".join(sorted(scopes)) if scopes else ""
 
     auth_params = {
         "response_type": "code",
@@ -460,6 +554,11 @@ def start_auth_flow(
         "code_challenge_method": "S256",
         "state": state,
     }
+    # RFC 8707: resource indicator — tells the auth server which resource
+    # server the token is intended for
+    parsed_server = urllib.parse.urlparse(server_url)
+    resource_url = f"{parsed_server.scheme}://{parsed_server.netloc}/"
+    auth_params["resource"] = resource_url
     if scope_str:
         auth_params["scope"] = scope_str
 
@@ -534,7 +633,10 @@ def start_auth_flow(
     req = urllib.request.Request(
         token_endpoint,
         data=exchange_data.encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": _OAUTH_USER_AGENT,
+        },
         method="POST",
     )
 
@@ -592,7 +694,7 @@ def get_auth_headers(
     tokens = load_tokens(server_name)
 
     if tokens and _is_token_valid(tokens):
-        token_type = tokens.get("token_type", "Bearer")
+        token_type = tokens.get("token_type", "Bearer").capitalize()
         return {"Authorization": f"{token_type} {tokens['access_token']}"}
 
     # Try refresh
@@ -606,7 +708,7 @@ def get_auth_headers(
     logger.debug("No valid tokens for '%s' — starting OAuth flow", server_name)
     tokens = start_auth_flow(server_name, server_url, callback=callback)
     if tokens:
-        token_type = tokens.get("token_type", "Bearer")
+        token_type = tokens.get("token_type", "Bearer").capitalize()
         return {"Authorization": f"{token_type} {tokens['access_token']}"}
 
     logger.warning("OAuth authentication failed for MCP server '%s'", server_name)

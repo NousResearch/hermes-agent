@@ -3682,6 +3682,10 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "identity":
+            self._handle_identity_command(cmd_original)
+        elif canonical == "wallet":
+            self._handle_wallet_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -4802,6 +4806,124 @@ class HermesCLI:
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
         finally:
             self._voice_tts_done.set()
+
+    def _handle_wallet_command(self, command: str):
+        """Handle /wallet [status|fund|login|logout] command."""
+        import subprocess, shutil
+
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else "status"
+
+        tempo = shutil.which("tempo") or os.path.expanduser("~/.tempo/bin/tempo")
+        if not os.path.isfile(tempo):
+            _cprint("  Tempo CLI not found.")
+            _cprint("  Install: curl -fsSL https://tempo.xyz/install | bash")
+            return
+
+        if subcommand in ("status", ""):
+            try:
+                r = subprocess.run([tempo, "wallet", "-t", "whoami"], capture_output=True, text=True, timeout=10)
+                if r.returncode != 0:
+                    _cprint(f"  Wallet not configured: {r.stderr.strip()}")
+                    _cprint("  Run /wallet login to set up.")
+                    return
+                for line in r.stdout.strip().split("\n"):
+                    _cprint(f"  {line}")
+            except Exception as e:
+                _cprint(f"  Error: {e}")
+
+        elif subcommand == "fund":
+            try:
+                r = subprocess.run([tempo, "wallet", "fund"], capture_output=True, text=True, timeout=15)
+                output = r.stdout.strip() or r.stderr.strip()
+                if output:
+                    _cprint(f"  {output}")
+                else:
+                    _cprint("  Fund request sent. Check your browser.")
+            except Exception as e:
+                _cprint(f"  Error: {e}")
+
+        elif subcommand == "login":
+            _cprint("  Opening browser for Tempo wallet login...")
+            _cprint("  This requires passkey authentication.")
+            try:
+                r = subprocess.run([tempo, "wallet", "login"], timeout=120)
+                if r.returncode == 0:
+                    _cprint("  Wallet login successful.")
+                else:
+                    _cprint("  Wallet login failed or cancelled.")
+            except subprocess.TimeoutExpired:
+                _cprint("  Login timed out (2 min).")
+            except Exception as e:
+                _cprint(f"  Error: {e}")
+
+        elif subcommand == "logout":
+            try:
+                r = subprocess.run([tempo, "wallet", "logout", "--yes"], capture_output=True, text=True, timeout=10)
+                _cprint("  Wallet logged out.")
+            except Exception as e:
+                _cprint(f"  Error: {e}")
+
+        else:
+            _cprint(f"  Unknown subcommand: {subcommand}")
+            _cprint("  Usage: /wallet [status|fund|login|logout]")
+
+    def _handle_identity_command(self, command: str):
+        """Handle /identity [create|status|export] command."""
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else "status"
+
+        try:
+            from identity import get_identity, identity_exists
+        except ImportError:
+            _cprint("Identity module not available.")
+            return
+
+        if subcommand == "create":
+            if identity_exists():
+                ident = get_identity()
+                _cprint(f"  Identity already exists.")
+                _cprint(f"  Pubkey: {ident.pubkey_hex}")
+            else:
+                ident = get_identity()
+                _cprint(f"  Identity created.")
+                _cprint(f"  Pubkey: {ident.pubkey_hex}")
+
+        elif subcommand == "export":
+            if not identity_exists():
+                _cprint("  No identity. Use /identity create first.")
+                return
+            ident = get_identity()
+            _cprint(ident.pubkey_hex)
+
+        elif subcommand in ("status", ""):
+            if not identity_exists():
+                _cprint("  No identity found.")
+                _cprint("  Use /identity create to generate an Ed25519 keypair.")
+                return
+            try:
+                ident = get_identity()
+            except Exception as e:
+                _cprint(f"  Identity corrupted: {e}")
+                return
+
+            _cprint(f"  Identity:  OK")
+            _cprint(f"  Pubkey:    {ident.pubkey_hex}")
+            _cprint(f"  Short:     {ident.pubkey_hex[:12]}...")
+            _cprint(f"  Key:       Ed25519 (256-bit)")
+
+            try:
+                social = self.config.get("social", {})
+                if social.get("enabled"):
+                    _cprint(f"  Relay:     {social.get('relay', 'not set')}")
+                    _cprint(f"  Social:    enabled")
+                else:
+                    _cprint(f"  Social:    disabled")
+            except Exception:
+                pass
+        else:
+            _cprint(f"  Unknown subcommand: {subcommand}")
+            _cprint("  Usage: /identity [create|status|export]")
 
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""

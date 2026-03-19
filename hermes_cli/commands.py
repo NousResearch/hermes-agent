@@ -128,6 +128,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
 
+    # Identity & Social
+    CommandDef("identity", "Show or create agent identity (Ed25519 keypair)", "Tools & Skills",
+               args_hint="[create|status|export]",
+               subcommands=("create", "status", "export")),
+    CommandDef("wallet", "Show Tempo wallet status, balance, or fund", "Tools & Skills",
+               args_hint="[status|fund|login|logout]",
+               subcommands=("status", "fund", "login", "logout")),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),

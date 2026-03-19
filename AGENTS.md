@@ -35,6 +35,7 @@ hermes-agent/
 │   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
 │   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
 │   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
+│   ├── mcp_config.py     # `hermes mcp` — MCP server management CLI
 │   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
 │   ├── models.py         # Model catalog, provider model lists
 │   └── auth.py           # Provider credential resolution
@@ -49,6 +50,7 @@ hermes-agent/
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py  # Subagent delegation
 │   ├── mcp_tool.py       # MCP client (~1050 lines)
+│   ├── mcp_oauth.py      # OAuth 2.1 PKCE authentication for MCP servers
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch

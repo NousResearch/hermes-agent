@@ -44,6 +44,7 @@ mcp_servers:
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
+| `auth` | string | HTTP | Authentication type: `oauth` for OAuth 2.1 PKCE |
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
 | `connect_timeout` | number | both | Initial connection timeout |
@@ -186,6 +187,58 @@ mcp_servers:
       resources: true
       prompts: false
 ```
+
+## OAuth authentication
+
+Set `auth: oauth` to use OAuth 2.1 PKCE for HTTP servers:
+
+```yaml
+mcp_servers:
+  my-api:
+    url: "https://api.example.com/mcp"
+    auth: oauth
+```
+
+First connection opens a browser for authorization. Tokens are stored in `~/.hermes/mcp-tokens/<server>.json` (permissions `0600`) and auto-refreshed.
+
+OAuth and static headers can be combined:
+
+```yaml
+mcp_servers:
+  my-api:
+    url: "https://api.example.com/mcp"
+    auth: oauth
+    headers:
+      X-Custom-Header: "value"
+```
+
+## Environment variable interpolation
+
+String values support `${VAR}` syntax, resolved from `os.environ` and `~/.hermes/.env`:
+
+```yaml
+mcp_servers:
+  ink:
+    url: "https://mcp.ml.ink/mcp"
+    headers:
+      Authorization: "Bearer ${INK_API_KEY}"
+```
+
+This keeps secrets out of `config.yaml`. The `hermes mcp add` command sets this up automatically.
+
+## CLI management
+
+Use `hermes mcp` to manage servers from the command line:
+
+```bash
+hermes mcp add <name> --url <url>       # Add with discovery
+hermes mcp remove <name>                # Remove + clean up tokens
+hermes mcp list                         # List with status
+hermes mcp test <name>                  # Test connection
+hermes mcp configure <name>             # Toggle tools interactively
+```
+
+See [CLI Commands Reference](/docs/reference/cli-commands#hermes-mcp) for full details.
 
 ## Reloading config
 

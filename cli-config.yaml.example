@@ -630,6 +630,38 @@ toolsets:
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
+#
+# OAuth-authenticated HTTP servers:
+#   Hermes automatically handles the OAuth 2.1 PKCE flow.
+#   On first connection, you'll be prompted to authorize in your browser.
+#   Tokens are cached in ~/.hermes/mcp-tokens/ and auto-refreshed.
+#
+#   ml-ink:
+#     url: https://server.ml.ink/mcp
+#     auth: oauth
+#
+# Mixed auth (static headers + OAuth overlay):
+#   my-server:
+#     url: https://api.example.com/mcp
+#     auth: oauth
+#     headers:
+#       X-Custom-Header: "value"      # Additional headers alongside OAuth Bearer
+#
+# Environment variable interpolation:
+#   String values support ${VAR} syntax, resolved from ~/.hermes/.env:
+#   ink:
+#     url: https://mcp.ml.ink/mcp
+#     headers:
+#       Authorization: "Bearer ${INK_API_KEY}"
+#
+# CLI management (recommended):
+#   hermes mcp add ink --url "https://mcp.ml.ink/mcp"           # Add with discovery
+#   hermes mcp add github --command npx --args @mcp/github      # Add stdio server
+#   hermes mcp add my-api --url "https://api.example.com" --auth oauth  # OAuth
+#   hermes mcp list                                             # List servers
+#   hermes mcp test ink                                         # Test connection
+#   hermes mcp configure ink                                    # Toggle tools
+#   hermes mcp remove ink                                       # Remove server
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

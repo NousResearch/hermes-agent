@@ -20,6 +20,25 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ## Quick start
 
+### Option A: Use the CLI (recommended)
+
+The `hermes mcp` command adds servers with interactive tool discovery:
+
+```bash
+# HTTP server
+hermes mcp add ink --url "https://mcp.ml.ink/mcp"
+
+# Stdio server
+hermes mcp add github --command npx --args -y @modelcontextprotocol/server-github
+
+# OAuth-authenticated server
+hermes mcp add my-api --url "https://api.example.com/mcp" --auth oauth
+```
+
+Hermes connects to the server, discovers available tools, and lets you select which ones to enable before saving to config.
+
+### Option B: Edit config manually
+
 1. Install MCP support (already included if you used the standard install script):
 
 ```bash
@@ -36,15 +55,13 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
 ```
 
-3. Start Hermes:
+3. Start Hermes — tools are auto-discovered:
 
 ```bash
 hermes chat
 ```
 
-4. Ask Hermes to use the MCP-backed capability.
-
-For example:
+### Try it
 
 ```text
 List the files in /home/user/projects and summarize the repo structure.
@@ -89,6 +106,36 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+### OAuth-authenticated servers
+
+For servers that require OAuth 2.1 (e.g., third-party SaaS APIs), Hermes handles the full PKCE flow automatically:
+
+```yaml
+mcp_servers:
+  my-api:
+    url: "https://api.example.com/mcp"
+    auth: oauth
+```
+
+Or via the CLI:
+
+```bash
+hermes mcp add my-api --url "https://api.example.com/mcp" --auth oauth
+```
+
+On first connection, Hermes opens your browser for authorization. Tokens are cached in `~/.hermes/mcp-tokens/` with restrictive permissions (`0600`) and auto-refreshed when they expire.
+
+You can combine OAuth with static headers for servers that need both:
+
+```yaml
+mcp_servers:
+  my-api:
+    url: "https://api.example.com/mcp"
+    auth: oauth
+    headers:
+      X-Custom-Header: "value"
+```
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -102,6 +149,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
+| `auth` | string | Authentication type: `oauth` for OAuth 2.1 PKCE |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
@@ -125,6 +173,20 @@ mcp_servers:
     headers:
       Authorization: "Bearer ***"
 ```
+
+### Environment variable interpolation
+
+You can reference environment variables from `~/.hermes/.env` in config values using `${VAR}` syntax:
+
+```yaml
+mcp_servers:
+  ink:
+    url: "https://mcp.ml.ink/mcp"
+    headers:
+      Authorization: "Bearer ${INK_API_KEY}"
+```
+
+This keeps secrets out of `config.yaml`. The `hermes mcp add` command sets this up automatically when you provide an API key.
 
 ## How Hermes registers MCP tools
 
@@ -368,6 +430,67 @@ Use it like:
 Inspect the project root and explain the directory layout.
 ```
 
+## Managing MCP servers with the CLI
+
+The `hermes mcp` command provides a full lifecycle manager for MCP servers.
+
+### `hermes mcp add`
+
+Add a server with interactive tool discovery:
+
+```bash
+# HTTP server
+hermes mcp add ink --url "https://mcp.ml.ink/mcp"
+
+# Stdio server
+hermes mcp add github --command npx --args -y @modelcontextprotocol/server-github
+
+# OAuth-authenticated server
+hermes mcp add my-api --url "https://api.example.com/mcp" --auth oauth
+```
+
+The command:
+1. Connects to the server and discovers available tools
+2. Shows the full tool list
+3. Lets you enable all, select specific tools, or cancel
+4. Saves the config to `~/.hermes/config.yaml`
+
+For HTTP servers, it also prompts for authentication (API key or OAuth) and securely stores credentials in `~/.hermes/.env`.
+
+### `hermes mcp list`
+
+View all configured servers with transport, tool count, and status:
+
+```bash
+hermes mcp list
+```
+
+### `hermes mcp test`
+
+Test a connection and verify tools are discoverable:
+
+```bash
+hermes mcp test ink
+```
+
+Shows connection latency, auth info (masked), and the full tool list.
+
+### `hermes mcp configure`
+
+Reconfigure which tools are enabled for a server using an interactive checklist:
+
+```bash
+hermes mcp configure ink
+```
+
+### `hermes mcp remove`
+
+Remove a server from config and clean up OAuth tokens:
+
+```bash
+hermes mcp remove ink
+```
+
 ## Troubleshooting
 
 ### MCP server not connecting
@@ -375,6 +498,9 @@ Inspect the project root and explain the directory layout.
 Check:
 
 ```bash
+# Test the connection
+hermes mcp test <server-name>
+
 # Verify MCP deps are installed (already included in standard install)
 cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
 
@@ -406,6 +532,7 @@ This is intentional and keeps the tool list honest.
 ## Related docs
 
 - [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
+- [MCP Config Reference](/docs/reference/mcp-config-reference)
 - [CLI Commands](/docs/reference/cli-commands)
 - [Slash Commands](/docs/reference/slash-commands)
 - [FAQ](/docs/reference/faq)

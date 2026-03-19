@@ -29,6 +29,9 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+      oauth_server:
+        url: "https://server.ml.ink/mcp"
+        auth: oauth                    # OAuth 2.1 PKCE (auto browser auth)
       analysis:
         command: "npx"
         args: ["-y", "analysis-server"]
@@ -688,7 +691,7 @@ class MCPServerTask:
     __slots__ = (
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
-        "_sampling", "_registered_tool_names",
+        "_sampling", "_registered_tool_names", "_auth_type",
     )
 
     def __init__(self, name: str):
@@ -703,6 +706,7 @@ class MCPServerTask:
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
         self._registered_tool_names: list[str] = []
+        self._auth_type: str = ""  # "oauth" for OAuth 2.1 PKCE
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -746,13 +750,33 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        headers = config.get("headers")
+        headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+        # OAuth 2.1 PKCE: resolve auth headers before connecting
+        if self._auth_type == "oauth":
+            try:
+                from tools.mcp_oauth import get_auth_headers
+                oauth_headers = get_auth_headers(self.name, url)
+                if oauth_headers:
+                    headers.update(oauth_headers)
+                else:
+                    logger.warning(
+                        "OAuth auth failed for MCP server '%s' — "
+                        "connecting without authentication",
+                        self.name,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "OAuth flow error for MCP server '%s': %s — "
+                    "connecting without authentication",
+                    self.name, e,
+                )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         async with streamablehttp_client(
             url,
-            headers=headers,
+            headers=headers or None,
             timeout=float(connect_timeout),
         ) as (read_stream, write_stream, _get_session_id):
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
@@ -781,6 +805,7 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self._auth_type = config.get("auth", "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})
@@ -918,6 +943,17 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
 # Config loading
 # ---------------------------------------------------------------------------
 
+def _interpolate_env_vars(value):
+    """Replace ``${VAR}`` with ``os.getenv(VAR, '')`` recursively."""
+    if isinstance(value, str):
+        return re.sub(r"\$\{(\w+)\}", lambda m: os.getenv(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_env_vars(v) for v in value]
+    return value
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -925,14 +961,23 @@ def _load_mcp_config() -> Dict[str, dict]:
     Server config can contain either ``command``/``args``/``env`` for stdio
     transport or ``url``/``headers`` for HTTP transport, plus optional
     ``timeout`` and ``connect_timeout`` overrides.
+
+    Supports ``${ENV_VAR}`` interpolation in string values — references
+    are resolved from ``os.environ`` (which includes ``~/.hermes/.env``
+    via ``load_config`` → ``load_env``).
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config, load_env
+
+        # Ensure .env vars are in os.environ before interpolation
+        for k, v in load_env().items():
+            os.environ.setdefault(k, v)
+
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
-        return servers
+        return _interpolate_env_vars(servers)
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

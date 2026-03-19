@@ -98,6 +98,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write
+from agent.mc_token_reporter import report_token_usage_async, report_from_response
 
 HONCHO_TOOL_NAMES = {
     "honcho_context",
@@ -5414,6 +5415,14 @@ class AIAgent:
                     
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
+                    
+                    # Report token usage to Mission Control (fire-and-forget)
+                    # This is intentionally non-blocking - failures are logged but don't affect flow
+                    try:
+                        report_from_response(response, task_id=getattr(self, '_mc_task_id', None))
+                    except Exception:
+                        # Silently ignore any token reporting errors to avoid disrupting the agent
+                        pass
                     
                     if self.verbose_logging:
                         # Log response with provider info if available

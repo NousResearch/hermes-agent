@@ -23,6 +23,7 @@ from tools.delegate_tool import (
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
+    _build_child_agent,
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
@@ -290,6 +291,58 @@ class TestToolNamePreservation(unittest.TestCase):
             self.assertEqual(result["results"][0]["status"], "error")
 
         self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+
+    def test_build_child_agent_does_not_raise_name_error(self):
+        """Regression: _build_child_agent must not reference _saved_tool_names.
+
+        The bug introduced by the e7844e9c merge conflict: line 235 inside
+        _build_child_agent read `list(_saved_tool_names)` where that variable
+        is only defined later in _run_single_child.  Calling _build_child_agent
+        standalone (without _run_single_child's scope) must never raise NameError.
+        """
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent"):
+            try:
+                _build_child_agent(
+                    task_index=0,
+                    goal="regression check",
+                    context=None,
+                    toolsets=None,
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                )
+            except NameError as exc:
+                self.fail(
+                    f"_build_child_agent raised NameError — "
+                    f"_saved_tool_names leaked back into wrong scope: {exc}"
+                )
+
+    def test_saved_tool_names_set_on_child_before_run(self):
+        """_run_single_child must set _delegate_saved_tool_names on the child
+        from model_tools._last_resolved_tool_names before run_conversation."""
+        import model_tools
+
+        parent = _make_mock_parent(depth=0)
+        expected_tools = ["read_file", "web_search", "execute_code"]
+        model_tools._last_resolved_tool_names = list(expected_tools)
+
+        captured = {}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture_and_return(user_message):
+                captured["saved"] = list(mock_child._delegate_saved_tool_names)
+                return {"final_response": "ok", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = capture_and_return
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="capture test", parent_agent=parent)
+
+        self.assertEqual(captured["saved"], expected_tools)
 
 
 class TestDelegateObservability(unittest.TestCase):

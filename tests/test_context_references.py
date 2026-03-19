@@ -71,6 +71,18 @@ def test_parse_typed_references_ignores_emails_and_handles():
     assert refs[2].target == "2"
 
 
+def test_parse_references_strips_trailing_punctuation():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references(
+        "review @file:README.md, then see (@url:https://example.com/docs)."
+    )
+
+    assert [ref.kind for ref in refs] == ["file", "url"]
+    assert refs[0].target == "README.md"
+    assert refs[1].target == "https://example.com/docs"
+
+
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
@@ -185,3 +197,25 @@ def test_sync_url_expansion_uses_async_fetcher(sample_repo: Path):
 
     assert result.expanded
     assert "Content for https://example.com/spec" in result.message
+
+
+def test_restricts_paths_to_allowed_root(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("inside\n", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("outside\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "read @file:../secret.txt and @file:notes.txt",
+        cwd=workspace,
+        context_length=100_000,
+        allowed_root=workspace,
+    )
+
+    assert result.expanded
+    assert "```\noutside\n```" not in result.message
+    assert "inside" in result.message
+    assert any("outside the allowed workspace" in warning for warning in result.warnings)

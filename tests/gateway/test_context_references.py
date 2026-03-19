@@ -87,7 +87,11 @@ async def test_gateway_handle_message_expands_context_references(monkeypatch, tm
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***", "base_url": "http://localhost:1234/v1"},
+    )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "anthropic/claude-opus-4.6")
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -101,6 +105,57 @@ async def test_gateway_handle_message_expands_context_references(monkeypatch, tm
     sent_message = runner._run_agent.await_args.kwargs["message"]
     assert "hello from gateway" in sent_message
     assert "@file:notes.txt" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_gateway_handle_message_uses_runtime_provider_for_budget(monkeypatch, tmp_path):
+    import gateway.run as gateway_run
+
+    (tmp_path / "notes.txt").write_text("hello from gateway\n", encoding="utf-8")
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 10,
+            "input_tokens": 20,
+            "output_tokens": 5,
+            "model": "anthropic/test",
+        }
+    )
+
+    runtime_kwargs = {"api_key": "custom-key", "base_url": "http://localhost:1234/v1"}
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: runtime_kwargs)
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "custom-model")
+    seen = {}
+
+    def fake_context_length(model, *, base_url="", api_key="", **_kwargs):
+        seen["model"] = model
+        seen["base_url"] = base_url
+        seen["api_key"] = api_key
+        return 100000
+
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", fake_context_length)
+    monkeypatch.setenv("MESSAGING_CWD", str(tmp_path))
+
+    result = await runner._handle_message(_make_event("inspect @file:notes.txt"))
+
+    assert result == "ok"
+    assert seen == {
+        "model": "custom-model",
+        "base_url": "http://localhost:1234/v1",
+        "api_key": "custom-key",
+    }
 
 
 @pytest.mark.asyncio
@@ -125,3 +180,31 @@ async def test_gateway_preprocess_context_references_returns_warning_when_blocke
 
     assert result.blocked
     assert any("50%" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_gateway_preprocess_restricts_paths_to_messaging_cwd(monkeypatch, tmp_path):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("inside\n", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("outside\n", encoding="utf-8")
+
+    result = await GatewayRunner._expand_context_references_for_message(
+        runner,
+        "inspect @file:../secret.txt and @file:notes.txt",
+        cwd=workspace,
+        model="anthropic/claude-opus-4.6",
+        base_url="",
+        api_key="",
+    )
+
+    assert "inside" in result.message
+    assert "```\noutside\n```" not in result.message
+    assert any("outside the allowed workspace" in warning for warning in result.warnings)

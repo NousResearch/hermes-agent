@@ -1295,6 +1295,7 @@ class GatewayRunner:
             message,
             cwd=effective_cwd,
             context_length=context_length,
+            allowed_root=effective_cwd,
         )
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
@@ -1983,9 +1984,12 @@ class GatewayRunner:
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
         expanded_context = await self._expand_context_references_for_message(
             message_text,
             model=_resolve_gateway_model(),
+            base_url=runtime_kwargs.get("base_url"),
+            api_key=runtime_kwargs.get("api_key"),
         )
         if expanded_context.references:
             logger.info(

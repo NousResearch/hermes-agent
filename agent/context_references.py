@@ -16,6 +16,7 @@ from agent.model_metadata import estimate_tokens_rough
 REFERENCE_PATTERN = re.compile(
     r"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>\S+))"
 )
+TRAILING_PUNCTUATION = ",.;!?"
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
             continue
 
         kind = match.group("kind")
-        value = match.group("value") or ""
+        value = _strip_trailing_punctuation(match.group("value") or "")
         line_start = None
         line_end = None
         target = value
@@ -93,6 +94,7 @@ def preprocess_context_references(
     cwd: str | Path,
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
+    allowed_root: str | Path | None = None,
 ) -> ContextReferenceResult:
     return asyncio.run(
         preprocess_context_references_async(
@@ -100,6 +102,7 @@ def preprocess_context_references(
             cwd=cwd,
             context_length=context_length,
             url_fetcher=url_fetcher,
+            allowed_root=allowed_root,
         )
     )
 
@@ -110,18 +113,25 @@ async def preprocess_context_references_async(
     cwd: str | Path,
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
+    allowed_root: str | Path | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
 
     cwd_path = Path(cwd).expanduser().resolve()
+    allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else None
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
 
     for ref in refs:
-        warning, block = await _expand_reference(ref, cwd_path, url_fetcher=url_fetcher)
+        warning, block = await _expand_reference(
+            ref,
+            cwd_path,
+            url_fetcher=url_fetcher,
+            allowed_root=allowed_root_path,
+        )
         if warning:
             warnings.append(warning)
         if block:
@@ -172,12 +182,13 @@ async def _expand_reference(
     cwd: Path,
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
+    allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
     try:
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd)
+            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
         if ref.kind == "folder":
-            return _expand_folder_reference(ref, cwd)
+            return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
         if ref.kind == "diff":
             return _expand_git_reference(ref, cwd, ["diff"], "git diff")
         if ref.kind == "staged":
@@ -196,8 +207,13 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
-def _expand_file_reference(ref: ContextReference, cwd: Path) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target)
+def _expand_file_reference(
+    ref: ContextReference,
+    cwd: Path,
+    *,
+    allowed_root: Path | None = None,
+) -> tuple[str | None, str | None]:
+    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     if not path.exists():
         return f"{ref.raw}: file not found", None
     if not path.is_file():
@@ -217,8 +233,13 @@ def _expand_file_reference(ref: ContextReference, cwd: Path) -> tuple[str | None
     return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
 
 
-def _expand_folder_reference(ref: ContextReference, cwd: Path) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target)
+def _expand_folder_reference(
+    ref: ContextReference,
+    cwd: Path,
+    *,
+    allowed_root: Path | None = None,
+) -> tuple[str | None, str | None]:
+    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
     if not path.is_dir():
@@ -273,11 +294,29 @@ async def _default_url_fetcher(url: str) -> str:
     return str(doc.get("content") or doc.get("raw_content") or "").strip()
 
 
-def _resolve_path(cwd: Path, target: str) -> Path:
+def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     path = Path(os.path.expanduser(target))
     if not path.is_absolute():
         path = cwd / path
-    return path.resolve()
+    resolved = path.resolve()
+    if allowed_root is not None:
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError as exc:
+            raise ValueError("path is outside the allowed workspace") from exc
+    return resolved
+
+
+def _strip_trailing_punctuation(value: str) -> str:
+    stripped = value.rstrip(TRAILING_PUNCTUATION)
+    while stripped.endswith((")", "]", "}")):
+        closer = stripped[-1]
+        opener = {")": "(", "]": "[", "}": "{"}[closer]
+        if stripped.count(closer) > stripped.count(opener):
+            stripped = stripped[:-1]
+            continue
+        break
+    return stripped
 
 
 def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:

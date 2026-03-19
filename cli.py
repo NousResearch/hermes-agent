@@ -973,6 +973,8 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+
+
 # ============================================================================
 # HermesCLI Class
 # ============================================================================
@@ -2890,6 +2892,14 @@ class HermesCLI:
                     for mid, desc in curated:
                         current_marker = " ← current" if (is_active and mid == self.model) else ""
                         print(f"      {mid}{current_marker}")
+                elif p["id"] == "custom":
+                    from hermes_cli.models import _get_custom_base_url
+                    custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                    if custom_url:
+                        print(f"      endpoint: {custom_url}")
+                    if is_active:
+                        print(f"      model: {self.model} ← current")
+                    print(f"      (use /model custom:<model-name>)")
                 else:
                     print(f"      (use /model {p['id']}:<model-name>)")
                 print()

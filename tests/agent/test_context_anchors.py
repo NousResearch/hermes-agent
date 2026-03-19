@@ -310,3 +310,82 @@ class TestBuildAnchorSavePrompt:
         assert "eclatauto" in prompt
         assert "read_file" in prompt or "read" in prompt.lower()
         assert "patch" in prompt
+
+
+# ---------------------------------------------------------------------------
+# build_batch_anchor_save_prompt
+# ---------------------------------------------------------------------------
+
+class TestBuildBatchAnchorSavePrompt:
+    def test_batch_contains_all_paths(self):
+        from agent.context_anchors import build_batch_anchor_save_prompt
+        anchors = [
+            {"path": "/a.md", "keywords": ["a"], "max_chars": 5000},
+            {"path": "/b.md", "keywords": ["b"], "max_chars": 5000},
+        ]
+        prompt = build_batch_anchor_save_prompt(anchors)
+        assert "/a.md" in prompt
+        assert "/b.md" in prompt
+        assert "read_file" in prompt
+        assert "patch" in prompt
+
+    def test_batch_single_anchor_same_as_legacy(self):
+        from agent.context_anchors import build_batch_anchor_save_prompt
+        anchor = {"path": "/test.md", "keywords": ["test"], "max_chars": 5000}
+        legacy = build_anchor_save_prompt(anchor)
+        batch = build_batch_anchor_save_prompt([anchor])
+        assert legacy == batch
+
+
+# ---------------------------------------------------------------------------
+# should_pre_flush
+# ---------------------------------------------------------------------------
+
+class TestShouldPreFlush:
+    def test_below_threshold(self):
+        from agent.context_anchors import should_pre_flush
+        assert should_pre_flush(threshold_tokens=100000, current_tokens=50000) is False
+
+    def test_at_threshold(self):
+        from agent.context_anchors import should_pre_flush
+        assert should_pre_flush(threshold_tokens=100000, current_tokens=70000) is True
+
+    def test_above_threshold(self):
+        from agent.context_anchors import should_pre_flush
+        assert should_pre_flush(threshold_tokens=100000, current_tokens=90000) is True
+
+    def test_zero_tokens(self):
+        from agent.context_anchors import should_pre_flush
+        assert should_pre_flush(threshold_tokens=100000, current_tokens=0) is False
+        assert should_pre_flush(threshold_tokens=0, current_tokens=50000) is False
+
+
+# ---------------------------------------------------------------------------
+# snapshot_anchor_hashes / anchors_changed_since
+# ---------------------------------------------------------------------------
+
+class TestAnchorHashes:
+    def test_snapshot_and_unchanged(self, tmp_path):
+        from agent.context_anchors import snapshot_anchor_hashes, anchors_changed_since
+        f = tmp_path / "test.md"
+        f.write_text("hello world")
+        anchors = [{"path": str(f), "keywords": ["test"], "max_chars": 5000}]
+        hashes = snapshot_anchor_hashes(anchors)
+        assert str(f) in hashes
+        assert anchors_changed_since(anchors, hashes) is False
+
+    def test_changed_after_snapshot(self, tmp_path):
+        from agent.context_anchors import snapshot_anchor_hashes, anchors_changed_since
+        f = tmp_path / "test.md"
+        f.write_text("hello world")
+        anchors = [{"path": str(f), "keywords": ["test"], "max_chars": 5000}]
+        hashes = snapshot_anchor_hashes(anchors)
+        f.write_text("updated content")
+        assert anchors_changed_since(anchors, hashes) is True
+
+    def test_missing_file(self):
+        from agent.context_anchors import snapshot_anchor_hashes, anchors_changed_since
+        anchors = [{"path": "/nonexistent.md", "keywords": ["x"], "max_chars": 5000}]
+        hashes = snapshot_anchor_hashes(anchors)
+        assert len(hashes) == 0
+        assert anchors_changed_since(anchors, hashes) is False

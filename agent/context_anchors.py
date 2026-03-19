@@ -15,6 +15,7 @@ Configuration in config.yaml:
     context_anchors_auto_save: true
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -307,3 +308,42 @@ def build_pre_flush_nudge(anchors: List[Dict[str, Any]]) -> str:
         f"{file_list}\n"
         f"Do this now, then continue with the user's request.]"
     )
+
+
+def snapshot_anchor_hashes(anchors: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Take a hash snapshot of all anchor files.
+
+    Returns {path: md5_hex} for files that exist.
+    Used to detect if files were modified between pre-flush nudge and compression.
+    """
+    hashes = {}
+    for anchor in anchors:
+        path = anchor["path"]
+        try:
+            content = Path(path).read_bytes()
+            hashes[path] = hashlib.md5(content).hexdigest()
+        except (OSError, IOError):
+            pass
+    return hashes
+
+
+def anchors_changed_since(
+    anchors: List[Dict[str, Any]],
+    old_hashes: Dict[str, str],
+) -> bool:
+    """Check if any anchor files changed since the snapshot.
+
+    Returns True if at least one file was modified (meaning the model
+    already saved state via pre-flush, so we can skip the expensive flush).
+    """
+    for anchor in anchors:
+        path = anchor["path"]
+        try:
+            content = Path(path).read_bytes()
+            current_hash = hashlib.md5(content).hexdigest()
+        except (OSError, IOError):
+            continue
+        old_hash = old_hashes.get(path)
+        if old_hash and current_hash != old_hash:
+            return True
+    return False

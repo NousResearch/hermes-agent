@@ -81,6 +81,8 @@ from agent.context_anchors import (
     build_batch_anchor_save_prompt,
     should_pre_flush,
     build_pre_flush_nudge,
+    snapshot_anchor_hashes,
+    anchors_changed_since,
 )
 
 # Agent internals extracted to agent/ package for modularity
@@ -880,6 +882,7 @@ class AIAgent:
         self._anchors_max_total = get_anchors_max_total(self.config)
         self._anchors_auto_save = anchors_auto_save_enabled(self.config)
         self._anchor_pre_flush_sent = False  # one nudge per session
+        self._anchor_hashes_at_nudge = {}  # snapshot taken when nudge is sent
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -4254,6 +4257,14 @@ class AIAgent:
         if not self._active_anchors:
             return
 
+        # Skip flush if pre-flush nudge already caused the model to save
+        _old_hashes = getattr(self, "_anchor_hashes_at_nudge", {})
+        if _old_hashes and anchors_changed_since(self._active_anchors, _old_hashes):
+            if not self.quiet_mode:
+                logger.info("Context anchors: skipping flush, files already updated by pre-flush")
+            self._anchor_hashes_at_nudge = {}
+            return
+
         from agent.auxiliary_client import call_llm as _call_llm
 
         # Build minimal tool set: read_file + patch only
@@ -4419,7 +4430,7 @@ class AIAgent:
         # Re-inject context anchors: only those relevant to the conversation
         if self._context_anchors:
             try:
-                active = getattr(self, "_active_anchors", None)
+                active = getattr(self, "_active_anchors", None) or None
                 anchor_content = load_all_anchors(
                     self._context_anchors,
                     max_total=self._anchors_max_total,
@@ -6616,6 +6627,7 @@ class AIAgent:
                                 "content": build_pre_flush_nudge(_pre_active),
                             })
                             self._anchor_pre_flush_sent = True
+                            self._anchor_hashes_at_nudge = snapshot_anchor_hashes(_pre_active)
                             if not self.quiet_mode:
                                 logger.info("Context anchors: pre-flush nudge injected at %d%% capacity",
                                     int(_estimated_next_prompt / _compressor.threshold_tokens * 100))

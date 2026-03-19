@@ -262,14 +262,14 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "
-            "You can use terminal + curl with the Slack Bot token from config to access Slack APIs."
+            "You can use terminal + curl with the Slack Bot token from config to access Slack APIs – you do not have access to Slack-specifi"
             "If the user asks, use the available tools to perform these actions."
         )
     elif context.source.platform == Platform.DISCORD:
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Discord. "
-            "You can use terminal + curl with the Discord Bot token from config to access Discord APIs."
+            "You can use terminal + curl with the Discord Bot token from config to access Discord APIs – you do not have access to Discord-s"
             "If the user asks, use the available tools to perform these actions."
         )
     # Connected platforms

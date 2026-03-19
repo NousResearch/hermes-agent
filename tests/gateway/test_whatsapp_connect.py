@@ -177,6 +177,7 @@ class TestDataInitialized:
 # File handle cleanup on error paths
 # ---------------------------------------------------------------------------
 
+@pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:RuntimeWarning")
 class TestFileHandleClosedOnError:
     """Verify the bridge log file handle is closed on every failure path."""
 

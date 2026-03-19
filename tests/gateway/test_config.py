@@ -1,6 +1,7 @@
 """Tests for gateway configuration management."""
 
 from gateway.config import (
+    ChannelOverride,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -47,6 +48,55 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict(d)
         assert restored.enabled is False
         assert restored.token is None
+
+    def test_channel_overrides_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            channel_overrides={
+                "1234567890": ChannelOverride(
+                    model="openrouter/healer-alpha",
+                    provider="openrouter",
+                    system_prompt="You are a daily news summarizer.",
+                ),
+                "9876543210": ChannelOverride(
+                    model="anthropic/claude-opus-4.6",
+                    provider="anthropic",
+                    system_prompt="You are a coding assistant.",
+                ),
+            },
+        )
+        d = pc.to_dict()
+        assert "channel_overrides" in d
+        assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
+        restored = PlatformConfig.from_dict(d)
+        assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["9876543210"].provider == "anthropic"
+
+    def test_channel_overrides_from_dict_normalizes_channel_id_to_str(self):
+        """YAML may have numeric channel IDs; we store as str."""
+        data = {
+            "enabled": True,
+            "channel_overrides": {
+                1234567890: {"model": "openrouter/healer-alpha"},
+            },
+        }
+        pc = PlatformConfig.from_dict(data)
+        assert "1234567890" in pc.channel_overrides
+        assert pc.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+
+
+class TestChannelOverride:
+    def test_from_dict_empty(self):
+        assert ChannelOverride.from_dict({}).model is None
+        assert ChannelOverride.from_dict(None).model is None
+
+    def test_to_dict_omits_none(self):
+        ov = ChannelOverride(model="gpt-4", provider=None, system_prompt="Hi")
+        d = ov.to_dict()
+        assert d["model"] == "gpt-4"
+        assert "provider" not in d
+        assert d["system_prompt"] == "Hi"
 
 
 class TestGetConnectedPlatforms:

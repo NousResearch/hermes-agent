@@ -173,6 +173,9 @@ def _build_child_agent(
     from run_agent import AIAgent
     import model_tools
 
+    # Save parent's resolved tool names so _run_single_child's finally can restore after child runs.
+    child_saved_tool_names = list(model_tools._last_resolved_tool_names)
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     if toolsets:
@@ -232,7 +235,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
-    child._delegate_saved_tool_names = list(_saved_tool_names)
+    child._delegate_saved_tool_names = child_saved_tool_names
 
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1

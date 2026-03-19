@@ -205,6 +205,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
     os.environ["TERMINAL_CWD"] = messaging_cwd
 
 from gateway.config import (
+    ChannelOverride,
     Platform,
     GatewayConfig,
     load_gateway_config,
@@ -247,6 +248,26 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+    try:
+        runtime = resolve_runtime_provider(requested=provider)
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+    }
+
+
 def _resolve_gateway_model() -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -269,6 +290,20 @@ def _resolve_gateway_model() -> str:
     except Exception:
         pass
     return model
+
+
+def _get_channel_override(
+    config: GatewayConfig,
+    platform: Platform,
+    chat_id: str,
+) -> Optional[ChannelOverride]:
+    """Return per-channel override for this platform/chat_id, or None."""
+    if not chat_id:
+        return None
+    platform_config = config.platforms.get(platform)
+    if not platform_config or not platform_config.channel_overrides:
+        return None
+    return platform_config.channel_overrides.get(str(chat_id))
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -704,6 +739,24 @@ class GatewayRunner:
         except Exception:
             pass
         return ""
+
+    def _resolve_model_for_channel(self, platform: Platform, chat_id: str) -> str:
+        """Resolve model for this channel: channel_overrides[channel_id] else global default."""
+        config = getattr(self, "config", None)
+        if config:
+            override = _get_channel_override(config, platform, chat_id)
+            if override and override.model:
+                return override.model
+        return _resolve_gateway_model()
+
+    def _get_system_prompt_for_channel(self, platform: Platform, chat_id: str) -> str:
+        """System prompt for this channel: channel override else global ephemeral."""
+        config = getattr(self, "config", None)
+        if config:
+            override = _get_channel_override(config, platform, chat_id)
+            if override and override.system_prompt:
+                return (override.system_prompt or "").strip()
+        return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -4491,10 +4544,11 @@ class GatewayRunner:
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
-            # Combine platform context with user-configured ephemeral system prompt
+            # Combine platform context with channel or global system prompt
             combined_ephemeral = context_prompt or ""
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            channel_prompt = self._get_system_prompt_for_channel(source.platform, source.chat_id)
+            if channel_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + channel_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
@@ -4505,10 +4559,15 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = _resolve_gateway_model()
+            model = self._resolve_model_for_channel(source.platform, source.chat_id)
 
+            _config = getattr(self, "config", None)
+            channel_override = _get_channel_override(_config, source.platform, source.chat_id) if _config else None
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                if channel_override and channel_override.provider:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(channel_override.provider)
+                else:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",

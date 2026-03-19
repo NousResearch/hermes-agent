@@ -162,28 +162,27 @@ def _check_rate_limit(action: str) -> Optional[str]:
 # Spend tracking
 # ---------------------------------------------------------------------------
 
-_spend_log: List[float] = []  # timestamps of payments in last hour
+_spend_log: List[Dict[str, float]] = []  # [{"time": timestamp, "amount": usdc}, ...]
 
 
-def _check_spend_limit() -> Optional[str]:
-    """Check if hourly spend limit is exceeded."""
+def _check_spend_limit(amount: float = 0) -> Optional[str]:
+    """Check if hourly spend limit would be exceeded by adding amount."""
     config = _load_social_config()
     payments = config.get("payments", {})
     max_spend = payments.get("max_spend_per_hour", 0.01)
-    cost_per_action = payments.get("cost_per_action", 0.0001)
 
     now = time.time()
-    _spend_log[:] = [t for t in _spend_log if now - t < 3600]
+    _spend_log[:] = [e for e in _spend_log if now - e["time"] < 3600]
 
-    estimated_spend = len(_spend_log) * cost_per_action
-    if estimated_spend >= max_spend:
-        return f"Hourly spend limit (${max_spend}) reached. {len(_spend_log)} payments this hour."
+    total_spent = sum(e["amount"] for e in _spend_log)
+    if total_spent + amount >= max_spend:
+        return f"Hourly spend limit (${max_spend}) reached. ${total_spent:.6f} spent this hour."
 
     return None
 
 
-def _record_spend():
-    _spend_log.append(time.time())
+def _record_spend(amount: float = 0.0001):
+    _spend_log.append({"time": time.time(), "amount": amount})
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +367,6 @@ def social_tool(
         return _action_timeline(limit)
     elif action == "wallet_status":
         return _action_wallet_status()
-    elif action == "tip":
-        return _action_tip(target, content)
 
     # Write actions (need identity + permission)
     if not identity_exists():
@@ -386,7 +383,7 @@ def social_tool(
         return json.dumps({"error": rate_error})
 
     # Spend limit check for paid actions
-    if action in ("post", "reply", "update_profile"):
+    if action in ("post", "reply", "update_profile", "tip"):
         spend_error = _check_spend_limit()
         if spend_error:
             return json.dumps({"error": spend_error})
@@ -405,6 +402,8 @@ def social_tool(
         return _action_update_profile(content)
     elif action == "delete":
         return _action_delete(target)
+    elif action == "tip":
+        return _action_tip(target, content)
     else:
         return json.dumps({"error": f"Unknown action: {action}"})
 
@@ -649,14 +648,20 @@ def _send_usdc(recipient_address: str, amount: str) -> Dict[str, Any]:
     if not tempo:
         return {"sent": False, "reason": "Tempo CLI not found"}
 
-    usdc_token = "0x20c000000000000000000000b9537d11c60e8b50"
+    config = _load_social_config()
+    usdc_token = config.get("payments", {}).get(
+        "usdc_token", "0x20c000000000000000000000b9537d11c60e8b50"
+    )
     try:
         r = subprocess.run(
             [tempo, "wallet", "transfer", amount, usdc_token, recipient_address],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            _record_spend()
+            try:
+                _record_spend(float(amount))
+            except (ValueError, TypeError):
+                _record_spend(0.0001)
             return {"sent": True, "amount": amount, "currency": "USDC", "to": recipient_address}
         stderr = r.stderr.strip()
         if "balance" in stderr.lower() or "insufficient" in stderr.lower():

@@ -114,9 +114,9 @@ social:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             import tools.social_tools as mod
             mod._config_cache = None
-            # Simulate 10 payments (10 * 0.0001 = 0.001 >= limit)
+            # Simulate 10 payments of 0.0001 each = 0.001 >= limit
             now = time.time()
-            _spend_log.extend([now] * 10)
+            _spend_log.extend([{"time": now, "amount": 0.0001} for _ in range(10)])
             result = _check_spend_limit()
             assert result is not None
             assert "limit" in result.lower()
@@ -124,7 +124,7 @@ social:
     def test_old_entries_pruned(self):
         # Add old entries (2 hours ago)
         old_time = time.time() - 7200
-        _spend_log.extend([old_time] * 100)
+        _spend_log.extend([{"time": old_time, "amount": 0.01} for _ in range(100)])
         # These should be pruned and not count
         result = _check_spend_limit()
         assert result is None

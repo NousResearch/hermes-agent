@@ -194,7 +194,8 @@ def _build_job_prompt(job: dict) -> str:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            raise RuntimeError(error)
+            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            continue
 
         content = str(loaded.get("content") or "").strip()
         if parts:

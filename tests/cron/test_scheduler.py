@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, _build_job_prompt
 
 
 class TestResolveOrigin:
@@ -449,3 +449,37 @@ class TestRunJobSkillBacked:
         assert "Instructions for blogwatcher." in prompt_arg
         assert "Instructions for find-nearby." in prompt_arg
         assert "Combine the results." in prompt_arg
+
+
+class TestBuildJobPromptMissingSkill:
+    """Verify that a missing skill logs a warning and does not crash the job."""
+
+    def _missing_skill_view(self, name: str) -> str:
+        return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+    def test_missing_skill_does_not_raise(self):
+        """Job should run even when a referenced skill is not installed."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        # prompt is preserved even though skill was skipped
+        assert "do something" in result
+
+    def test_missing_skill_logs_warning(self, caplog):
+        """A warning is logged when a skill cannot be found."""
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+                _build_job_prompt({"name": "My Job", "skills": ["ghost-skill"], "prompt": "do something"})
+        assert any("ghost-skill" in record.message for record in caplog.records)
+
+    def test_valid_skill_loaded_alongside_missing(self):
+        """A valid skill is still loaded when another skill in the list is missing."""
+
+        def _mixed_skill_view(name: str) -> str:
+            if name == "real-skill":
+                return json.dumps({"success": True, "content": "Real skill content."})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_mixed_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
+        assert "Real skill content." in result
+        assert "go" in result

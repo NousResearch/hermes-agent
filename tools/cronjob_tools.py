@@ -342,7 +342,15 @@ calls are skipped to avoid duplicate cron deliveries. Put the primary
 user-facing content in the final response, and use send_message only for
 additional or different targets.
 
-Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
+Important safety rule: cron-run sessions should not recursively schedule more cron jobs.
+
+Before calling action='create', verify that the user's request clearly specifies:
+1. Which skill(s) to use — or explicitly confirms the prompt is self-contained.
+2. A specific, actionable prompt describing exactly what the agent should do
+   on each scheduled run (not vague references like "it", "this task", "do stuff").
+
+If either is unclear or missing, ask the user to clarify BEFORE calling this tool.
+Do not create a cron job based on an ambiguous or incomplete request.""",
     "parameters": {
         "type": "object",
         "properties": {

@@ -331,7 +331,15 @@ def _pay_with_tempo(
                 return {"error": f"Insufficient Tempo balance. Run: tempo wallet fund"}
             return {"error": f"Tempo payment failed: {stderr or result.stdout}"}
 
-        return _json.loads(result.stdout)
+        # Tempo CLI may return TOON format (not JSON), try parsing
+        stdout = result.stdout.strip()
+        try:
+            return _json.loads(stdout)
+        except (ValueError, _json.JSONDecodeError):
+            # TOON format: "ok: true\ndata:\n  id: ..."
+            if "ok: true" in stdout or "ok:true" in stdout:
+                return {"ok": True, "data": {"raw": stdout}}
+            return {"error": f"Unexpected relay response: {stdout[:200]}"}
     except subprocess.TimeoutExpired:
         return {"error": "Tempo payment timed out (30s)"}
     except Exception as e:

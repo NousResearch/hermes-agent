@@ -84,10 +84,11 @@ GitHub workflow skills for managing repositories, pull requests, code reviews, i
 
 ## mcp
 
-Skills for working with MCP (Model Context Protocol) servers, tools, and integrations. Includes the built-in native MCP client (configure servers in config.yaml for automatic tool discovery) and the mcporter CLI bridge for ad-hoc server interaction.
+Skills for working with MCP (Model Context Protocol) servers, tools, and integrations. Includes FastMCP server-building workflows, the built-in native MCP client for connecting Hermes to external servers, and the mcporter CLI bridge for ad-hoc MCP interaction.
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| `fastmcp` | Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Use when creating a new MCP server, wrapping an API or database as MCP tools, exposing resources or prompts, or preparing a FastMCP server for Claude Code, Cursor, or HTTP deployment. | `mcp/fastmcp` |
 | `mcporter` | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. | `mcp/mcporter` |
 | `native-mcp` | Built-in MCP (Model Context Protocol) client that connects to external MCP servers, discovers their tools, and registers them as native Hermes Agent tools. Supports stdio and HTTP transports with automatic reconnection, security filtering, and zero-config tool injection. | `mcp/native-mcp` |
 

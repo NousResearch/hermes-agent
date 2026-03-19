@@ -885,6 +885,7 @@ class TestSkillViewPrerequisites:
             ("docker", "docker-backed skills"),
             ("singularity", "singularity-backed skills"),
             ("modal", "modal-backed skills"),
+            ("morph", "morph-backed skills"),
         ],
     )
     def test_remote_backend_keeps_setup_needed_after_local_secret_capture(

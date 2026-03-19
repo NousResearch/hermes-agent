@@ -354,7 +354,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "morph"):
         return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts
@@ -428,7 +428,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "morph"):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass all approval prompts

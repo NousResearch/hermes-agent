@@ -177,6 +177,50 @@ def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch
     assert resolved["api_key"] == "local-key"
 
 
+def test_custom_endpoint_uses_config_api_key_over_env(monkeypatch):
+    """provider: custom with base_url and api_key in config uses them (#1760)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-api.example.com/v1",
+            "api_key": "config-api-key",
+        },
+    )
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://other.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://my-api.example.com/v1"
+    assert resolved["api_key"] == "config-api-key"
+
+
+def test_custom_endpoint_uses_config_api_field_when_no_api_key(monkeypatch):
+    """provider: custom with 'api' in config uses it as api_key (#1760)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://custom.example.com/v1",
+            "api": "config-api-field",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+    assert resolved["api_key"] == "config-api-field"
+
+
 def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
     """Auto provider with non-OpenRouter base_url should prefer OPENAI_API_KEY.
 
@@ -394,10 +438,75 @@ def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
         lambda p: {
             "name": "my-server",
             "base_url": "http://localhost:8000/v1",
-            "api_key": "sk-test",
+            "api_key": "***",
         },
     )
 
     resolved = rp.resolve_runtime_provider(requested="my-server")
 
     assert resolved["api_mode"] == "chat_completions"
+
+
+def test_anthropic_messages_in_valid_api_modes():
+    """anthropic_messages should be accepted by _parse_api_mode."""
+    assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"
+
+
+def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
+    """API-key providers with /anthropic base URL should auto-detect anthropic_messages mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_api_key_provider_explicit_api_mode_config(monkeypatch):
+    """API-key providers should respect api_mode from model config."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "anthropic_messages"})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_api_key_provider_default_url_stays_chat_completions(monkeypatch):
+    """API-key providers with default /v1 URL should stay on chat_completions."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.minimax.io/v1"
+
+
+def test_named_custom_provider_anthropic_api_mode(monkeypatch):
+    """Custom providers should accept api_mode: anthropic_messages."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-anthropic-proxy",
+            "base_url": "https://proxy.example.com/anthropic",
+            "api_key": "test-key",
+            "api_mode": "anthropic_messages",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-anthropic-proxy")
+
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://proxy.example.com/anthropic"

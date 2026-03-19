@@ -493,6 +493,11 @@ class AIAgent:
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
+        elif self._base_url_lower.rstrip("/").endswith("/anthropic"):
+            # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
+            # use a URL convention ending in /anthropic. Auto-detect these so the
+            # Anthropic Messages API adapter is used instead of chat completions.
+            self.api_mode = "anthropic_messages"
         else:
             self.api_mode = "chat_completions"
 
@@ -3474,11 +3479,11 @@ class AIAgent:
 
             # Determine api_mode from provider
             fb_api_mode = "chat_completions"
+            fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic":
+            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
-            fb_base_url = str(fb_client.base_url)
 
             old_model = self.model
             self.model = fb_model

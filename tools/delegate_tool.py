@@ -232,7 +232,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
-    child._delegate_saved_tool_names = list(_saved_tool_names)
+    # Set delegation depth
 
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1

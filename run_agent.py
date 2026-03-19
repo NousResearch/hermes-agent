@@ -2356,13 +2356,22 @@ class AIAgent:
                     # Replay encrypted reasoning items from previous turns
                     # so the API can maintain coherent reasoning chains.
                     codex_reasoning = msg.get("codex_reasoning_items")
+                    has_codex_reasoning = False
                     if isinstance(codex_reasoning, list):
                         for ri in codex_reasoning:
                             if isinstance(ri, dict) and ri.get("encrypted_content"):
                                 items.append(ri)
+                                has_codex_reasoning = True
 
                     if content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
+                    elif has_codex_reasoning:
+                        # The Responses API requires a following item after each
+                        # reasoning item (otherwise: missing_following_item error).
+                        # When the assistant produced only reasoning with no visible
+                        # content, emit an empty assistant message as the required
+                        # following item.
+                        items.append({"role": "assistant", "content": ""})
 
                     tool_calls = msg.get("tool_calls")
                     if isinstance(tool_calls, list):
@@ -2803,6 +2812,14 @@ class AIAgent:
         if tool_calls:
             finish_reason = "tool_calls"
         elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+            finish_reason = "incomplete"
+        elif reasoning_items_raw and not final_text:
+            # Response contains only reasoning (encrypted thinking state) with
+            # no visible content or tool calls.  The model is still thinking and
+            # needs another turn to produce the actual answer.  Marking this as
+            # "stop" would send it into the empty-content retry loop which burns
+            # 3 retries then fails — treat it as incomplete instead so the Codex
+            # continuation path handles it correctly.
             finish_reason = "incomplete"
         else:
             finish_reason = "stop"
@@ -6214,15 +6231,24 @@ class AIAgent:
                     interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                     interim_has_content = bool((interim_msg.get("content") or "").strip())
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
+                    interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
 
-                    if interim_has_content or interim_has_reasoning:
+                    if interim_has_content or interim_has_reasoning or interim_has_codex_reasoning:
                         last_msg = messages[-1] if messages else None
+                        # Duplicate detection: two consecutive incomplete assistant
+                        # messages with identical content AND reasoning are collapsed.
+                        # For reasoning-only messages (codex_reasoning_items differ but
+                        # visible content/reasoning are both empty), we also compare
+                        # the encrypted items to avoid silently dropping new state.
+                        last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
+                        interim_codex_items = interim_msg.get("codex_reasoning_items")
                         duplicate_interim = (
                             isinstance(last_msg, dict)
                             and last_msg.get("role") == "assistant"
                             and last_msg.get("finish_reason") == "incomplete"
                             and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
                             and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                            and last_codex_items == interim_codex_items
                         )
                         if not duplicate_interim:
                             messages.append(interim_msg)

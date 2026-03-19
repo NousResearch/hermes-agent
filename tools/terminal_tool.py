@@ -426,6 +426,11 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
+        - ssh_host: str -- SSH hostname (overrides TERMINAL_SSH_HOST)
+        - ssh_user: str -- SSH username (overrides TERMINAL_SSH_USER)
+        - ssh_port: int -- SSH port (overrides TERMINAL_SSH_PORT)
+        - ssh_key: str -- Path to SSH private key (overrides TERMINAL_SSH_KEY)
+        - ssh_persistent: bool -- Persistent shell mode (overrides TERMINAL_SSH_PERSISTENT)
 
     Args:
         task_id: The rollout's unique task identifier
@@ -953,11 +958,11 @@ def terminal_tool(
                         ssh_config = None
                         if env_type == "ssh":
                             ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
+                                "host": overrides.get("ssh_host") or config.get("ssh_host", ""),
+                                "user": overrides.get("ssh_user") or config.get("ssh_user", ""),
+                                "port": overrides.get("ssh_port") or config.get("ssh_port", 22),
+                                "key": overrides.get("ssh_key") or config.get("ssh_key", ""),
+                                "persistent": overrides.get("ssh_persistent", config.get("ssh_persistent", False)),
                             }
 
                         container_config = None

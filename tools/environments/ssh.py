@@ -3,7 +3,6 @@
 import logging
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -50,7 +49,11 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         self.key_path = key_path
         self.persistent = persistent
 
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
+        # Use /tmp directly instead of platform tempdir — macOS's
+        # /var/folders/XX/.../T/ path is ~60 chars, and Unix domain sockets
+        # have a 104-char limit. A socket name like "rl_1@10.0.0.5:2222.sock"
+        # would exceed it. /tmp/hermes-ssh/ keeps paths short.
+        self.control_dir = Path("/tmp/hermes-ssh")
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
         _ensure_ssh_available()

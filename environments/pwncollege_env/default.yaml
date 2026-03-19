@@ -1,0 +1,40 @@
+# PwnCollege Training Environment
+#
+# Usage:
+#   python environments/pwncollege_env/pwncollege_env.py serve \
+#       --config environments/pwncollege_env/default.yaml
+#
+#   python environments/pwncollege_env/pwncollege_env.py process \
+#       --config environments/pwncollege_env/default.yaml \
+#       --env.data_path_to_save_groups sft_data.jsonl
+
+env:
+  enabled_toolsets: ["terminal", "file", "pwncollege"]
+  max_agent_turns: 20
+  max_token_length: 16384
+  agent_temperature: 0.7
+  terminal_backend: "ssh"
+
+  # Dojo connection
+  base_url: "http://100.120.55.25:8080"
+  ssh_host: "100.120.55.25"
+  ssh_port: 2222
+  ssh_key: "" # Set to path of RL agent private key
+
+  # Challenge selection
+  challenge: "hello/hello"
+  # dojo_filter: "linux-luminarium"
+  # module_filter: "hello"
+
+  # Atropos settings
+  use_wandb: false
+  wandb_name: "pwncollege"
+  ensure_scores_are_not_same: false
+  tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
+
+openai:
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-sonnet-4.5"
+  server_type: "openai"
+  health_check: false
+  # api_key loaded from OPENROUTER_API_KEY in .env

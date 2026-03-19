@@ -7,8 +7,9 @@ import logging
 import os
 import threading
 from typing import Optional
-from tools.file_operations import ShellFileOperations
+
 from agent.redact import redact_sensitive_text
+from tools.file_operations import ShellFileOperations
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +47,19 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
     """
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _check_disk_usage_warning,
-        _creation_locks, _creation_locks_lock,
-    )
     import time
+
+    from tools.terminal_tool import (
+        _active_environments,
+        _check_disk_usage_warning,
+        _create_environment,
+        _creation_locks,
+        _creation_locks_lock,
+        _env_lock,
+        _get_env_config,
+        _last_activity,
+        _start_cleanup_thread,
+    )
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -94,7 +101,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]
             elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
+                image = (
+                    overrides.get("singularity_image") or config["singularity_image"]
+                )
             elif env_type == "modal":
                 image = overrides.get("modal_image") or config["modal_image"]
             elif env_type == "daytona":
@@ -103,7 +112,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 image = ""
 
             cwd = overrides.get("cwd") or config["cwd"]
-            logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
+            logger.info(
+                "Creating new %s environment for task %s...", env_type, task_id[:8]
+            )
 
             container_config = None
             if env_type in ("docker", "singularity", "modal", "daytona"):
@@ -118,11 +129,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             ssh_config = None
             if env_type == "ssh":
                 ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
+                    "host": overrides.get("ssh_host") or config.get("ssh_host", ""),
+                    "user": overrides.get("ssh_user") or config.get("ssh_user", ""),
+                    "port": overrides.get("ssh_port") or config.get("ssh_port", 22),
+                    "key": overrides.get("ssh_key") or config.get("ssh_key", ""),
+                    "persistent": overrides.get(
+                        "ssh_persistent", config.get("ssh_persistent", False)
+                    ),
                 }
 
             local_config = None
@@ -166,7 +179,9 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str, offset: int = 1, limit: int = 500, task_id: str = "default"
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         # Security: block direct reads of internal Hermes cache/index files
@@ -201,9 +216,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # so only truly back-to-back identical reads trigger warnings/blocks.
         read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
-            })
+            task_data = _read_tracker.setdefault(
+                task_id,
+                {
+                    "last_key": None,
+                    "consecutive": 0,
+                    "read_history": set(),
+                },
+            )
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -214,15 +234,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
-            return json.dumps({
-                "error": (
-                    f"BLOCKED: You have read this exact file region {count} times in a row. "
-                    "The content has NOT changed. You already have this information. "
-                    "STOP re-reading and proceed with your task."
-                ),
-                "path": path,
-                "already_read": count,
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": (
+                        f"BLOCKED: You have read this exact file region {count} times in a row. "
+                        "The content has NOT changed. You already have this information. "
+                        "STOP re-reading and proceed with your task."
+                    ),
+                    "path": path,
+                    "already_read": count,
+                },
+                ensure_ascii=False,
+            )
         elif count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -245,13 +268,12 @@ def get_read_files_summary(task_id: str = "default") -> list:
         task_data = _read_tracker.get(task_id, {})
         read_history = task_data.get("read_history", set())
         seen_paths: dict = {}
-        for (path, offset, limit) in read_history:
+        for path, offset, limit in read_history:
             if path not in seen_paths:
                 seen_paths[path] = []
             seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
         return [
-            {"path": p, "regions": regions}
-            for p, regions in sorted(seen_paths.items())
+            {"path": p, "regions": regions} for p, regions in sorted(seen_paths.items())
         ]
 
 
@@ -299,13 +321,19 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
+def patch_tool(
+    mode: str = "replace",
+    path: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    patch: str = None,
+    task_id: str = "default",
+) -> str:
     """Patch a file using replace mode or V4A patch format."""
     try:
         file_ops = _get_file_ops(task_id)
-        
+
         if mode == "replace":
             if not path:
                 return json.dumps({"error": "path required"})
@@ -318,7 +346,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result = file_ops.patch_v4a(patch)
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
-        
+
         result_dict = result.to_dict()
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
@@ -330,10 +358,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
-                output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+def search_tool(
+    pattern: str,
+    target: str = "content",
+    path: str = ".",
+    file_glob: str = None,
+    limit: int = 50,
+    offset: int = 0,
+    output_mode: str = "content",
+    context: int = 0,
+    task_id: str = "default",
+) -> str:
     """Search for content or files."""
     try:
         # Track searches to detect *consecutive* repeated search loops.
@@ -349,9 +384,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             offset,
         )
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
-            })
+            task_data = _read_tracker.setdefault(
+                task_id,
+                {
+                    "last_key": None,
+                    "consecutive": 0,
+                    "read_history": set(),
+                },
+            )
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1
             else:
@@ -360,24 +400,33 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             count = task_data["consecutive"]
 
         if count >= 4:
-            return json.dumps({
-                "error": (
-                    f"BLOCKED: You have run this exact search {count} times in a row. "
-                    "The results have NOT changed. You already have this information. "
-                    "STOP re-searching and proceed with your task."
-                ),
-                "pattern": pattern,
-                "already_searched": count,
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": (
+                        f"BLOCKED: You have run this exact search {count} times in a row. "
+                        "The results have NOT changed. You already have this information. "
+                        "STOP re-searching and proceed with your task."
+                    ),
+                    "pattern": pattern,
+                    "already_searched": count,
+                },
+                ensure_ascii=False,
+            )
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            pattern=pattern,
+            path=path,
+            target=target,
+            file_glob=file_glob,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            context=context,
         )
-        if hasattr(result, 'matches'):
+        if hasattr(result, "matches"):
             for m in result.matches:
-                if hasattr(m, 'content') and m.content:
+                if hasattr(m, "content") and m.content:
                     m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
 
@@ -402,7 +451,7 @@ FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
     {"name": "write_file", "function": write_file_tool},
     {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
+    {"name": "search_files", "function": search_tool},
 ]
 
 
@@ -420,7 +469,9 @@ from tools.registry import registry
 def _check_file_reqs():
     """Lazy wrapper to avoid circular import with tools/__init__.py."""
     from tools import check_file_requirements
+
     return check_file_requirements()
+
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
@@ -428,12 +479,25 @@ READ_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "path": {
+                "type": "string",
+                "description": "Path to the file to read (absolute, relative, or ~/path)",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Line number to start reading from (1-indexed, default: 1)",
+                "default": 1,
+                "minimum": 1,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of lines to read (default: 500, max: 2000)",
+                "default": 500,
+                "maximum": 2000,
+            },
         },
-        "required": ["path"]
-    }
+        "required": ["path"],
+    },
 }
 
 WRITE_FILE_SCHEMA = {
@@ -442,11 +506,17 @@ WRITE_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
-            "content": {"type": "string", "description": "Complete content to write to the file"}
+            "path": {
+                "type": "string",
+                "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)",
+            },
+            "content": {
+                "type": "string",
+                "description": "Complete content to write to the file",
+            },
         },
-        "required": ["path", "content"]
-    }
+        "required": ["path", "content"],
+    },
 }
 
 PATCH_SCHEMA = {
@@ -455,15 +525,36 @@ PATCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
-            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
-            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
-            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
-            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches",
+                "default": "replace",
+            },
+            "path": {
+                "type": "string",
+                "description": "File path to edit (required for 'replace' mode)",
+            },
+            "old_string": {
+                "type": "string",
+                "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness.",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text.",
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                "default": False,
+            },
+            "patch": {
+                "type": "string",
+                "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
         },
-        "required": ["mode"]
-    }
+        "required": ["mode"],
+    },
 }
 
 SEARCH_FILES_SCHEMA = {
@@ -472,36 +563,80 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
-            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
-            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
-            "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
-            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
-            "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "pattern": {
+                "type": "string",
+                "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search",
+            },
+            "target": {
+                "type": "string",
+                "enum": ["content", "files"],
+                "description": "'content' searches inside file contents, 'files' searches for files by name",
+                "default": "content",
+            },
+            "path": {
+                "type": "string",
+                "description": "Directory or file to search in (default: current working directory)",
+                "default": ".",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: 50)",
+                "default": 50,
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Skip first N results for pagination (default: 0)",
+                "default": 0,
+            },
+            "output_mode": {
+                "type": "string",
+                "enum": ["content", "files_only", "count"],
+                "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
+                "default": "content",
+            },
+            "context": {
+                "type": "integer",
+                "description": "Number of context lines before and after each match (grep mode only)",
+                "default": 0,
+            },
         },
-        "required": ["pattern"]
-    }
+        "required": ["pattern"],
+    },
 }
 
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    return write_file_tool(
+        path=args.get("path", ""), content=args.get("content", ""), task_id=tid
+    )
 
 
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
     return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
-        old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        mode=args.get("mode", "replace"),
+        path=args.get("path"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False),
+        patch=args.get("patch"),
+        task_id=tid,
+    )
 
 
 def _handle_search_files(args, **kw):
@@ -510,12 +645,47 @@ def _handle_search_files(args, **kw):
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
-        file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        pattern=args.get("pattern", ""),
+        target=target,
+        path=args.get("path", "."),
+        file_glob=args.get("file_glob"),
+        limit=args.get("limit", 50),
+        offset=args.get("offset", 0),
+        output_mode=args.get("output_mode", "content"),
+        context=args.get("context", 0),
+        task_id=tid,
+    )
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖")
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️")
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧")
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎")
+registry.register(
+    name="read_file",
+    toolset="file",
+    schema=READ_FILE_SCHEMA,
+    handler=_handle_read_file,
+    check_fn=_check_file_reqs,
+    emoji="📖",
+)
+registry.register(
+    name="write_file",
+    toolset="file",
+    schema=WRITE_FILE_SCHEMA,
+    handler=_handle_write_file,
+    check_fn=_check_file_reqs,
+    emoji="✍️",
+)
+registry.register(
+    name="patch",
+    toolset="file",
+    schema=PATCH_SCHEMA,
+    handler=_handle_patch,
+    check_fn=_check_file_reqs,
+    emoji="🔧",
+)
+registry.register(
+    name="search_files",
+    toolset="file",
+    schema=SEARCH_FILES_SCHEMA,
+    handler=_handle_search_files,
+    check_fn=_check_file_reqs,
+    emoji="🔎",
+)

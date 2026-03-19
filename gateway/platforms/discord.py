@@ -1270,6 +1270,54 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return [asdict(message) for message in messages]
 
+    async def list_threads(
+        self,
+        channel_id: str,
+        include_archived: bool = False,
+        limit: int = 100,
+        before: Optional[Any] = None,
+        private: bool = False,
+        joined: bool = False,
+    ) -> list:
+        """List active and optionally archived threads for a channel."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_threads(
+            self._client,
+            channel_id,
+            include_archived=include_archived,
+            limit=limit,
+            before=before,
+            private=private,
+            joined=joined,
+        )
+
+    async def reply_in_thread(
+        self,
+        thread_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a message to a Discord thread."""
+        result = await discord_messaging.reply_in_thread(
+            self._client,
+            thread_id,
+            content,
+            reply_to=reply_to,
+            format_message=self.format_message,
+            truncate_message=self.truncate_message,
+            max_message_length=self.MAX_MESSAGE_LENGTH,
+            send_text_message=discord_delivery.send_text_message,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to reply in Discord thread %s: %s",
+                self.name,
+                thread_id,
+                result.error,
+            )
+        return result
+
     async def search_channel_history(
         self,
         channel_id: str,
@@ -1295,6 +1343,68 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         permissions = await discord_permissions.check_channel_permissions(self._client, channel_id)
         return asdict(permissions) if permissions else None
+
+    async def list_pins(
+        self,
+        channel_id: str,
+        limit: int = 50,
+        before: Optional[Any] = None,
+        oldest_first: bool = False,
+    ) -> list:
+        """List pinned messages for a Discord channel or thread."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_pins(
+            self._client,
+            channel_id,
+            limit=limit,
+            before=before,
+            oldest_first=oldest_first,
+        )
+
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        reason: Optional[str] = None,
+    ) -> SendResult:
+        """Pin a Discord message."""
+        result = await discord_messaging.pin_message(
+            self._client,
+            chat_id,
+            message_id,
+            reason=reason,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to pin Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def unpin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        reason: Optional[str] = None,
+    ) -> SendResult:
+        """Unpin a Discord message."""
+        result = await discord_messaging.unpin_message(
+            self._client,
+            chat_id,
+            message_id,
+            reason=reason,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to unpin Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
 
     async def get_accessible_channels(self, guild_id: Optional[str] = None) -> list:
         """List accessible channels."""

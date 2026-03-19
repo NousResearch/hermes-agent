@@ -265,3 +265,127 @@ async def test_get_channel_permissions_serializes_dm_thread_flags_as_false():
         "can_manage_threads": False,
         "can_create_threads": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_list_threads_returns_serialized_threads():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread = sys.modules["discord"].Thread()
+    thread.id = 77
+    thread.name = "planning"
+    thread.parent = SimpleNamespace(id=5, name="general")
+    thread.guild = SimpleNamespace(id=1, name="Hermes")
+    thread.archived = False
+    thread.locked = False
+    thread.message_count = 4
+    thread.member_count = 2
+    channel = SimpleNamespace(threads=[thread])
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.list_threads("123")
+
+    assert result == [
+        {
+            "id": "77",
+            "name": "planning",
+            "parent_id": "5",
+            "parent_name": "general",
+            "guild_id": "1",
+            "guild_name": "Hermes",
+            "archived": False,
+            "locked": False,
+            "message_count": 4,
+            "member_count": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_in_thread_sends_to_valid_thread():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread = sys.modules["discord"].Thread()
+    thread.parent = SimpleNamespace(id=5)
+    thread.fetch_message = AsyncMock(return_value=SimpleNamespace(id=99))
+    sent = SimpleNamespace(id=101)
+    thread.send = AsyncMock(return_value=sent)
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=thread),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.reply_in_thread("123", "hello", reply_to="99")
+
+    assert result.success is True
+    assert result.message_id == "101"
+    thread.fetch_message.assert_awaited_once_with(99)
+    thread.send.assert_awaited_once_with(content="hello", reference=thread.fetch_message.return_value)
+
+
+@pytest.mark.asyncio
+async def test_reply_in_thread_rejects_non_thread_channel():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=SimpleNamespace(parent=None)),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.reply_in_thread("123", "hello")
+
+    assert result.success is False
+    assert result.error == "Channel 123 is not a thread"
+
+
+@pytest.mark.asyncio
+async def test_list_pins_returns_serialized_messages():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    author = SimpleNamespace(id=42, name="Jezza", display_name="Jezza", bot=False)
+    pinned = SimpleNamespace(
+        id=7,
+        author=author,
+        content="important",
+        created_at=datetime(2026, 3, 18, 12, 0, 0, tzinfo=timezone.utc),
+        attachments=[],
+        reference=None,
+    )
+    channel = SimpleNamespace(pins=MagicMock(return_value=_FakeHistoryIterator([pinned])))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.list_pins("123")
+
+    assert result == [
+        {
+            "id": "7",
+            "author_id": "42",
+            "author_name": "Jezza",
+            "content": "important",
+            "timestamp": "2026-03-18T12:00:00+00:00",
+            "is_bot": False,
+            "attachments": [],
+            "reply_to": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pin_and_unpin_message_delegate_to_message_methods():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(pin=AsyncMock(), unpin=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+
+    pin_result = await adapter.pin_message("123", "456", reason="keep")
+    unpin_result = await adapter.unpin_message("123", "456", reason="drop")
+
+    assert pin_result.success is True
+    assert unpin_result.success is True
+    message.pin.assert_awaited_once_with(reason="keep")
+    message.unpin.assert_awaited_once_with(reason="drop")

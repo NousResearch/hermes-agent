@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import importlib
@@ -77,6 +78,22 @@ def _make_client(channel):
     )
 
 
+class _AsyncItemsIterator:
+    def __init__(self, items):
+        self._items = list(items)
+        self._index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._index >= len(self._items):
+            raise StopAsyncIteration
+        item = self._items[self._index]
+        self._index += 1
+        return item
+
+
 def test_normalize_edit_content_truncates_to_limit():
     result = messaging.normalize_edit_content(
         "a" * 25,
@@ -148,3 +165,148 @@ async def test_edit_message_truncates_oversized_content():
 
     assert result.success is True
     message.edit.assert_awaited_once_with(content="aaaaaaa...")
+
+
+@pytest.mark.asyncio
+async def test_list_threads_returns_active_threads():
+    active_thread = SimpleNamespace(
+        id=10,
+        name="alpha",
+        parent=SimpleNamespace(id=5, name="general"),
+        guild=SimpleNamespace(id=1, name="Hermes"),
+        archived=False,
+        locked=False,
+        message_count=3,
+        member_count=2,
+    )
+    channel = SimpleNamespace(threads=[active_thread])
+
+    result = await messaging.list_threads(_make_client(channel), "123")
+
+    assert result == [
+        {
+            "id": "10",
+            "name": "alpha",
+            "parent_id": "5",
+            "parent_name": "general",
+            "guild_id": "1",
+            "guild_name": "Hermes",
+            "archived": False,
+            "locked": False,
+            "message_count": 3,
+            "member_count": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_threads_includes_archived_threads_when_requested():
+    archived_thread = SimpleNamespace(
+        id=11,
+        name="archive",
+        parent=SimpleNamespace(id=5, name="general"),
+        guild=SimpleNamespace(id=1, name="Hermes"),
+        archived=True,
+        locked=True,
+        message_count=9,
+        member_count=4,
+    )
+    channel = SimpleNamespace(
+        threads=[],
+        archived_threads=MagicMock(return_value=_AsyncItemsIterator([archived_thread])),
+    )
+
+    result = await messaging.list_threads(_make_client(channel), "123", include_archived=True, limit=25)
+
+    assert result[0]["id"] == "11"
+    channel.archived_threads.assert_called_once_with(
+        private=False,
+        joined=False,
+        limit=25,
+        before=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reply_in_thread_rejects_non_thread_channel():
+    channel = SimpleNamespace(parent=None)
+
+    result = await messaging.reply_in_thread(_make_client(channel), "123", "hello")
+
+    assert result.success is False
+    assert result.error == "Channel 123 is not a thread"
+
+
+@pytest.mark.asyncio
+async def test_reply_in_thread_sends_chunks():
+    sent_message = SimpleNamespace(id=55)
+    thread = SimpleNamespace(
+        parent=SimpleNamespace(id=5),
+        fetch_message=AsyncMock(return_value=SimpleNamespace(id=99)),
+    )
+    send_text_message = AsyncMock(return_value=sent_message)
+
+    result = await messaging.reply_in_thread(
+        _make_client(thread),
+        "123",
+        "hello",
+        reply_to="99",
+        format_message=lambda value: value.upper(),
+        truncate_message=lambda value, _max_len: [value[:3], value[3:]],
+        send_text_message=send_text_message,
+    )
+
+    assert result.success is True
+    assert result.message_id == "55"
+    assert send_text_message.await_count == 2
+    first_call = send_text_message.await_args_list[0]
+    second_call = send_text_message.await_args_list[1]
+    assert first_call.args[0] is thread
+    assert first_call.args[1] == "HEL"
+    assert first_call.kwargs["reference"].id == 99
+    assert second_call.args[1] == "LO"
+    assert second_call.kwargs["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_pins_serializes_messages():
+    author = SimpleNamespace(id=42, name="Jezza", display_name="Jezza", bot=False)
+    pinned = SimpleNamespace(
+        id=7,
+        author=author,
+        content="important",
+        created_at=datetime(2026, 3, 18, 12, 0, 0),
+        attachments=[],
+        reference=None,
+    )
+    channel = SimpleNamespace(pins=MagicMock(return_value=_AsyncItemsIterator([pinned])))
+
+    result = await messaging.list_pins(_make_client(channel), "123")
+
+    assert result == [
+        {
+            "id": "7",
+            "author_id": "42",
+            "author_name": "Jezza",
+            "content": "important",
+            "timestamp": "2026-03-18T12:00:00",
+            "is_bot": False,
+            "attachments": [],
+            "reply_to": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pin_and_unpin_message_call_message_methods():
+    message = SimpleNamespace(pin=AsyncMock(), unpin=AsyncMock())
+    channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+    client = _make_client(channel)
+
+    pin_result = await messaging.pin_message(client, "123", "456", reason="keep")
+    unpin_result = await messaging.unpin_message(client, "123", "456", reason="drop")
+
+    assert pin_result.success is True
+    assert unpin_result.success is True
+    message.pin.assert_awaited_once_with(reason="keep")
+    message.unpin.assert_awaited_once_with(reason="drop")

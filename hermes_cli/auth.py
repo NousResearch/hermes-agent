@@ -831,6 +831,34 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
         )
+    # Auto-sync: if ~/.codex/auth.json is newer than our stored state, re-import
+    codex_home = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
+    codex_auth_path = Path(codex_home).expanduser() / "auth.json"
+    if codex_auth_path.is_file():
+        try:
+            file_mtime = codex_auth_path.stat().st_mtime
+            last_refresh_str = state.get("last_refresh") or ""
+            stored_ts: float = 0.0
+            if last_refresh_str:
+                from datetime import datetime, timezone
+                stored_ts = datetime.fromisoformat(last_refresh_str.replace("Z", "+00:00")).timestamp()
+            if file_mtime > stored_ts:
+                payload = json.loads(codex_auth_path.read_text())
+                cli_tokens = payload.get("tokens")
+                if isinstance(cli_tokens, dict) and cli_tokens.get("access_token") and cli_tokens.get("refresh_token"):
+                    logger.info("Detected newer Codex CLI credentials, syncing to Hermes auth store")
+                    _save_codex_tokens(dict(cli_tokens))
+                    # Reload the updated state
+                    if _lock:
+                        with _auth_store_lock():
+                            auth_store2 = _load_auth_store()
+                    else:
+                        auth_store2 = _load_auth_store()
+                    state = _load_provider_state(auth_store2, "openai-codex") or state
+                    tokens = state.get("tokens", tokens)
+        except Exception:
+            pass
+
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),

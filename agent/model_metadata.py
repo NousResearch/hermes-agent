@@ -220,7 +220,7 @@ def is_local_endpoint(base_url: str) -> bool:
 def detect_local_server_type(base_url: str) -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
-    Returns one of: "ollama", "lmstudio", "vllm", "llamacpp", or None.
+    Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
     """
     import httpx
 
@@ -231,18 +231,25 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
 
     try:
         with httpx.Client(timeout=2.0) as client:
-            # Ollama exposes /api/tags
+            # LM Studio exposes /api/v1/models — check first (most specific)
+            try:
+                r = client.get(f"{server_url}/api/v1/models")
+                if r.status_code == 200:
+                    return "lm-studio"
+            except Exception:
+                pass
+            # Ollama exposes /api/tags and responds with {"models": [...]}
+            # LM Studio returns {"error": "Unexpected endpoint"} with status 200
+            # on this path, so we must verify the response contains "models".
             try:
                 r = client.get(f"{server_url}/api/tags")
                 if r.status_code == 200:
-                    return "ollama"
-            except Exception:
-                pass
-            # LM Studio exposes /api/v0/models
-            try:
-                r = client.get(f"{server_url}/api/v0/models")
-                if r.status_code == 200:
-                    return "lmstudio"
+                    try:
+                        data = r.json()
+                        if "models" in data:
+                            return "ollama"
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # llama.cpp exposes /props

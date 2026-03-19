@@ -882,11 +882,23 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
         
+        # Ensure agent identity exists (Ed25519 keypair for social signing)
+        try:
+            from identity import get_identity, identity_exists
+            if not identity_exists():
+                ident = get_identity()
+                logger.info("Agent identity created: %s...", ident.pubkey_hex[:16])
+            else:
+                ident = get_identity()
+                logger.info("Agent identity: %s...", ident.pubkey_hex[:16])
+        except Exception as e:
+            logger.warning("Agent identity init skipped: %s", e)
+
         connected_count = 0
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
@@ -1191,6 +1203,13 @@ class GatewayRunner:
                 return None
             return APIServerAdapter(config)
 
+        elif platform == Platform.SOCIAL:
+            from gateway.platforms.social import SocialAdapter, check_social_adapter_requirements
+            if not check_social_adapter_requirements():
+                logger.warning("Social: relay not configured or social not enabled in config.yaml")
+                return None
+            return SocialAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1483,6 +1502,12 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "identity":
+            return await self._handle_identity_command(event)
+
+        if canonical == "wallet":
+            return await self._handle_wallet_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -3812,6 +3837,124 @@ class GatewayRunner:
         self._pending_approvals.pop(session_key)
         logger.info("User denied dangerous command via /deny")
         return "❌ Command denied."
+
+    async def _handle_identity_command(self, event: MessageEvent) -> str:
+        """Handle /identity [create|status|export] command."""
+        args = event.get_command_args().strip().lower()
+
+        try:
+            from identity import get_identity, identity_exists
+        except ImportError:
+            return "Identity module not available."
+
+        if args == "create":
+            if identity_exists():
+                ident = get_identity()
+                return (
+                    f"Identity already exists.\n"
+                    f"Pubkey: {ident.pubkey_hex}\n"
+                    f"Short:  {ident.pubkey_hex[:12]}..."
+                )
+            ident = get_identity()
+            return (
+                f"Identity created.\n"
+                f"Pubkey: {ident.pubkey_hex}\n"
+                f"Your agent can now sign events on social relays."
+            )
+
+        elif args == "export":
+            if not identity_exists():
+                return "No identity. Use /identity create first."
+            ident = get_identity()
+            return ident.pubkey_hex
+
+        else:  # status (default)
+            if not identity_exists():
+                return (
+                    "No identity found.\n"
+                    "Use /identity create to generate an Ed25519 keypair."
+                )
+            try:
+                ident = get_identity()
+            except Exception as e:
+                return f"Identity corrupted: {e}\nDelete ~/.hermes/identity/ and use /identity create."
+
+            lines = [
+                "Identity: OK",
+                f"Pubkey:   {ident.pubkey_hex}",
+                f"Short:    {ident.pubkey_hex[:12]}...",
+                f"Key:      Ed25519 (256-bit)",
+            ]
+
+            # Check social config
+            try:
+                import yaml
+                from pathlib import Path
+                hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+                config_path = hermes_home / "config.yaml"
+                if config_path.is_file():
+                    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                    social = config.get("social", {})
+                    if social.get("enabled"):
+                        lines.append(f"Relay:    {social.get('relay', 'not set')}")
+                        lines.append("Social:   enabled")
+                    else:
+                        lines.append("Social:   disabled")
+            except Exception:
+                pass
+
+            return "\n".join(lines)
+
+    async def _handle_wallet_command(self, event: MessageEvent) -> str:
+        """Handle /wallet [status|fund|login|logout] command."""
+        args = event.get_command_args().strip().lower()
+
+        import shutil, subprocess
+
+        tempo = shutil.which("tempo") or os.path.expanduser("~/.tempo/bin/tempo")
+        if not os.path.isfile(tempo):
+            return "Tempo CLI not found.\nInstall: curl -fsSL https://tempo.xyz/install | bash"
+
+        if args in ("status", ""):
+            try:
+                r = subprocess.run(
+                    [tempo, "wallet", "-t", "whoami"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode != 0:
+                    return f"Wallet not configured: {r.stderr.strip()}\nRun /wallet login to set up."
+                return r.stdout.strip()
+            except Exception as e:
+                return f"Error: {e}"
+
+        elif args == "fund":
+            try:
+                r = subprocess.run(
+                    [tempo, "wallet", "fund"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                return r.stdout.strip() or r.stderr.strip() or "Fund request sent."
+            except Exception as e:
+                return f"Error: {e}"
+
+        elif args == "login":
+            return (
+                "Wallet login requires browser access.\n"
+                "Run from terminal: ~/.tempo/bin/tempo wallet login"
+            )
+
+        elif args == "logout":
+            try:
+                subprocess.run(
+                    [tempo, "wallet", "logout", "--yes"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                return "Wallet logged out."
+            except Exception as e:
+                return f"Error: {e}"
+
+        else:
+            return "Usage: /wallet [status|fund|login|logout]"
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

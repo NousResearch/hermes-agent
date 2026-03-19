@@ -56,6 +56,7 @@ class Platform(Enum):
     SMS = "sms"
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
+    SOCIAL = "social"
 
 
 @dataclass
@@ -714,6 +715,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=sms_home,
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # Social relay
+    try:
+        import yaml as _yaml
+        _social_cfg_path = _home / "config.yaml"
+        if _social_cfg_path.exists():
+            _social_yaml = _yaml.safe_load(_social_cfg_path.read_text(encoding="utf-8")) or {}
+            _social_section = _social_yaml.get("social", {})
+            if isinstance(_social_section, dict) and _social_section.get("enabled") and _social_section.get("relay"):
+                if Platform.SOCIAL not in config.platforms:
+                    config.platforms[Platform.SOCIAL] = PlatformConfig()
+                config.platforms[Platform.SOCIAL].enabled = True
+                config.platforms[Platform.SOCIAL].extra["relay"] = _social_section["relay"]
+                config.platforms[Platform.SOCIAL].extra["poll_interval"] = _social_section.get("poll_interval", 30)
+    except Exception:
+        pass
 
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")

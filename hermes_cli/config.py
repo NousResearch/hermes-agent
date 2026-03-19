@@ -779,6 +779,10 @@ OPTIONAL_ENV_VARS = {
     "WHATSAPP_REPLY_PREFIX": {
         "description": "Optional WhatsApp reply prefix. Use an empty value to disable it. Supports \\n escapes.",
         "prompt": "WhatsApp reply prefix",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "API_SERVER_ENABLED": {
         "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",

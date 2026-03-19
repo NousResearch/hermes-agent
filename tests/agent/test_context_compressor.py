@@ -9,7 +9,8 @@ from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
 @pytest.fixture()
 def compressor():
     """Create a ContextCompressor with mocked dependencies."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+         patch("agent.context_compressor.get_upgrade_context_tier", return_value=None):
         c = ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
@@ -513,3 +514,104 @@ class TestCompressWithClient:
         for msg in result:
             if msg.get("role") == "tool" and msg.get("tool_call_id"):
                 assert msg["tool_call_id"] in called_ids
+
+
+# =========================================================================
+# Upgrade probe (auto-detect premium context tiers)
+# =========================================================================
+
+class TestUpgradeProbe:
+    def _make_compressor(self, upgrade_tier):
+        """Create a compressor with a specific upgrade tier (no base_url → cache skipped)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000), \
+             patch("agent.context_compressor.get_upgrade_context_tier", return_value=upgrade_tier):
+            return ContextCompressor(
+                model="claude-opus-4-6",
+                threshold_percent=0.50,
+                quiet_mode=True,
+            )
+
+    def test_upgrade_probe_activates_at_threshold(self):
+        """When tokens hit the threshold and an upgrade tier exists, probe
+        activates and should_compress returns False."""
+        c = self._make_compressor(1_000_000)
+        assert c.context_length == 200_000
+        assert c.threshold_tokens == 100_000
+
+        # Tokens exceed threshold → should activate probe, not compress
+        result = c.should_compress(prompt_tokens=110_000)
+        assert result is False
+        assert c._upgrade_probe_active is True
+        assert c.context_length == 1_000_000
+        assert c.threshold_tokens == 500_000
+
+    def test_no_upgrade_tier_compresses_normally(self):
+        """Without an upgrade tier, compression triggers as usual."""
+        c = self._make_compressor(None)
+        result = c.should_compress(prompt_tokens=110_000)
+        assert result is True
+        assert c._upgrade_probe_active is False
+
+    def test_probe_only_activates_once(self):
+        """Upgrade probe should not re-activate after being used."""
+        c = self._make_compressor(1_000_000)
+
+        # First time: activates probe
+        c.should_compress(prompt_tokens=110_000)
+        assert c._upgrade_probe_active is True
+
+        # Simulate error handler deactivating probe and reverting context
+        c._upgrade_probe_active = False
+        c._context_probed = True
+        c.context_length = 200_000
+        c.threshold_tokens = 100_000
+
+        # Second time: should compress normally (probed=True blocks re-probe)
+        result = c.should_compress(prompt_tokens=110_000)
+        assert result is True
+
+    def test_preflight_also_activates_probe(self):
+        """should_compress_preflight should also activate the upgrade probe."""
+        c = self._make_compressor(1_000_000)
+        # Create messages that exceed the threshold (~400K chars ÷ 4 = 100K tokens)
+        msgs = [{"role": "user", "content": "x" * 500_000}]
+        result = c.should_compress_preflight(msgs)
+        assert result is False
+        assert c._upgrade_probe_active is True
+        assert c.context_length == 1_000_000
+
+    def test_pre_upgrade_context_preserved(self):
+        """The original context length is preserved for revert on failure."""
+        c = self._make_compressor(1_000_000)
+        c.should_compress(prompt_tokens=110_000)
+        assert c._pre_upgrade_context_length == 200_000
+
+    def test_cached_context_suppresses_upgrade_probe(self):
+        """When context length was loaded from cache, upgrade probe is disabled."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000), \
+             patch("agent.context_compressor.get_cached_context_length", return_value=200000), \
+             patch("agent.context_compressor.get_upgrade_context_tier", return_value=1_000_000):
+            c = ContextCompressor(
+                model="claude-opus-4-6",
+                threshold_percent=0.50,
+                quiet_mode=True,
+                base_url="https://api.anthropic.com",
+            )
+        assert c._upgrade_tier is None
+        # Should compress normally, no probe
+        result = c.should_compress(prompt_tokens=110_000)
+        assert result is True
+        assert c._upgrade_probe_active is False
+
+    def test_no_cache_allows_upgrade_probe(self):
+        """Without a cached context length, upgrade probe is enabled."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000), \
+             patch("agent.context_compressor.get_cached_context_length", return_value=None), \
+             patch("agent.context_compressor.get_upgrade_context_tier", return_value=1_000_000):
+            c = ContextCompressor(
+                model="claude-opus-4-6",
+                threshold_percent=0.50,
+                quiet_mode=True,
+                base_url="https://api.anthropic.com",
+            )
+        assert c._upgrade_tier == 1_000_000

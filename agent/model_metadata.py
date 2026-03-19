@@ -38,6 +38,16 @@ CONTEXT_PROBE_TIERS = [
     32_000,
 ]
 
+# Models that may support higher context on premium API tiers (e.g., Max plan).
+# Default context is used initially; if the session grows past it without a
+# context-length error, the upgrade tier is confirmed and cached for future
+# sessions.  This avoids penalising Max-plan users with early compression
+# while keeping the default safe for standard-plan users.
+UPGRADE_CONTEXT_TIERS = {
+    "anthropic/claude-opus-4.6": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
+}
+
 DEFAULT_CONTEXT_LENGTHS = {
     "anthropic/claude-opus-4": 200000,
     "anthropic/claude-opus-4.5": 200000,
@@ -401,6 +411,27 @@ def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     return cache.get(key)
+
+
+def get_upgrade_context_tier(model: str) -> Optional[int]:
+    """Return the potential upgrade context tier for a model, or None.
+
+    Some models support higher context windows on premium API plans (e.g.,
+    Anthropic Max plan gives 1M for Opus 4.6).  This returns the higher
+    limit so the compressor can probe for it instead of compressing early.
+    """
+    if model in UPGRADE_CONTEXT_TIERS:
+        return UPGRADE_CONTEXT_TIERS[model]
+    # Fuzzy match: only check if a known key appears IN the model string
+    # (e.g., "claude-opus-4-6" in "claude-opus-4-6:beta").  The reverse
+    # direction (model in key) is intentionally omitted to prevent
+    # "claude-opus-4" from matching "claude-opus-4-6".
+    for key, tier in sorted(
+        UPGRADE_CONTEXT_TIERS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if key in model:
+            return tier
+    return None
 
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:

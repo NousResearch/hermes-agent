@@ -5184,7 +5184,7 @@ class AIAgent:
             _msg_tok_est = estimate_messages_tokens_rough(messages)
             _preflight_tokens = _sys_tok_est + _msg_tok_est
 
-            if _preflight_tokens >= self.context_compressor.threshold_tokens:
+            if self.context_compressor.should_compress(_preflight_tokens):
                 logger.info(
                     "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                     f"{_preflight_tokens:,}",
@@ -5655,6 +5655,27 @@ class AIAgent:
                             self._safe_print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
                             self.context_compressor._context_probed = False
 
+                        # Confirm upgrade probe: if we're in upgrade-probe mode
+                        # and the API call succeeded past the old default
+                        # threshold, the user has the premium tier.  We confirm
+                        # just above the old compression threshold (not the full
+                        # context limit) so sessions that stabilise between
+                        # threshold and limit still get cached.
+                        compressor = self.context_compressor
+                        if (
+                            compressor._upgrade_probe_active
+                            and compressor._pre_upgrade_context_length
+                            and prompt_tokens > compressor._pre_upgrade_context_length * compressor.threshold_percent
+                        ):
+                            save_context_length(
+                                self.model, self.base_url, compressor._upgrade_tier
+                            )
+                            self._safe_print(
+                                f"{self.log_prefix}🎉 Extended context confirmed: "
+                                f"{compressor._upgrade_tier:,} tokens for {self.model}"
+                            )
+                            compressor._upgrade_probe_active = False
+
                         self.session_prompt_tokens += prompt_tokens
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
@@ -5929,22 +5950,39 @@ class AIAgent:
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
 
-                        # Try to parse the actual limit from the error message
-                        parsed_limit = parse_context_limit_from_error(error_msg)
-                        if parsed_limit and parsed_limit < old_ctx:
-                            new_ctx = parsed_limit
-                            self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
-                        else:
-                            # Step down to the next probe tier
-                            new_ctx = get_next_probe_tier(old_ctx)
-
-                        if new_ctx and new_ctx < old_ctx:
+                        if compressor._upgrade_probe_active:
+                            # Upgrade probe failed — user doesn't have the
+                            # premium tier.  Revert to the pre-upgrade default
+                            # and cache it.  Skip normal step-down logic since
+                            # we already know the correct limit.
+                            new_ctx = compressor._pre_upgrade_context_length
                             compressor.context_length = new_ctx
                             compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
+                            compressor._upgrade_probe_active = False
+                            compressor._upgrade_tier = None  # don't probe again
                             compressor._context_probed = True
-                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
+                            save_context_length(self.model, self.base_url, new_ctx)
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Upgrade probe failed — "
+                                f"reverting to {new_ctx:,} tokens (cached for future sessions)",
+                                force=True,
+                            )
                         else:
-                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)
+                            # Normal step-down: parse limit from error or probe
+                            parsed_limit = parse_context_limit_from_error(error_msg)
+                            if parsed_limit and parsed_limit < old_ctx:
+                                new_ctx = parsed_limit
+                                self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                            else:
+                                new_ctx = get_next_probe_tier(old_ctx)
+
+                            if new_ctx and new_ctx < old_ctx:
+                                compressor.context_length = new_ctx
+                                compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
+                                compressor._context_probed = True
+                                self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
+                            else:
+                                self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)
 
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:

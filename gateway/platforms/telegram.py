@@ -349,6 +349,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
             for i, chunk in enumerate(chunks):
+                if chunk is None or not str(chunk).strip():
+                    continue
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -366,6 +368,8 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
+                                if plain_chunk is None or not str(plain_chunk).strip():
+                                          continue
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
                                     text=plain_chunk,

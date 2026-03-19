@@ -642,6 +642,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\profiles" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\whatsapp\session" | Out-Null
     
     # Create .env
@@ -692,6 +693,25 @@ Delete the contents (or this file) to use the default personality.
 -->
 "@ | Set-Content -Path $soulPath -Encoding UTF8
         Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+    }
+
+    # Seed example profile template into ~/.hermes/profiles/example-profile/
+    $profileTemplateSrc = "$InstallDir\docs\examples\profile-template"
+    $profileTemplateDst = "$HermesHome\profiles\example-profile"
+    if (-not (Test-Path $profileTemplateDst)) {
+        if (Test-Path $profileTemplateSrc) {
+            Copy-Item -Path $profileTemplateSrc -Destination $profileTemplateDst -Recurse -Force
+            Write-Success "Created ~/.hermes/profiles/example-profile template"
+        } else {
+            New-Item -ItemType Directory -Force -Path "$profileTemplateDst\workspace" | Out-Null
+            New-Item -ItemType Directory -Force -Path "$profileTemplateDst\memories" | Out-Null
+            New-Item -ItemType Directory -Force -Path "$profileTemplateDst\cron" | Out-Null
+            New-Item -ItemType Directory -Force -Path "$profileTemplateDst\sessions" | Out-Null
+            New-Item -ItemType Directory -Force -Path "$profileTemplateDst\skills" | Out-Null
+            Write-Warning "Profile template source not found; created empty ~/.hermes/profiles/example-profile/"
+        }
+    } else {
+        Write-Info "~/.hermes/profiles/example-profile already exists, keeping it"
     }
     
     Write-Success "Configuration directory ready: ~/.hermes/"

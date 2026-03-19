@@ -69,9 +69,11 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
+# Shared skills live in ~/.hermes/skills/. Profile runtimes can add
+# profile-private skills under ~/.hermes/profiles/<name>/skills/.
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 SKILLS_DIR = HERMES_HOME / "skills"
+_DEFAULT_SHARED_SKILLS_DIR = SKILLS_DIR
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -86,6 +88,55 @@ ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 def check_skill_manage_requirements() -> bool:
     """Skill management has no external requirements -- always available."""
     return True
+
+
+def _get_shared_skills_dir() -> Path:
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None:
+            return runtime.shared_skills_dir
+    except Exception:
+        pass
+    return _single_user_skills_dir()
+
+
+def _single_user_skills_dir() -> Path:
+    if SKILLS_DIR != _DEFAULT_SHARED_SKILLS_DIR:
+        return SKILLS_DIR
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills"
+
+
+def _get_private_skills_dir() -> Optional[Path]:
+    try:
+        from runtime_context import get_private_skills_dir
+
+        return get_private_skills_dir()
+    except Exception:
+        return None
+
+
+def _get_create_root() -> Path:
+    return _get_private_skills_dir() or _get_shared_skills_dir()
+
+
+def _get_skill_roots() -> list[Path]:
+    roots: list[Path] = []
+    private = _get_private_skills_dir()
+    if private is not None:
+        roots.append(private)
+    roots.append(_get_shared_skills_dir())
+    return roots
+
+
+def _relative_skill_dir(path: Path) -> str:
+    for root in _get_skill_roots():
+        try:
+            return str(path.relative_to(root))
+        except Exception:
+            continue
+    return str(path)
 
 
 # =============================================================================
@@ -147,9 +198,10 @@ def _validate_frontmatter(content: str) -> Optional[str]:
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
+    root = _get_create_root()
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return root / category / name
+    return root / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -157,11 +209,12 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Find a skill by name in ~/.hermes/skills/.
     Returns {"path": Path} or None.
     """
-    if not SKILLS_DIR.exists():
-        return None
-    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if skill_md.parent.name == name:
-            return {"path": skill_md.parent}
+    for root in _get_skill_roots():
+        if not root.exists():
+            continue
+        for skill_md in root.rglob("SKILL.md"):
+            if skill_md.parent.name == name:
+                return {"path": skill_md.parent, "root": root}
     return None
 
 
@@ -264,7 +317,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": _relative_skill_dir(skill_dir),
         "skill_md": str(skill_md),
     }
     if category:
@@ -401,7 +454,7 @@ def _delete_skill(name: str) -> Dict[str, Any]:
 
     # Clean up empty category directories (don't remove SKILLS_DIR itself)
     parent = skill_dir.parent
-    if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
+    if parent != _get_shared_skills_dir() and parent != _get_private_skills_dir() and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
     return {

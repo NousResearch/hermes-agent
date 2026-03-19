@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_time import now as _hermes_now
+from runtime_context import build_runtime_context, get_effective_home, use_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,36 @@ _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _get_runtime_home() -> Path:
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None:
+            return runtime.effective_home
+    except Exception:
+        pass
+    return _hermes_home
+
+
+def _iter_cron_runtimes():
+    try:
+        from hermes_cli.config import load_config
+
+        global_config = load_config(use_runtime=False)
+    except Exception:
+        global_config = {}
+
+    global_home = _hermes_home
+    yield build_runtime_context(global_config=global_config, global_home=global_home)
+    for profile_name in (global_config.get("profiles", {}) or {}).keys():
+        yield build_runtime_context(
+            global_config=global_config,
+            profile_name=profile_name,
+            global_home=global_home,
+        )
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -266,10 +297,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
+        hermes_home = _get_runtime_home()
         try:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
+            load_dotenv(str(hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+            load_dotenv(str(hermes_home / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -284,16 +316,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cfg = {}
         try:
             import yaml
-            _cfg_path = str(_hermes_home / "config.yaml")
-            if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
+
+            cfg_path = hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
-                _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+            _model_cfg = _cfg.get("model", {})
+            if not job.get("model"):
+                if isinstance(_model_cfg, str):
+                    model = _model_cfg
+                elif isinstance(_model_cfg, dict):
+                    model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -316,7 +349,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             import json as _json
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
-                pfpath = _hermes_home / pfpath
+                pfpath = hermes_home / pfpath
             if pfpath.exists():
                 try:
                     with open(pfpath, "r", encoding="utf-8") as _pf:
@@ -364,6 +397,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             },
         )
 
+        session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+        workspace = None
+        try:
+            from runtime_context import get_current_runtime
+
+            runtime_context = get_current_runtime()
+            workspace = runtime_context.workspace if runtime_context else None
+        except Exception:
+            workspace = None
+        if workspace:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+
+                register_task_env_overrides(session_id, {"cwd": workspace})
+            except Exception:
+                pass
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -382,7 +432,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             disabled_toolsets=["cronjob"],
             quiet_mode=True,
             platform="cron",
-            session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            session_id=session_id,
             session_db=_session_db,
         )
         
@@ -482,45 +532,46 @@ def tick(verbose: bool = True) -> int:
         return 0
 
     try:
-        due_jobs = get_due_jobs()
+        executed = 0
+        any_due = False
+        for runtime in _iter_cron_runtimes():
+            with use_runtime(runtime):
+                due_jobs = get_due_jobs()
+                if due_jobs:
+                    any_due = True
+                for job in due_jobs:
+                    try:
+                        success, output, final_response, error = run_job(job)
 
-        if verbose and not due_jobs:
+                        output_file = save_job_output(job["id"], output)
+                        if verbose:
+                            logger.info("Output saved to: %s", output_file)
+
+                        deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                        should_deliver = bool(deliver_content)
+                        if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
+                            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                            should_deliver = False
+
+                        if should_deliver:
+                            try:
+                                _deliver_result(job, deliver_content)
+                            except Exception as de:
+                                logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                        mark_job_run(job["id"], success, error)
+                        executed += 1
+
+                    except Exception as e:
+                        logger.error("Error processing job %s: %s", job['id'], e)
+                        mark_job_run(job["id"], False, str(e))
+
+        if verbose and not any_due:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
             return 0
 
-        if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
-
-        executed = 0
-        for job in due_jobs:
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                if should_deliver:
-                    try:
-                        _deliver_result(job, deliver_content)
-                    except Exception as de:
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                mark_job_run(job["id"], success, error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+        if verbose and any_due:
+            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), executed)
 
         return executed
     finally:

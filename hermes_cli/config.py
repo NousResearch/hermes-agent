@@ -356,6 +356,7 @@ DEFAULT_CONFIG = {
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
+    "profiles": {},
 
     # Pre-exec security scanning via tirith
     "security": {
@@ -1162,9 +1163,18 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def load_config() -> Dict[str, Any]:
+def load_config(use_runtime: bool = True) -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
+    if use_runtime:
+        try:
+            from runtime_context import get_current_runtime
+
+            runtime = get_current_runtime()
+            if runtime is not None and runtime.effective_config:
+                return _normalize_max_turns_config(copy.deepcopy(runtime.effective_config))
+        except Exception:
+            pass
     ensure_hermes_home()
     config_path = get_config_path()
     

@@ -26,9 +26,11 @@ Usage:
 """
 
 import os
+import ntpath
 import re
 import json
 import difflib
+import posixpath
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
@@ -90,6 +92,51 @@ def _get_safe_write_root() -> Optional[str]:
         return os.path.realpath(os.path.expanduser(root))
     except Exception:
         return None
+
+
+def _get_safe_access_root() -> Optional[str]:
+    root = os.getenv("HERMES_FILE_SAFE_ROOT", "")
+    if root:
+        try:
+            return os.path.expanduser(root)
+        except Exception:
+            return None
+    try:
+        from runtime_context import get_workspace_isolation_root
+
+        runtime_root = get_workspace_isolation_root()
+        if runtime_root is not None:
+            return str(runtime_root)
+    except Exception:
+        pass
+    return None
+
+
+def _path_module_for(path: str):
+    if re.match(r"^[A-Za-z]:[\\/]", path or ""):
+        return ntpath
+    return posixpath
+
+
+def _normalize_access_path(path: str, cwd: str) -> str:
+    path = str(path or "")
+    cwd = str(cwd or "/")
+    pathmod = _path_module_for(path or cwd)
+    if not path:
+        return pathmod.normpath(cwd)
+    if pathmod.isabs(path):
+        return pathmod.normpath(path)
+    return pathmod.normpath(pathmod.join(cwd, path))
+
+
+def _path_within_root(path: str, root: str, cwd: str) -> bool:
+    normalized_root = _normalize_access_path(root, root)
+    normalized_path = _normalize_access_path(path, cwd)
+    pathmod = _path_module_for(normalized_root)
+    try:
+        return pathmod.commonpath([normalized_root, normalized_path]) == normalized_root
+    except Exception:
+        return False
 
 
 def _is_write_denied(path: str) -> bool:
@@ -342,6 +389,20 @@ class ShellFileOperations(FileOperations):
         
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
+
+    def _validate_path_access(self, path: str, *, write: bool = False) -> Optional[str]:
+        safe_root = _get_safe_access_root()
+        if not safe_root:
+            return None
+
+        expanded = self._expand_path(path)
+        if not _path_within_root(expanded, safe_root, self.cwd):
+            action = "write" if write else "access"
+            return (
+                f"Path {action} denied: '{path}' is outside the isolated workspace "
+                f"root '{safe_root}'."
+            )
+        return None
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -473,6 +534,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        access_error = self._validate_path_access(path, write=False)
+        if access_error:
+            return ReadResult(error=access_error)
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -661,6 +725,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        access_error = self._validate_path_access(path, write=True)
+        if access_error:
+            return WriteResult(error=access_error)
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
@@ -718,6 +785,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        access_error = self._validate_path_access(path, write=True)
+        if access_error:
+            return PatchResult(error=access_error)
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
@@ -850,6 +920,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        access_error = self._validate_path_access(path, write=False)
+        if access_error:
+            return SearchResult(error=access_error, total_count=0)
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")

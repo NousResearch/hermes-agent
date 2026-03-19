@@ -82,11 +82,101 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 
-# All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
-# This is the single source of truth -- agent edits, hub installs, and bundled
-# skills all coexist here without polluting the git repo.
+# Global shared skills live in ~/.hermes/skills/. Profile runtimes can add a
+# private skills directory under ~/.hermes/profiles/<name>/skills/.
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 SKILLS_DIR = HERMES_HOME / "skills"
+_DEFAULT_SHARED_SKILLS_DIR = SKILLS_DIR
+
+
+def _single_user_skills_dir() -> Path:
+    if SKILLS_DIR != _DEFAULT_SHARED_SKILLS_DIR:
+        return SKILLS_DIR
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills"
+
+
+def _get_shared_skills_dir() -> Path:
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None:
+            return runtime.shared_skills_dir
+    except Exception:
+        pass
+    return _single_user_skills_dir()
+
+
+def _get_private_skills_dir() -> Path | None:
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None:
+            return runtime.private_skills_dir
+    except Exception:
+        pass
+    return None
+
+
+def _get_skill_roots() -> list[Path]:
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None:
+            roots = [p for p in runtime.get_skill_roots() if p]
+            if roots:
+                return roots
+    except Exception:
+        pass
+    return [_single_user_skills_dir()]
+
+
+def _get_primary_skills_dir() -> Path:
+    private = _get_private_skills_dir()
+    return private or _get_shared_skills_dir()
+
+
+def _iter_skill_files() -> list[Path]:
+    seen: set[tuple[str, str]] = set()
+    results: list[Path] = []
+    for root in _get_skill_roots():
+        if not root.exists():
+            continue
+        for skill_md in root.rglob("SKILL.md"):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            try:
+                rel = str(skill_md.relative_to(root))
+            except Exception:
+                rel = str(skill_md)
+            key = (str(root), rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(skill_md)
+    return results
+
+
+def _find_skill_root(path: Path) -> Path:
+    try:
+        from runtime_context import find_skill_root_for_path
+
+        root = find_skill_root_for_path(path)
+        if root is not None:
+            return root
+    except Exception:
+        pass
+    return _get_shared_skills_dir()
+
+
+def _relative_skill_path(path: Path) -> str:
+    root = _find_skill_root(path)
+    try:
+        return str(path.relative_to(root))
+    except Exception:
+        return str(path)
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -460,7 +550,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     """
     try:
-        rel_path = skill_path.relative_to(SKILLS_DIR)
+        rel_path = skill_path.relative_to(_find_skill_root(skill_path))
         parts = rel_path.parts
         if len(parts) >= 3:
             return parts[0]
@@ -564,17 +654,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """
     skills = []
 
-    if not SKILLS_DIR.exists():
+    roots = _get_skill_roots()
+    if not any(root.exists() for root in roots):
         return skills
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
 
-    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-            continue
-
+    for skill_md in _iter_skill_files():
         skill_dir = skill_md.parent
 
         try:
@@ -678,7 +766,8 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         JSON string with list of categories and their descriptions
     """
     try:
-        if not SKILLS_DIR.exists():
+        roots = _get_skill_roots()
+        if not any(root.exists() for root in roots):
             return json.dumps(
                 {
                     "success": True,
@@ -690,10 +779,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
 
         category_dirs = {}
         category_counts: Dict[str, int] = {}
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                continue
-
+        for skill_md in _iter_skill_files():
             try:
                 frontmatter, _ = _parse_frontmatter(
                     skill_md.read_text(encoding="utf-8")[:4000]
@@ -708,7 +794,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
             if category:
                 category_counts[category] = category_counts.get(category, 0) + 1
                 if category not in category_dirs:
-                    category_dirs[category] = SKILLS_DIR / category
+                    category_dirs[category] = _find_skill_root(skill_md) / category
 
         categories = []
         for name in sorted(category_dirs.keys()):
@@ -748,14 +834,15 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        primary_skills_dir = _get_primary_skills_dir()
+        if not any(root.exists() for root in _get_skill_roots()):
+            primary_skills_dir.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
                     "success": True,
                     "skills": [],
                     "categories": [],
-                    "message": "No skills found. Skills directory created at ~/.hermes/skills/",
+                    "message": f"No skills found. Skills directory created at {primary_skills_dir}/",
                 },
                 ensure_ascii=False,
             )
@@ -814,7 +901,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
-        if not SKILLS_DIR.exists():
+        skill_roots = _get_skill_roots()
+        if not any(root.exists() for root in skill_roots):
             return json.dumps(
                 {
                     "success": False,
@@ -827,16 +915,19 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         skill_md = None
 
         # Try direct path first (e.g., "mlops/axolotl")
-        direct_path = SKILLS_DIR / name
-        if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-            skill_dir = direct_path
-            skill_md = direct_path / "SKILL.md"
-        elif direct_path.with_suffix(".md").exists():
-            skill_md = direct_path.with_suffix(".md")
+        for root in skill_roots:
+            direct_path = Path(name).expanduser() if Path(name).is_absolute() else root / name
+            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                skill_dir = direct_path
+                skill_md = direct_path / "SKILL.md"
+                break
+            if direct_path.with_suffix(".md").exists():
+                skill_md = direct_path.with_suffix(".md")
+                break
 
         # Search by directory name
         if not skill_md:
-            for found_skill_md in SKILLS_DIR.rglob("SKILL.md"):
+            for found_skill_md in _iter_skill_files():
                 if found_skill_md.parent.name == name:
                     skill_dir = found_skill_md.parent
                     skill_md = found_skill_md
@@ -844,9 +935,12 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Legacy: flat .md files
         if not skill_md:
-            for found_md in SKILLS_DIR.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
-                    skill_md = found_md
+            for root in skill_roots:
+                for found_md in root.rglob(f"{name}.md"):
+                    if found_md.name != "SKILL.md":
+                        skill_md = found_md
+                        break
+                if skill_md:
                     break
 
         if not skill_md or not skill_md.exists():
@@ -875,7 +969,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Security: warn if skill is loaded from outside the trusted skills directory
         try:
-            skill_md.resolve().relative_to(SKILLS_DIR.resolve())
+            skill_md.resolve().relative_to(_find_skill_root(skill_md).resolve())
             _outside_skills_dir = False
         except ValueError:
             _outside_skills_dir = True
@@ -1116,7 +1210,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if script_files:
             linked_files["scripts"] = script_files
 
-        rel_path = str(skill_md.relative_to(SKILLS_DIR))
+        rel_path = _relative_skill_path(skill_md)
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )

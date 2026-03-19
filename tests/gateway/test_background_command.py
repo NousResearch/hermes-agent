@@ -254,6 +254,89 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "failed" in content.lower()
 
+    @pytest.mark.asyncio
+    async def test_profiled_background_task_uses_profile_runtime(self, tmp_path):
+        """Profile-matched /background runs should keep profile runtime state."""
+        runner = _make_runner()
+        runner._global_config = {
+            "profiles": {
+                "alice": {
+                    "users": {
+                        "telegram": ["12345"],
+                    },
+                    "config": {
+                        "model": "profile-model",
+                        "workspace": str(tmp_path / "alice-workspace"),
+                        "platform_toolsets": {
+                            "telegram": ["file", "memory"],
+                        },
+                    },
+                }
+            }
+        }
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+            thread_id="thread-1",
+        )
+
+        runtime_state = runner._ensure_runtime_registry().resolve_runtime(source)
+        observed_env = {}
+        mock_result = {"final_response": "Hello from background!", "messages": []}
+
+        def _run_side_effect(*_args, **_kwargs):
+            observed_env["session_key"] = os.environ.get("HERMES_SESSION_KEY", "")
+            observed_env["platform"] = os.environ.get("HERMES_SESSION_PLATFORM", "")
+            observed_env["chat_id"] = os.environ.get("HERMES_SESSION_CHAT_ID", "")
+            observed_env["thread_id"] = os.environ.get("HERMES_SESSION_THREAD_ID", "")
+            return mock_result
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={
+                "api_key": "test-key",
+                "base_url": "https://example.test/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            },
+        ), patch(
+            "tools.terminal_tool.register_task_env_overrides"
+        ) as mock_register, patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = _run_side_effect
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "say hello",
+                source,
+                "bg_test",
+                profile_name="alice",
+            )
+
+        kwargs = MockAgent.call_args.kwargs
+        assert kwargs["model"] == "profile-model"
+        assert kwargs["enabled_toolsets"] == ["file", "memory"]
+        assert kwargs["session_db"] is runtime_state.session_db
+        mock_register.assert_called_once_with(
+            "bg_test",
+            {"cwd": str(tmp_path / "alice-workspace")},
+        )
+        assert observed_env["session_key"].startswith("profile:alice:")
+        assert observed_env["platform"] == "telegram"
+        assert observed_env["chat_id"] == "67890"
+        assert observed_env["thread_id"] == "thread-1"
+
 
 # ---------------------------------------------------------------------------
 # /background in help and known_commands

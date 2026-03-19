@@ -80,6 +80,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
+    "cerebras": ["gpt-oss-120b", "gpt-oss-20b", "qwen-3-235b-a22b-instruct-2507", "qwen-3-coder-480b"],
 }
 
 
@@ -884,6 +885,7 @@ def setup_model_provider(config: dict):
         "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
+        "Cerebras (ultra-fast direct API)",
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
         "OpenCode Go (open models, $10/month subscription)",
@@ -1462,7 +1464,39 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+    elif provider_idx == 11:  # Cerebras
+        selected_provider = "cerebras"
+        print()
+        print_header("Cerebras API Key")
+        pconfig = PROVIDER_REGISTRY["cerebras"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://cloud.cerebras.ai/")
+        print()
+
+        existing_key = get_env_value("CEREBRAS_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                new_key = prompt("  Cerebras API key", password=True)
+                if new_key:
+                    save_env_value("CEREBRAS_API_KEY", new_key)
+                    print_success("Cerebras API key updated")
+        else:
+            new_key = prompt("  Cerebras API key", password=True)
+            if new_key:
+                save_env_value("CEREBRAS_API_KEY", new_key)
+                print_success("Cerebras API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("cerebras", pconfig.inference_base_url, default_model="gpt-oss-120b")
+        _set_model_provider(config, "cerebras", pconfig.inference_base_url)
+
+    elif provider_idx == 12:  # Alibaba Cloud / DashScope
         selected_provider = "alibaba"
         print()
         print_header("Alibaba Cloud / DashScope API Key")
@@ -1494,7 +1528,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
-    elif provider_idx == 12:  # OpenCode Zen
+    elif provider_idx == 13:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1527,7 +1561,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 13:  # OpenCode Go
+    elif provider_idx == 14:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1560,7 +1594,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 14:  # GitHub Copilot
+    elif provider_idx == 15:  # GitHub Copilot
         selected_provider = "copilot"
         print()
         print_header("GitHub Copilot")
@@ -1593,7 +1627,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 15:  # GitHub Copilot ACP
+    elif provider_idx == 16:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"
         print()
         print_header("GitHub Copilot ACP")
@@ -1609,7 +1643,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 16 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 17 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1790,7 +1824,7 @@ def setup_model_provider(config: dict):
             model_cfg = _model_config_dict(config)
             model_cfg["api_mode"] = "chat_completions"
             config["model"] = model_cfg
-        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
+        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "cerebras"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1851,7 +1885,7 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "cerebras") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)

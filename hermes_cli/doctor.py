@@ -571,6 +571,7 @@ def run_doctor(args):
         # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+        ("Cerebras",         ("CEREBRAS_API_KEY",),                           "https://api.cerebras.ai/v1/models",   "CEREBRAS_BASE_URL", True),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
     ]

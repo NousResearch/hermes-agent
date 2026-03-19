@@ -120,6 +120,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("cs") == "cerebras"
         assert normalize_provider("github-copilot") == "copilot"
 
     def test_case_insensitive(self):
@@ -130,6 +131,7 @@ class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
         assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("cerebras") == "Cerebras"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -151,6 +153,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_cerebras_returns_curated_models(self):
+        assert "gpt-oss-120b" in provider_model_ids("cerebras")
 
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \

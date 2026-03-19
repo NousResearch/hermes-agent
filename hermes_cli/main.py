@@ -797,6 +797,7 @@ def cmd_model(args):
         "opencode-go": "OpenCode Go",
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
+        "cerebras": "Cerebras",
         "alibaba": "Alibaba Cloud (DashScope)",
         "custom": "Custom endpoint",
     }
@@ -823,6 +824,7 @@ def cmd_model(args):
         ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
+        ("cerebras", "Cerebras (ultra-fast direct API)"),
         ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
     ]
 
@@ -896,7 +898,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "cerebras", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1481,6 +1483,12 @@ _PROVIDER_MODELS = {
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+    ],
+    "cerebras": [
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+        "qwen-3-235b-a22b-instruct-2507",
+        "qwen-3-coder-480b",
     ],
 }
 

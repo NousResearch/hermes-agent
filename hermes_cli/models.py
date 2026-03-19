@@ -125,6 +125,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "cerebras": [
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+        "qwen-3-235b-a22b-instruct-2507",
+        "qwen-3-coder-480b",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -211,6 +217,7 @@ _PROVIDER_LABELS = {
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
+    "cerebras": "Cerebras",
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
@@ -237,6 +244,7 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
+    "cs": "cerebras",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
     "go": "opencode-go",
@@ -284,7 +292,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "cerebras", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

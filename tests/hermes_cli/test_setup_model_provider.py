@@ -38,6 +38,7 @@ def _clear_provider_env(monkeypatch):
         "KIMI_API_KEY",
         "MINIMAX_API_KEY",
         "MINIMAX_CN_API_KEY",
+        "CEREBRAS_API_KEY",
         "ANTHROPIC_TOKEN",
         "ANTHROPIC_API_KEY",
     ):
@@ -241,8 +242,8 @@ def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            assert choices[14] == "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"
-            return 14
+            assert "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)" in choices
+            return choices.index("GitHub Copilot (uses GITHUB_TOKEN or gh auth token)")
         if question == "Select default model:":
             assert "gpt-4.1" in choices
             assert "gpt-5.4" in choices
@@ -320,8 +321,8 @@ def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkey
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            assert choices[15] == "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"
-            return 15
+            assert "GitHub Copilot ACP (spawns `copilot --acp --stdio`)" in choices
+            return choices.index("GitHub Copilot ACP (spawns `copilot --acp --stdio`)")
         if question == "Select default model:":
             assert "gpt-4.1" in choices
             assert "gpt-5.4" in choices

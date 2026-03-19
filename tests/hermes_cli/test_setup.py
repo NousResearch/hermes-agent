@@ -18,6 +18,7 @@ def _clear_provider_env(monkeypatch):
         "OPENROUTER_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
+        "CEREBRAS_API_KEY",
         "LLM_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)

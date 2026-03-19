@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, Cerebras, AI Gateway)."""
 
 import os
 import sys
@@ -42,6 +42,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("cerebras", "Cerebras", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
@@ -82,6 +83,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_cerebras_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["cerebras"]
+        assert pconfig.api_key_env_vars == ("CEREBRAS_API_KEY",)
+        assert pconfig.base_url_env_var == "CEREBRAS_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -94,6 +100,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["cerebras"].inference_base_url == "https://api.cerebras.ai/v1"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
 
@@ -114,6 +121,7 @@ PROVIDER_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "CEREBRAS_API_KEY", "CEREBRAS_BASE_URL",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",

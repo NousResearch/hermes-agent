@@ -509,6 +509,21 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "CEREBRAS_API_KEY": {
+        "description": "Cerebras API key for direct Cerebras Inference access",
+        "prompt": "Cerebras API Key",
+        "url": "https://cloud.cerebras.ai/",
+        "password": True,
+        "category": "provider",
+    },
+    "CEREBRAS_BASE_URL": {
+        "description": "Custom Cerebras API base URL (default: https://api.cerebras.ai/v1)",
+        "prompt": "Cerebras Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key for Qwen models",
         "prompt": "DashScope API Key",

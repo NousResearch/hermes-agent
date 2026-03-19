@@ -180,6 +180,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "cerebras": ProviderConfig(
+        id="cerebras",
+        name="Cerebras",
+        auth_type="api_key",
+        inference_base_url="https://api.cerebras.ai/v1",
+        api_key_env_vars=("CEREBRAS_API_KEY",),
+        base_url_env_var="CEREBRAS_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="AI Gateway",
@@ -653,6 +661,7 @@ def resolve_provider(
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
+        "cerebras-cloud": "cerebras",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",

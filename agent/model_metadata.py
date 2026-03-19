@@ -4,6 +4,8 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -361,14 +363,45 @@ def _get_context_cache_path() -> Path:
     return hermes_home / "context_length_cache.yaml"
 
 
+def _compute_defaults_hash() -> str:
+    """Compute a stable hash of the hardcoded context length defaults.
+
+    This is stored alongside cached entries so that stale values are
+    automatically discarded when a new hermes-agent version changes the
+    default model context lengths.
+    """
+    # Sort keys for deterministic serialization across Python versions.
+    payload = json.dumps(
+        sorted(DEFAULT_CONTEXT_LENGTHS.items()), sort_keys=True
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
 def _load_context_cache() -> Dict[str, int]:
-    """Load the model+provider → context_length cache from disk."""
+    """Load the model+provider → context_length cache from disk.
+
+    Returns an empty dict (forcing re-probe) when:
+    - the cache file does not exist or is corrupted
+    - the ``defaults_hash`` in the file does not match the current
+      hardcoded defaults, indicating that model context lengths have
+      changed since the cache was written (e.g., new hermes-agent version)
+    """
     path = _get_context_cache_path()
     if not path.exists():
         return {}
     try:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+        current_hash = _compute_defaults_hash()
+        stored_hash = data.get("defaults_hash", "")
+        if stored_hash != current_hash:
+            logger.info(
+                "Context length cache invalidated: defaults have changed "
+                "(stored=%s, current=%s)",
+                stored_hash or "<none>",
+                current_hash,
+            )
+            return {}
         return data.get("context_lengths", {})
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
@@ -379,7 +412,9 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
 
     Cache key is ``model@base_url`` so the same model name served from
-    different providers can have different limits.
+    different providers can have different limits.  The current defaults
+    hash is stored alongside entries so that stale caches are
+    automatically invalidated when model defaults change.
     """
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
@@ -390,7 +425,14 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
-            yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+            yaml.dump(
+                {
+                    "defaults_hash": _compute_defaults_hash(),
+                    "context_lengths": cache,
+                },
+                f,
+                default_flow_style=False,
+            )
         logger.info("Cached context length %s → %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)

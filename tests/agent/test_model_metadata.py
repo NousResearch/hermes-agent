@@ -31,6 +31,7 @@ from agent.model_metadata import (
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    _compute_defaults_hash,
 )
 
 
@@ -511,3 +512,88 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+    def test_cache_stores_defaults_hash(self, tmp_path):
+        """Cache file should include a defaults_hash field."""
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("model", "http://x", 32768)
+            with open(cache_file) as f:
+                data = yaml.safe_load(f)
+            assert "defaults_hash" in data
+            assert data["defaults_hash"] == _compute_defaults_hash()
+
+
+# =========================================================================
+# Cache invalidation on defaults change
+# =========================================================================
+
+class TestCacheInvalidation:
+    def test_stale_hash_invalidates_cache(self, tmp_path):
+        """Cache entries are discarded when defaults_hash doesn't match."""
+        cache_file = tmp_path / "cache.yaml"
+        # Write a cache with a stale hash
+        with open(cache_file, "w") as f:
+            yaml.dump({
+                "defaults_hash": "stale_hash_from_old_version",
+                "context_lengths": {"model@http://x": 32768},
+            }, f)
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("model", "http://x") is None
+
+    def test_matching_hash_preserves_cache(self, tmp_path):
+        """Cache entries are preserved when defaults_hash matches."""
+        cache_file = tmp_path / "cache.yaml"
+        with open(cache_file, "w") as f:
+            yaml.dump({
+                "defaults_hash": _compute_defaults_hash(),
+                "context_lengths": {"model@http://x": 32768},
+            }, f)
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("model", "http://x") == 32768
+
+    def test_missing_hash_invalidates_cache(self, tmp_path):
+        """Legacy cache files without defaults_hash are treated as stale."""
+        cache_file = tmp_path / "cache.yaml"
+        # Legacy format: no defaults_hash field
+        with open(cache_file, "w") as f:
+            yaml.dump({
+                "context_lengths": {"model@http://x": 32768},
+            }, f)
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("model", "http://x") is None
+
+    def test_save_after_invalidation_writes_new_hash(self, tmp_path):
+        """Saving after invalidation creates a fresh cache with current hash."""
+        cache_file = tmp_path / "cache.yaml"
+        # Start with stale cache
+        with open(cache_file, "w") as f:
+            yaml.dump({
+                "defaults_hash": "old_hash",
+                "context_lengths": {"old_model@http://x": 99999},
+            }, f)
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            # Old entry should be gone
+            assert get_cached_context_length("old_model", "http://x") is None
+            # Save a new entry
+            save_context_length("new_model", "http://y", 64000)
+            # New entry should work
+            assert get_cached_context_length("new_model", "http://y") == 64000
+            # Old entry should still be gone (not carried over)
+            assert get_cached_context_length("old_model", "http://x") is None
+
+    def test_defaults_hash_is_deterministic(self):
+        """Hash should be stable across calls."""
+        h1 = _compute_defaults_hash()
+        h2 = _compute_defaults_hash()
+        assert h1 == h2
+        assert len(h1) == 16  # truncated sha256
+
+    def test_defaults_hash_changes_with_defaults(self):
+        """Hash should change when DEFAULT_CONTEXT_LENGTHS changes."""
+        original_hash = _compute_defaults_hash()
+        modified_defaults = dict(DEFAULT_CONTEXT_LENGTHS)
+        modified_defaults["new/model"] = 999999
+        with patch("agent.model_metadata.DEFAULT_CONTEXT_LENGTHS", modified_defaults):
+            new_hash = _compute_defaults_hash()
+        assert original_hash != new_hash

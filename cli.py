@@ -177,6 +177,21 @@ def load_cli_config() -> Dict[str, Any]:
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
         },
+        "documents": {
+            "parser_backend": "auto",
+            "liteparse": {
+                "ocr_enabled": True,
+                "ocr_server_url": "",
+                "ocr_language": "en",
+                "dpi": 150,
+                "target_pages": "",
+                "max_pages": 10000,
+                "no_precise_bbox": False,
+                "preserve_small_text": False,
+                "image_format": "png",
+                "screenshot_output_dir": "",
+            },
+        },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit

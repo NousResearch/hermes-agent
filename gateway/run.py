@@ -1396,12 +1396,14 @@ class GatewayRunner:
                                 f"Task {task.task_id[:8]} submitted for parallel execution "
                                 f"({task.classification.task_type.value}, conf={task.classification.confidence:.2f})"
                             )
-                            # Acknowledge to user
+                            # Acknowledge to user with task ID
                             adapter = self.adapters.get(source.platform)
-                            if adapter and task.classification.task_type.value == "independent":
+                            if adapter:
+                                task_emoji = "⚡" if task.classification.task_type.value == "independent" else "🔄"
                                 await adapter.send(
                                     source.chat_id,
-                                    f"⚡ Starting in parallel: {event.text[:50]}{'...' if len(event.text) > 50 else ''}"
+                                    f"{task_emoji} Task started: {event.text[:50]}{'...' if len(event.text) > 50 else ''}\n"
+                                    f"Task ID: {task.task_id[:8]}"
                                 )
                             return None
                     except Exception as e:

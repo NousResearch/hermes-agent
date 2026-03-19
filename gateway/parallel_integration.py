@@ -217,21 +217,9 @@ class ParallelExecutionIntegration:
         if not self.is_enabled():
             return False
         
-        # Check if there are already running tasks
-        running = self._task_manager.get_running_tasks(session_key)
-        if not running:
-            return False  # No need for parallel if nothing is running
-        
-        # Quick keyword check for parallel intent
-        parallel_keywords = [
-            "meanwhile", "at the same time", "also", "additionally",
-            "in parallel", "while you", "can you also"
-        ]
-        message_lower = message.lower()
-        if any(kw in message_lower for kw in parallel_keywords):
-            return True
-        
-        return True  # Default to trying parallel, let classifier decide
+        # Always return True when enabled - let the classifier decide
+        # This ensures all messages get added to the task system
+        return True
     
     def get_stats(self) -> Dict[str, Any]:
         """Get parallel execution statistics."""

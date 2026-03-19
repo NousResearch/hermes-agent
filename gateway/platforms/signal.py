@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 import httpx
 
@@ -161,7 +161,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
-        self.send_read_receipts = extra.get("send_read_receipts", True)
+        self.send_read_receipts = extra.get("send_read_receipts", False)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -250,14 +250,16 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
+        sse_url = f"{self.http_url}/api/v1/events"
+        sse_params = {"account": self.account}
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
             try:
-                logger.debug("Signal SSE: connecting to %s", url)
+                logger.debug("Signal SSE: connecting to %s (account=%s)", sse_url, _redact_phone(self.account))
                 async with self.client.stream(
-                    "GET", url,
+                    "GET", sse_url,
+                    params=sse_params,
                     headers={"Accept": "text/event-stream"},
                     timeout=None,
                 ) as response:

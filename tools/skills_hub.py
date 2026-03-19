@@ -1719,6 +1719,185 @@ class ClaudeMarketplaceSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# Heurist Marketplace source adapter
+# ---------------------------------------------------------------------------
+
+class HeuristSource(SkillSource):
+    """
+    Fetch skills from the Heurist Marketplace (mesh.heurist.xyz).
+    Heurist skills are verified Web3/crypto agent instructions stored as SKILL.md
+    on Autonomys decentralized storage.  Only verified skills are surfaced.
+    """
+
+    BASE_URL = os.getenv("HEURIST_MARKETPLACE_API", "https://mesh.heurist.xyz")
+
+    def source_id(self) -> str:
+        return "heurist"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    # -- search -----------------------------------------------------------
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        cache_key = f"heurist_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**s) for s in cached][:limit]
+
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "verification_status": "verified",
+        }
+        if query:
+            params["search"] = query
+
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=15)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+
+        skills_list = data.get("skills", [])
+        results: List[SkillMeta] = []
+        for item in skills_list[:limit]:
+            slug = item.get("slug")
+            if not slug:
+                continue
+            results.append(self._item_to_meta(item))
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+        return results
+
+    # -- inspect ----------------------------------------------------------
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        slug = self._strip_prefix(identifier)
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}", timeout=15)
+            if resp.status_code != 200:
+                return None
+            item = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        meta = self._item_to_meta(item)
+        # Enrich with detail-only fields
+        meta.extra["approved_sha256"] = item.get("approved_sha256")
+        meta.extra["source_url"] = item.get("source_url")
+        meta.extra["is_folder"] = item.get("is_folder", False)
+        meta.extra["approved_at"] = item.get("approved_at")
+        return meta
+
+    # -- fetch ------------------------------------------------------------
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        slug = self._strip_prefix(identifier)
+
+        # Get skill detail first to check if it's a folder skill
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}", timeout=15)
+            if resp.status_code != 200:
+                return None
+            detail = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        is_folder = detail.get("is_folder", False)
+        files: Dict[str, Union[str, bytes]] = {}
+
+        if is_folder:
+            files = self._fetch_folder_files(slug)
+        else:
+            content = self._download_file_url(detail.get("file_url"))
+            if content is not None:
+                files["SKILL.md"] = content
+
+        if "SKILL.md" not in files:
+            logger.warning("Heurist fetch for %s: no SKILL.md found", slug)
+            return None
+
+        return SkillBundle(
+            name=slug,
+            files=files,
+            source="heurist",
+            identifier=f"heurist:{slug}",
+            trust_level="community",
+            metadata={
+                "approved_sha256": detail.get("approved_sha256"),
+                "risk_tier": detail.get("risk_tier"),
+                "capabilities": detail.get("capabilities", {}),
+            },
+        )
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _strip_prefix(identifier: str) -> str:
+        if identifier.startswith("heurist:"):
+            return identifier[len("heurist:"):]
+        return identifier
+
+    def _item_to_meta(self, item: dict) -> SkillMeta:
+        slug = item.get("slug", "")
+        author = item.get("author") or {}
+        capabilities = item.get("capabilities") or {}
+        return SkillMeta(
+            name=item.get("name") or slug,
+            description=item.get("description", "")[:500],
+            source="heurist",
+            identifier=f"heurist:{slug}",
+            trust_level="community",
+            tags=item.get("labels", []),
+            extra={
+                "risk_tier": item.get("risk_tier"),
+                "category": item.get("category"),
+                "capabilities": capabilities,
+                "external_api_dependencies": item.get("external_api_dependencies", []),
+                "author": author.get("display_name"),
+                "download_count": item.get("download_count", 0),
+                "star_count": item.get("star_count", 0),
+                "homepage": item.get("homepage"),
+            },
+        )
+
+    def _fetch_folder_files(self, slug: str) -> Dict[str, Union[str, bytes]]:
+        """Fetch all files for a folder skill via the /files endpoint."""
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}/files", timeout=15)
+            if resp.status_code != 200:
+                return {}
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return {}
+
+        files: Dict[str, Union[str, bytes]] = {}
+        for file_entry in data.get("files", []):
+            path = file_entry.get("path")
+            gateway_url = file_entry.get("gateway_url")
+            if not path or not gateway_url:
+                continue
+            content = self._download_file_url(gateway_url)
+            if content is not None:
+                files[path] = content
+        return files
+
+    @staticmethod
+    def _download_file_url(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        try:
+            resp = httpx.get(url, timeout=30, follow_redirects=True)
+            if resp.status_code == 200:
+                return resp.text
+        except httpx.HTTPError as e:
+            logger.debug("Heurist file download failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # LobeHub source adapter
 # ---------------------------------------------------------------------------
 
@@ -2419,6 +2598,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
+        HeuristSource(),
         LobeHubSource(),
     ]
 

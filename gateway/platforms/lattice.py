@@ -257,8 +257,6 @@ class LatticeAdapter(BasePlatformAdapter):
                                 event_id = ""
                                 event_data = ""
 
-            except asyncio.CancelledError:
-                break
             except Exception as e:
                 if self._running:
                     logger.warning(

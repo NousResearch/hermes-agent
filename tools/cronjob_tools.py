@@ -344,12 +344,14 @@ additional or different targets.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.
 
-Before calling action='create', verify that the user's request clearly specifies:
-1. Which skill(s) to use — or explicitly confirms the prompt is self-contained.
-2. A specific, actionable prompt describing exactly what the agent should do
-   on each scheduled run (not vague references like "it", "this task", "do stuff").
+Before calling action='create', confirm the following with the user:
+- schedule: when and how often? (e.g. 'every day at 9am', 'every 30m', 'every Monday')
+- skills: which skill(s) should the job load? (e.g. 'research', 'daily-briefing') — or confirm the prompt is fully self-contained without a skill
+- prompt: is it specific and actionable? Vague prompts like "do stuff", "check it", "run the task" will not work reliably — ask the user to describe exactly what the agent should do each run
+- deliver: where should results be sent? (e.g. 'origin' to reply here, 'telegram', 'local' to save only)
+- repeat: should this run once, a fixed number of times, or forever?
 
-If either is unclear or missing, ask the user to clarify BEFORE calling this tool.
+If any of these are unclear or missing, ask the user to clarify BEFORE calling this tool.
 Do not create a cron job based on an ambiguous or incomplete request.""",
     "parameters": {
         "type": "object",

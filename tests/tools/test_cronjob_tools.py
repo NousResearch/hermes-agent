@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from tools.cronjob_tools import (
+    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -403,3 +404,24 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
+
+
+# =========================================================================
+# Schema description — pre-create clarification instruction
+# =========================================================================
+
+class TestCronjobSchemaDescription:
+    """Verify the tool description instructs the agent to clarify before creating."""
+
+    def test_pre_create_instruction_present(self):
+        desc = CRONJOB_SCHEMA["description"]
+        assert "Before calling action='create'" in desc
+
+    def test_all_key_params_mentioned(self):
+        desc = CRONJOB_SCHEMA["description"]
+        for param in ("schedule", "skills", "prompt", "deliver", "repeat"):
+            assert param in desc, f"Expected '{param}' to be mentioned in pre-create instruction"
+
+    def test_instruction_requires_clarification_before_calling(self):
+        desc = CRONJOB_SCHEMA["description"]
+        assert "ask the user to clarify BEFORE calling this tool" in desc

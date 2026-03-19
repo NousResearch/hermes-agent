@@ -20,6 +20,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import asdict
+from datetime import datetime
 from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ from gateway.platforms.discord_impl import interactions as discord_interactions
 from gateway.platforms.discord_impl import messaging as discord_messaging
 from gateway.platforms.discord_impl import native_commands as discord_native_commands
 from gateway.platforms.discord_impl import permissions as discord_permissions
+from gateway.platforms.discord_impl import runtime_state as discord_runtime_state
 from gateway.platforms.discord_impl import state as discord_state
 from gateway.platforms.discord_impl import threads as discord_threads
 
@@ -435,6 +437,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._bot_participated_threads: set = self._load_participated_threads()
+        self._thread_bindings, self._activation_overrides = self._load_runtime_state()
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
 
@@ -1724,6 +1727,170 @@ class DiscordAdapter(BasePlatformAdapter):
         """Return the parent channel ID for a Discord thread-like channel, if present."""
         return discord_intake.get_parent_channel_id(channel)
 
+    @staticmethod
+    def _runtime_state_path():
+        """Path to the persisted Discord runtime controls."""
+        return discord_runtime_state.runtime_state_path()
+
+    @classmethod
+    def _load_runtime_state(cls) -> tuple[dict[str, discord_runtime_state.DiscordThreadBinding], dict[str, str]]:
+        """Load persisted Discord runtime controls."""
+        return discord_runtime_state.load_runtime_state()
+
+    def _save_runtime_state(self) -> None:
+        """Persist Discord thread bindings and activation overrides."""
+        discord_runtime_state.save_runtime_state(
+            self._thread_bindings,
+            self._activation_overrides,
+        )
+
+    def get_thread_binding(self, thread_id: str) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Return the persisted focus binding for a thread, if any."""
+        return self._thread_bindings.get(str(thread_id))
+
+    def list_thread_bindings(self, parent_chat_id: Optional[str] = None) -> list[discord_runtime_state.DiscordThreadBinding]:
+        """Return all thread bindings, optionally scoped to one parent channel."""
+        bindings = list(self._thread_bindings.values())
+        if parent_chat_id is None:
+            return sorted(bindings, key=lambda binding: (binding.parent_chat_id or "", binding.chat_name, binding.thread_id))
+        target_parent = str(parent_chat_id)
+        return sorted(
+            [binding for binding in bindings if str(binding.parent_chat_id or "") == target_parent],
+            key=lambda binding: (binding.chat_name, binding.thread_id),
+        )
+
+    def focus_thread_binding(
+        self,
+        *,
+        thread_id: str,
+        session_key: str,
+        chat_name: str,
+        parent_chat_id: Optional[str],
+        bound_by: str,
+        idle_timeout_minutes: Optional[int] = None,
+        max_age_minutes: Optional[int] = None,
+    ) -> discord_runtime_state.DiscordThreadBinding:
+        """Create or update a persisted focus binding for a Discord thread."""
+        now = datetime.now().isoformat()
+        existing = self._thread_bindings.get(str(thread_id))
+        binding = discord_runtime_state.DiscordThreadBinding(
+            thread_id=str(thread_id),
+            session_key=session_key,
+            chat_id=str(thread_id),
+            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            chat_name=chat_name,
+            bound_by=bound_by,
+            bound_at=existing.bound_at if existing and existing.bound_at else now,
+            last_activity_at=now,
+            idle_timeout_minutes=(
+                int(idle_timeout_minutes)
+                if idle_timeout_minutes is not None
+                else (existing.idle_timeout_minutes if existing else discord_runtime_state.DEFAULT_THREAD_BINDING_IDLE_MINUTES)
+            ),
+            max_age_minutes=(
+                int(max_age_minutes)
+                if max_age_minutes is not None
+                else (existing.max_age_minutes if existing else discord_runtime_state.DEFAULT_THREAD_BINDING_MAX_AGE_MINUTES)
+            ),
+        )
+        self._thread_bindings[binding.thread_id] = binding
+        self._track_thread(binding.thread_id)
+        self._save_runtime_state()
+        return binding
+
+    def unfocus_thread_binding(self, thread_id: str) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Remove a persisted focus binding for a thread."""
+        binding = self._thread_bindings.pop(str(thread_id), None)
+        if binding:
+            self._bot_participated_threads.discard(str(thread_id))
+            self._save_participated_threads()
+            self._save_runtime_state()
+        return binding
+
+    def update_thread_binding_limits(
+        self,
+        thread_id: str,
+        *,
+        idle_timeout_minutes: Optional[int] = None,
+        max_age_minutes: Optional[int] = None,
+    ) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Update idle/max-age settings for an existing thread binding."""
+        existing = self._thread_bindings.get(str(thread_id))
+        if existing is None:
+            return None
+        updated = discord_runtime_state.DiscordThreadBinding(
+            thread_id=existing.thread_id,
+            session_key=existing.session_key,
+            chat_id=existing.chat_id,
+            parent_chat_id=existing.parent_chat_id,
+            chat_name=existing.chat_name,
+            bound_by=existing.bound_by,
+            bound_at=existing.bound_at,
+            last_activity_at=existing.last_activity_at,
+            idle_timeout_minutes=(
+                int(idle_timeout_minutes)
+                if idle_timeout_minutes is not None
+                else existing.idle_timeout_minutes
+            ),
+            max_age_minutes=(
+                int(max_age_minutes)
+                if max_age_minutes is not None
+                else existing.max_age_minutes
+            ),
+        )
+        self._thread_bindings[updated.thread_id] = updated
+        self._save_runtime_state()
+        return updated
+
+    def touch_thread_binding(
+        self,
+        thread_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Refresh last-activity time for a thread binding."""
+        binding = self._thread_bindings.get(str(thread_id))
+        if binding is None:
+            return None
+        updated = discord_runtime_state.touch_binding(binding, now=now)
+        self._thread_bindings[updated.thread_id] = updated
+        self._save_runtime_state()
+        return updated
+
+    def expire_thread_binding_if_needed(
+        self,
+        thread_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[str]:
+        """Expire a focused thread binding when idle/max-age thresholds are reached."""
+        binding = self._thread_bindings.get(str(thread_id))
+        if binding is None:
+            return None
+        reason = discord_runtime_state.binding_expiration_reason(binding, now=now)
+        if reason is None:
+            return None
+        self.unfocus_thread_binding(thread_id)
+        return reason
+
+    def get_activation_mode(self, chat_id: str) -> Optional[str]:
+        """Return the Discord activation override for a chat, if any."""
+        return self._activation_overrides.get(str(chat_id))
+
+    def set_activation_mode(self, chat_id: str, mode: str) -> Optional[str]:
+        """Set or clear the Discord activation override for a chat."""
+        normalized = str(mode or "").strip().lower()
+        key = str(chat_id)
+        if normalized in {"", "inherit", "default", "reset"}:
+            previous = self._activation_overrides.pop(key, None)
+            self._save_runtime_state()
+            return previous
+        if normalized not in {"mention", "always"}:
+            raise ValueError(f"Unsupported activation mode: {mode}")
+        self._activation_overrides[key] = normalized
+        self._save_runtime_state()
+        return normalized
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         return discord_intake.is_forum_parent(channel)
@@ -1776,9 +1943,12 @@ class DiscordAdapter(BasePlatformAdapter):
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
         policy = self._get_discord_policy()
+        active_binding = None
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+            self.expire_thread_binding_if_needed(thread_id)
+            active_binding = self.get_thread_binding(thread_id)
 
         if not isinstance(message.channel, discord.DMChannel):
             free_channels = policy.free_response_channels
@@ -1788,10 +1958,26 @@ class DiscordAdapter(BasePlatformAdapter):
 
             require_mention = policy.require_mention
             is_free_channel = bool(channel_ids & free_channels)
+            for channel_id in channel_ids:
+                activation_mode = self.get_activation_mode(channel_id)
+                if activation_mode == "always":
+                    require_mention = False
+                    is_free_channel = True
+                    break
+                if activation_mode == "mention":
+                    require_mention = True
+                    is_free_channel = False
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+            in_bot_thread = bool(
+                is_thread
+                and thread_id
+                and (
+                    thread_id in self._bot_participated_threads
+                    or active_binding is not None
+                )
+            )
             is_mentioned = bool(self._client.user and self._client.user in message.mentions)
 
             if discord_intake.should_skip_for_mention(
@@ -1929,5 +2115,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # follow-up messages in threads it has already engaged in.
         if thread_id:
             self._track_thread(thread_id)
+            if active_binding is not None:
+                self.touch_thread_binding(thread_id)
 
         await self.handle_message(event)

@@ -33,6 +33,23 @@ def _install_telegram_mock(monkeypatch, bot):
 
 
 class TestSendMessageTool:
+    def test_session_send_policy_off_blocks_send_message(self):
+        with patch.dict(os.environ, {"HERMES_SESSION_SEND_POLICY": "off"}, clear=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["error"] == (
+            "send_message is disabled for this session. "
+            "Use /send on or /send inherit to re-enable it."
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

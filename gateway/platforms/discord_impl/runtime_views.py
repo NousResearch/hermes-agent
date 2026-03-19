@@ -52,6 +52,10 @@ class DiscordStatusSnapshot:
     approval_command_preview: Optional[str]
     has_background_process: bool
     voice_mode: str
+    send_policy: str
+    dock_target: Optional[str]
+    activation_mode: Optional[str]
+    focused_thread_summary: Optional[str]
     connected_platforms: tuple[str, ...]
 
 
@@ -169,6 +173,53 @@ def collect_discord_status_snapshot(runner: Any, event: MessageEvent) -> Discord
                 approval_command_preview += "..."
 
     connected_platforms = tuple(sorted(platform.value for platform in getattr(runner, "adapters", {}).keys()))
+    send_policy = "inherit"
+    if hasattr(runner, "_session_send_policy"):
+        try:
+            send_policy = str(runner._session_send_policy(session_key) or "inherit")
+        except Exception:
+            send_policy = "inherit"
+
+    dock_target = None
+    if hasattr(runner, "_dock_target_for_session"):
+        try:
+            dock_target_state = runner._dock_target_for_session(session_key)
+        except Exception:
+            dock_target_state = None
+        if dock_target_state and hasattr(runner, "_format_dock_target"):
+            try:
+                dock_target = runner._format_dock_target(dock_target_state)
+            except Exception:
+                dock_target = None
+
+    activation_mode = None
+    focused_thread_summary = None
+    if target_source.platform.value == "discord":
+        adapter = getattr(runner, "adapters", {}).get(target_source.platform)
+        if adapter is not None and target_source.chat_type != "dm":
+            if hasattr(adapter, "get_activation_mode"):
+                try:
+                    activation_mode = adapter.get_activation_mode(target_source.chat_id)
+                except Exception:
+                    activation_mode = None
+            if activation_mode is None and hasattr(adapter, "_get_discord_policy"):
+                try:
+                    policy = adapter._get_discord_policy()
+                    activation_mode = "mention" if getattr(policy, "require_mention", True) else "always"
+                except Exception:
+                    activation_mode = None
+        if adapter is not None and target_source.thread_id and hasattr(adapter, "get_thread_binding"):
+            try:
+                binding = adapter.get_thread_binding(target_source.thread_id)
+            except Exception:
+                binding = None
+            if binding is not None:
+                idle = getattr(binding, "idle_timeout_minutes", 0) or 0
+                max_age = getattr(binding, "max_age_minutes", 0) or 0
+                focused_thread_summary = (
+                    f"yes ({getattr(binding, 'chat_name', '') or target_source.thread_id}; "
+                    f"idle {idle}m; max-age {max_age}m)"
+                )
 
     return DiscordStatusSnapshot(
         session_id=session_entry.session_id,
@@ -204,6 +255,10 @@ def collect_discord_status_snapshot(runner: Any, event: MessageEvent) -> Discord
         approval_command_preview=approval_command_preview,
         has_background_process=has_background_process,
         voice_mode=getattr(runner, "_voice_mode", {}).get(target_source.chat_id, "off"),
+        send_policy=send_policy,
+        dock_target=dock_target,
+        activation_mode=activation_mode,
+        focused_thread_summary=focused_thread_summary,
         connected_platforms=connected_platforms,
     )
 
@@ -282,10 +337,17 @@ def render_discord_status(snapshot: DiscordStatusSnapshot) -> str:
             f"• Pending Approval: {_yes_no(snapshot.has_pending_approval)}",
             f"• Background Processes: {_yes_no(snapshot.has_background_process)}",
             f"• Voice Mode: `{snapshot.voice_mode}`",
+            f"• Send Policy: `{snapshot.send_policy}`",
         ]
     )
     if snapshot.approval_command_preview:
         lines.append(f"• Approval Command: `{snapshot.approval_command_preview}`")
+    if snapshot.dock_target:
+        lines.append(f"• Dock Target: {snapshot.dock_target}")
+    if snapshot.activation_mode:
+        lines.append(f"• Activation: `{snapshot.activation_mode}`")
+    if snapshot.focused_thread_summary:
+        lines.append(f"• Focused Thread: {snapshot.focused_thread_summary}")
 
     lines.extend(
         [

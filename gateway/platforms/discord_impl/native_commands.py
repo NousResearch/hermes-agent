@@ -92,6 +92,20 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
         DiscordChoiceSpec("allow-always — permanently allow this pattern", "allow-always"),
         DiscordChoiceSpec("deny — reject this command", "deny"),
     )
+    send_choices = (
+        DiscordChoiceSpec("on — allow send_message for this session", "on"),
+        DiscordChoiceSpec("off — block send_message for this session", "off"),
+        DiscordChoiceSpec("inherit — use the default behavior", "inherit"),
+    )
+    activation_choices = (
+        DiscordChoiceSpec("mention — require an explicit mention", "mention"),
+        DiscordChoiceSpec("always — respond without a mention", "always"),
+    )
+    session_choices = (
+        DiscordChoiceSpec("idle — inactivity auto-unfocus window", "idle"),
+        DiscordChoiceSpec("max-age — hard focus lifetime", "max-age"),
+        DiscordChoiceSpec("status — show current focus binding", "status"),
+    )
 
     return (
         DiscordNativeCommandSpec(
@@ -120,6 +134,50 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             "Show the Discord identity Hermes sees",
             "simple",
             lambda: "/whoami",
+        ),
+        DiscordNativeCommandSpec(
+            "focus",
+            "Bind the current Discord thread to this Hermes session",
+            "dispatch",
+            lambda name="": _join_command("/focus", name),
+            args=(
+                DiscordArgSpec(
+                    "name",
+                    "Optional label for the current thread binding",
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "unfocus",
+            "Remove the current Discord thread binding",
+            "simple",
+            lambda: "/unfocus",
+        ),
+        DiscordNativeCommandSpec(
+            "agents",
+            "Show Discord thread bindings for this session",
+            "simple",
+            lambda: "/agents",
+        ),
+        DiscordNativeCommandSpec(
+            "session",
+            "Manage thread binding idle and max-age controls",
+            "dispatch",
+            lambda mode="", value="": _join_command("/session", mode, value),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Thread binding control: idle, max-age, or status",
+                    choices=session_choices,
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+                DiscordArgSpec(
+                    "value",
+                    "Duration like 30m, 2h, 1d, or off",
+                    default="",
+                ),
+            ),
         ),
         DiscordNativeCommandSpec(
             "id",
@@ -327,11 +385,66 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             ),
         ),
         DiscordNativeCommandSpec(
+            "send",
+            "Control whether this session may use send_message",
+            "dispatch",
+            lambda mode="": _join_command("/send", mode),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Send policy: on, off, or inherit",
+                    choices=send_choices,
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
+            "activation",
+            "Control mention-vs-always activation for this Discord chat",
+            "dispatch",
+            lambda mode="": _join_command("/activation", mode),
+            args=(
+                DiscordArgSpec(
+                    "mode",
+                    "Activation mode: mention or always",
+                    choices=activation_choices,
+                    prefer_autocomplete=True,
+                    allow_fallback_menu=True,
+                ),
+            ),
+        ),
+        DiscordNativeCommandSpec(
             "update",
             "Update Hermes Agent to the latest version",
             "simple",
             lambda: "/update",
             followup_msg="Update initiated~",
+        ),
+        DiscordNativeCommandSpec(
+            "restart",
+            "Restart the Hermes gateway",
+            "simple",
+            lambda: "/restart",
+            followup_msg="Restart scheduled~",
+        ),
+        DiscordNativeCommandSpec(
+            "dock-telegram",
+            "Dock replies for this session to the Telegram home channel",
+            "simple",
+            lambda: "/dock-telegram",
+        ),
+        DiscordNativeCommandSpec(
+            "dock-discord",
+            "Dock replies for this session to the Discord home channel",
+            "simple",
+            lambda: "/dock-discord",
+        ),
+        DiscordNativeCommandSpec(
+            "dock-slack",
+            "Dock replies for this session to the Slack home channel",
+            "simple",
+            lambda: "/dock-slack",
         ),
         DiscordNativeCommandSpec(
             "thread",
@@ -596,37 +709,61 @@ def _register_single_arg_command(tree: Any, adapter: Any, spec: DiscordNativeCom
 
 def _register_double_arg_command(tree: Any, adapter: Any, spec: DiscordNativeCommandSpec) -> None:
     first, second = spec.args
-    if (first.name, second.name) != ("decision", "approval_id"):
-        raise ValueError(
-            f"Unsupported Discord command spec shape for {spec.name}:{first.name},{second.name}"
-        )
-
     choices_decorator, autocomplete_decorator = _build_choices_decorator(adapter, spec, first)
     if choices_decorator is None:
         choices_decorator = lambda fn: fn
     if autocomplete_decorator is None:
         autocomplete_decorator = lambda fn: fn
 
-    @tree.command(name=spec.name, description=spec.description)
-    @discord.app_commands.describe(
-        decision=first.description,
-        approval_id=second.description,
-    )
-    @autocomplete_decorator
-    @choices_decorator
-    async def callback(
-        interaction: Any,
-        decision=first.default,
-        approval_id=second.default,
-        _spec: DiscordNativeCommandSpec = spec,
-    ):
-        await _dispatch(
-            adapter,
-            interaction,
-            _spec,
-            decision=decision,
-            approval_id=approval_id,
+    if (first.name, second.name) == ("decision", "approval_id"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            decision=first.description,
+            approval_id=second.description,
         )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            decision=first.default,
+            approval_id=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                decision=decision,
+                approval_id=approval_id,
+            )
+        return
+
+    if (first.name, second.name) == ("mode", "value"):
+        @tree.command(name=spec.name, description=spec.description)
+        @discord.app_commands.describe(
+            mode=first.description,
+            value=second.description,
+        )
+        @autocomplete_decorator
+        @choices_decorator
+        async def callback(
+            interaction: Any,
+            mode=first.default,
+            value=second.default,
+            _spec: DiscordNativeCommandSpec = spec,
+        ):
+            await _dispatch(
+                adapter,
+                interaction,
+                _spec,
+                mode=mode,
+                value=value,
+            )
+        return
+
+    raise ValueError(
+        f"Unsupported Discord command spec shape for {spec.name}:{first.name},{second.name}"
+    )
 
 
 def _register_thread_command(tree: Any, adapter: Any, spec: DiscordNativeCommandSpec) -> None:

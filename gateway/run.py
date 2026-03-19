@@ -385,6 +385,9 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        runtime_controls = self._load_runtime_controls()
+        self._session_send_policies: Dict[str, str] = runtime_controls["send_policies"]
+        self._session_docks: Dict[str, Dict[str, Any]] = runtime_controls["dock_targets"]
 
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
@@ -454,6 +457,7 @@ class GatewayRunner:
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+    _RUNTIME_CONTROLS_PATH = _hermes_home / "gateway_runtime_controls.json"
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -499,6 +503,56 @@ class GatewayRunner:
         disabled_chats.update(
             chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
         )
+
+    def _load_runtime_controls(self) -> Dict[str, Dict[str, Any]]:
+        """Load persisted per-session send-policy and dock-routing controls."""
+        try:
+            payload = json.loads(self._RUNTIME_CONTROLS_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {"send_policies": {}, "dock_targets": {}}
+
+        if not isinstance(payload, dict):
+            return {"send_policies": {}, "dock_targets": {}}
+
+        raw_send_policies = payload.get("send_policies") or {}
+        send_policies = {
+            str(session_key): str(mode)
+            for session_key, mode in raw_send_policies.items()
+            if str(mode) in {"on", "off", "inherit"}
+        }
+
+        raw_dock_targets = payload.get("dock_targets") or {}
+        dock_targets: Dict[str, Dict[str, Any]] = {}
+        for session_key, target in raw_dock_targets.items():
+            if not isinstance(target, dict):
+                continue
+            platform = str(target.get("platform") or "").strip().lower()
+            chat_id = str(target.get("chat_id") or "").strip()
+            if not platform or not chat_id:
+                continue
+            dock_targets[str(session_key)] = {
+                "platform": platform,
+                "chat_id": chat_id,
+                "thread_id": str(target.get("thread_id") or "").strip() or None,
+                "name": str(target.get("name") or "").strip(),
+            }
+
+        return {
+            "send_policies": send_policies,
+            "dock_targets": dock_targets,
+        }
+
+    def _save_runtime_controls(self) -> None:
+        """Persist per-session send-policy and dock-routing controls."""
+        payload = {
+            "send_policies": getattr(self, "_session_send_policies", {}) or {},
+            "dock_targets": getattr(self, "_session_docks", {}) or {},
+        }
+        try:
+            self._RUNTIME_CONTROLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._RUNTIME_CONTROLS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        except OSError as e:
+            logger.warning("Failed to save gateway runtime controls: %s", e)
 
     # -----------------------------------------------------------------
 
@@ -735,6 +789,138 @@ class GatewayRunner:
             f"✅ Command approved ({decision_label}) and executed (`{pending_id}`).\n\n"
             f"```\n{result[:3500]}\n```"
         )
+
+    @staticmethod
+    def _format_minutes_label(minutes: int) -> str:
+        if minutes <= 0:
+            return "off"
+        if minutes % 1440 == 0:
+            days = minutes // 1440
+            return f"{days}d"
+        if minutes % 60 == 0:
+            hours = minutes // 60
+            return f"{hours}h"
+        return f"{minutes}m"
+
+    @staticmethod
+    def _parse_duration_minutes(raw: str) -> Optional[int]:
+        value = str(raw or "").strip().lower()
+        if not value:
+            return None
+        if value in {"off", "none", "disable", "disabled"}:
+            return 0
+
+        from cron.jobs import parse_duration
+
+        return parse_duration(value)
+
+    def _get_discord_adapter(self):
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            return None
+        return adapter
+
+    def _session_send_policy(self, session_key: str) -> str:
+        policies = getattr(self, "_session_send_policies", None)
+        if not isinstance(policies, dict):
+            return "inherit"
+        return policies.get(session_key, "inherit")
+
+    def _dock_target_for_session(self, session_key: str) -> Optional[Dict[str, Any]]:
+        dock_targets = getattr(self, "_session_docks", None)
+        if not isinstance(dock_targets, dict):
+            return None
+        target = dock_targets.get(session_key)
+        if not isinstance(target, dict):
+            return None
+        return target
+
+    def _format_dock_target(self, target: Dict[str, Any]) -> str:
+        platform = str(target.get("platform") or "unknown")
+        name = str(target.get("name") or "").strip()
+        chat_id = str(target.get("chat_id") or "")
+        if name:
+            return f"{platform}:{name} (`{chat_id}`)"
+        return f"{platform} home channel (`{chat_id}`)"
+
+    def _schedule_gateway_restart(self, delay_seconds: float = 1.5) -> None:
+        async def _restart_later():
+            await asyncio.sleep(delay_seconds)
+            hermes_cmd = _resolve_hermes_bin()
+            if not hermes_cmd:
+                logger.error("Could not locate hermes executable for gateway restart")
+                return
+            cmd = hermes_cmd + ["gateway", "restart"]
+            try:
+                import shutil
+                import subprocess
+
+                systemd_run = shutil.which("systemd-run")
+                if systemd_run:
+                    subprocess.Popen(
+                        [systemd_run, "--user", "--scope", "--unit=hermes-discord-restart", "--", *cmd],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                else:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+            except Exception:
+                logger.exception("Gateway restart scheduling failed")
+
+        asyncio.create_task(_restart_later())
+
+    async def _deliver_docked_response(
+        self,
+        *,
+        session_key: str,
+        response: str,
+        source: SessionSource,
+    ) -> Optional[str]:
+        target = self._dock_target_for_session(session_key)
+        if not target or not response.strip():
+            return response
+
+        target_platform = str(target.get("platform") or "").strip().lower()
+        if not target_platform:
+            return response
+
+        try:
+            platform = Platform(target_platform)
+        except ValueError:
+            return response
+
+        same_target = (
+            platform == source.platform
+            and str(target.get("chat_id") or "") == str(source.chat_id)
+            and str(target.get("thread_id") or "") == str(source.thread_id or "")
+        )
+        if same_target:
+            return response
+
+        dock_target = DeliveryTarget(
+            platform=platform,
+            chat_id=str(target.get("chat_id") or ""),
+            thread_id=str(target.get("thread_id") or "").strip() or None,
+        )
+        results = await self.delivery_router.deliver(
+            response,
+            [dock_target],
+            metadata={
+                "source_platform": source.platform.value if source.platform else "unknown",
+                "source_chat_id": source.chat_id,
+            },
+        )
+        result = results.get(dock_target.to_string()) or {}
+        if result.get("success"):
+            return None
+        error = result.get("error") or "unknown dock delivery failure"
+        return f"⚠️ Reply docking failed: {error}\n\n{response}"
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -1586,6 +1772,18 @@ class GatewayRunner:
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
+
+        if canonical == "focus":
+            return await self._handle_focus_command(event)
+
+        if canonical == "unfocus":
+            return await self._handle_unfocus_command(event)
+
+        if canonical == "agents":
+            return await self._handle_agents_command(event)
+
+        if canonical == "session":
+            return await self._handle_session_command(event)
         
         if canonical == "status":
             return await self._handle_status_command(event)
@@ -1604,6 +1802,12 @@ class GatewayRunner:
 
         if canonical == "think":
             return await self._handle_think_command(event)
+
+        if canonical == "send":
+            return await self._handle_send_command(event)
+
+        if canonical == "activation":
+            return await self._handle_activation_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -1662,6 +1866,18 @@ class GatewayRunner:
 
         if canonical == "update":
             return await self._handle_update_command(event)
+
+        if canonical == "restart":
+            return await self._handle_restart_command(event)
+
+        if canonical == "dock-telegram":
+            return await self._handle_dock_command(event, Platform.TELEGRAM)
+
+        if canonical == "dock-discord":
+            return await self._handle_dock_command(event, Platform.DISCORD)
+
+        if canonical == "dock-slack":
+            return await self._handle_dock_command(event, Platform.SLACK)
 
         if canonical == "title":
             return await self._handle_title_command(event)
@@ -2397,14 +2613,24 @@ class GatewayRunner:
                 base_url=agent_result.get("base_url"),
             )
 
-            # Auto voice reply: send TTS audio before the text response
-            if self._should_send_voice_reply(event, response, agent_messages):
+            dock_target = self._dock_target_for_session(session_key)
+
+            # Auto voice reply: send TTS audio before the text response.
+            # Skip when replies for this session are docked elsewhere.
+            if dock_target is None and self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, return None so
             # _process_message_background doesn't send it again.
             if agent_result.get("already_sent"):
                 return None
+
+            if response:
+                response = await self._deliver_docked_response(
+                    session_key=session_key,
+                    response=response,
+                    source=source,
+                )
 
             return response
             
@@ -2660,6 +2886,225 @@ class GatewayRunner:
         if source.chat_topic:
             lines.append(f"**Chat Topic:** {source.chat_topic}")
         return "\n".join(lines)
+
+    def _resolve_discord_thread_target(
+        self,
+        event: MessageEvent,
+    ) -> tuple[Optional[Any], Optional[SessionSource], Optional[str], Optional[str]]:
+        """Return Discord adapter, target source, thread id, and parent channel id."""
+        target_source = self._command_target_source_for_event(event)
+        if target_source.platform != Platform.DISCORD:
+            return None, None, None, None
+
+        adapter = self._get_discord_adapter()
+        if adapter is None:
+            return None, None, None, None
+
+        thread_id = str(target_source.thread_id or "").strip()
+        if not thread_id:
+            return adapter, target_source, None, None
+
+        raw = getattr(event, "raw_message", None)
+        channel = getattr(raw, "channel", None)
+        parent_chat_id = None
+        if channel is not None and hasattr(adapter, "_get_parent_channel_id"):
+            parent_chat_id = adapter._get_parent_channel_id(channel)
+        return adapter, target_source, thread_id, parent_chat_id
+
+    def _render_thread_binding_status(self, binding: Any) -> str:
+        idle_label = self._format_minutes_label(int(binding.idle_timeout_minutes or 0))
+        max_age_label = self._format_minutes_label(int(binding.max_age_minutes or 0))
+        lines = [
+            "🧵 **Focused Thread**",
+            "",
+            f"• Thread: `{binding.thread_id}`",
+            f"• Session: `{binding.session_key}`",
+            f"• Label: {binding.chat_name or binding.thread_id}",
+            f"• Bound By: {binding.bound_by or 'unknown'}",
+            f"• Idle Auto-Unfocus: `{idle_label}`",
+            f"• Max Age: `{max_age_label}`",
+        ]
+        if binding.parent_chat_id:
+            lines.append(f"• Parent Channel: `{binding.parent_chat_id}`")
+        return "\n".join(lines)
+
+    async def _handle_focus_command(self, event: MessageEvent) -> str:
+        """Handle /focus for Discord thread binding."""
+        adapter, target_source, thread_id, parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None or target_source is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/focus` inside a Discord thread."
+
+        session_key = self._session_key_for_source(target_source)
+        label = event.get_command_args().strip() or (target_source.chat_name or thread_id)
+        binding = adapter.focus_thread_binding(
+            thread_id=thread_id,
+            session_key=session_key,
+            chat_name=label,
+            parent_chat_id=parent_chat_id,
+            bound_by=target_source.user_name or target_source.user_id or "unknown",
+        )
+        return (
+            "🧵 Thread focused.\n\n"
+            f"{self._render_thread_binding_status(binding)}"
+        )
+
+    async def _handle_unfocus_command(self, event: MessageEvent) -> str:
+        """Handle /unfocus for Discord thread binding removal."""
+        adapter, _target_source, thread_id, _parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/unfocus` inside a focused Discord thread."
+
+        binding = adapter.unfocus_thread_binding(thread_id)
+        if binding is None:
+            return "No focused thread binding exists here."
+        return "🧵 Thread unfocused. Messages here now require normal Discord activation again."
+
+    async def _handle_agents_command(self, event: MessageEvent) -> str:
+        """Handle /agents for Discord thread-binding inspection."""
+        adapter, target_source, thread_id, parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None or target_source is None:
+            return "This command is only available on Discord."
+
+        if thread_id:
+            binding = adapter.get_thread_binding(thread_id)
+            if binding is None:
+                return "No focused thread binding exists for this thread."
+            is_running = binding.session_key in getattr(self, "_running_agents", {})
+            return "\n".join(
+                [
+                    "🧵 **Thread-Bound Hermes Sessions**",
+                    "",
+                    f"• Target: `{binding.session_key}`",
+                    f"• Label: {binding.chat_name or binding.thread_id}",
+                    f"• Running: {'yes' if is_running else 'no'}",
+                    f"• Idle Auto-Unfocus: `{self._format_minutes_label(int(binding.idle_timeout_minutes or 0))}`",
+                    f"• Max Age: `{self._format_minutes_label(int(binding.max_age_minutes or 0))}`",
+                ]
+            )
+
+        bindings = adapter.list_thread_bindings(parent_chat_id=parent_chat_id or target_source.chat_id)
+        if not bindings:
+            return "No focused Discord thread bindings were found for this chat."
+        lines = ["🧵 **Focused Discord Threads**", ""]
+        for binding in bindings:
+            running = "yes" if binding.session_key in getattr(self, "_running_agents", {}) else "no"
+            lines.append(
+                f"• `{binding.thread_id}` — {binding.chat_name or binding.thread_id} "
+                f"(running: {running}, idle: {self._format_minutes_label(int(binding.idle_timeout_minutes or 0))}, "
+                f"max-age: {self._format_minutes_label(int(binding.max_age_minutes or 0))})"
+            )
+        return "\n".join(lines)
+
+    async def _handle_session_command(self, event: MessageEvent) -> str:
+        """Handle /session idle|max-age controls for focused Discord threads."""
+        adapter, _target_source, thread_id, _parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/session` inside a focused Discord thread."
+
+        binding = adapter.get_thread_binding(thread_id)
+        if binding is None:
+            return "No focused thread binding exists here. Use `/focus` first."
+
+        tokens = [token for token in event.get_command_args().strip().split() if token]
+        if not tokens or tokens[0].lower() == "status":
+            return self._render_thread_binding_status(binding)
+        if len(tokens) < 2:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        mode = tokens[0].strip().lower()
+        try:
+            minutes = self._parse_duration_minutes(tokens[1])
+        except ValueError as exc:
+            return f"⚠️ {exc}"
+        if minutes is None:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        if mode == "idle":
+            binding = adapter.update_thread_binding_limits(thread_id, idle_timeout_minutes=minutes)
+        elif mode in {"max-age", "max_age", "maxage"}:
+            binding = adapter.update_thread_binding_limits(thread_id, max_age_minutes=minutes)
+            mode = "max-age"
+        else:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        if binding is None:
+            return "No focused thread binding exists here. Use `/focus` first."
+        return (
+            f"🧵 Updated thread session `{mode}` to `{self._format_minutes_label(minutes)}`.\n\n"
+            f"{self._render_thread_binding_status(binding)}"
+        )
+
+    async def _handle_send_command(self, event: MessageEvent) -> str:
+        """Handle /send on|off|inherit for the current session."""
+        target_source = self._command_target_source_for_event(event)
+        session_key = self._session_key_for_source(target_source)
+        args = event.get_command_args().strip().lower()
+        current = self._session_send_policy(session_key)
+        if not args:
+            return f"📮 Current send policy for this session: `{current}`"
+        if args not in {"on", "off", "inherit"}:
+            return "Use `/send on`, `/send off`, or `/send inherit`."
+
+        if not isinstance(getattr(self, "_session_send_policies", None), dict):
+            self._session_send_policies = {}
+        self._session_send_policies[session_key] = args
+        if args == "inherit":
+            self._session_send_policies.pop(session_key, None)
+        self._save_runtime_controls()
+        return f"📮 Send policy for this session is now `{args}`."
+
+    async def _handle_activation_command(self, event: MessageEvent) -> str:
+        """Handle /activation mention|always for Discord chats."""
+        target_source = self._command_target_source_for_event(event)
+        if target_source.platform != Platform.DISCORD or target_source.chat_type == "dm":
+            return "This command only works in Discord servers and threads."
+
+        adapter = self._get_discord_adapter()
+        if adapter is None:
+            return "Discord is not connected."
+
+        args = event.get_command_args().strip().lower()
+        current = adapter.get_activation_mode(target_source.chat_id) or (
+            "mention" if adapter._get_discord_policy().require_mention else "always"
+        )
+        if not args:
+            return f"🎛️ Current activation mode for this chat: `{current}`"
+        if args not in {"mention", "always"}:
+            return "Use `/activation mention` or `/activation always`."
+
+        adapter.set_activation_mode(target_source.chat_id, args)
+        return f"🎛️ Activation mode for this chat is now `{args}`."
+
+    async def _handle_restart_command(self, event: MessageEvent) -> str:
+        """Handle /restart by scheduling a delayed gateway restart."""
+        del event
+        self._schedule_gateway_restart()
+        return "♻️ Gateway restart scheduled. Hermes will reconnect shortly."
+
+    async def _handle_dock_command(self, event: MessageEvent, platform: Platform) -> str:
+        """Handle /dock-* by routing future replies for this session to a home channel."""
+        target_source = self._command_target_source_for_event(event)
+        session_key = self._session_key_for_source(target_source)
+        home = self.config.get_home_channel(platform)
+        if home is None:
+            return f"No home channel is configured for `{platform.value}`."
+
+        if not isinstance(getattr(self, "_session_docks", None), dict):
+            self._session_docks = {}
+        self._session_docks[session_key] = {
+            "platform": platform.value,
+            "chat_id": home.chat_id,
+            "thread_id": None,
+            "name": home.name,
+        }
+        self._save_runtime_controls()
+        return f"📮 Replies for this session are now docked to {platform.value} home channel **{home.name}** (`{home.chat_id}`)."
 
     def _load_current_model_selection(self) -> dict[str, Any]:
         """Resolve the configured model/provider from config plus runtime env."""
@@ -4542,7 +4987,13 @@ class GatewayRunner:
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_SEND_POLICY",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -5075,6 +5526,7 @@ class GatewayRunner:
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            os.environ["HERMES_SESSION_SEND_POLICY"] = self._session_send_policy(session_key)
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))

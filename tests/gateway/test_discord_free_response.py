@@ -400,3 +400,68 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._bot_participated_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_focused_thread_skips_mention_requirement(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=222, name="general")
+    thread = FakeThread(channel_id=333, name="focused-thread", parent=parent)
+    adapter.focus_thread_binding(
+        thread_id="333",
+        session_key="discord:thread:333",
+        chat_name="focused-thread",
+        parent_chat_id="222",
+        bound_by="alan",
+    )
+
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.text == "follow-up without mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_unfocused_thread_requires_mention_again(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    parent = FakeTextChannel(channel_id=222, name="general")
+    thread = FakeThread(channel_id=334, name="focused-thread", parent=parent)
+    adapter.focus_thread_binding(
+        thread_id="334",
+        session_key="discord:thread:334",
+        chat_name="focused-thread",
+        parent_chat_id="222",
+        bound_by="alan",
+    )
+    adapter.unfocus_thread_binding("334")
+
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_activation_override_always_allows_channel_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter.set_activation_mode("789", "always")
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="allowed without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed without mention"

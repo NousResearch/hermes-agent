@@ -204,7 +204,16 @@ def _load_interactions_module():
     ext_mod.commands = commands_mod
     sys.modules["discord.ext"] = ext_mod
     sys.modules["discord.ext.commands"] = commands_mod
-    return importlib.reload(importlib.import_module("gateway.platforms.discord_impl.interactions"))
+    for module_name in (
+        "gateway.platforms.discord_impl.components",
+        "gateway.platforms.discord_impl.native_commands",
+        "gateway.platforms.discord_impl.interactions",
+    ):
+        if module_name in sys.modules:
+            importlib.reload(sys.modules[module_name])
+        else:
+            importlib.import_module(module_name)
+    return sys.modules["gateway.platforms.discord_impl.interactions"]
 
 
 interactions = _load_interactions_module()
@@ -258,6 +267,10 @@ def test_register_slash_commands_registers_expected_names():
         "help",
         "commands",
         "whoami",
+        "focus",
+        "unfocus",
+        "agents",
+        "session",
         "id",
         "approve",
         "model",
@@ -280,7 +293,13 @@ def test_register_slash_commands_registers_expected_names():
         "reload-mcp",
         "voice",
         "vc",
+        "send",
+        "activation",
         "update",
+        "restart",
+        "dock-telegram",
+        "dock-discord",
+        "dock-slack",
         "thread",
     }
 

@@ -57,11 +57,22 @@ def _make_runner(session_entry: SessionEntry):
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
         }
     )
+    discord_adapter = MagicMock()
+    discord_adapter.get_activation_mode = MagicMock(return_value="always")
+    discord_adapter.get_thread_binding = MagicMock(
+        return_value=SimpleNamespace(
+            chat_name="release room",
+            idle_timeout_minutes=120,
+            max_age_minutes=1440,
+        )
+    )
     runner.adapters = {
-        Platform.DISCORD: MagicMock(),
+        Platform.DISCORD: discord_adapter,
         Platform.TELEGRAM: MagicMock(),
     }
     runner._voice_mode = {}
+    runner._session_send_policies = {}
+    runner._session_docks = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
@@ -129,6 +140,13 @@ async def test_discord_status_command_returns_rich_runtime_summary(monkeypatch):
     runner._pending_messages[session_key] = {"text": "queued"}
     runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/not-real"}
     runner._voice_mode[source.chat_id] = "all"
+    runner._session_send_policies[session_key] = "off"
+    runner._session_docks[session_key] = {
+        "platform": "telegram",
+        "chat_id": "-1001",
+        "thread_id": None,
+        "name": "Ops Feed",
+    }
 
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -158,6 +176,10 @@ async def test_discord_status_command_returns_rich_runtime_summary(monkeypatch):
     assert "Context Window: 200,000 tokens" in result
     assert "Pending Approval: Yes" in result
     assert "Background Processes: Yes" in result
+    assert "Send Policy: `off`" in result
+    assert "Dock Target: telegram:Ops Feed (`-1001`)" in result
+    assert "Activation: `always`" in result
+    assert "Focused Thread: yes (release room; idle 120m; max-age 1440m)" in result
     assert "Connected: discord, telegram" in result
     assert "secret-key" not in result
 

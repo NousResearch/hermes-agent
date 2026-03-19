@@ -239,6 +239,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    base_url = oai_config.get("base_url", "https://api.openai.com/v1")
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -247,7 +248,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         response_format = "mp3"
 
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
     response = client.audio.speech.create(
         model=model,
         voice=voice,

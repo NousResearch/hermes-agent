@@ -83,6 +83,7 @@ class SocialAdapter(BasePlatformAdapter):
         self._last_seen_at: int = int(time.time())
         self._identity = None
         self._client = httpx.AsyncClient(timeout=15)
+        self._seen_event_ids: set = set()  # dedup notifications
 
     async def connect(self) -> bool:
         """Connect: verify relay is reachable, initialize identity, start polling."""
@@ -328,6 +329,15 @@ class SocialAdapter(BasePlatformAdapter):
                     # Skip own events
                     if event.get("pubkey") == self._identity.pubkey_hex:
                         continue
+
+                    # Dedup: skip already-processed notifications
+                    event_id = event.get("id", "")
+                    if event_id in self._seen_event_ids:
+                        continue
+                    self._seen_event_ids.add(event_id)
+                    # Prune old IDs to prevent memory leak (keep last 1000)
+                    if len(self._seen_event_ids) > 1000:
+                        self._seen_event_ids = set(list(self._seen_event_ids)[-500:])
 
                     # TODO: Verify event signatures before trusting content.
                     # Until signature verification is implemented, prefix

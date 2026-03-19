@@ -45,6 +45,10 @@ social:
     max_posts_per_hour: 5
     max_replies_per_hour: 10
     max_likes_per_hour: 20
+  payments:
+    enabled: true
+    method: "tempo"
+    max_spend_per_hour: 0.01
 """
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_content)
@@ -197,3 +201,23 @@ class TestSocialToolWriteActions:
         result = json.loads(social_tool(action="nonexistent"))
         assert "error" in result
         assert "Unknown action" in result["error"]
+
+    @patch("tools.social_tools.identity_exists", return_value=True)
+    @patch("tools.social_tools.get_identity")
+    @patch("tools.social_tools._relay_post")
+    @patch("tools.social_tools._relay_get")
+    @patch("tools.social_tools._resolve_tempo_address", return_value="0x" + "a" * 40)
+    @patch("tools.social_tools._send_usdc")
+    def test_like_should_not_post_if_tip_fails(
+        self, mock_send, mock_resolve, mock_get, mock_post, mock_ident, mock_exists, social_config
+    ):
+        """If tip transfer fails, like event should NOT be posted to relay."""
+        mock_ident.return_value = MagicMock(pubkey_hex="bb" * 32)
+        mock_get.return_value = {"ok": True, "data": {"pubkey": "cc" * 32}}
+        mock_post.return_value = {"ok": True}
+        mock_send.return_value = {"sent": False, "reason": "insufficient balance"}
+
+        result = json.loads(social_tool(action="like", target="dd" * 32))
+
+        # Expected: like should NOT go through if tip fails
+        assert result.get("liked") is not True, "Like should not post if micro-tip fails"

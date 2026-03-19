@@ -95,3 +95,15 @@ class TestSocialAdapter:
         )
         assert result.success is False
         assert "identity" in result.error.lower()
+
+
+class TestNotificationDedup:
+    def test_adapter_has_dedup_mechanism(self, social_config_enabled):
+        """Adapter should have a mechanism to skip already-processed notifications."""
+        from gateway.config import PlatformConfig
+
+        pc = PlatformConfig(enabled=True)
+        adapter = SocialAdapter(pc)
+
+        # Adapter should have a set to track processed event IDs
+        assert hasattr(adapter, "_seen_event_ids"), "Adapter needs _seen_event_ids set for dedup"

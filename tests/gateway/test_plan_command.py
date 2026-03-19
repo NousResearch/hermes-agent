@@ -116,6 +116,13 @@ class TestGatewayPlanCommand:
         assert "active workspace/backend cwd" in forwarded
         assert "Runtime note:" in forwarded
 
+    def test_plan_command_in_gateway_known_commands(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, telegram_bot_commands
+
+        assert "plan" in GATEWAY_KNOWN_COMMANDS
+        tg_names = [name for name, _ in telegram_bot_commands()]
+        assert "plan" in tg_names
+
     @pytest.mark.asyncio
     async def test_plan_command_appears_in_help_output_via_skill_listing(self, tmp_path):
         runner = _make_runner()

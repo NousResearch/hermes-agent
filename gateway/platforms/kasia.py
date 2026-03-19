@@ -35,9 +35,6 @@ from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-_PREFERRED_MAX_MESSAGE_CHARS = 400
-_MIN_SPLIT_MESSAGE_CHARS = 80
-
 
 def _is_local_port_in_use(port: int) -> bool:
     """Return True when a local TCP listener already owns the given port."""
@@ -244,53 +241,10 @@ class KasiaAdapter(BasePlatformAdapter):
         if not self._running:
             return SendResult(success=False, error="Not connected")
         try:
-            result = await self._send_chunk_with_retry(chat_id, str(content or "").strip())
-            if not result.success:
-                return result
-            return SendResult(
-                success=True,
-                message_id=result.message_id,
-                raw_response={
-                    "chunk_count": 1,
-                    "results": [result.raw_response],
-                },
-            )
-        except Exception as error:
-            return SendResult(success=False, error=str(error))
-
-    async def _send_chunk_with_retry(self, chat_id: str, content: str) -> SendResult:
-        result = await self._send_single_message(chat_id, content)
-        if result.success:
-            return result
-
-        if (
-            not self._is_payload_size_error(result.error)
-            or len(content) <= _MIN_SPLIT_MESSAGE_CHARS
-        ):
-            return result
-
-        left, right = self._split_message(content)
-        if not left or not right:
-            return result
-
-        logger.info(
-            "[%s] Retrying oversized Kasia message as %s + %s chars",
-            self.name,
-            len(left),
-            len(right),
-        )
-
-        left_result = await self._send_chunk_with_retry(chat_id, left)
-        if not left_result.success:
-            return left_result
-        return await self._send_chunk_with_retry(chat_id, right)
-
-    async def _send_single_message(self, chat_id: str, content: str) -> SendResult:
-        try:
             data = await self._request_json(
                 "POST",
                 "/send",
-                payload={"chatId": chat_id, "message": content},
+                payload={"chatId": chat_id, "message": str(content or "").strip()},
                 total=30,
             )
             return SendResult(
@@ -300,50 +254,6 @@ class KasiaAdapter(BasePlatformAdapter):
             )
         except Exception as error:
             return SendResult(success=False, error=str(error))
-
-    @staticmethod
-    def _is_payload_size_error(error: Optional[str]) -> bool:
-        text = str(error or "").lower()
-        return (
-            "larger than max allowed size" in text
-            or "is not standard" in text
-            or "transient (storage) mass" in text
-        )
-
-    @staticmethod
-    def _chunk_message(content: str) -> list[str]:
-        text = str(content or "").strip()
-        if not text:
-            return [""]
-        if len(text) <= _PREFERRED_MAX_MESSAGE_CHARS:
-            return [text]
-
-        chunks: list[str] = []
-        remaining = text
-        while len(remaining) > _PREFERRED_MAX_MESSAGE_CHARS:
-            split_at = KasiaAdapter._find_split_index(remaining, _PREFERRED_MAX_MESSAGE_CHARS)
-            chunks.append(remaining[:split_at].strip())
-            remaining = remaining[split_at:].lstrip()
-        if remaining:
-            chunks.append(remaining)
-        return [chunk for chunk in chunks if chunk]
-
-    @staticmethod
-    def _split_message(content: str) -> tuple[str, str]:
-        midpoint = max(len(content) // 2, 1)
-        split_at = KasiaAdapter._find_split_index(content, midpoint)
-        left = content[:split_at].strip()
-        right = content[split_at:].lstrip()
-        return left, right
-
-    @staticmethod
-    def _find_split_index(text: str, target: int) -> int:
-        minimum = max(1, min(target, len(text) - 1))
-        for separator in ("\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " "):
-            idx = text.rfind(separator, 0, minimum + 1)
-            if idx >= max(1, minimum // 2):
-                return idx + len(separator)
-        return minimum
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Fetch chat information from the bridge state."""

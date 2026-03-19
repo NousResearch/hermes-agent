@@ -13,6 +13,7 @@ export function createEmptyState(wallet = {}) {
       address: wallet.address || null,
       public_key: wallet.public_key || null,
       network: wallet.network || null,
+      send_state: wallet.send_state || {},
     },
     conversations: {},
     cursors: {
@@ -48,6 +49,11 @@ function normalizeState(state, wallet = {}) {
       ...base.wallet,
       ...(state?.wallet || {}),
       ...wallet,
+      send_state: {
+        ...(base.wallet.send_state || {}),
+        ...((state?.wallet || {}).send_state || {}),
+        ...(wallet.send_state || {}),
+      },
     },
     conversations: {},
     cursors: {

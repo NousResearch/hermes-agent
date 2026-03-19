@@ -1,5 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 import {
   Address,
+  addressFromScriptPublicKey,
   ConnectStrategy,
   Encoding,
   Generator,
@@ -9,9 +12,297 @@ import {
   PrivateKeyGenerator,
   RpcClient,
   UtxoContext,
+  UtxoEntries,
   UtxoProcessor,
   XPrv,
 } from "./kaspa_sdk.js";
+
+const DEFAULT_SEND_STATE = Object.freeze({
+  reserved_outpoints: [],
+  pending_outputs: [],
+  last_compaction_ms: 0,
+});
+const DEFAULT_SEND_VISIBILITY_RETRIES = 4;
+const DEFAULT_SEND_VISIBILITY_DELAY_MS = 500;
+const DEFAULT_MAX_CONFIRMED_INPUT_PLANS = 6;
+const DEFAULT_COMPACTION_INPUT_THRESHOLD = 3;
+const DEFAULT_COMPACTION_MAX_INPUTS = 12;
+const DEFAULT_COMPACTION_COOLDOWN_MS = 60_000;
+const DEFAULT_RESERVED_OUTPOINT_TTL_MS = 120_000;
+const DEFAULT_PENDING_OUTPUT_TTL_MS = 600_000;
+
+function toBigInt(value, fallback = 0n) {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "string" && value.trim()) {
+    try {
+      return BigInt(value.trim());
+    } catch {}
+  }
+  return fallback;
+}
+
+function toNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeOutpoint(outpoint = {}) {
+  const transactionId =
+    outpoint.transactionId ||
+    outpoint.transaction_id ||
+    outpoint.txId ||
+    outpoint.tx_id ||
+    null;
+  const index = toNumber(outpoint.index, -1);
+  return {
+    transactionId,
+    index,
+  };
+}
+
+export function makeOutpointKey(inputOrTransactionId, index) {
+  if (
+    inputOrTransactionId &&
+    typeof inputOrTransactionId === "object" &&
+    inputOrTransactionId.outpoint
+  ) {
+    const normalized = normalizeOutpoint(inputOrTransactionId.outpoint);
+    return makeOutpointKey(normalized.transactionId, normalized.index);
+  }
+
+  const txId = String(inputOrTransactionId || "").trim();
+  const outputIndex = toNumber(index, -1);
+  if (!txId || outputIndex < 0) {
+    return null;
+  }
+  return `${txId}:${outputIndex}`;
+}
+
+function normalizeReservedOutpoint(entry = {}) {
+  const key = String(entry.key || entry.outpoint_key || "").trim();
+  if (!key) {
+    return null;
+  }
+  return {
+    key,
+    reserved_at_ms: toNumber(entry.reserved_at_ms, 0),
+  };
+}
+
+function normalizePendingOutput(entry = {}) {
+  const key =
+    String(entry.key || "").trim() ||
+    makeOutpointKey(entry.tx_id || entry.transaction_id, entry.index);
+  if (!key) {
+    return null;
+  }
+  return {
+    key,
+    tx_id: String(entry.tx_id || entry.transaction_id || "").trim(),
+    index: toNumber(entry.index, 0),
+    amount: String(toBigInt(entry.amount, 0n)),
+    created_ms: toNumber(entry.created_ms, 0),
+  };
+}
+
+export function normalizeSendState(sendState = {}) {
+  const reserved = Array.isArray(sendState.reserved_outpoints)
+    ? sendState.reserved_outpoints
+        .map((entry) => normalizeReservedOutpoint(entry))
+        .filter(Boolean)
+    : [];
+  const pending = Array.isArray(sendState.pending_outputs)
+    ? sendState.pending_outputs
+        .map((entry) => normalizePendingOutput(entry))
+        .filter(Boolean)
+    : [];
+
+  return {
+    reserved_outpoints: reserved,
+    pending_outputs: pending,
+    last_compaction_ms: toNumber(sendState.last_compaction_ms, 0),
+  };
+}
+
+export function normalizeUtxoList(entries) {
+  if (!entries) {
+    return [];
+  }
+  if (Array.isArray(entries)) {
+    return entries.filter(Boolean);
+  }
+  if (Array.isArray(entries.items)) {
+    return entries.items.filter(Boolean);
+  }
+  if (typeof entries[Symbol.iterator] === "function") {
+    return Array.from(entries).filter(Boolean);
+  }
+  return [];
+}
+
+function isPendingUtxo(entry) {
+  return toBigInt(entry?.blockDaaScore, 0n) === 0n;
+}
+
+function isSpendableUtxo(entry) {
+  return Boolean(entry) && entry.isCoinbase !== true;
+}
+
+function sortByAmountDescending(entries) {
+  return [...entries].sort((left, right) => {
+    const diff = toBigInt(right?.amount, 0n) - toBigInt(left?.amount, 0n);
+    if (diff === 0n) {
+      return 0;
+    }
+    return diff > 0n ? 1 : -1;
+  });
+}
+
+function getTrackedPendingKeys(sendState) {
+  return new Set(sendState.pending_outputs.map((entry) => entry.key));
+}
+
+export function reconcileSendState(
+  sendState,
+  liveUtxos,
+  {
+    nowMs = Date.now(),
+    reservedOutpointTtlMs = DEFAULT_RESERVED_OUTPOINT_TTL_MS,
+    pendingOutputTtlMs = DEFAULT_PENDING_OUTPUT_TTL_MS,
+  } = {}
+) {
+  const normalized = normalizeSendState(sendState);
+  const liveEntries = normalizeUtxoList(liveUtxos);
+  const liveByKey = new Map();
+
+  for (const entry of liveEntries) {
+    const key = makeOutpointKey(entry);
+    if (key) {
+      liveByKey.set(key, entry);
+    }
+  }
+
+  normalized.reserved_outpoints = normalized.reserved_outpoints.filter((entry) => {
+    if (!entry.key) {
+      return false;
+    }
+    if (!liveByKey.has(entry.key)) {
+      return false;
+    }
+    return entry.reserved_at_ms + reservedOutpointTtlMs > nowMs;
+  });
+
+  normalized.pending_outputs = normalized.pending_outputs.filter((entry) => {
+    if (!entry.key) {
+      return false;
+    }
+    const live = liveByKey.get(entry.key);
+    if (!live) {
+      return entry.created_ms + pendingOutputTtlMs > nowMs;
+    }
+    return isPendingUtxo(live);
+  });
+
+  return normalized;
+}
+
+export function buildCandidateUtxoPlans({
+  trackedPendingUtxos = [],
+  matureUtxos = [],
+  maxConfirmedPlans = DEFAULT_MAX_CONFIRMED_INPUT_PLANS,
+}) {
+  const plans = [];
+  const seen = new Set();
+
+  for (const utxo of sortByAmountDescending(trackedPendingUtxos)) {
+    const key = makeOutpointKey(utxo);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    plans.push({
+      name: "pending-single",
+      entries: [utxo],
+      usesPendingInputs: true,
+    });
+  }
+
+  const confirmed = sortByAmountDescending(matureUtxos);
+  const planCount = Math.min(confirmed.length, Math.max(1, maxConfirmedPlans));
+  for (let count = 1; count <= planCount; count += 1) {
+    plans.push({
+      name: `confirmed-${count}`,
+      entries: confirmed.slice(0, count),
+      usesPendingInputs: false,
+    });
+  }
+
+  if (confirmed.length > planCount) {
+    plans.push({
+      name: "confirmed-all",
+      entries: confirmed,
+      usesPendingInputs: false,
+    });
+  }
+
+  return plans;
+}
+
+export function shouldCompactContextualSend({
+  matureUtxos = [],
+  trackedPendingUtxos = [],
+  lastCompactionMs = 0,
+  nowMs = Date.now(),
+  cooldownMs = DEFAULT_COMPACTION_COOLDOWN_MS,
+  threshold = DEFAULT_COMPACTION_INPUT_THRESHOLD,
+}) {
+  if (trackedPendingUtxos.length > 0) {
+    return false;
+  }
+  if (matureUtxos.length < threshold) {
+    return false;
+  }
+  return nowMs - toNumber(lastCompactionMs, 0) >= cooldownMs;
+}
+
+function createGeneratorEntries(entries) {
+  const normalized = normalizeUtxoList(entries);
+  if (normalized.length === 0) {
+    return new UtxoEntries([]);
+  }
+  return new UtxoEntries(normalized);
+}
+
+function normalizeAddressValue(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value.toString === "function") {
+    return value.toString();
+  }
+  return null;
+}
+
+function isLikelyInsufficientFundsError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("insufficient funds") ||
+    text.includes("not enough funds") ||
+    text.includes("not enough mature") ||
+    text.includes("no transaction was produced") ||
+    text.includes("not enough balance") ||
+    text.includes("storage mass") ||
+    text.includes("larger than max allowed size")
+  );
+}
 
 export function deriveWalletIdentity(seedPhrase, network) {
   const mnemonic = new Mnemonic(String(seedPhrase || "").trim());
@@ -34,15 +325,44 @@ export function deriveWalletIdentity(seedPhrase, network) {
 }
 
 export class KaspaWalletClient {
-  constructor({ seedPhrase, nodeUrl, network }) {
+  constructor({
+    seedPhrase,
+    nodeUrl,
+    network,
+    nowFn = () => Date.now(),
+    visibilityRetries = DEFAULT_SEND_VISIBILITY_RETRIES,
+    visibilityDelayMs = DEFAULT_SEND_VISIBILITY_DELAY_MS,
+    maxConfirmedPlans = DEFAULT_MAX_CONFIRMED_INPUT_PLANS,
+    compactionInputThreshold = DEFAULT_COMPACTION_INPUT_THRESHOLD,
+    compactionMaxInputs = DEFAULT_COMPACTION_MAX_INPUTS,
+    compactionCooldownMs = DEFAULT_COMPACTION_COOLDOWN_MS,
+  }) {
     this.seedPhrase = seedPhrase;
     this.nodeUrl = nodeUrl;
     this.network = network || "mainnet";
+    this.nowFn = nowFn;
+    this.visibilityRetries = visibilityRetries;
+    this.visibilityDelayMs = visibilityDelayMs;
+    this.maxConfirmedPlans = maxConfirmedPlans;
+    this.compactionInputThreshold = compactionInputThreshold;
+    this.compactionMaxInputs = compactionMaxInputs;
+    this.compactionCooldownMs = compactionCooldownMs;
+
     this.identity = null;
     this.rpc = null;
     this.utxoProcessor = null;
     this.utxoContext = null;
     this.isConnected = false;
+    this.sendState = normalizeSendState(DEFAULT_SEND_STATE);
+    this._sendTail = Promise.resolve();
+  }
+
+  loadSendState(sendState = {}) {
+    this.sendState = normalizeSendState(sendState);
+  }
+
+  exportSendState() {
+    return normalizeSendState(this.sendState);
   }
 
   async init() {
@@ -93,6 +413,40 @@ export class KaspaWalletClient {
     amountSompi,
     payloadBytes,
     priorityFeeSompi = 0n,
+    strategy = "default",
+  }) {
+    return await this._enqueueSend(async () =>
+      this._sendPayloadTransaction({
+        destinationAddress,
+        amountSompi,
+        payloadBytes,
+        priorityFeeSompi,
+        strategy,
+      })
+    );
+  }
+
+  async _enqueueSend(operation) {
+    const previous = this._sendTail;
+    let release = null;
+    this._sendTail = new Promise((resolve) => {
+      release = resolve;
+    });
+
+    try {
+      await previous.catch(() => {});
+      return await operation();
+    } finally {
+      release?.();
+    }
+  }
+
+  async _sendPayloadTransaction({
+    destinationAddress,
+    amountSompi,
+    payloadBytes,
+    priorityFeeSompi = 0n,
+    strategy = "default",
   }) {
     if (!this.identity || !this.utxoContext || !this.rpc) {
       throw new Error("Wallet client is not initialized");
@@ -100,34 +454,351 @@ export class KaspaWalletClient {
 
     const receiveAddress = new Address(this.identity.address);
     const destination = new Address(destinationAddress);
-    const isSelfSend =
-      destination.toString() === receiveAddress.toString();
+    const isSelfSend = destination.toString() === receiveAddress.toString();
+    const sendStrategy =
+      strategy === "default" ? (isSelfSend ? "contextual" : "direct") : strategy;
 
-    const generator = new Generator({
-      changeAddress: receiveAddress,
-      entries: this.utxoContext,
-      outputs: isSelfSend
-        ? []
-        : [new PaymentOutput(destination, amountSompi)],
-      payload: payloadBytes,
-      networkId: this.identity.networkId,
-      priorityFee: priorityFeeSompi,
-    });
+    let lastError = null;
+    for (let attempt = 0; attempt <= this.visibilityRetries; attempt += 1) {
+      const context = this._loadSendContext();
+      const plans = buildCandidateUtxoPlans({
+        trackedPendingUtxos: context.trackedPendingUtxos,
+        matureUtxos: context.availableMatureUtxos,
+        maxConfirmedPlans: this.maxConfirmedPlans,
+      });
 
-    let txId = null;
-    let pendingTransaction;
-    while ((pendingTransaction = await generator.next())) {
-      pendingTransaction.sign([this.identity.privateKey], false);
-      txId = await pendingTransaction.submit(this.rpc);
+      const firstPassPlans = plans.filter((plan) => plan.entries.length <= 1);
+      const laterPlans = plans.filter((plan) => plan.entries.length > 1);
+
+      const firstPass = await this._tryPlans(firstPassPlans, {
+        destination,
+        receiveAddress,
+        amountSompi,
+        payloadBytes,
+        priorityFeeSompi,
+      });
+      if (firstPass.success) {
+        return this._finalizeSubmittedTransactions(firstPass.transactions);
+      }
+      if (firstPass.error) {
+        lastError = firstPass.error;
+      }
+
+      if (
+        sendStrategy === "contextual" &&
+        shouldCompactContextualSend({
+          matureUtxos: context.availableMatureUtxos,
+          trackedPendingUtxos: context.trackedPendingUtxos,
+          lastCompactionMs: this.sendState.last_compaction_ms,
+          nowMs: this.nowFn(),
+          cooldownMs: this.compactionCooldownMs,
+          threshold: this.compactionInputThreshold,
+        })
+      ) {
+        await this._compactMatureUtxos(
+          context.availableMatureUtxos,
+          receiveAddress
+        );
+        continue;
+      }
+
+      const laterPass = await this._tryPlans(laterPlans, {
+        destination,
+        receiveAddress,
+        amountSompi,
+        payloadBytes,
+        priorityFeeSompi,
+      });
+      if (laterPass.success) {
+        return this._finalizeSubmittedTransactions(laterPass.transactions);
+      }
+      if (laterPass.error) {
+        lastError = laterPass.error;
+      }
+
+      if (
+        this.sendState.pending_outputs.length > 0 &&
+        context.trackedPendingUtxos.length === 0 &&
+        attempt < this.visibilityRetries
+      ) {
+        await delay(this.visibilityDelayMs * (attempt + 1));
+        continue;
+      }
+
+      break;
     }
 
-    if (!txId) {
+    if (lastError) {
+      throw lastError;
+    }
+    throw new Error(
+      "No transaction was produced. The Kasia wallet may not have enough mature balance."
+    );
+  }
+
+  _loadSendContext() {
+    const matureUtxos = normalizeUtxoList(
+      this.utxoContext.getMatureRange(0, this.utxoContext.matureLength)
+    ).filter(isSpendableUtxo);
+    const pendingUtxos = normalizeUtxoList(
+      this.utxoContext.getPending()
+    ).filter(isSpendableUtxo);
+    const liveUtxos = [...matureUtxos, ...pendingUtxos];
+
+    this.sendState = reconcileSendState(this.sendState, liveUtxos, {
+      nowMs: this.nowFn(),
+    });
+
+    const reservedKeys = new Set(
+      this.sendState.reserved_outpoints.map((entry) => entry.key)
+    );
+    const trackedPendingKeys = getTrackedPendingKeys(this.sendState);
+
+    const availableMatureUtxos = matureUtxos.filter((entry) => {
+      const key = makeOutpointKey(entry);
+      return key && !reservedKeys.has(key);
+    });
+    const availablePendingUtxos = pendingUtxos.filter((entry) => {
+      const key = makeOutpointKey(entry);
+      return key && !reservedKeys.has(key);
+    });
+    const trackedPendingUtxos = sortByAmountDescending(
+      availablePendingUtxos.filter((entry) =>
+        trackedPendingKeys.has(makeOutpointKey(entry))
+      )
+    );
+
+    return {
+      availableMatureUtxos,
+      availablePendingUtxos,
+      trackedPendingUtxos,
+    };
+  }
+
+  async _tryPlans(plans, txOptions) {
+    let lastError = null;
+    for (const plan of plans) {
+      if (!Array.isArray(plan.entries) || plan.entries.length === 0) {
+        continue;
+      }
+      try {
+        const transactions = await this._submitPlan(plan, txOptions);
+        return {
+          success: true,
+          transactions,
+        };
+      } catch (error) {
+        if (!isLikelyInsufficientFundsError(error)) {
+          throw error;
+        }
+        lastError = error;
+      }
+    }
+    return {
+      success: false,
+      error: lastError,
+    };
+  }
+
+  async _submitPlan(
+    plan,
+    { destination, receiveAddress, amountSompi, payloadBytes, priorityFeeSompi }
+  ) {
+    const generator = new Generator({
+      changeAddress: receiveAddress,
+      entries: createGeneratorEntries(plan.entries),
+      outputs:
+        destination.toString() === receiveAddress.toString()
+          ? []
+          : [new PaymentOutput(destination, toBigInt(amountSompi, 0n))],
+      payload: payloadBytes,
+      networkId: this.identity.networkId,
+      priorityFee: toBigInt(priorityFeeSompi, 0n),
+    });
+
+    const submissions = [];
+    let pendingTransaction;
+    while ((pendingTransaction = await generator.next())) {
+      const selectedEntries = normalizeUtxoList(
+        pendingTransaction.getUtxoEntries()
+      );
+      const usesPendingInputs =
+        plan.usesPendingInputs || selectedEntries.some(isPendingUtxo);
+      const txId = await this._submitPendingTransaction(
+        pendingTransaction,
+        usesPendingInputs
+      );
+      this._reserveConsumedInputs(selectedEntries);
+      this._consumePendingOutputs(selectedEntries);
+      this._trackPendingOutputs(pendingTransaction.transaction, txId);
+      submissions.push({
+        txId,
+        inputCount: selectedEntries.length,
+        usesPendingInputs,
+      });
+    }
+
+    if (submissions.length === 0) {
       throw new Error(
         "No transaction was produced. The Kasia wallet may not have enough mature balance."
       );
     }
 
-    return txId;
+    return submissions;
+  }
+
+  async _submitPendingTransaction(pendingTransaction, usesPendingInputs) {
+    pendingTransaction.sign([this.identity.privateKey], false);
+
+    if (usesPendingInputs) {
+      try {
+        const response = await this.rpc.submitTransaction({
+          transaction: pendingTransaction.transaction,
+          allowOrphan: true,
+        });
+        return this._extractTxId(response, pendingTransaction);
+      } catch {
+        // Fall back to the runtime helper if the request shape changes between SDK releases.
+      }
+    }
+
+    const response = await pendingTransaction.submit(this.rpc);
+    return this._extractTxId(response, pendingTransaction);
+  }
+
+  _extractTxId(response, pendingTransaction) {
+    if (typeof response === "string" && response.trim()) {
+      return response;
+    }
+    if (response && typeof response === "object") {
+      if (typeof response.txId === "string" && response.txId.trim()) {
+        return response.txId;
+      }
+      if (typeof response.transactionId === "string" && response.transactionId.trim()) {
+        return response.transactionId;
+      }
+      if (typeof response.id === "string" && response.id.trim()) {
+        return response.id;
+      }
+    }
+    const txId =
+      normalizeAddressValue(pendingTransaction?.transaction?.id) ||
+      normalizeAddressValue(pendingTransaction?.id);
+    if (txId) {
+      return txId;
+    }
+    throw new Error("Submitted transaction did not return a transaction id");
+  }
+
+  _reserveConsumedInputs(entries) {
+    const nowMs = this.nowFn();
+    const byKey = new Map(
+      this.sendState.reserved_outpoints.map((entry) => [entry.key, entry])
+    );
+    for (const entry of normalizeUtxoList(entries)) {
+      const key = makeOutpointKey(entry);
+      if (!key) {
+        continue;
+      }
+      byKey.set(key, {
+        key,
+        reserved_at_ms: nowMs,
+      });
+    }
+    this.sendState.reserved_outpoints = [...byKey.values()];
+  }
+
+  _consumePendingOutputs(entries) {
+    const consumedKeys = new Set(
+      normalizeUtxoList(entries)
+        .map((entry) => makeOutpointKey(entry))
+        .filter(Boolean)
+    );
+    this.sendState.pending_outputs = this.sendState.pending_outputs.filter(
+      (entry) => !consumedKeys.has(entry.key)
+    );
+  }
+
+  _trackPendingOutputs(transaction, txId) {
+    if (!transaction || !Array.isArray(transaction.outputs)) {
+      return;
+    }
+
+    const nowMs = this.nowFn();
+    const byKey = new Map(
+      this.sendState.pending_outputs.map((entry) => [entry.key, entry])
+    );
+
+    transaction.outputs.forEach((output, index) => {
+      const address = this._tryOutputAddress(output);
+      if (address !== this.identity.address) {
+        return;
+      }
+      const key = makeOutpointKey(txId, index);
+      if (!key) {
+        return;
+      }
+      byKey.set(key, {
+        key,
+        tx_id: txId,
+        index,
+        amount: String(toBigInt(output?.value, 0n)),
+        created_ms: nowMs,
+      });
+    });
+
+    this.sendState.pending_outputs = [...byKey.values()];
+  }
+
+  _tryOutputAddress(output) {
+    try {
+      return normalizeAddressValue(
+        addressFromScriptPublicKey(output?.scriptPublicKey, this.identity.networkId)
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  async _compactMatureUtxos(availableMatureUtxos, receiveAddress) {
+    const selected = sortByAmountDescending(availableMatureUtxos).slice(
+      0,
+      Math.max(2, this.compactionMaxInputs)
+    );
+    if (selected.length < 2) {
+      return;
+    }
+
+    await this._submitPlan(
+      {
+        name: "compaction",
+        entries: selected,
+        usesPendingInputs: false,
+      },
+      {
+        destination: receiveAddress,
+        receiveAddress,
+        amountSompi: 0n,
+        payloadBytes: new Uint8Array(),
+        priorityFeeSompi: 0n,
+      }
+    );
+    this.sendState.last_compaction_ms = this.nowFn();
+    await delay(this.visibilityDelayMs);
+  }
+
+  _finalizeSubmittedTransactions(transactions) {
+    const last = transactions[transactions.length - 1];
+    return {
+      txId: last.txId,
+      transactionCount: transactions.length,
+      inputCount: transactions.reduce(
+        (total, entry) => total + toNumber(entry.inputCount, 0),
+        0
+      ),
+      usedPendingInput: transactions.some((entry) => entry.usesPendingInputs),
+      sendState: this.exportSendState(),
+    };
   }
 
   async close() {

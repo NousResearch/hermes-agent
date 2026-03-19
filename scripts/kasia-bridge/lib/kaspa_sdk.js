@@ -18,6 +18,7 @@ const kaspa = require(kaspaEntry);
 export default kaspa;
 export const {
   Address,
+  addressFromScriptPublicKey,
   ConnectStrategy,
   Encoding,
   Generator,
@@ -27,6 +28,7 @@ export const {
   PrivateKeyGenerator,
   RpcClient,
   UtxoContext,
+  UtxoEntries,
   UtxoProcessor,
   XPrv,
   XOnlyPublicKey,

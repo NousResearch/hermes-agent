@@ -10,6 +10,12 @@ class FakeWalletClient {
   constructor() {
     this.isConnected = true;
     this.sentTransactions = [];
+    this.loadedSendState = null;
+    this.sendState = {
+      reserved_outpoints: [],
+      pending_outputs: [],
+      last_compaction_ms: 0,
+    };
     this.info = {
       address: "kaspa:qpeerwalletaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       publicKeyHex: "02".padEnd(66, "1"),
@@ -23,6 +29,15 @@ class FakeWalletClient {
   }
 
   async close() {}
+
+  loadSendState(state) {
+    this.loadedSendState = state;
+    this.sendState = state || this.sendState;
+  }
+
+  exportSendState() {
+    return this.sendState;
+  }
 
   async sendPayloadTransaction(payload) {
     this.sentTransactions.push(payload);
@@ -133,6 +148,45 @@ test("duplicate transactions are deduplicated by tx id", async () => {
     await readFile(join(stateDir, "state.json"), "utf8")
   );
   assert.deepEqual(stateJson.processed_tx_ids, ["tx-dup"]);
+});
+
+test("wallet send state is loaded from disk and persisted back on save", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const firstWallet = new FakeWalletClient();
+
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: firstWallet,
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  firstWallet.sendState = {
+    reserved_outpoints: [{ key: "old:0", reserved_at_ms: 10 }],
+    pending_outputs: [{ key: "new:1", tx_id: "new", index: 1, amount: "42", created_ms: 11 }],
+    last_compaction_ms: 12,
+  };
+  await bridge.close();
+
+  const restartedWallet = new FakeWalletClient();
+  const restarted = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient: restartedWallet,
+    fetchImpl: async () => response([]),
+  });
+
+  await restarted.init();
+  assert.deepEqual(restartedWallet.loadedSendState, firstWallet.sendState);
+  assert.equal(restarted.health().pendingOutputCount, 1);
+  assert.equal(restarted.health().reservedOutpointCount, 1);
 });
 
 test("contextual polling encodes aliases for the live indexer query shape", async () => {

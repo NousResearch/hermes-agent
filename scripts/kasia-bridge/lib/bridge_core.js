@@ -88,6 +88,7 @@ export class KasiaBridgeCore {
       public_key: this.walletInfo.publicKeyHex,
       network: this.walletInfo.network,
     });
+    this.walletClient.loadSendState?.(this.state.wallet.send_state || {});
     await this._saveState();
 
     try {
@@ -105,6 +106,7 @@ export class KasiaBridgeCore {
   }
 
   health() {
+    const sendState = this.walletClient.exportSendState?.() || {};
     return {
       status: this.walletClient.isConnected ? "connected" : "starting",
       walletAddress: this.state.wallet.address,
@@ -112,6 +114,12 @@ export class KasiaBridgeCore {
       indexerUrl: this.indexerUrl,
       nodeUrl: this.nodeUrl,
       lastSyncMs: this.state.last_sync_ms,
+      pendingOutputCount: Array.isArray(sendState.pending_outputs)
+        ? sendState.pending_outputs.length
+        : 0,
+      reservedOutpointCount: Array.isArray(sendState.reserved_outpoints)
+        ? sendState.reserved_outpoints.length
+        : 0,
     };
   }
 
@@ -171,7 +179,7 @@ export class KasiaBridgeCore {
 
     return {
       status: "sent",
-      txId,
+      txId: txId.txId || txId,
       chatId: conversation.peer_address,
     };
   }
@@ -199,10 +207,11 @@ export class KasiaBridgeCore {
       message: String(message),
       randomBytesFn: this.randomBytesFn,
     });
-    const txId = await this.walletClient.sendPayloadTransaction({
+    const txResult = await this.walletClient.sendPayloadTransaction({
       destinationAddress: this.walletInfo.address,
       amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
       payloadBytes,
+      strategy: "contextual",
     });
 
     touchConversation(conversation, new Date(this.nowFn()).toISOString());
@@ -210,8 +219,9 @@ export class KasiaBridgeCore {
 
     return {
       status: "sent",
-      txId,
+      txId: txResult.txId || txResult,
       chatId: conversation.peer_address,
+      wallet: typeof txResult === "object" ? txResult : undefined,
     };
   }
 
@@ -384,6 +394,7 @@ export class KasiaBridgeCore {
   }
 
   async _saveState() {
+    this.state.wallet.send_state = this.walletClient.exportSendState?.() || {};
     await saveState(this.statePath, this.state);
   }
 }

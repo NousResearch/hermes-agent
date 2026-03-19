@@ -631,6 +631,28 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
+    def test_reasoning_sent_for_copilot_gpt5(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-5.4"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
+        agent.base_url = "https://api.githubcopilot.com"
+        agent.model = "gpt-4.1"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
@@ -806,7 +828,7 @@ class TestConcurrentToolExecution:
                 mock_con.assert_not_called()
 
     def test_multiple_tools_uses_concurrent_path(self, agent):
-        """Multiple non-interactive tools should use concurrent path."""
+        """Multiple read-only tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -816,6 +838,94 @@ class TestConcurrentToolExecution:
                 agent._execute_tool_calls(mock_msg, messages, "task-1")
                 mock_con.assert_called_once()
                 mock_seq.assert_not_called()
+
+    def test_terminal_batch_forces_sequential(self, agent):
+        """Stateful tools should not share the concurrent execution path."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="terminal", arguments='{"command":"pwd"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_write_batch_forces_sequential(self, agent):
+        """File mutations should stay ordered within a turn."""
+        tc1 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c1")
+        tc2 = _mock_tool_call(name="write_file", arguments='{"path":"x.py","content":"print(1)"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_disjoint_write_batch_uses_concurrent_path(self, agent):
+        """Independent file writes should still run concurrently."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/b.py","content":"print(2)"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_con.assert_called_once()
+                mock_seq.assert_not_called()
+
+    def test_overlapping_write_batch_forces_sequential(self, agent):
+        """Writes to the same file must stay ordered."""
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"print(1)"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="patch",
+            arguments='{"path":"src/a.py","old_string":"1","new_string":"2"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_malformed_json_args_forces_sequential(self, agent):
+        """Unparseable tool arguments should fall back to sequential."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments="NOT JSON {{{", call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_non_dict_args_forces_sequential(self, agent):
+        """Tool arguments that parse to a non-dict type should fall back to sequential."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
 
     def test_concurrent_executes_all_tools(self, agent):
         """Concurrent path should execute all tools and append results in order."""
@@ -941,6 +1051,39 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+
+class TestPathsOverlap:
+    """Unit tests for the _paths_overlap helper."""
+
+    def test_same_path_overlaps(self):
+        from run_agent import _paths_overlap
+        assert _paths_overlap(Path("src/a.py"), Path("src/a.py"))
+
+    def test_siblings_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/a.py"), Path("src/b.py"))
+
+    def test_parent_child_overlap(self):
+        from run_agent import _paths_overlap
+        assert _paths_overlap(Path("src"), Path("src/sub/a.py"))
+
+    def test_different_roots_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/a.py"), Path("other/a.py"))
+
+    def test_nested_vs_flat_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path("src/sub/a.py"), Path("src/a.py"))
+
+    def test_empty_paths_do_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path(""), Path(""))
+
+    def test_one_empty_path_does_not_overlap(self):
+        from run_agent import _paths_overlap
+        assert not _paths_overlap(Path(""), Path("src/a.py"))
+        assert not _paths_overlap(Path("src/a.py"), Path(""))
 
 
 class TestHandleMaxIterations:
@@ -2170,6 +2313,41 @@ class TestFallbackAnthropicProvider:
         assert result is True
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
+
+
+def test_aiagent_uses_copilot_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_is_openai_client_closed_honors_custom_client_flag():
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=True)) is True
+    assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False
 
 
 class TestAnthropicBaseUrlPassthrough:

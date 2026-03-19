@@ -8,7 +8,7 @@ Usage:
     python -m tools.neutts_synth --text "Hello" --out output.wav \
         --ref-audio samples/jo.wav --ref-text samples/jo.txt
 
-Requires: pip install neutts[all]
+Requires: python -m pip install -U neutts[all]
 System:   apt install espeak-ng  (or brew install espeak-ng)
 """
 
@@ -75,7 +75,7 @@ def main():
     try:
         from neutts import NeuTTS
     except ImportError:
-        print("Error: neutts not installed. Run: pip install neutts[all]", file=sys.stderr)
+        print("Error: neutts not installed. Run: python -m pip install -U neutts[all]", file=sys.stderr)
         sys.exit(1)
 
     tts = NeuTTS(

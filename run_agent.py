@@ -85,7 +85,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -203,6 +203,27 @@ class IterationBudget:
 # When any of these appear in a batch, we fall back to sequential execution.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
+# Read-only tools with no shared mutable session state.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "honcho_context",
+    "honcho_profile",
+    "honcho_search",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+
+# File tools can run concurrently when they target independent paths.
+_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -234,6 +255,74 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def _should_parallelize_tool_batch(tool_calls) -> bool:
+    """Return True when a tool-call batch is safe to run concurrently."""
+    if len(tool_calls) <= 1:
+        return False
+
+    tool_names = [tc.function.name for tc in tool_calls]
+    if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
+        return False
+
+    reserved_paths: list[Path] = []
+    for tool_call in tool_calls:
+        tool_name = tool_call.function.name
+        try:
+            function_args = json.loads(tool_call.function.arguments)
+        except Exception:
+            logging.debug(
+                "Could not parse args for %s — defaulting to sequential; raw=%s",
+                tool_name,
+                tool_call.function.arguments[:200],
+            )
+            return False
+        if not isinstance(function_args, dict):
+            logging.debug(
+                "Non-dict args for %s (%s) — defaulting to sequential",
+                tool_name,
+                type(function_args).__name__,
+            )
+            return False
+
+        if tool_name in _PATH_SCOPED_TOOLS:
+            scoped_path = _extract_parallel_scope_path(tool_name, function_args)
+            if scoped_path is None:
+                return False
+            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
+                return False
+            reserved_paths.append(scoped_path)
+            continue
+
+        if tool_name not in _PARALLEL_SAFE_TOOLS:
+            return False
+
+    return True
+
+
+def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
+    """Return the normalized file target for path-scoped tools."""
+    if tool_name not in _PATH_SCOPED_TOOLS:
+        return None
+
+    raw_path = function_args.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+
+    # Avoid resolve(); the file may not exist yet.
+    return Path(raw_path).expanduser()
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """Return True when two paths may refer to the same subtree."""
+    left_parts = left.parts
+    right_parts = right.parts
+    if not left_parts or not right_parts:
+        # Empty paths shouldn't reach here (guarded upstream), but be safe.
+        return bool(left_parts) == bool(right_parts) and bool(left_parts)
+    common_len = min(len(left_parts), len(right_parts))
+    return left_parts[:common_len] == right_parts[:common_len]
+
+
 def _inject_honcho_turn_context(content, turn_context: str):
     """Append Honcho recall to the current-turn user message without mutating history.
 
@@ -263,17 +352,30 @@ def _inject_honcho_turn_context(content, turn_context: str):
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
-    
+
     This class manages the conversation flow, tool execution, and response handling
     for AI models that support function calling.
     """
-    
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        self._base_url = value
+        self._base_url_lower = value.lower() if value else ""
+
     def __init__(
         self,
         base_url: str = None,
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        acp_command: str = None,
+        acp_args: list[str] | None = None,
+        command: str = None,
+        args: list[str] | None = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -379,23 +481,30 @@ class AIAgent:
         self.base_url = base_url or OPENROUTER_BASE_URL
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or "openrouter"
+        self.acp_command = acp_command or command
+        self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
-        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self.base_url.lower():
+        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
-        elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self.base_url.lower()):
+        elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"
+        elif self._base_url_lower.rstrip("/").endswith("/anthropic"):
+            # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
+            # use a URL convention ending in /anthropic. Auto-detect these so the
+            # Anthropic Messages API adapter is used instead of chat completions.
+            self.api_mode = "anthropic_messages"
         else:
             self.api_mode = "chat_completions"
 
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or "openrouter" in self.base_url.lower():
+        if self.provider == "openrouter" or "openrouter" in self._base_url_lower:
             threading.Thread(
                 target=lambda: fetch_model_metadata(),
                 daemon=True,
@@ -439,7 +548,7 @@ class AIAgent:
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = "openrouter" in self.base_url.lower()
+        is_openrouter = "openrouter" in self._base_url_lower
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
@@ -555,6 +664,7 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
             effective_key = api_key or resolve_anthropic_token() or ""
+            self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
@@ -572,6 +682,9 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
+                if self.provider == "copilot-acp":
+                    client_kwargs["command"] = self.acp_command
+                    client_kwargs["args"] = self.acp_args
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
@@ -579,6 +692,10 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
+                elif "api.githubcopilot.com" in effective_base.lower():
+                    from hermes_cli.models import copilot_default_headers
+
+                    client_kwargs["default_headers"] = copilot_default_headers()
                 elif "api.kimi.com" in effective_base.lower():
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
@@ -609,6 +726,7 @@ class AIAgent:
                     }
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+            self.api_key = client_kwargs.get("api_key", "")
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:
@@ -732,6 +850,13 @@ class AIAgent:
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
+        # Load config once for memory, skills, and compression sections
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+            _agent_cfg = _load_agent_config()
+        except Exception:
+            _agent_cfg = {}
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -742,8 +867,7 @@ class AIAgent:
         self._iters_since_skill = 0
         if not skip_memory:
             try:
-                from hermes_cli.config import load_config as _load_mem_config
-                mem_config = _load_mem_config().get("memory", {})
+                mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -831,21 +955,16 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            from hermes_cli.config import load_config as _load_skills_config
-            skills_config = _load_skills_config().get("skills", {})
+            skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
             pass
-        
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
-        try:
-            from hermes_cli.config import load_config as _load_compression_config
-            _compression_cfg = _load_compression_config().get("compression", {})
-            if not isinstance(_compression_cfg, dict):
-                _compression_cfg = {}
-        except ImportError:
+        _compression_cfg = _agent_cfg.get("compression", {})
+        if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
@@ -860,6 +979,7 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            api_key=getattr(self, "api_key", ""),
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -915,8 +1035,8 @@ class AIAgent:
         OpenAI models use 'max_tokens'.
         """
         _is_direct_openai = (
-            "api.openai.com" in self.base_url.lower()
-            and "openrouter" not in self.base_url.lower()
+            "api.openai.com" in self._base_url_lower
+            and "openrouter" not in self._base_url_lower
         )
         if _is_direct_openai:
             return {"max_completion_tokens": value}
@@ -1833,28 +1953,38 @@ class AIAgent:
         is stable across all turns in a session, maximizing prefix cache hits.
         """
         # Layers (in order):
-        #   1. Default agent identity (always present)
+        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
         #   2. User / gateway system prompt (if provided)
         #   3. Persistent memory (frozen snapshot)
         #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (SOUL.md, AGENTS.md, .cursorrules)
+        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
-        # If an AI peer name is configured in Honcho, personalise the identity line.
-        _ai_peer_name = (
-            self._honcho_config.ai_peer
-            if self._honcho_config and self._honcho_config.ai_peer != "hermes"
-            else None
-        )
-        if _ai_peer_name:
-            _identity = DEFAULT_AGENT_IDENTITY.replace(
-                "You are Hermes Agent",
-                f"You are {_ai_peer_name}",
-                1,
+
+        # Try SOUL.md as primary identity (unless context files are skipped)
+        _soul_loaded = False
+        if not self.skip_context_files:
+            _soul_content = load_soul_md()
+            if _soul_content:
+                prompt_parts = [_soul_content]
+                _soul_loaded = True
+
+        if not _soul_loaded:
+            # Fallback to hardcoded identity
+            _ai_peer_name = (
+                self._honcho_config.ai_peer
+                if self._honcho_config and self._honcho_config.ai_peer != "hermes"
+                else None
             )
-        else:
-            _identity = DEFAULT_AGENT_IDENTITY
-        prompt_parts = [_identity]
+            if _ai_peer_name:
+                _identity = DEFAULT_AGENT_IDENTITY.replace(
+                    "You are Hermes Agent",
+                    f"You are {_ai_peer_name}",
+                    1,
+                )
+            else:
+                _identity = DEFAULT_AGENT_IDENTITY
+            prompt_parts = [_identity]
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -1950,7 +2080,7 @@ class AIAgent:
             prompt_parts.append(skills_prompt)
 
         if not self.skip_context_files:
-            context_files_prompt = build_context_files_prompt()
+            context_files_prompt = build_context_files_prompt(skip_soul=_soul_loaded)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
@@ -1959,6 +2089,10 @@ class AIAgent:
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
+        if self.model:
+            timestamp_line += f"\nModel: {self.model}"
+        if self.provider:
+            timestamp_line += f"\nProvider: {self.provider}"
         prompt_parts.append(timestamp_line)
 
         platform_key = (self.platform or "").lower().strip()
@@ -2687,10 +2821,23 @@ class AIAgent:
 
         if isinstance(client, Mock):
             return False
+        if bool(getattr(client, "is_closed", False)):
+            return True
         http_client = getattr(client, "_client", None)
         return bool(getattr(http_client, "is_closed", False))
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(**client_kwargs)
+            logger.info(
+                "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -3332,11 +3479,11 @@ class AIAgent:
 
             # Determine api_mode from provider
             fb_api_mode = "chat_completions"
+            fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic":
+            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
-            fb_base_url = str(fb_client.base_url)
 
             old_model = self.model
             self.model = fb_model
@@ -3550,6 +3697,11 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
+            is_github_responses = (
+                "models.github.ai" in self.base_url.lower()
+                or "api.githubcopilot.com" in self.base_url.lower()
+            )
+
             # Resolve reasoning effort: config > default (medium)
             reasoning_effort = "medium"
             reasoning_enabled = True
@@ -3567,13 +3719,23 @@ class AIAgent:
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
                 "store": False,
-                "prompt_cache_key": self.session_id,
             }
 
+            if not is_github_responses:
+                kwargs["prompt_cache_key"] = self.session_id
+
             if reasoning_enabled:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
-            else:
+                if is_github_responses:
+                    # Copilot's Responses route advertises reasoning-effort support,
+                    # but not OpenAI-specific prompt cache or encrypted reasoning
+                    # fields. Keep the payload to the documented subset.
+                    github_reasoning = self._github_models_reasoning_extra_body()
+                    if github_reasoning is not None:
+                        kwargs["reasoning"] = github_reasoning
+                else:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = ["reasoning.encrypted_content"]
+            elif not is_github_responses:
                 kwargs["include"] = []
 
             if self.max_tokens is not None:
@@ -3643,7 +3805,11 @@ class AIAgent:
 
         extra_body = {}
 
-        _is_openrouter = "openrouter" in self.base_url.lower()
+        _is_openrouter = "openrouter" in self._base_url_lower
+        _is_github_models = (
+            "models.github.ai" in self._base_url_lower
+            or "api.githubcopilot.com" in self._base_url_lower
+        )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
         # specific.  Only send to OpenRouter-compatible endpoints.
@@ -3651,22 +3817,27 @@ class AIAgent:
         # for _is_nous when their backend is updated.
         if provider_preferences and _is_openrouter:
             extra_body["provider"] = provider_preferences
-        _is_nous = "nousresearch" in self.base_url.lower()
+        _is_nous = "nousresearch" in self._base_url_lower
 
         if self._supports_reasoning_extra_body():
-            if self.reasoning_config is not None:
-                rc = dict(self.reasoning_config)
-                # Nous Portal requires reasoning enabled — don't send
-                # enabled=false to it (would cause 400).
-                if _is_nous and rc.get("enabled") is False:
-                    pass  # omit reasoning entirely for Nous when disabled
-                else:
-                    extra_body["reasoning"] = rc
+            if _is_github_models:
+                github_reasoning = self._github_models_reasoning_extra_body()
+                if github_reasoning is not None:
+                    extra_body["reasoning"] = github_reasoning
             else:
-                extra_body["reasoning"] = {
-                    "enabled": True,
-                    "effort": "medium"
-                }
+                if self.reasoning_config is not None:
+                    rc = dict(self.reasoning_config)
+                    # Nous Portal requires reasoning enabled — don't send
+                    # enabled=false to it (would cause 400).
+                    if _is_nous and rc.get("enabled") is False:
+                        pass  # omit reasoning entirely for Nous when disabled
+                    else:
+                        extra_body["reasoning"] = rc
+                else:
+                    extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": "medium"
+                    }
 
         # Nous Portal product attribution
         if _is_nous:
@@ -3684,14 +3855,20 @@ class AIAgent:
         Some providers/routes reject `reasoning` with 400s, so gate it to
         known reasoning-capable model families and direct Nous Portal.
         """
-        base_url = (self.base_url or "").lower()
-        if "nousresearch" in base_url:
+        if "nousresearch" in self._base_url_lower:
             return True
-        if "ai-gateway.vercel.sh" in base_url:
+        if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
-        if "openrouter" not in base_url:
+        if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
+            try:
+                from hermes_cli.models import github_model_reasoning_efforts
+
+                return bool(github_model_reasoning_efforts(self.model))
+            except Exception:
+                return False
+        if "openrouter" not in self._base_url_lower:
             return False
-        if "api.mistral.ai" in base_url:
+        if "api.mistral.ai" in self._base_url_lower:
             return False
 
         model = (self.model or "").lower()
@@ -3704,6 +3881,38 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _github_models_reasoning_extra_body(self) -> dict | None:
+        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
+        try:
+            from hermes_cli.models import github_model_reasoning_efforts
+        except Exception:
+            return None
+
+        supported_efforts = github_model_reasoning_efforts(self.model)
+        if not supported_efforts:
+            return None
+
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                return None
+            requested_effort = str(
+                self.reasoning_config.get("effort", "medium")
+            ).strip().lower()
+        else:
+            requested_effort = "medium"
+
+        if requested_effort == "xhigh" and "high" in supported_efforts:
+            requested_effort = "high"
+        elif requested_effort not in supported_efforts:
+            if requested_effort == "minimal" and "low" in supported_efforts:
+                requested_effort = "low"
+            elif "medium" in supported_efforts:
+                requested_effort = "medium"
+            else:
+                requested_effort = supported_efforts[0]
+
+        return {"effort": requested_effort}
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3877,7 +4086,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
-            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -4066,20 +4275,17 @@ class AIAgent:
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
-        Dispatches to concurrent execution when multiple independent tool calls
-        are present, falling back to sequential execution for single calls or
-        when interactive tools (e.g. clarify) are in the batch.
+        Dispatches to concurrent execution only for batches that look
+        independent: read-only tools may always share the parallel path, while
+        file reads/writes may do so only when their target paths do not overlap.
         """
         tool_calls = assistant_message.tool_calls
 
-        # Single tool call or interactive tool present → sequential
-        if (len(tool_calls) <= 1
-                or any(tc.function.name in _NEVER_PARALLEL_TOOLS for tc in tool_calls)):
+        if not _should_parallelize_tool_batch(tool_calls):
             return self._execute_tool_calls_sequential(
                 assistant_message, messages, effective_task_id, api_call_count
             )
 
-        # Multiple non-interactive tools → concurrent
         return self._execute_tool_calls_concurrent(
             assistant_message, messages, effective_task_id, api_call_count
         )
@@ -4653,7 +4859,7 @@ class AIAgent:
         try:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
-            _is_strict_api = "api.mistral.ai" in self.base_url.lower()
+            _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
@@ -4674,7 +4880,7 @@ class AIAgent:
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
-            _is_nous = "nousresearch" in self.base_url.lower()
+            _is_nous = "nousresearch" in self._base_url_lower
             if self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
@@ -5092,7 +5298,7 @@ class AIAgent:
                 # strict providers like Mistral that reject unknown fields with 422.
                 # Uses new dicts so the internal messages list retains the fields
                 # for Codex Responses compatibility.
-                if "api.mistral.ai" in self.base_url.lower():
+                if "api.mistral.ai" in self._base_url_lower:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
@@ -5464,6 +5670,7 @@ class AIAgent:
                             canonical_usage,
                             provider=self.provider,
                             base_url=self.base_url,
+                            api_key=getattr(self, "api_key", ""),
                         )
                         if cost_result.amount_usd is not None:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)

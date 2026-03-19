@@ -63,7 +63,11 @@ def _resolve_origin(job: dict) -> Optional[dict]:
 
 
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
-    """Resolve the concrete auto-delivery target for a cron job, if any."""
+    """Resolve the concrete auto-delivery target for a cron job, if any.
+    
+    Handles both numeric IDs and human-readable labels from channel_directory.
+    Fixes #1945: WhatsApp cron jobs fail when deliver uses human-readable names.
+    """
     deliver = job.get("deliver", "local")
     origin = _resolve_origin(job)
 
@@ -81,6 +85,21 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     if ":" in deliver:
         platform_name, chat_id = deliver.split(":", 1)
+        
+        # Try to resolve human-readable label to numeric ID (fixes #1945)
+        # Example: "whatsapp:Alice (dm)" → "whatsapp:12345678901234@lid"
+        from gateway.channel_directory import resolve_channel_name
+        resolved = resolve_channel_name(platform_name, chat_id)
+        if resolved:
+            chat_id = resolved
+            logger.debug(
+                "Job '%s': resolved '%s' to '%s' on %s",
+                job.get("id", "?"),
+                deliver.split(":", 1)[1],
+                chat_id,
+                platform_name,
+            )
+        
         return {
             "platform": platform_name,
             "chat_id": chat_id,

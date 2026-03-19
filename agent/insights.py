@@ -174,25 +174,37 @@ class InsightsEngine:
     # Data gathering (SQL queries)
     # =========================================================================
 
-    # Columns we actually need (skip system_prompt, model_config blobs)
-    _SESSION_COLS = ("id, source, model, started_at, ended_at, "
-                     "message_count, tool_call_count, input_tokens, output_tokens, "
-                     "cache_read_tokens, cache_write_tokens, billing_provider, "
-                     "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source")
+    # Columns we actually need (skip system_prompt, model_config blobs).
+    # Note: This is a constant tuple, not user input, but we use it in a
+    # pre-built query string for clarity and to avoid f-string patterns
+    # in SQL (addresses security review concern #1911).
+    _SESSION_COLS = (
+        "id", "source", "model", "started_at", "ended_at",
+        "message_count", "tool_call_count", "input_tokens", "output_tokens",
+        "cache_read_tokens", "cache_write_tokens", "billing_provider",
+        "billing_base_url", "billing_mode", "estimated_cost_usd",
+        "actual_cost_usd", "cost_status", "cost_source"
+    )
+    
+    # Pre-built SQL fragment from constant columns (avoids f-string in execute)
+    _SESSION_SELECT = "SELECT " + ", ".join(_SESSION_COLS) + " FROM sessions"
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Fetch sessions within the time window."""
+        """Fetch sessions within the time window.
+        
+        Security: Uses parameterized queries for user input (source, cutoff).
+        The column list is a class constant, not user-controlled.
+        """
         if source:
             cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
+                self._SESSION_SELECT + """
                     WHERE started_at >= ? AND source = ?
                     ORDER BY started_at DESC""",
                 (cutoff, source),
             )
         else:
             cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
+                self._SESSION_SELECT + """
                     WHERE started_at >= ?
                     ORDER BY started_at DESC""",
                 (cutoff,),

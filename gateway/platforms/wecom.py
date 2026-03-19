@@ -170,6 +170,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+        self._reply_req_ids: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -408,6 +409,32 @@ class WeComAdapter(BasePlatformAdapter):
         finally:
             self._pending_responses.pop(req_id, None)
 
+    async def _send_reply_request(
+        self,
+        reply_req_id: str,
+        body: Dict[str, Any],
+        cmd: str = APP_CMD_RESPONSE,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        """Send a reply frame correlated to an inbound callback req_id."""
+        if not self._ws or self._ws.closed:
+            raise RuntimeError("WeCom websocket is not connected")
+
+        normalized_req_id = str(reply_req_id or "").strip()
+        if not normalized_req_id:
+            raise ValueError("reply_req_id is required")
+
+        future = asyncio.get_running_loop().create_future()
+        self._pending_responses[normalized_req_id] = future
+        try:
+            await self._send_json(
+                {"cmd": cmd, "headers": {"req_id": normalized_req_id}, "body": body}
+            )
+            response = await asyncio.wait_for(future, timeout=timeout)
+            return response
+        finally:
+            self._pending_responses.pop(normalized_req_id, None)
+
     @staticmethod
     def _new_req_id(prefix: str) -> str:
         return f"{prefix}-{uuid.uuid4().hex}"
@@ -442,6 +469,7 @@ class WeComAdapter(BasePlatformAdapter):
         if self._is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
+        self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
@@ -711,12 +739,31 @@ class WeComAdapter(BasePlatformAdapter):
             self._seen_messages = {
                 key: ts for key, ts in self._seen_messages.items() if ts > cutoff
             }
+            if self._reply_req_ids:
+                self._reply_req_ids = {
+                    key: value for key, value in self._reply_req_ids.items() if key in self._seen_messages
+                }
 
         if msg_id in self._seen_messages:
             return True
 
         self._seen_messages[msg_id] = now
         return False
+
+    def _remember_reply_req_id(self, message_id: str, req_id: str) -> None:
+        normalized_message_id = str(message_id or "").strip()
+        normalized_req_id = str(req_id or "").strip()
+        if not normalized_message_id or not normalized_req_id:
+            return
+        self._reply_req_ids[normalized_message_id] = normalized_req_id
+        while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
+            self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
+
+    def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
+        normalized = str(reply_to or "").strip()
+        if not normalized or normalized.startswith("quote:"):
+            return None
+        return self._reply_req_ids.get(normalized)
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -911,6 +958,8 @@ class WeComAdapter(BasePlatformAdapter):
         source = str(media_source or "").strip()
         if not source:
             raise ValueError("media source is required")
+        if re.fullmatch(r"<[^>\n]+>", source):
+            raise ValueError(f"Media placeholder was not replaced with a real file path: {source}")
 
         parsed = urlparse(source)
         if parsed.scheme in {"http", "https"}:
@@ -1022,10 +1071,46 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send media message")
         return response
 
-    async def _send_followup_markdown(self, chat_id: str, content: str) -> Optional[SendResult]:
+    async def _send_reply_stream(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": self._new_req_id("stream"),
+                    "finish": True,
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                },
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply stream")
+        return response
+
+    async def _send_reply_media_message(
+        self,
+        reply_req_id: str,
+        media_type: str,
+        media_id: str,
+    ) -> Dict[str, Any]:
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": media_type,
+                media_type: {"media_id": media_id},
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply media message")
+        return response
+
+    async def _send_followup_markdown(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> Optional[SendResult]:
         if not content:
             return None
-        result = await self.send(chat_id=chat_id, content=content)
+        result = await self.send(chat_id=chat_id, content=content, reply_to=reply_to)
         if not result.success:
             logger.warning("[%s] Follow-up markdown send failed: %s", self.name, result.error)
         return result
@@ -1036,6 +1121,7 @@ class WeComAdapter(BasePlatformAdapter):
         media_source: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
@@ -1049,20 +1135,32 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
         if prepared["rejected"]:
-            await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}")
+            await self._send_followup_markdown(
+                chat_id,
+                f"⚠️ {prepared['reject_reason']}",
+                reply_to=reply_to,
+            )
             return SendResult(success=False, error=prepared["reject_reason"])
 
+        reply_req_id = self._reply_req_id_for_message(reply_to)
         try:
             upload_result = await self._upload_media_bytes(
                 prepared["data"],
                 prepared["final_type"],
                 prepared["file_name"],
             )
-            media_response = await self._send_media_message(
-                chat_id,
-                prepared["final_type"],
-                upload_result["media_id"],
-            )
+            if reply_req_id:
+                media_response = await self._send_reply_media_message(
+                    reply_req_id,
+                    prepared["final_type"],
+                    upload_result["media_id"],
+                )
+            else:
+                media_response = await self._send_media_message(
+                    chat_id,
+                    prepared["final_type"],
+                    upload_result["media_id"],
+                )
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending media to WeCom")
         except Exception as exc:
@@ -1072,9 +1170,17 @@ class WeComAdapter(BasePlatformAdapter):
         caption_result = None
         downgrade_result = None
         if caption:
-            caption_result = await self._send_followup_markdown(chat_id, caption)
+            caption_result = await self._send_followup_markdown(
+                chat_id,
+                caption,
+                reply_to=reply_to,
+            )
         if prepared["downgraded"] and prepared["downgrade_note"]:
-            downgrade_result = await self._send_followup_markdown(chat_id, f"ℹ️ {prepared['downgrade_note']}")
+            downgrade_result = await self._send_followup_markdown(
+                chat_id,
+                f"ℹ️ {prepared['downgrade_note']}",
+                reply_to=reply_to,
+            )
 
         return SendResult(
             success=True,
@@ -1097,19 +1203,24 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del reply_to, metadata
+        del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
-        body = {
-            "chatid": chat_id,
-            "msgtype": "markdown",
-            "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-        }
-
         try:
-            response = await self._send_request(APP_CMD_SEND, body)
+            reply_req_id = self._reply_req_id_for_message(reply_to)
+            if reply_req_id:
+                response = await self._send_reply_stream(reply_req_id, content)
+            else:
+                response = await self._send_request(
+                    APP_CMD_SEND,
+                    {
+                        "chatid": chat_id,
+                        "msgtype": "markdown",
+                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                    },
+                )
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
@@ -1134,15 +1245,20 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        del reply_to, metadata
+        del metadata
 
-        result = await self._send_media_source(chat_id=chat_id, media_source=image_url, caption=caption)
+        result = await self._send_media_source(
+            chat_id=chat_id,
+            media_source=image_url,
+            caption=caption,
+            reply_to=reply_to,
+        )
         if result.success or not self._looks_like_url(image_url):
             return result
 
         logger.warning("[%s] Falling back to text send for image URL %s: %s", self.name, image_url, result.error)
         fallback_text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=fallback_text)
+        return await self.send(chat_id=chat_id, content=fallback_text, reply_to=reply_to)
 
     async def send_image_file(
         self,
@@ -1152,8 +1268,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        del reply_to, kwargs
-        return await self._send_media_source(chat_id=chat_id, media_source=image_path, caption=caption)
+        del kwargs
+        return await self._send_media_source(
+            chat_id=chat_id,
+            media_source=image_path,
+            caption=caption,
+            reply_to=reply_to,
+        )
 
     async def send_document(
         self,
@@ -1164,12 +1285,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        del reply_to, kwargs
+        del kwargs
         return await self._send_media_source(
             chat_id=chat_id,
             media_source=file_path,
             caption=caption,
             file_name=file_name,
+            reply_to=reply_to,
         )
 
     async def send_voice(
@@ -1180,8 +1302,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        del reply_to, kwargs
-        return await self._send_media_source(chat_id=chat_id, media_source=audio_path, caption=caption)
+        del kwargs
+        return await self._send_media_source(
+            chat_id=chat_id,
+            media_source=audio_path,
+            caption=caption,
+            reply_to=reply_to,
+        )
 
     async def send_video(
         self,
@@ -1191,8 +1318,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        del reply_to, kwargs
-        return await self._send_media_source(chat_id=chat_id, media_source=video_path, caption=caption)
+        del kwargs
+        return await self._send_media_source(
+            chat_id=chat_id,
+            media_source=video_path,
+            caption=caption,
+            reply_to=reply_to,
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """WeCom does not expose typing indicators in this adapter."""

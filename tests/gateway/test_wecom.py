@@ -117,6 +117,60 @@ class TestWeComConnect:
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
 
+class TestWeComReplyMode:
+    @pytest.mark.asyncio
+    async def test_send_uses_passive_reply_stream_when_reply_context_exists(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-123", "hello from reply", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1]["msgtype"] == "stream"
+        assert args[1]["stream"]["finish"] is True
+        assert args[1]["stream"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._prepare_outbound_media = AsyncMock(
+            return_value={
+                "data": b"image-bytes",
+                "content_type": "image/png",
+                "file_name": "demo.png",
+                "detected_type": "image",
+                "final_type": "image",
+                "rejected": False,
+                "reject_reason": None,
+                "downgraded": False,
+                "downgrade_note": None,
+            }
+        )
+        adapter._upload_media_bytes = AsyncMock(return_value={"media_id": "media-1", "type": "image"})
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send_image_file("chat-123", "/tmp/demo.png", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
+
+
 class TestExtractText:
     def test_extracts_plain_text(self):
         from gateway.platforms.wecom import WeComAdapter
@@ -241,6 +295,15 @@ class TestMediaHelpers:
         decrypted = WeComAdapter._decrypt_file_bytes(encrypted, base64.b64encode(key).decode("ascii"))
 
         assert decrypted == plaintext
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_placeholder_path(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with pytest.raises(ValueError, match="placeholder was not replaced"):
+            await adapter._load_outbound_media("<path>")
 
 
 class TestMediaUpload:

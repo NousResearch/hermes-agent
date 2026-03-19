@@ -815,7 +815,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
 
     # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
+    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,profiles,whatsapp/session}
 
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -860,6 +860,21 @@ Delete the contents (or this file) to use the default personality.
 -->
 SOUL_EOF
         log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+    fi
+
+    # Seed example profile template into ~/.hermes/profiles/example-profile/
+    local profile_template_src="$INSTALL_DIR/docs/examples/profile-template"
+    local profile_template_dst="$HERMES_HOME/profiles/example-profile"
+    if [ ! -d "$profile_template_dst" ]; then
+        if [ -d "$profile_template_src" ]; then
+            cp -R "$profile_template_src" "$profile_template_dst"
+            log_success "Created ~/.hermes/profiles/example-profile template"
+        else
+            mkdir -p "$profile_template_dst"/{workspace,memories,cron,sessions,skills}
+            log_warn "Profile template source not found; created empty ~/.hermes/profiles/example-profile/"
+        fi
+    else
+        log_info "~/.hermes/profiles/example-profile already exists, keeping it"
     fi
 
     log_success "Configuration directory ready: ~/.hermes/"

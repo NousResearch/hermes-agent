@@ -1,0 +1,22 @@
+profiles:
+  alice:
+    users:
+      telegram: ["123456789"]
+      signal: ["+15551234567"]
+    config:
+      model: "anthropic/claude-sonnet-4.6"
+      agent:
+        reasoning_effort: "medium"
+      isolation:
+        enabled: true
+      workspace: "/srv/workspaces/alice"
+      messaging:
+        disabled_slash_commands: ["model", "update"]
+      platform_toolsets:
+        telegram: ["web", "file", "memory", "skills"]
+      tools:
+        disabled_toolsets: ["browser"]
+      skills:
+        disabled: ["telephony"]
+        platform_disabled:
+          telegram: ["voice-mode"]

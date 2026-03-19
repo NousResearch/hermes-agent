@@ -155,6 +155,13 @@ class SocialAdapter(BasePlatformAdapter):
         if not self._identity:
             return SendResult(success=False, error="No identity loaded")
 
+        # Secret filter: prevent leaking API keys, tokens, etc.
+        from tools.social_tools import _check_outgoing_content
+        secret_check = _check_outgoing_content(content)
+        if secret_check:
+            logger.warning("Social adapter: blocked outgoing content with secret: %s", secret_check)
+            return SendResult(success=False, error=secret_check)
+
         try:
             tags = []
             mentions = None
@@ -337,16 +344,35 @@ class SocialAdapter(BasePlatformAdapter):
                     self._seen_event_ids.add(event_id)
                     # Prune old IDs to prevent memory leak (keep last 1000)
                     if len(self._seen_event_ids) > 1000:
-                        self._seen_event_ids = set(list(self._seen_event_ids)[-500:])
+                        # Keep only the most recent IDs by clearing oldest half
+                        # Since we can't sort a set, just clear and rely on
+                        # _last_seen_at timestamp to avoid reprocessing
+                        self._seen_event_ids.clear()
 
-                    # TODO: Verify event signatures before trusting content.
-                    # Until signature verification is implemented, prefix
-                    # notification content as unverified.
+                    # Verify event signature
+                    sig_valid = False
+                    try:
+                        from identity.events import compute_event_id
+                        from nacl.signing import VerifyKey
+                        expected_id = compute_event_id(
+                            event.get("pubkey", ""), event.get("created_at", 0),
+                            event.get("kind", 0), event.get("tags", []), event.get("content", "")
+                        )
+                        if expected_id == event.get("id"):
+                            vk = VerifyKey(bytes.fromhex(event["pubkey"]))
+                            vk.verify(bytes.fromhex(event["id"]), bytes.fromhex(event.get("sig", "")))
+                            sig_valid = True
+                    except Exception:
+                        pass
 
-                    # Build message event
+                    # Sanitize content
+                    from tools.social_tools import _sanitize_relay_content
                     source_pubkey = event.get("pubkey", "")
                     raw_content = event.get("content", "")
-                    content_text = f"[UNVERIFIED] {raw_content}" if raw_content else ""
+                    if sig_valid:
+                        content_text = _sanitize_relay_content(raw_content)
+                    else:
+                        content_text = f"[UNVERIFIED - INVALID SIGNATURE] {_sanitize_relay_content(raw_content)}"
                     msg = MessageEvent(
                         text=content_text,
                         message_type=MessageType.TEXT,

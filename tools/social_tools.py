@@ -53,13 +53,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _config_cache: Optional[Dict[str, Any]] = None
+_config_cache_time: float = 0
 _config_lock = threading.Lock()
+_CONFIG_TTL = 60  # seconds
 
 
 def _load_social_config() -> Dict[str, Any]:
-    global _config_cache
+    global _config_cache, _config_cache_time
     with _config_lock:
-        if _config_cache is not None:
+        if _config_cache is not None and (time.time() - _config_cache_time) < _CONFIG_TTL:
             return _config_cache
 
         hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
@@ -97,6 +99,7 @@ def _load_social_config() -> Dict[str, Any]:
             result["permissions"] = {**defaults["permissions"], **social.get("permissions", {})}
             result["limits"] = {**defaults["limits"], **social.get("limits", {})}
             _config_cache = result
+            _config_cache_time = time.time()
             return result
         except Exception as e:
             logger.warning("Failed to load social config: %s", e)
@@ -125,6 +128,7 @@ def _get_relay_url() -> str:
 # ---------------------------------------------------------------------------
 
 _rate_counters: Dict[str, List[float]] = {}
+_rate_lock = threading.Lock()
 
 
 def _check_rate_limit(action: str) -> Optional[str]:
@@ -145,16 +149,16 @@ def _check_rate_limit(action: str) -> Optional[str]:
     window = 3600
 
     key = action
-    if key not in _rate_counters:
-        _rate_counters[key] = []
+    with _rate_lock:
+        if key not in _rate_counters:
+            _rate_counters[key] = []
 
-    # Prune old entries
-    _rate_counters[key] = [t for t in _rate_counters[key] if now - t < window]
+        _rate_counters[key] = [t for t in _rate_counters[key] if now - t < window]
 
-    if len(_rate_counters[key]) >= max_count:
-        return f"Rate limit: {action} limit ({max_count}/hour) reached. Try again later."
+        if len(_rate_counters[key]) >= max_count:
+            return f"Rate limit: {action} limit ({max_count}/hour) reached. Try again later."
 
-    _rate_counters[key].append(now)
+        _rate_counters[key].append(now)
     return None
 
 
@@ -277,6 +281,8 @@ def _relay_get(path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
 
     try:
         r = httpx.get(f"{relay}{path}", params=params or {}, timeout=15)
+        if r.status_code >= 500:
+            return {"error": f"Relay server error: {r.status_code}"}
         return r.json()
     except Exception as e:
         return {"error": f"Relay request failed: {e}"}
@@ -289,6 +295,9 @@ def _relay_post(path: str, data: Dict) -> Dict[str, Any]:
 
     try:
         r = httpx.post(f"{relay}{path}", json=data, timeout=15)
+
+        if r.status_code >= 500:
+            return {"error": f"Relay server error: {r.status_code}"}
 
         # Handle MPP 402 Payment Required
         if r.status_code == 402:
@@ -340,8 +349,10 @@ def _pay_with_tempo(
             "error": "Tempo CLI not found. Install: curl -fsSL https://tempo.xyz/install | bash"
         }
 
-    # Check spend limit
-    max_spend = payments.get("max_spend_per_hour", 0.01)
+    # Check spend limit before paying
+    spend_error = _check_spend_limit(payments.get("cost_per_action", 0.0001))
+    if spend_error:
+        return {"error": spend_error}
 
     try:
         import json as _json
@@ -423,7 +434,7 @@ def social_tool(
         return json.dumps({"error": rate_error})
 
     # Spend limit check for paid actions
-    if action in ("post", "reply", "update_profile", "tip"):
+    if action in ("post", "reply", "update_profile", "tip", "like"):
         spend_error = _check_spend_limit()
         if spend_error:
             return json.dumps({"error": spend_error})
@@ -650,7 +661,7 @@ def _action_reply(content: str, reply_to: str, hashtags_str: str) -> str:
     mentions = None
     warning = None
     if original.get("ok") and original.get("data", {}).get("pubkey"):
-        mentions = [original["data"]["pubkey"]]
+        mentions = [original.get("data", {}).get("pubkey", "")]
     else:
         warning = "Original post not found; replying without mention."
         logger.warning("Reply target %s not found, proceeding without mention", reply_to)
@@ -730,7 +741,7 @@ def _action_like(event_id: str) -> str:
         return json.dumps({"error": "Post not found"})
 
     ident = get_identity()
-    author_pubkey = original["data"]["pubkey"]
+    author_pubkey = original.get("data", {}).get("pubkey", "")
 
     if author_pubkey == ident.pubkey_hex:
         return json.dumps({"error": "Cannot like your own post"})
@@ -777,7 +788,7 @@ def _action_repost(event_id: str) -> str:
         return json.dumps({"error": "Post not found"})
 
     ident = get_identity()
-    author = original["data"]["pubkey"]
+    author = original.get("data", {}).get("pubkey", "")
     event = create_repost_event(ident, event_id, author)
     result = _relay_post("/api/events", event)
 
@@ -956,12 +967,12 @@ def _format_posts(events: List[Dict]) -> List[Dict]:
         stats = e.get("stats", {})
 
         post = {
-            "id": e["id"],
-            "author": e["pubkey"][:12] + "...",
-            "author_pubkey": e["pubkey"],
-            "content": _sanitize_relay_content(e["content"]),
+            "id": e.get("id", ""),
+            "author": e.get("pubkey", "")[:12] + "...",
+            "author_pubkey": e.get("pubkey", ""),
+            "content": _sanitize_relay_content(e.get("content", "")),
             "hashtags": hashtags,
-            "time": e["created_at"],
+            "time": e.get("created_at", 0),
             "likes": stats.get("likes", 0),
             "reposts": stats.get("reposts", 0),
             "replies": stats.get("replies", 0),
@@ -1104,7 +1115,7 @@ registry.register(
         content=args.get("content", ""),
         target=args.get("target", ""),
         hashtags=args.get("hashtags", ""),
-        limit=min(args.get("limit", 20), 50),
+        limit=max(1, min(args.get("limit", 20), 50)),
         query=args.get("query", ""),
     ),
     check_fn=check_social_requirements,

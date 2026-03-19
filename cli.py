@@ -1046,6 +1046,14 @@ class HermesCLI:
         _config_model = _model_config.get("default", "") if isinstance(_model_config, dict) else (_model_config or "")
         _FALLBACK_MODEL = "anthropic/claude-opus-4.6"
         self.model = model or _config_model or _FALLBACK_MODEL
+        # Auto-detect model from local server if still on fallback
+        if self.model == _FALLBACK_MODEL:
+            _base_url = _model_config.get("base_url", "") if isinstance(_model_config, dict) else ""
+            if "localhost" in _base_url or "127.0.0.1" in _base_url:
+                from hermes_cli.runtime_provider import _auto_detect_local_model
+                _detected = _auto_detect_local_model(_base_url)
+                if _detected:
+                    self.model = _detected
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
@@ -1251,6 +1259,8 @@ class HermesCLI:
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 

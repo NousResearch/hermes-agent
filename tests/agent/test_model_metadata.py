@@ -218,6 +218,79 @@ class TestGetModelContextLength:
 
         assert result == CONTEXT_PROBE_TIERS[0]
 
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_single_model_fallback(self, mock_endpoint_fetch, mock_fetch):
+        """Single-model servers: use the only model even if name doesn't match."""
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "Qwen3.5-9B-Q4_K_M.gguf": {"context_length": 131072}
+        }
+
+        result = get_model_context_length(
+            "qwen3.5:9b",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == 131072
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_fuzzy_substring_match(self, mock_endpoint_fetch, mock_fetch):
+        """Fuzzy match: configured model name is substring of endpoint model."""
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "org/llama-3.3-70b-instruct-fp8": {"context_length": 131072},
+            "org/qwen-2.5-72b": {"context_length": 32768},
+        }
+
+        result = get_model_context_length(
+            "llama-3.3-70b-instruct",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == 131072
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_config_context_length_overrides_all(self, mock_fetch):
+        """Explicit config_context_length takes priority over everything."""
+        mock_fetch.return_value = {
+            "test/model": {"context_length": 200000}
+        }
+
+        result = get_model_context_length(
+            "test/model",
+            config_context_length=65536,
+        )
+
+        assert result == 65536
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_config_context_length_zero_is_ignored(self, mock_fetch):
+        """config_context_length=0 should be treated as unset."""
+        mock_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "anthropic/claude-sonnet-4",
+            config_context_length=0,
+        )
+
+        assert result == 200000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_config_context_length_none_is_ignored(self, mock_fetch):
+        """config_context_length=None should be treated as unset."""
+        mock_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "anthropic/claude-sonnet-4",
+            config_context_length=None,
+        )
+
+        assert result == 200000
+
 
 # =========================================================================
 # fetch_model_metadata — caching, TTL, slugs, failures

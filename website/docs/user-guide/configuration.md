@@ -414,6 +414,29 @@ LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
 
 ---
 
+### Context Length Detection
+
+Hermes automatically detects your model's context length by querying the endpoint's `/v1/models` response. For most setups this works out of the box. If detection fails (the model name doesn't match, the endpoint doesn't expose `/v1/models`, etc.), Hermes falls back to a high default and probes downward on context-length errors.
+
+To set the context length explicitly, add `context_length` to your model config:
+
+```yaml
+model:
+  default: "qwen3.5:9b"
+  base_url: "http://localhost:8080/v1"
+  context_length: 131072  # tokens
+```
+
+This takes highest priority — it overrides auto-detection, cached values, and hardcoded defaults.
+
+:::tip When to set this manually
+- Your model shows "2M context" in the status bar (detection failed)
+- You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
+- You're running behind a proxy that doesn't expose `/v1/models`
+:::
+
+---
+
 ### Choosing the Right Setup
 
 | Use Case | Recommended |

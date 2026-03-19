@@ -387,6 +387,11 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
+            # Default Minimax to anthropic_messages and auto-correct URL to prevent 401 Auth errors
+            elif provider in ("minimax", "minimax-cn") and not configured_mode:
+                api_mode = "anthropic_messages"
+                if base_url.rstrip("/").endswith("/v1"):
+                    base_url = base_url.rstrip("/")[:-3] + "/anthropic"
         return {
             "provider": provider,
             "api_mode": api_mode,

@@ -232,8 +232,6 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
     )
-    child._delegate_saved_tool_names = list(_saved_tool_names)
-
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -270,6 +268,7 @@ def _run_single_child(
     # save/restore happens in the same scope as the try/finally.
     import model_tools
     _saved_tool_names = list(model_tools._last_resolved_tool_names)
+    child._delegate_saved_tool_names = _saved_tool_names
 
     try:
         result = child.run_conversation(user_message=goal)

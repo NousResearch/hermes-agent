@@ -452,7 +452,7 @@ class TestRunJobSkillBacked:
 
 
 class TestBuildJobPromptMissingSkill:
-    """Verify that a missing skill logs a warning and does not crash the job."""
+    """Verify that a missing skill logs a warning, notifies the user, and does not crash the job."""
 
     def _missing_skill_view(self, name: str) -> str:
         return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
@@ -471,6 +471,13 @@ class TestBuildJobPromptMissingSkill:
                 _build_job_prompt({"name": "My Job", "skills": ["ghost-skill"], "prompt": "do something"})
         assert any("ghost-skill" in record.message for record in caplog.records)
 
+    def test_missing_skill_injects_user_notice_into_prompt(self):
+        """A system notice about the missing skill is injected into the prompt so the agent notifies the user."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        assert "ghost-skill" in result
+        assert "not found" in result.lower() or "skipped" in result.lower()
+
     def test_valid_skill_loaded_alongside_missing(self):
         """A valid skill is still loaded when another skill in the list is missing."""
 
@@ -483,3 +490,5 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
+        # missing skill notice is also present
+        assert "ghost-skill" in result

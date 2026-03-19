@@ -830,3 +830,212 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
 
     payload = json.loads(dump_file.read_text())
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
+
+
+# --- Reasoning-only response tests (fix for empty content retry loop) ---
+
+
+def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_text="Thinking..."):
+    """Codex response containing only reasoning items — no message text, no tool calls."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_001",
+                encrypted_content=encrypted_content,
+                summary=[SimpleNamespace(type="summary_text", text=summary_text)],
+                status="completed",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch):
+    """A response with only reasoning items and no content should be 'incomplete', not 'stop'.
+
+    Without this fix, reasoning-only responses get finish_reason='stop' which
+    sends them into the empty-content retry loop (3 retries then failure).
+    """
+    agent = _build_agent(monkeypatch)
+    assistant_message, finish_reason = agent._normalize_codex_response(
+        _codex_reasoning_only_response()
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_reasoning_items is not None
+    assert len(assistant_message.codex_reasoning_items) == 1
+    assert assistant_message.codex_reasoning_items[0]["encrypted_content"] == "enc_abc123"
+
+
+def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
+    """If a response has both reasoning and message content, it should still be 'stop'."""
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_001",
+                encrypted_content="enc_xyz",
+                summary=[SimpleNamespace(type="summary_text", text="Thinking...")],
+                status="completed",
+            ),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Here is the answer.")],
+                status="completed",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert "Here is the answer" in assistant_message.content
+
+
+def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypatch):
+    """End-to-end: reasoning-only → final message should succeed, not hit retry loop."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_reasoning_only_response(),
+        _codex_message_response("The final answer is 42."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "The final answer is 42."
+    # The reasoning-only turn should be in messages as an incomplete interim
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and msg.get("codex_reasoning_items") is not None
+        for msg in result["messages"]
+    )
+
+
+def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeypatch):
+    """Encrypted codex_reasoning_items must be preserved in interim messages
+    even when there is no visible reasoning text or content."""
+    agent = _build_agent(monkeypatch)
+    # Response with encrypted reasoning but no human-readable summary
+    reasoning_response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_002",
+                encrypted_content="enc_opaque_blob",
+                summary=[],
+                status="completed",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    responses = [
+        reasoning_response,
+        _codex_message_response("Done thinking."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("think hard")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Done thinking."
+    # The interim message must have codex_reasoning_items preserved
+    interim_msgs = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+    ]
+    assert len(interim_msgs) >= 1
+    assert interim_msgs[0].get("codex_reasoning_items") is not None
+    assert interim_msgs[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_opaque_blob"
+
+
+def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monkeypatch):
+    """When converting a reasoning-only interim message to Responses API input,
+    the reasoning items must be followed by an assistant message (even if empty)
+    to satisfy the API's 'required following item' constraint."""
+    agent = _build_agent(monkeypatch)
+    messages = [
+        {"role": "user", "content": "think hard"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": None,
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_abc", "summary": []},
+            ],
+        },
+    ]
+    items = agent._chat_messages_to_responses_input(messages)
+
+    # Find the reasoning item
+    reasoning_indices = [i for i, it in enumerate(items) if it.get("type") == "reasoning"]
+    assert len(reasoning_indices) == 1
+    ri_idx = reasoning_indices[0]
+
+    # There must be a following item after the reasoning
+    assert ri_idx < len(items) - 1, "Reasoning item must not be the last item (missing_following_item)"
+    following = items[ri_idx + 1]
+    assert following.get("role") == "assistant"
+
+
+def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
+    """Two consecutive reasoning-only responses with different encrypted content
+    must NOT be treated as duplicates."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        # First reasoning-only response
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="rs_001",
+                    encrypted_content="enc_first", summary=[], status="completed",
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
+            status="completed", model="gpt-5-codex",
+        ),
+        # Second reasoning-only response (different encrypted content)
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="rs_002",
+                    encrypted_content="enc_second", summary=[], status="completed",
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
+            status="completed", model="gpt-5-codex",
+        ),
+        _codex_message_response("Final answer after thinking."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("think very hard")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Final answer after thinking."
+    # Both reasoning-only interim messages should be in history (not collapsed)
+    interim_msgs = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+    ]
+    assert len(interim_msgs) == 2
+    encrypted_contents = [
+        msg["codex_reasoning_items"][0]["encrypted_content"]
+        for msg in interim_msgs
+    ]
+    assert "enc_first" in encrypted_contents
+    assert "enc_second" in encrypted_contents

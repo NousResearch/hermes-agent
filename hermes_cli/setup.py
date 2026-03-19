@@ -1091,6 +1091,49 @@ def setup_model_provider(config: dict):
                         f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}"
                     )
 
+            # --- Context length configuration ---
+            if base_url and model_name:
+                from agent.model_metadata import (
+                    fetch_endpoint_model_metadata,
+                    save_context_length,
+                )
+
+                cache_base_url = base_url.rstrip("/")
+
+                detected_ctx = None
+                endpoint_meta = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+                if endpoint_meta and model_name in endpoint_meta:
+                    detected_ctx = endpoint_meta[model_name].get("context_length")
+
+                if (
+                    type(detected_ctx) is int
+                    and 1024 <= detected_ctx <= 10_000_000
+                ):
+                    print_success(f"  Context length auto-detected: {detected_ctx:,} tokens")
+                    save_context_length(model_name, cache_base_url, detected_ctx)
+                else:
+                    if detected_ctx is not None:
+                        print_warning("  Auto-detected context length out of range. Ignoring.")
+                    print()
+                    print_info(
+                        "  Endpoint did not report context length. "
+                        "You can enter it now or leave blank to auto-detect at runtime "
+                        "(auto-detect may be slow on first run)."
+                    )
+                    ctx_input = prompt(
+                        "  Context window size in tokens (e.g. 32768, 131072)", ""
+                    ).strip().replace(",", "")
+                    if ctx_input:
+                        try:
+                            ctx_value = int(ctx_input)
+                            if 1024 <= ctx_value <= 10_000_000:
+                                save_context_length(model_name, cache_base_url, ctx_value)
+                                print_success(f"  Context length saved: {ctx_value:,} tokens")
+                            else:
+                                print_warning("  Value out of range (1,024–10,000,000). Skipping — will auto-detect at runtime.")
+                        except ValueError:
+                            print_warning("  Invalid number. Skipping — will auto-detect at runtime.")
+
             save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)

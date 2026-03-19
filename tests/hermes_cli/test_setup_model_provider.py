@@ -106,6 +106,8 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
             return "local-key"
         if "Model name" in message:
             return "llm"
+        if "Context window" in message:
+            return ""  # skip context length
         return ""
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
@@ -123,6 +125,10 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
             "suggested_base_url": "http://localhost:8000/v1",
             "used_fallback": True,
         },
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata",
+        lambda base_url, api_key="": {},
     )
 
     setup_model_provider(config)
@@ -468,3 +474,284 @@ def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkey
 
     assert "Vision (image analysis)" in output
     assert "missing run 'hermes setup' to configure" not in output
+
+
+# ---------------------------------------------------------------------------
+# Context length auto-detect / manual entry during custom endpoint setup
+# ---------------------------------------------------------------------------
+
+def _custom_endpoint_base_mocks(monkeypatch, tmp_path, *, fake_prompt, endpoint_meta=None):
+    """Wire up the minimum mocks needed for the custom-endpoint path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 3  # Custom endpoint
+        if question == "Configure vision:":
+            return len(choices) - 1  # Skip
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["my-model"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata",
+        lambda base_url, api_key="": endpoint_meta or {},
+    )
+
+
+def test_custom_endpoint_auto_detects_context_length(tmp_path, monkeypatch):
+    """When the endpoint reports context_length, it is saved automatically."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1"
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        # Context prompt should NOT be reached
+        if "Context window" in message:
+            raise AssertionError("Should not prompt when auto-detected")
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={
+            "my-model": {"name": "my-model", "context_length": 131072},
+        },
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 1
+    assert save_calls[0] == ("my-model", "http://localhost:8000/v1", 131072)
+
+
+def test_custom_endpoint_manual_context_length_prompt(tmp_path, monkeypatch):
+    """When the endpoint has no context_length, user enters it manually."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1"
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        if "Context window" in message:
+            return "32768"
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={},
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 1
+    assert save_calls[0] == ("my-model", "http://localhost:8000/v1", 32768)
+
+
+def test_custom_endpoint_context_length_blank_skips(tmp_path, monkeypatch):
+    """When the user leaves context length blank, nothing is saved."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1"
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        if "Context window" in message:
+            return ""
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={},
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 0
+
+
+def test_custom_endpoint_context_length_invalid_input(tmp_path, monkeypatch, capsys):
+    """When the user enters a non-numeric value, a warning is shown and nothing is saved."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1"
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        if "Context window" in message:
+            return "abc"
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={},
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 0
+    output = capsys.readouterr().out
+    assert "Invalid number" in output
+
+
+def test_custom_endpoint_trailing_slash_normalized_in_cache_key(tmp_path, monkeypatch):
+    """Trailing slash on base_url is stripped before saving to context cache."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1/"  # trailing slash
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        if "Context window" in message:
+            return "65536"
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={},
+    )
+    # probe returns the URL as-is (no fallback rewrite)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["my-model"],
+            "probed_url": "http://localhost:8000/v1//models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 1
+    # Key must NOT have the trailing slash
+    assert save_calls[0] == ("my-model", "http://localhost:8000/v1", 65536)
+
+
+def test_custom_endpoint_auto_detect_out_of_range_skips(tmp_path, monkeypatch, capsys):
+    """Auto-detected context length outside valid range is ignored and user is prompted."""
+    config = load_config()
+    save_calls = []
+
+    def fake_prompt(message, current=None, **kwargs):
+        if "API base URL" in message:
+            return "http://localhost:8000/v1"
+        if "API key" in message:
+            return "test-key"
+        if "Model name" in message:
+            return "my-model"
+        if "Context window" in message:
+            return ""  # user skips manual entry too
+        return ""
+
+    _custom_endpoint_base_mocks(
+        monkeypatch, tmp_path,
+        fake_prompt=fake_prompt,
+        endpoint_meta={
+            "my-model": {"name": "my-model", "context_length": 99_999_999},
+        },
+    )
+
+    import agent.model_metadata as _mm
+    original_save = _mm.save_context_length
+
+    def tracking_save(model, base_url, length):
+        save_calls.append((model, base_url, length))
+        return original_save(model, base_url, length)
+
+    monkeypatch.setattr("agent.model_metadata.save_context_length", tracking_save)
+
+    setup_model_provider(config)
+
+    assert len(save_calls) == 0
+    output = capsys.readouterr().out
+    assert "out of range" in output

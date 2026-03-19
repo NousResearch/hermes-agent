@@ -324,6 +324,22 @@ def build_skills_system_prompt(
     )
 
 
+def build_lazy_skills_prompt() -> str:
+    """Return a minimal skills hint for lazy loading mode.
+
+    Instead of injecting the full skill listing into the system prompt,
+    tells the agent to call skills_list() when it thinks a skill might help.
+    """
+    return (
+        "## Skills (mandatory)\n"
+        "A skills catalog is available. Call list_skills() when you think "
+        "a specialized skill might help with your task. "
+        "Then load the matching skill with skill_view(name) and follow its instructions.\n"
+        "If a skill has issues, fix it with skill_manage(action=\'patch\').\n"
+        "If no skill matches, proceed normally without loading one."
+    )
+
+
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================

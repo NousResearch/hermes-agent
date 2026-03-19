@@ -1263,6 +1263,15 @@ registry.register(
     check_fn=check_skills_requirements,
 )
 registry.register(
+    name="list_skills",
+    toolset="skills",
+    schema=SKILLS_LIST_SCHEMA,
+    handler=lambda args, **kw: skills_list(
+        category=args.get("category"), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+)
+registry.register(
     name="skill_view",
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,

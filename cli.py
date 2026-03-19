@@ -202,6 +202,9 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "toolsets": ["all"],
+        "skills": {
+            "loading": "eager",  # "eager" (default) or "lazy" — lazy omits skill listing from system prompt
+        },
         "display": {
             "compact": False,
             "resume_display": "full",

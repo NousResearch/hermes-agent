@@ -124,6 +124,27 @@ class TestGatewayPlanCommand:
         assert "plan" in tg_names
 
     @pytest.mark.asyncio
+    async def test_plan_command_emits_hook(self, monkeypatch, tmp_path):
+        import gateway.run as gateway_run
+
+        runner = _make_runner()
+        event = _make_event("/plan Build auth module")
+
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            lambda *_args, **_kwargs: 100_000,
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_plan_skill(tmp_path)
+            scan_skill_commands()
+            await runner._handle_message(event)
+
+        emitted = [call.args[0] for call in runner.hooks.emit.call_args_list]
+        assert "command:plan" in emitted
+
+    @pytest.mark.asyncio
     async def test_plan_command_appears_in_help_output_via_skill_listing(self, tmp_path):
         runner = _make_runner()
         event = _make_event("/help")

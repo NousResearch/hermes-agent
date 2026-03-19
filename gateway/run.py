@@ -2380,8 +2380,14 @@ class GatewayRunner:
             lines = [
                 f"🤖 **Current model:** `{current}`",
                 f"**Provider:** {provider_label}",
-                "",
             ]
+            # Show custom endpoint URL when using a custom provider
+            if current_provider == "custom":
+                from hermes_cli.models import _get_custom_base_url
+                custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                if custom_url:
+                    lines.append(f"**Endpoint:** `{custom_url}`")
+            lines.append("")
             curated = curated_models_for_provider(current_provider)
             if curated:
                 lines.append(f"**Available models ({provider_label}):**")
@@ -2391,7 +2397,7 @@ class GatewayRunner:
                     lines.append(f"• `{mid}`{label}{marker}")
                 lines.append("")
             lines.append("To change: `/model model-name`")
-            lines.append("Switch provider: `/model provider:model-name`")
+            lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
             return "\n".join(lines)
 
         # Parse provider:model syntax

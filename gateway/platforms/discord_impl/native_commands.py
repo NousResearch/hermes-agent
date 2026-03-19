@@ -106,6 +106,12 @@ def get_command_specs() -> tuple[DiscordNativeCommandSpec, ...]:
             ),
         ),
         DiscordNativeCommandSpec(
+            "models",
+            "Open the interactive model picker",
+            "simple",
+            lambda: "/models",
+        ),
+        DiscordNativeCommandSpec(
             "reasoning",
             "Show or change reasoning effort",
             "dispatch",

@@ -85,6 +85,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Show or change the current model", "Configuration",
                args_hint="[name]"),
+    CommandDef("models", "Open the Discord model picker or list models", "Configuration",
+               gateway_only=True),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",

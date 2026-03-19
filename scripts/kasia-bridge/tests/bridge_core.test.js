@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { KasiaBridgeCore } from "../lib/bridge_core.js";
+import { deriveWalletIdentity } from "../lib/kaspa_wallet.js";
+import {
+  buildHandshakePayload,
+  buildHandshakeTransactionPayload,
+  HANDSHAKE_PREFIX,
+} from "../lib/protocol.js";
 
 const VALID_CONTACT_ADDRESS =
   "kaspa:qr9ssytsv8gsw5wrmp4lhnxdhprlg5g9ct9m37ngq9x9nhr7wm3ycxcrzs5e7";
@@ -347,6 +353,58 @@ test("duplicate transactions are deduplicated by tx id", async () => {
     await readFile(join(stateDir, "state.json"), "utf8")
   );
   assert.deepEqual(stateJson.processed_tx_ids, ["tx-dup"]);
+});
+
+test("retryable malformed handshakes are not marked processed", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new FakeWalletClient();
+  const identity = deriveWalletIdentity(
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "mainnet"
+  );
+  walletClient.info = {
+    address: identity.address,
+    publicKeyHex: identity.publicKeyHex,
+    privateKeyHex: identity.privateKeyHex,
+    network: "mainnet",
+  };
+  const handshakePayload = buildHandshakePayload({
+    alias: "001122334455",
+    timestamp: 1,
+    version: 1,
+  });
+  const messagePayload = buildHandshakeTransactionPayload({
+    recipientAddress: identity.address,
+    payload: handshakePayload,
+  })
+    .subarray(Buffer.byteLength(HANDSHAKE_PREFIX))
+    .toString("hex");
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async (url) => {
+      if (String(url).includes("/handshakes/by-receiver")) {
+        return response([
+          {
+            tx_id: "tx-missing-sender",
+            block_time: 123,
+            message_payload: messagePayload,
+          },
+        ]);
+      }
+      return response([]);
+    },
+  });
+
+  await bridge.init();
+  await bridge._pollHandshakes();
+
+  assert.equal(bridge.state.processed_tx_ids.includes("tx-missing-sender"), false);
+  assert.equal(bridge.state.cursors.handshakes_block_time, 123);
 });
 
 test("wallet send state is loaded from disk and persisted back on save", async () => {

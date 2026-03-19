@@ -90,6 +90,11 @@ function isPayloadTooLargeError(error) {
   );
 }
 
+function isRetryableHandshakeProcessingError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return text.includes("missing sender address");
+}
+
 function truncateMessage(
   content,
   maxLength = DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS,
@@ -714,6 +719,7 @@ export class KasiaBridgeCore {
       if (!record?.tx_id || hasProcessedTx(this.state, record.tx_id)) {
         continue;
       }
+      let shouldMarkProcessed = true;
       try {
         const plaintext = decryptSealedMessage(
           this.walletInfo.privateKeyHex,
@@ -725,8 +731,11 @@ export class KasiaBridgeCore {
         this.logger.warn?.(
           `[kasia-bridge] Failed to process handshake ${record?.tx_id}: ${error?.message || error}`
         );
+        shouldMarkProcessed = !isRetryableHandshakeProcessingError(error);
       }
-      markProcessedTx(this.state, record.tx_id, this.processedTxLimit);
+      if (shouldMarkProcessed) {
+        markProcessedTx(this.state, record.tx_id, this.processedTxLimit);
+      }
     }
 
     this.state.cursors.handshakes_block_time = maxBlockTime;

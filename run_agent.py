@@ -79,6 +79,8 @@ from agent.context_anchors import (
     get_anchor_paths_for_summary,
     detect_active_anchors,
     build_batch_anchor_save_prompt,
+    should_pre_flush,
+    build_pre_flush_nudge,
 )
 
 # Agent internals extracted to agent/ package for modularity
@@ -877,6 +879,7 @@ class AIAgent:
         self._context_anchors = parse_anchor_config(self.config)
         self._anchors_max_total = get_anchors_max_total(self.config)
         self._anchors_auto_save = anchors_auto_save_enabled(self.config)
+        self._anchor_pre_flush_sent = False  # one nudge per session
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -983,6 +986,7 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        self._anchor_flush_model = compression_summary_model  # reuse cheap model for anchor flush
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -4267,10 +4271,27 @@ class AIAgent:
 
         # Single prompt for all active anchors
         flush_content = build_batch_anchor_save_prompt(self._active_anchors)
-        _sentinel = f"__anchor_flush_{id(self)}_{time.monotonic()}"
-        flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
-        messages.append(flush_msg)
-        flush_start_idx = len(messages) - 1
+
+        # Build MINIMAL context for the flush LLM (not the full conversation)
+        # Only need: recent user/assistant messages (no tool results) for context
+        _slim_messages = []
+        for msg in messages[-20:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                # Truncate long messages
+                if len(content) > 1500:
+                    content = content[:750] + "\n...[truncated]...\n" + content[-250:]
+                _slim_messages.append({"role": role, "content": content})
+        _slim_messages.append({"role": "user", "content": flush_content})
+
+        # Resolve flush model: prefer cheap model (same as compression summary)
+        _flush_model = getattr(self, "_anchor_flush_model", None)
+        _flush_kwargs = {}
+        if _flush_model:
+            _flush_kwargs["model"] = _flush_model
+
+        flush_start_idx = len(messages)
 
         try:
             # Multi-round loop: read -> patch -> done
@@ -4278,19 +4299,8 @@ class AIAgent:
             flush_messages = []  # local conversation for the flush
 
             for round_num in range(max_rounds):
-                # Build API messages from main conversation + flush messages
-                api_messages = []
-                for msg in messages:
-                    api_msg = msg.copy()
-                    api_msg.pop("reasoning", None)
-                    api_msg.pop("finish_reason", None)
-                    api_msg.pop("_flush_sentinel", None)
-                    api_messages.append(api_msg)
-                # Append flush-local messages (tool results from previous rounds)
-                api_messages.extend(flush_messages)
-
-                if self._cached_system_prompt:
-                    api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
+                # Build API messages: slim context + flush-local messages
+                api_messages = list(_slim_messages) + flush_messages
 
                 try:
                     response = _call_llm(
@@ -4300,6 +4310,7 @@ class AIAgent:
                         temperature=0.3,
                         max_tokens=4096,
                         timeout=30.0,
+                        **_flush_kwargs,
                     )
                 except (RuntimeError, Exception) as e:
                     logger.debug("Anchor flush LLM call failed (round %d): %s", round_num, e)
@@ -4366,13 +4377,6 @@ class AIAgent:
 
         except Exception as e:
             logger.debug("Anchor flush failed: %s", e)
-        finally:
-            # Strip ALL flush artifacts from main messages
-            while len(messages) > flush_start_idx:
-                messages.pop()
-            # The flush_msg itself
-            if messages and messages[-1].get("_flush_sentinel") == _sentinel:
-                messages.pop()
 
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
@@ -6599,7 +6603,25 @@ class AIAgent:
                         + _compressor.last_completion_tokens
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
+                    # Pre-flush nudge: if approaching compression, tell the model
+                    # to save anchor files proactively (in its normal flow, no extra LLM call)
+                    if (self.compression_enabled
+                            and self._context_anchors
+                            and not self._anchor_pre_flush_sent
+                            and should_pre_flush(_compressor.threshold_tokens, _estimated_next_prompt)):
+                        _pre_active = detect_active_anchors(self._context_anchors, messages)
+                        if _pre_active:
+                            messages.append({
+                                "role": "user",
+                                "content": build_pre_flush_nudge(_pre_active),
+                            })
+                            self._anchor_pre_flush_sent = True
+                            if not self.quiet_mode:
+                                logger.info("Context anchors: pre-flush nudge injected at %d%% capacity",
+                                    int(_estimated_next_prompt / _compressor.threshold_tokens * 100))
+
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
+                        self._anchor_pre_flush_sent = False  # reset for next compression cycle
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Defaults
 DEFAULT_MAX_CHARS_PER_ANCHOR = 5000
 DEFAULT_MAX_TOTAL_CHARS = 20000
+PRE_FLUSH_THRESHOLD = 0.70  # trigger pre-flush nudge at 70% of compression threshold
 ANCHOR_INJECTION_PREFIX = (
     "[ANCHORED PROJECT CONTEXT - These files contain persistent project state "
     "that survives compression. They reflect the current ground truth. Do NOT "
@@ -271,4 +272,38 @@ def build_batch_anchor_save_prompt(anchors: List[Dict[str, Any]]) -> str:
         f"- Files must read as CURRENT TRUTH, not a changelog.\n"
         f"- Be concise and factual. No narrative, no timestamps for resolved work.\n"
         f"- If nothing changed for a file, skip it entirely.]"
+    )
+
+
+def should_pre_flush(
+    threshold_tokens: int,
+    current_tokens: int,
+    pre_flush_ratio: float = PRE_FLUSH_THRESHOLD,
+) -> bool:
+    """Check if we should nudge the model to save anchors proactively.
+
+    Returns True when token usage crosses pre_flush_ratio * threshold_tokens
+    (e.g. 70% of the compression threshold), giving the model time to save
+    state in its normal flow before compression fires.
+    """
+    if threshold_tokens <= 0 or current_tokens <= 0:
+        return False
+    return current_tokens >= int(threshold_tokens * pre_flush_ratio)
+
+
+def build_pre_flush_nudge(anchors: List[Dict[str, Any]]) -> str:
+    """Build a nudge message telling the model to save state NOW.
+
+    This is injected as a system message in the normal conversation flow
+    so the model saves anchors without needing a separate LLM call.
+    """
+    file_list = "\n".join(f"  - {a['path']}" for a in anchors)
+
+    return (
+        f"[System: Context compression is approaching. Before continuing, "
+        f"update these project context files with any changes from this session. "
+        f"Use read_file then patch. Keep them as current truth (no changelogs, "
+        f"no resolved bugs, replace outdated info in-place, remove completed tasks).\n"
+        f"{file_list}\n"
+        f"Do this now, then continue with the user's request.]"
     )

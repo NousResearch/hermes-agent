@@ -62,6 +62,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skills',
             'user-guide/features/memory',
             'user-guide/features/context-files',
+            'user-guide/features/context-references',
             'user-guide/features/personality',
             'user-guide/features/skins',
           ],

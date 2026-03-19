@@ -117,6 +117,8 @@ Common examples:
 
 For the full built-in CLI and messaging lists, see [Slash Commands Reference](../reference/slash-commands.md).
 
+Hermes also supports inline `@` context references such as `@file:src/main.py`, `@folder:src/`, `@diff`, and `@url:https://...`. In the CLI, `Tab` completes `@file:` and `@folder:` paths directly in the input box. See [Context References](features/context-references.md).
+
 For setup, providers, silence tuning, and messaging/Discord voice usage, see [Voice Mode](features/voice-mode.md).
 
 :::tip

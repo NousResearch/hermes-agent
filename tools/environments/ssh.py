@@ -154,7 +154,10 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                          stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
+        # Shell-quote work_dir to prevent command injection via crafted paths
+        # (e.g. workdir="/tmp/$(rm -rf /)" would execute the subshell without quoting)
+        import shlex
+        wrapped = f'cd {shlex.quote(work_dir)} && {exec_command}'
         effective_timeout = timeout or self.timeout
 
         if sudo_stdin is not None and stdin_data is not None:

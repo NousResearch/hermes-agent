@@ -16,6 +16,58 @@ from webapi.sse import SSEEmitter, SSEStream
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
 
 
+def _read_attachment_field(attachment: Any, *keys: str) -> str:
+    if not isinstance(attachment, dict):
+        return ""
+    for key in keys:
+        value = attachment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _build_user_content(payload: ChatRequest) -> tuple[str | list[dict[str, Any]], str]:
+    text = payload.message or ""
+    attachments = payload.attachments or []
+    image_parts: list[dict[str, Any]] = []
+
+    for attachment in attachments:
+        if hasattr(attachment, "model_dump"):
+            raw = attachment.model_dump(exclude_none=True)
+        elif isinstance(attachment, dict):
+            raw = dict(attachment)
+        else:
+            continue
+
+        mime = _read_attachment_field(raw, "contentType", "mimeType", "mediaType")
+        if not mime.startswith("image/"):
+            continue
+
+        content = _read_attachment_field(raw, "content", "base64", "data")
+        if not content:
+            continue
+
+        image_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{content}"},
+            }
+        )
+
+    if not image_parts:
+        return text, payload.persist_user_message or text
+
+    content_parts: list[dict[str, Any]] = []
+    if text.strip():
+        content_parts.append({"type": "text", "text": text})
+    content_parts.extend(image_parts)
+    if not content_parts:
+        content_parts.append({"type": "text", "text": ""})
+
+    persist_text = payload.persist_user_message or text
+    return content_parts, persist_text
+
+
 def _tool_map(messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     mapping: dict[str, dict[str, Any]] = {}
     for message in messages:
@@ -143,6 +195,7 @@ def _run_chat(
 ) -> dict[str, Any]:
     get_session_or_404(session_id, session_db)
     history = session_db.get_messages_as_conversation(session_id)
+    user_content, persist_text = _build_user_content(payload)
     agent = create_agent(
         session_id=session_id,
         session_db=session_db,
@@ -154,9 +207,9 @@ def _run_chat(
         skip_memory=payload.skip_memory,
     )
     return agent.run_conversation(
-        payload.message,
+        user_content,
         conversation_history=history,
-        persist_user_message=payload.persist_user_message,
+        persist_user_message=persist_text,
     )
 
 
@@ -191,6 +244,7 @@ async def chat_stream(
     session_db: Annotated[SessionDB, Depends(get_session_db)],
 ) -> StreamingResponse:
     session = get_session_or_404(session_id, session_db)
+    user_content, persist_text = _build_user_content(payload)
     run_id = f"run_{uuid.uuid4().hex}"
     assistant_message_id = f"msg_asst_{uuid.uuid4().hex}"
     stream = SSEStream()
@@ -210,7 +264,7 @@ async def chat_stream(
             user_message={
                 "id": f"msg_user_{uuid.uuid4().hex}",
                 "role": "user",
-                "content": payload.message,
+                "content": persist_text,
             },
         )
     )
@@ -275,10 +329,10 @@ async def chat_stream(
                 tool_progress_callback=tool_progress_callback,
             )
             result = agent.run_conversation(
-                payload.message,
+                user_content,
                 conversation_history=history,
                 stream_callback=stream_callback,
-                persist_user_message=payload.persist_user_message,
+                persist_user_message=persist_text,
             )
             _emit_post_run_events(emitter, stream, result, assistant_message_id)
         except Exception as exc:

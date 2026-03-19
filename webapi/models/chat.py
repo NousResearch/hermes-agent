@@ -3,8 +3,20 @@ from typing import Any
 from webapi.models.common import WebAPIModel
 
 
+class ChatAttachment(WebAPIModel):
+    type: str | None = None
+    contentType: str | None = None
+    mimeType: str | None = None
+    mediaType: str | None = None
+    content: str | None = None
+    base64: str | None = None
+    data: str | None = None
+    name: str | None = None
+
+
 class ChatRequest(WebAPIModel):
     message: str
+    attachments: list[ChatAttachment] | None = None
     persist_user_message: str | None = None
     system_message: str | None = None
     model: str | None = None
